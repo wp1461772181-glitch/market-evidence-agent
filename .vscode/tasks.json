@@ -1,0 +1,16 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Ensure PostgreSQL",
+      "type": "shell",
+      "command": "if ! docker info >/dev/null 2>&1; then open -gj -a OrbStack; i=0; until docker info >/dev/null 2>&1; do i=$((i+1)); if [ $i -ge 30 ]; then echo 'Docker/OrbStack did not become ready'; exit 1; fi; sleep 1; done; fi; if ! docker inspect market-evidence-postgres >/dev/null 2>&1; then echo 'Container market-evidence-postgres does not exist'; exit 1; fi; if [ \"$(docker inspect -f '{{.State.Running}}' market-evidence-postgres)\" != \"true\" ]; then docker start market-evidence-postgres >/dev/null; fi; i=0; until docker exec market-evidence-postgres pg_isready -U market_evidence -d market_evidence >/dev/null 2>&1; do i=$((i+1)); if [ $i -ge 30 ]; then echo 'PostgreSQL did not become ready'; exit 1; fi; sleep 1; done; echo 'PostgreSQL ready on localhost:55432'",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "silent",
+        "panel": "shared",
+        "clear": true
+      }
+    }
+  ]
+}

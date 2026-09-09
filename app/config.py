@@ -1,0 +1,7 @@
+import os
+
+
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql+psycopg://market_evidence:market_evidence_dev@localhost:55432/market_evidence",
+)

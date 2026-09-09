@@ -1,0 +1,22 @@
+# Local configuration and Python tooling
+.env
+.env.*
+!.env.example
+.venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+*.egg-info/
+
+# Local databases and generated data. Keep source code, tests, and documented
+# evaluation summaries versioned instead of placing them in these directories.
+*.db
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+data/
+exports/
+artifacts/
+postgres_data/

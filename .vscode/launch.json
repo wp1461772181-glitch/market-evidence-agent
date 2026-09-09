@@ -1,0 +1,29 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Market Evidence Agent",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": [
+        "app.main:app",
+        "--reload",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8000"
+      ],
+      "cwd": "${workspaceFolder}",
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "console": "integratedTerminal",
+      "subProcess": true,
+      "preLaunchTask": "Ensure PostgreSQL",
+      "serverReadyAction": {
+        "action": "openExternally",
+        "pattern": "Uvicorn running on (https?://\\S+)",
+        "uriFormat": "%s/docs"
+      }
+    }
+  ]
+}
