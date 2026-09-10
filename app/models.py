@@ -1,7 +1,21 @@
 import uuid
 from datetime import date, datetime
 
-from sqlalchemy import BigInteger, Boolean, Date, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint, Uuid, func
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    Date,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    JSON,
+    String,
+    UniqueConstraint,
+    Uuid,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .database import Base
@@ -16,6 +30,46 @@ class Forecast(Base):
     neutral_probability: Mapped[float] = mapped_column(Float, nullable=False)
     bearish_probability: Mapped[float] = mapped_column(Float, nullable=False)
     model_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class ForecastSnapshot(Base):
+    """An append-only-in-application offline Week 5 prediction with its inputs.
+
+    This intentionally has no foreign key to ``Forecast``.  The old endpoint
+    still produces its Week 1 ``mock-v1`` records, while this table preserves
+    an independently reproducible record made from the Week 4 model artifact.
+    """
+
+    __tablename__ = "forecast_snapshots"
+    __table_args__ = (
+        CheckConstraint(
+            "bearish_probability >= 0 AND bearish_probability <= 1 "
+            "AND neutral_probability >= 0 AND neutral_probability <= 1 "
+            "AND bullish_probability >= 0 AND bullish_probability <= 1",
+            name="ck_forecast_snapshot_probability_bounds",
+        ),
+        CheckConstraint(
+            "abs((bearish_probability + neutral_probability + bullish_probability) - 1.0) < 0.00000001",
+            name="ck_forecast_snapshot_probability_sum",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    symbol: Mapped[str] = mapped_column(String(10), nullable=False, index=True)
+    feature_trading_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    feature_as_of_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    model_version: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    model_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    model_manifest_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    feature_export_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    feature_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    feature_source: Mapped[str] = mapped_column(String(64), nullable=False)
+    feature_snapshot_mode: Mapped[str] = mapped_column(String(32), nullable=False)
+    feature_values: Mapped[dict[str, float]] = mapped_column(JSON, nullable=False)
+    bearish_probability: Mapped[float] = mapped_column(Float, nullable=False)
+    neutral_probability: Mapped[float] = mapped_column(Float, nullable=False)
+    bullish_probability: Mapped[float] = mapped_column(Float, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 

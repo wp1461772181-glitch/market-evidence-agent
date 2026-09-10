@@ -1,6 +1,6 @@
-# Market Evidence Agent — Weeks 1–4
+# Market Evidence Agent — Weeks 1–5 (part 1)
 
-A FastAPI and PostgreSQL foundation for a market-evidence system. The project stores a deterministic Week 1 mock-v1 forecast, then adds reproducible daily market-data snapshots, leakage-safe Week 3 features, and a fixed Week 4 offline baseline evaluation. The API does **not** yet serve the trained baseline.
+A FastAPI and PostgreSQL foundation for a market-evidence system. The project stores a deterministic Week 1 mock-v1 forecast, then adds reproducible daily market-data snapshots, leakage-safe Week 3 features, a fixed Week 4 offline baseline evaluation, and a small Week 5 archive command for one offline model prediction. The API does **not** yet serve the trained baseline.
 
 ## Implemented scope
 
@@ -11,6 +11,7 @@ A FastAPI and PostgreSQL foundation for a market-evidence system. The project st
 - Historical snapshots select the newest revision visible at a chosen cutoff.
 - market-features-v1 exports momentum, volatility, volume, drawdown, and relative-market features from a reproducible snapshot.
 - Week 4 builds a five-stock, 20-XNYS-session excess-return dataset and evaluates a fixed logistic-regression baseline with time-ordered, label-maturity-purged folds.
+- Week 5 part 1 can archive one prediction from a trusted local Week 4 artifact and a compatible Week 3 feature export, then retrieve that saved record by ID.
 
 ## Time semantics and data-version limits
 
@@ -154,11 +155,44 @@ for reproduction and inspection only, not an API or full-history production
 model. `manifest.json` records the ordered features, class order, library
 versions, source-export hash, data metadata, and reload check.
 
+## Week 5 part 1: archive an offline prediction
+
+This small slice deliberately keeps model loading out of the request path. It
+loads a **trusted local** Week 4 artifact, selects one existing feature row,
+uses the saved model to calculate the three probabilities, and appends the
+exact inputs and provenance to `forecast_snapshots`. The record can then be
+read through `GET /forecast-snapshots/{id}`.
+
+For the checked local Week 4 artifact and Week 3 export, archive the AAPL row
+at the export cutoff as follows:
+
+~~~bash
+.venv/bin/python -m app.forecast_archive \
+  --model-dir artifacts/week4-2026-09-10 \
+  --features exports/week3-features-2026-09-04.json \
+  --symbol AAPL \
+  --trading-date 2026-09-04
+~~~
+
+The command creates the additive table when needed and prints the new ID. Its
+record includes the named bearish, neutral, and bullish probabilities; the six
+feature values; feature date and cutoff; feature version, source, and snapshot
+mode; and SHA-256 values for the model, manifest, and input export. It accepts
+only a feature export compatible with the saved model's feature version,
+source, and snapshot mode. The selected feature date must be on or after
+2026-04-09, the conservative availability boundary recorded by this last-fold
+artifact.
+
+The Week 4 artifact and the feature export are local ignored files; they are
+not committed to GitHub. `joblib` files must be treated as trusted local input,
+not as files supplied by an API caller. See [Week 5 progress](docs/week5-progress.md)
+for the exact boundary of this slice.
+
 ## Validation evidence
 
 The automated suite covers the forecast API, data validation, idempotent ingestion, immutable revisions, timezone and session-close boundaries, cross-timezone snapshot selection, feature formulas, warm-up/skip behavior, and tests that future bars or later revisions cannot change an earlier feature row. Run pytest -q after changing the schema, ingestion, snapshot, or feature logic.
 
-Verified locally on 2026-09-10: 49 tests passed (10 dependency deprecation
+Verified locally on 2026-09-10: 56 tests passed (10 dependency deprecation
 warnings), and `pip check` reported no broken requirements.
 
 - The upgrade appended 4,536 baseline revisions and a repeat migration added 0;
@@ -177,12 +211,24 @@ warnings), and `pip check` reported no broken requirements.
   0.6252 multiclass Brier score, and 1.0465 log loss. Sigmoid calibration made
   probability scores worse in this run (0.6920 Brier, 1.2237 log loss), so it
   is recorded rather than presented as an improvement.
+- The Week 5 archive command created one AAPL snapshot for 2026-09-04. A local
+  HTTP retrieval returned its saved six inputs, probabilities, and model/export
+  provenance exactly; an unknown UUID returned 404 and a malformed UUID 422.
+  The check left the 52 legacy `forecasts`, 4,536 `market_prices`, and 4,536
+  `market_price_revisions` rows unchanged.
 
 ## Current limitations
 
-- mock-v1 is a deterministic placeholder, not a trained market model.
-- The Week 4 model is offline only; API integration, immutable forecast versions,
-  revision-triggered re-evaluation, and monitoring remain later work.
+- `POST /forecasts` still creates only the deterministic `mock-v1` placeholder;
+  it does not serve the Week 4 model.
+- Week 5 part 1 archives offline inferences only. It does not yet provide a
+  forecast-revision timeline, replay, online model serving,
+  revision-triggered re-evaluation, or monitoring. The application exposes no
+  update or delete route for snapshots, but this is not a database-level
+  tamper-proof guarantee.
+- The Week 4 artifact is experimental. This archive feature makes no accuracy
+  improvement or trading-profit claim. It was built on 2026-09-10 from a
+  historical-research export, so it is not evidence of a prospective live run.
 - Historical-research backfills are not a genuine provider point-in-time feed.
   Overlapping 20-session labels also mean the OOS rows are correlated and do not
   establish trading profitability.

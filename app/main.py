@@ -1,9 +1,11 @@
+from uuid import UUID
+
 from fastapi import Depends, FastAPI, HTTPException, status
 from sqlalchemy.orm import Session
 
 from .database import Base, SessionLocal, engine
-from .models import Forecast
-from .schemas import ForecastRequest, ForecastResponse
+from .models import Forecast, ForecastSnapshot
+from .schemas import ForecastRequest, ForecastResponse, ForecastSnapshotResponse
 from .services import MODEL_VERSION, is_valid_symbol, mock_forecast, normalize_symbol
 
 
@@ -45,3 +47,11 @@ def create_forecast(payload: ForecastRequest, db: Session = Depends(get_db)) -> 
     db.commit()
     db.refresh(forecast)
     return forecast
+
+
+@app.get("/forecast-snapshots/{snapshot_id}", response_model=ForecastSnapshotResponse)
+def get_forecast_snapshot(snapshot_id: UUID, db: Session = Depends(get_db)) -> ForecastSnapshot:
+    snapshot = db.get(ForecastSnapshot, snapshot_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="forecast snapshot not found")
+    return snapshot
