@@ -73,6 +73,42 @@ class ForecastSnapshot(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
+class ForecastRevision(Base):
+    """One append-only link from a new forecast snapshot to its predecessor.
+
+    Existing, unlinked ``ForecastSnapshot`` rows are version-one roots.  The
+    unique parent reference permits one successor only, which keeps every
+    revision history a simple linear chain without needing a separate event
+    system or a migration of existing records.
+    """
+
+    __tablename__ = "forecast_revisions"
+    __table_args__ = (
+        UniqueConstraint("parent_snapshot_id", name="forecast_revisions_parent_snapshot_id_key"),
+        CheckConstraint("length(trim(reason)) > 0", name="ck_forecast_revision_reason_nonblank"),
+        CheckConstraint("snapshot_id <> parent_snapshot_id", name="ck_forecast_revision_not_self"),
+    )
+
+    snapshot_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("forecast_snapshots.id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    parent_snapshot_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("forecast_snapshots.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    root_snapshot_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("forecast_snapshots.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    reason: Mapped[str] = mapped_column(String(280), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
 class MarketPrice(Base):
     __tablename__ = "market_prices"
     __table_args__ = (

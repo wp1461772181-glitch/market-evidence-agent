@@ -41,3 +41,16 @@ class ForecastSnapshotResponse(BaseModel):
     neutral_probability: float
     bullish_probability: float
     created_at: datetime
+
+
+class ForecastSnapshotTimelineEntry(ForecastSnapshotResponse):
+    """One saved snapshot plus its position and link in a revision chain."""
+
+    version: int
+    parent_snapshot_id: UUID | None
+    revision_reason: str | None
+
+
+class ForecastSnapshotTimelineResponse(BaseModel):
+    root_snapshot_id: UUID
+    snapshots: list[ForecastSnapshotTimelineEntry]
