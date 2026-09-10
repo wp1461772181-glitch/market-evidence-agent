@@ -1,6 +1,6 @@
-# Market Evidence Agent — Weeks 1–3
+# Market Evidence Agent — Weeks 1–4
 
-A FastAPI and PostgreSQL foundation for a market-evidence system. The project stores a deterministic Week 1 mock-v1 forecast, then adds reproducible daily market-data snapshots and leakage-safe Week 3 features. It does **not** yet train or evaluate a real prediction model.
+A FastAPI and PostgreSQL foundation for a market-evidence system. The project stores a deterministic Week 1 mock-v1 forecast, then adds reproducible daily market-data snapshots, leakage-safe Week 3 features, and a fixed Week 4 offline baseline evaluation. The API does **not** yet serve the trained baseline.
 
 ## Implemented scope
 
@@ -10,6 +10,7 @@ A FastAPI and PostgreSQL foundation for a market-evidence system. The project st
 - market_price_revisions is append-only. A changed provider bar becomes a new numbered, content-hashed revision instead of replacing an earlier value.
 - Historical snapshots select the newest revision visible at a chosen cutoff.
 - market-features-v1 exports momentum, volatility, volume, drawdown, and relative-market features from a reproducible snapshot.
+- Week 4 builds a five-stock, 20-XNYS-session excess-return dataset and evaluates a fixed logistic-regression baseline with time-ordered, label-maturity-purged folds.
 
 ## Time semantics and data-version limits
 
@@ -39,6 +40,25 @@ Each feature row uses its trading date and earlier visible bars only. The first 
 | Relative market performance | Stock 20-day return minus SPY 20-day return on exact matching dates |
 
 For a final export cutoff, feature construction reloads the stock and SPY snapshot at **each feature date's own XNYS close**. This prevents later visible bars or revisions from entering an earlier feature row.
+
+## Week 4 offline baseline
+
+The Week 4 experiment is deliberately small: it reuses scikit-learn's
+`Pipeline(StandardScaler, LogisticRegression)` and compares it with class-prior,
+majority-class, and relative-momentum baselines. Sigmoid calibration is fit on a
+separate time block with `FrozenEstimator`, never on the test block.
+
+Labels use the stock's 20-session return minus SPY's return over the same dates.
+For a row at `t`, `threshold = max(1e-8, 0.5 * volatility_20d(t) * sqrt(20 / 252))`:
+below `-threshold` is bearish (0), within the boundary is neutral (1), and above
+`threshold` is bullish (2). The final 20 sessions without a mature label are
+excluded.
+
+Three expanding time folds each hold out 84 XNYS sessions for testing. The 63
+sessions immediately before each test block are reserved for calibration; rows
+whose label was not available before the next block began are purged. See
+[the Week 4 evaluation report](docs/week4-evaluation.md) for the fixed design,
+actual OOS metrics, and limits.
 
 ## Setup
 
@@ -117,13 +137,29 @@ The export contains metadata (feature_version, UTC cutoff, source, snapshot mode
 CSV is also supported with `--format csv`; its first line is a `# metadata=`
 JSON comment, so a dataframe reader should use `comment="#"`.
 
+## Run the Week 4 evaluation
+
+The command saves the dataset, out-of-sample predictions, JSON report, model,
+and manifest under an ignored artifact directory. Use a fresh or empty output
+directory; the command refuses to overwrite an existing run.
+
+~~~bash
+.venv/bin/python -m app.training \
+  --features exports/week3-features-2026-09-04.json \
+  --output-dir artifacts/week4-2026-09-10
+~~~
+
+The saved model is the calibrated model from the **last evaluation fold**. It is
+for reproduction and inspection only, not an API or full-history production
+model. `manifest.json` records the ordered features, class order, library
+versions, source-export hash, data metadata, and reload check.
+
 ## Validation evidence
 
 The automated suite covers the forecast API, data validation, idempotent ingestion, immutable revisions, timezone and session-close boundaries, cross-timezone snapshot selection, feature formulas, warm-up/skip behavior, and tests that future bars or later revisions cannot change an earlier feature row. Run pytest -q after changing the schema, ingestion, snapshot, or feature logic.
 
-Verified locally on 2026-09-09 after migrating the existing six-symbol Week 2
-database: 37 tests passed (three existing dependency deprecation warnings),
-and `pip check` reported no broken requirements.
+Verified locally on 2026-09-10: 49 tests passed (10 dependency deprecation
+warnings), and `pip check` reported no broken requirements.
 
 - The upgrade appended 4,536 baseline revisions and a repeat migration added 0;
   the original 4,536 legacy price rows were preserved.
@@ -135,10 +171,20 @@ and `pip check` reported no broken requirements.
   exactly 120 warm-up skips and no other skip reason. The SPY relative-return
   feature was zero. This local run took about 37 seconds; timing is only a
   machine-specific reference.
+- The Week 4 run retained 3,580 labelled stock rows and excluded 100 rows whose
+  20-session labels had not matured. Its three OOS blocks contain 1,260 rows in
+  total. Raw logistic regression had 0.4516 accuracy, 0.3530 balanced accuracy,
+  0.6252 multiclass Brier score, and 1.0465 log loss. Sigmoid calibration made
+  probability scores worse in this run (0.6920 Brier, 1.2237 log loss), so it
+  is recorded rather than presented as an improvement.
 
 ## Current limitations
 
 - mock-v1 is a deterministic placeholder, not a trained market model.
-- No train/validation split, baseline model comparison, probability calibration, or evaluation report has been implemented yet.
+- The Week 4 model is offline only; API integration, immutable forecast versions,
+  revision-triggered re-evaluation, and monitoring remain later work.
+- Historical-research backfills are not a genuine provider point-in-time feed.
+  Overlapping 20-session labels also mean the OOS rows are correlated and do not
+  establish trading profitability.
 - Yahoo Finance Chart is an external undocumented endpoint and can change or rate-limit requests.
 - SQLAlchemy create_all is currently used for schema creation; Alembic migrations, SEC/FRED evidence, LLM workflows, frontend, deployment, and monitoring remain later milestones.

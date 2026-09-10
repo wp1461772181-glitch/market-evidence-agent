@@ -1,0 +1,1287 @@
+{
+  "data_metadata": {
+    "as_of_time": "2026-09-04T21:00:00+00:00",
+    "benchmark_rows_excluded": 736,
+    "benchmark_symbol": "SPY",
+    "class_mapping": {
+      "bearish": 0,
+      "bullish": 2,
+      "neutral": 1
+    },
+    "excluded_by_reason": {
+      "label_not_mature_at_cutoff": 100
+    },
+    "feature_columns": [
+      "momentum_5d",
+      "momentum_20d",
+      "volatility_20d",
+      "volume_ratio_20d",
+      "drawdown_20d",
+      "relative_return_20d"
+    ],
+    "feature_export_metadata": {
+      "as_of_time": "2026-09-04T21:00:00+00:00",
+      "feature_version": "market-features-v1",
+      "formula": {
+        "drawdown_20d": "close_t / max(close_t-19 ... close_t) - 1",
+        "momentum_20d": "close_t / close_t-20 - 1",
+        "momentum_5d": "close_t / close_t-5 - 1",
+        "relative_return_20d": "stock 20-day return - SPY 20-day return, exact-date aligned",
+        "volatility_20d": "sample stddev of 20 close-to-close returns (ddof=1) * sqrt(252)",
+        "volume_ratio_20d": "volume_t / mean(volume_t-20 ... volume_t-1)"
+      },
+      "historical_research_limit": "Daily bars are assumed available at XNYS session close on their trading date; later provider revisions are excluded until observed.",
+      "observed_limit": null,
+      "row_count": 4416,
+      "skipped_by_reason": {
+        "insufficient_history": 120
+      },
+      "snapshot_mode": "historical_research",
+      "source": "yahoo-finance-chart",
+      "symbols": [
+        "AAPL",
+        "AMZN",
+        "GOOGL",
+        "MSFT",
+        "NVDA",
+        "SPY"
+      ]
+    },
+    "feature_file": "exports/week3-features-2026-09-04.json",
+    "feature_file_sha256": "b12f6b372829def4323d433709c02fb741d5ce7b4c6b6709ac43af374649dc52",
+    "feature_version": "market-features-v1",
+    "input_feature_row_count": 4416,
+    "label": {
+      "boundary_class": "neutral",
+      "forward_sessions": 20,
+      "historical_research_limit": "Initial historical backfills are a research assumption, not proof that this system possessed the bar at that historical close.",
+      "minimum_threshold": 1e-08,
+      "price_snapshot": "snapshot at label_end_date XNYS session close",
+      "target_formula": "stock_return_t_to_t_plus_20 - SPY_return_t_to_t_plus_20",
+      "threshold_formula": "max(1e-8, 0.5 * volatility_20d * sqrt(20 / 252))",
+      "threshold_volatility_multiplier": 0.5
+    },
+    "row_count": 3580,
+    "snapshot_mode": "historical_research",
+    "source": "yahoo-finance-chart"
+  },
+  "experiment": {
+    "class_mapping": {
+      "0": "bearish",
+      "1": "neutral",
+      "2": "bullish"
+    },
+    "feature_columns": [
+      "momentum_5d",
+      "momentum_20d",
+      "volatility_20d",
+      "volume_ratio_20d",
+      "drawdown_20d",
+      "relative_return_20d"
+    ],
+    "models": {
+      "baseline_class_prior": "DummyClassifier(strategy=prior)",
+      "baseline_majority_class": "DummyClassifier(strategy=most_frequent)",
+      "baseline_relative_momentum": "relative_return_20d compared with each row's precomputed label threshold",
+      "logistic_calibrated": "sigmoid CalibratedClassifierCV(FrozenEstimator(fitted raw pipeline)) on the held-out calibration block",
+      "logistic_raw": "Pipeline(StandardScaler, LogisticRegression(C=1, max_iter=1000, random_state=42))"
+    },
+    "name": "week4-fixed-logistic-walk-forward-v1",
+    "purpose": "Offline baseline evaluation only; no test-fold model selection or hyperparameter search.",
+    "split_design": {
+      "calibration_sessions_before_purge": 63,
+      "n_folds": 3,
+      "purge_rule": "label_available_at must be strictly earlier than the next role's earliest decision_time",
+      "test_sessions_per_fold": 84
+    }
+  },
+  "folds": [
+    {
+      "fold": 1,
+      "models": {
+        "baseline_class_prior": {
+          "accuracy": 0.4595238095238095,
+          "balanced_accuracy": 0.3333333333333333,
+          "brier_multiclass": 0.6415841917398121,
+          "confusion_matrix": [
+            [
+              0,
+              102,
+              0
+            ],
+            [
+              0,
+              193,
+              0
+            ],
+            [
+              0,
+              125,
+              0
+            ]
+          ],
+          "log_loss": 1.0622092786094823,
+          "macro_f1": 0.20989668297988037,
+          "reliability_bins": {
+            "bearish": {
+              "fraction_positive": [
+                0.24285714285714285
+              ],
+              "mean_predicted_value": [
+                0.24881889763779397
+              ]
+            },
+            "bullish": {
+              "fraction_positive": [
+                0.2976190476190476
+              ],
+              "mean_predicted_value": [
+                0.2834645669291367
+              ]
+            },
+            "neutral": {
+              "fraction_positive": [
+                0.4595238095238095
+              ],
+              "mean_predicted_value": [
+                0.46771653543307473
+              ]
+            }
+          }
+        },
+        "baseline_majority_class": {
+          "accuracy": 0.4595238095238095,
+          "balanced_accuracy": 0.3333333333333333,
+          "brier_multiclass": 1.0809523809523809,
+          "confusion_matrix": [
+            [
+              0,
+              102,
+              0
+            ],
+            [
+              0,
+              193,
+              0
+            ],
+            [
+              0,
+              125,
+              0
+            ]
+          ],
+          "log_loss": 19.480736474594266,
+          "macro_f1": 0.20989668297988037,
+          "reliability_bins": {
+            "bearish": {
+              "fraction_positive": [
+                0.24285714285714285
+              ],
+              "mean_predicted_value": [
+                0.0
+              ]
+            },
+            "bullish": {
+              "fraction_positive": [
+                0.2976190476190476
+              ],
+              "mean_predicted_value": [
+                0.0
+              ]
+            },
+            "neutral": {
+              "fraction_positive": [
+                0.4595238095238095
+              ],
+              "mean_predicted_value": [
+                1.0
+              ]
+            }
+          }
+        },
+        "baseline_relative_momentum": {
+          "accuracy": 0.3547619047619048,
+          "balanced_accuracy": 0.33100098208540757,
+          "brier_multiclass": 1.2904761904761906,
+          "confusion_matrix": [
+            [
+              10,
+              58,
+              34
+            ],
+            [
+              48,
+              77,
+              68
+            ],
+            [
+              26,
+              37,
+              62
+            ]
+          ],
+          "log_loss": 23.256738258216064,
+          "macro_f1": 0.31950347796141493,
+          "reliability_bins": {
+            "bearish": {
+              "fraction_positive": [
+                0.27380952380952384,
+                0.11904761904761904
+              ],
+              "mean_predicted_value": [
+                0.0,
+                1.0
+              ]
+            },
+            "bullish": {
+              "fraction_positive": [
+                0.24609375,
+                0.3780487804878049
+              ],
+              "mean_predicted_value": [
+                0.0,
+                1.0
+              ]
+            },
+            "neutral": {
+              "fraction_positive": [
+                0.46774193548387094,
+                0.4476744186046512
+              ],
+              "mean_predicted_value": [
+                0.0,
+                1.0
+              ]
+            }
+          }
+        },
+        "logistic_calibrated": {
+          "accuracy": 0.4595238095238095,
+          "balanced_accuracy": 0.3333333333333333,
+          "brier_multiclass": 0.6757988567371694,
+          "confusion_matrix": [
+            [
+              0,
+              102,
+              0
+            ],
+            [
+              0,
+              193,
+              0
+            ],
+            [
+              0,
+              125,
+              0
+            ]
+          ],
+          "log_loss": 1.1994441896503067,
+          "macro_f1": 0.20989668297988037,
+          "reliability_bins": {
+            "bearish": {
+              "fraction_positive": [
+                0.24285714285714285
+              ],
+              "mean_predicted_value": [
+                0.07054330370965817
+              ]
+            },
+            "bullish": {
+              "fraction_positive": [
+                0.2698412698412698,
+                0.3392857142857143
+              ],
+              "mean_predicted_value": [
+                0.36372192064076236,
+                0.4207112043800222
+              ]
+            },
+            "neutral": {
+              "fraction_positive": [
+                0.4508816120906801,
+                0.6086956521739131
+              ],
+              "mean_predicted_value": [
+                0.5393335629684154,
+                0.6051731133115961
+              ]
+            }
+          }
+        },
+        "logistic_raw": {
+          "accuracy": 0.44285714285714284,
+          "balanced_accuracy": 0.355142402384097,
+          "brier_multiclass": 0.6310612186528578,
+          "confusion_matrix": [
+            [
+              22,
+              80,
+              0
+            ],
+            [
+              29,
+              164,
+              0
+            ],
+            [
+              9,
+              116,
+              0
+            ]
+          ],
+          "log_loss": 1.0605106516120917,
+          "macro_f1": 0.2882444429561167,
+          "reliability_bins": {
+            "bearish": {
+              "fraction_positive": [
+                0.24509803921568626,
+                0.2089041095890411,
+                0.6153846153846154
+              ],
+              "mean_predicted_value": [
+                0.13865136182515309,
+                0.29005940876833525,
+                0.42306205101415334
+              ]
+            },
+            "bullish": {
+              "fraction_positive": [
+                0.2976190476190476
+              ],
+              "mean_predicted_value": [
+                0.29112245979133616
+              ]
+            },
+            "neutral": {
+              "fraction_positive": [
+                0.39568345323741005,
+                0.464,
+                0.7096774193548387
+              ],
+              "mean_predicted_value": [
+                0.36061084744487554,
+                0.4725413217209426,
+                0.6331912603121919
+              ]
+            }
+          }
+        }
+      },
+      "row_counts": {
+        "calibration": 215,
+        "test": 420,
+        "train": 1905
+      },
+      "windows": {
+        "calibration": {
+          "end": "2025-08-06",
+          "start": "2025-05-07"
+        },
+        "test": {
+          "end": "2025-12-04",
+          "start": "2025-08-07"
+        },
+        "train": {
+          "end": "2025-05-06",
+          "start": "2023-09-29"
+        }
+      }
+    },
+    {
+      "fold": 2,
+      "models": {
+        "baseline_class_prior": {
+          "accuracy": 0.44761904761904764,
+          "balanced_accuracy": 0.3333333333333333,
+          "brier_multiclass": 0.6501949490444808,
+          "confusion_matrix": [
+            [
+              0,
+              113,
+              0
+            ],
+            [
+              0,
+              188,
+              0
+            ],
+            [
+              0,
+              119,
+              0
+            ]
+          ],
+          "log_loss": 1.0761375964018691,
+          "macro_f1": 0.20614035087719298,
+          "reliability_bins": {
+            "bearish": {
+              "fraction_positive": [
+                0.26904761904761904
+              ],
+              "mean_predicted_value": [
+                0.22322580645161252
+              ]
+            },
+            "bullish": {
+              "fraction_positive": [
+                0.2833333333333333
+              ],
+              "mean_predicted_value": [
+                0.3002150537634387
+              ]
+            },
+            "neutral": {
+              "fraction_positive": [
+                0.44761904761904764
+              ],
+              "mean_predicted_value": [
+                0.4765591397849414
+              ]
+            }
+          }
+        },
+        "baseline_majority_class": {
+          "accuracy": 0.44761904761904764,
+          "balanced_accuracy": 0.3333333333333333,
+          "brier_multiclass": 1.1047619047619048,
+          "confusion_matrix": [
+            [
+              0,
+              113,
+              0
+            ],
+            [
+              0,
+              188,
+              0
+            ],
+            [
+              0,
+              119,
+              0
+            ]
+          ],
+          "log_loss": 19.909827586369474,
+          "macro_f1": 0.20614035087719298,
+          "reliability_bins": {
+            "bearish": {
+              "fraction_positive": [
+                0.26904761904761904
+              ],
+              "mean_predicted_value": [
+                0.0
+              ]
+            },
+            "bullish": {
+              "fraction_positive": [
+                0.2833333333333333
+              ],
+              "mean_predicted_value": [
+                0.0
+              ]
+            },
+            "neutral": {
+              "fraction_positive": [
+                0.44761904761904764
+              ],
+              "mean_predicted_value": [
+                1.0
+              ]
+            }
+          }
+        },
+        "baseline_relative_momentum": {
+          "accuracy": 0.34523809523809523,
+          "balanced_accuracy": 0.30737115030534906,
+          "brier_multiclass": 1.3095238095238095,
+          "confusion_matrix": [
+            [
+              27,
+              51,
+              35
+            ],
+            [
+              67,
+              100,
+              21
+            ],
+            [
+              46,
+              55,
+              18
+            ]
+          ],
+          "log_loss": 23.60001114763623,
+          "macro_f1": 0.30252714859505386,
+          "reliability_bins": {
+            "bearish": {
+              "fraction_positive": [
+                0.30714285714285716,
+                0.19285714285714287
+              ],
+              "mean_predicted_value": [
+                0.0,
+                1.0
+              ]
+            },
+            "bullish": {
+              "fraction_positive": [
+                0.29190751445086704,
+                0.24324324324324326
+              ],
+              "mean_predicted_value": [
+                0.0,
+                1.0
+              ]
+            },
+            "neutral": {
+              "fraction_positive": [
+                0.411214953271028,
+                0.4854368932038835
+              ],
+              "mean_predicted_value": [
+                0.0,
+                1.0
+              ]
+            }
+          }
+        },
+        "logistic_calibrated": {
+          "accuracy": 0.43333333333333335,
+          "balanced_accuracy": 0.3607336551641933,
+          "brier_multiclass": 0.6096484112145039,
+          "confusion_matrix": [
+            [
+              0,
+              33,
+              80
+            ],
+            [
+              0,
+              145,
+              43
+            ],
+            [
+              0,
+              82,
+              37
+            ]
+          ],
+          "log_loss": 1.0050822143246263,
+          "macro_f1": 0.30418480116060764,
+          "reliability_bins": {
+            "bearish": {
+              "fraction_positive": [
+                0.11787072243346007,
+                0.5222929936305732
+              ],
+              "mean_predicted_value": [
+                0.1369763897359849,
+                0.2424526385520022
+              ]
+            },
+            "bullish": {
+              "fraction_positive": [
+                0.32113821138211385,
+                0.22988505747126436
+              ],
+              "mean_predicted_value": [
+                0.3595265334720594,
+                0.4227296899629825
+              ]
+            },
+            "neutral": {
+              "fraction_positive": [
+                0.2654320987654321,
+                0.5088495575221239,
+                0.9375
+              ],
+              "mean_predicted_value": [
+                0.3364137574543352,
+                0.48253101231862133,
+                0.6362692021086063
+              ]
+            }
+          }
+        },
+        "logistic_raw": {
+          "accuracy": 0.4785714285714286,
+          "balanced_accuracy": 0.3752118245151572,
+          "brier_multiclass": 0.5995349448613284,
+          "confusion_matrix": [
+            [
+              16,
+              97,
+              0
+            ],
+            [
+              3,
+              185,
+              0
+            ],
+            [
+              3,
+              116,
+              0
+            ]
+          ],
+          "log_loss": 0.995797952496927,
+          "macro_f1": 0.28947878481439343,
+          "reliability_bins": {
+            "bearish": {
+              "fraction_positive": [
+                0.0364963503649635,
+                0.3776978417266187,
+                0.6
+              ],
+              "mean_predicted_value": [
+                0.14899356646013456,
+                0.27928292785235637,
+                0.4159084656921571
+              ]
+            },
+            "bullish": {
+              "fraction_positive": [
+                0.0,
+                0.2853717026378897
+              ],
+              "mean_predicted_value": [
+                0.19117130234983082,
+                0.29264844750110347
+              ]
+            },
+            "neutral": {
+              "fraction_positive": [
+                0.18888888888888888,
+                0.4965753424657534,
+                0.6842105263157895
+              ],
+              "mean_predicted_value": [
+                0.36941596014450534,
+                0.47567644978795637,
+                0.6609160225644021
+              ]
+            }
+          }
+        }
+      },
+      "row_counts": {
+        "calibration": 215,
+        "test": 420,
+        "train": 2325
+      },
+      "windows": {
+        "calibration": {
+          "end": "2025-12-04",
+          "start": "2025-09-08"
+        },
+        "test": {
+          "end": "2026-04-08",
+          "start": "2025-12-05"
+        },
+        "train": {
+          "end": "2025-09-05",
+          "start": "2023-09-29"
+        }
+      }
+    },
+    {
+      "fold": 3,
+      "models": {
+        "baseline_class_prior": {
+          "accuracy": 0.430952380952381,
+          "balanced_accuracy": 0.3333333333333333,
+          "brier_multiclass": 0.6584740215574219,
+          "confusion_matrix": [
+            [
+              0,
+              121,
+              0
+            ],
+            [
+              0,
+              181,
+              0
+            ],
+            [
+              0,
+              118,
+              0
+            ]
+          ],
+          "log_loss": 1.088511896993722,
+          "macro_f1": 0.2007764836383805,
+          "reliability_bins": {
+            "bearish": {
+              "fraction_positive": [
+                0.28809523809523807
+              ],
+              "mean_predicted_value": [
+                0.22586520947176686
+              ]
+            },
+            "bullish": {
+              "fraction_positive": [
+                0.28095238095238095
+              ],
+              "mean_predicted_value": [
+                0.2994535519125663
+              ]
+            },
+            "neutral": {
+              "fraction_positive": [
+                0.430952380952381
+              ],
+              "mean_predicted_value": [
+                0.4746812386156613
+              ]
+            }
+          }
+        },
+        "baseline_majority_class": {
+          "accuracy": 0.430952380952381,
+          "balanced_accuracy": 0.3333333333333333,
+          "brier_multiclass": 1.138095238095238,
+          "confusion_matrix": [
+            [
+              0,
+              121,
+              0
+            ],
+            [
+              0,
+              181,
+              0
+            ],
+            [
+              0,
+              118,
+              0
+            ]
+          ],
+          "log_loss": 20.51055514285476,
+          "macro_f1": 0.2007764836383805,
+          "reliability_bins": {
+            "bearish": {
+              "fraction_positive": [
+                0.28809523809523807
+              ],
+              "mean_predicted_value": [
+                0.0
+              ]
+            },
+            "bullish": {
+              "fraction_positive": [
+                0.28095238095238095
+              ],
+              "mean_predicted_value": [
+                0.0
+              ]
+            },
+            "neutral": {
+              "fraction_positive": [
+                0.430952380952381
+              ],
+              "mean_predicted_value": [
+                1.0
+              ]
+            }
+          }
+        },
+        "baseline_relative_momentum": {
+          "accuracy": 0.26666666666666666,
+          "balanced_accuracy": 0.23941416394318868,
+          "brier_multiclass": 1.4666666666666666,
+          "confusion_matrix": [
+            [
+              18,
+              39,
+              64
+            ],
+            [
+              60,
+              77,
+              44
+            ],
+            [
+              21,
+              80,
+              17
+            ]
+          ],
+          "log_loss": 26.432012485352573,
+          "macro_f1": 0.23734737425669739,
+          "reliability_bins": {
+            "bearish": {
+              "fraction_positive": [
+                0.32087227414330216,
+                0.18181818181818182
+              ],
+              "mean_predicted_value": [
+                0.0,
+                1.0
+              ]
+            },
+            "bullish": {
+              "fraction_positive": [
+                0.3423728813559322,
+                0.136
+              ],
+              "mean_predicted_value": [
+                0.0,
+                1.0
+              ]
+            },
+            "neutral": {
+              "fraction_positive": [
+                0.4642857142857143,
+                0.39285714285714285
+              ],
+              "mean_predicted_value": [
+                0.0,
+                1.0
+              ]
+            }
+          }
+        },
+        "logistic_calibrated": {
+          "accuracy": 0.4595238095238095,
+          "balanced_accuracy": 0.37748966393970607,
+          "brier_multiclass": 0.7904672719404852,
+          "confusion_matrix": [
+            [
+              22,
+              99,
+              0
+            ],
+            [
+              10,
+              169,
+              2
+            ],
+            [
+              11,
+              105,
+              2
+            ]
+          ],
+          "log_loss": 1.4664552491492853,
+          "macro_f1": 0.3037292904739428,
+          "reliability_bins": {
+            "bearish": {
+              "fraction_positive": [
+                0.225,
+                0.3116883116883117,
+                0.5106382978723404,
+                0.625
+              ],
+              "mean_predicted_value": [
+                0.08739066349001792,
+                0.2955614856100138,
+                0.48202834773630265,
+                0.6905921335414409
+              ]
+            },
+            "bullish": {
+              "fraction_positive": [
+                0.2736842105263158,
+                0.3333333333333333,
+                0.5
+              ],
+              "mean_predicted_value": [
+                0.05904525425420357,
+                0.2663107220636309,
+                0.4239120620421648
+              ]
+            },
+            "neutral": {
+              "fraction_positive": [
+                0.0,
+                0.23333333333333334,
+                0.28205128205128205,
+                0.5096153846153846,
+                0.4852941176470588
+              ],
+              "mean_predicted_value": [
+                0.18843112818712507,
+                0.3155080784951275,
+                0.5109382920124651,
+                0.7079437027000168,
+                0.890437469441772
+              ]
+            }
+          }
+        },
+        "logistic_raw": {
+          "accuracy": 0.43333333333333335,
+          "balanced_accuracy": 0.33608815426997246,
+          "brier_multiclass": 0.644935496759979,
+          "confusion_matrix": [
+            [
+              1,
+              118,
+              2
+            ],
+            [
+              0,
+              181,
+              0
+            ],
+            [
+              0,
+              118,
+              0
+            ]
+          ],
+          "log_loss": 1.0831609159811664,
+          "macro_f1": 0.20724820439717093,
+          "reliability_bins": {
+            "bearish": {
+              "fraction_positive": [
+                0.22968197879858657,
+                0.40875912408759124
+              ],
+              "mean_predicted_value": [
+                0.14746431956992245,
+                0.24684867532406907
+              ]
+            },
+            "bullish": {
+              "fraction_positive": [
+                0.6363636363636364,
+                0.27205882352941174,
+                0.0
+              ],
+              "mean_predicted_value": [
+                0.18000238495537155,
+                0.301425332277703,
+                0.4041526362803846
+              ]
+            },
+            "neutral": {
+              "fraction_positive": [
+                0.23076923076923078,
+                0.375,
+                0.7878787878787878
+              ],
+              "mean_predicted_value": [
+                0.37246554011001265,
+                0.5081325713720399,
+                0.6474549568080716
+              ]
+            }
+          }
+        }
+      },
+      "row_counts": {
+        "calibration": 215,
+        "test": 420,
+        "train": 2745
+      },
+      "windows": {
+        "calibration": {
+          "end": "2026-04-08",
+          "start": "2026-01-07"
+        },
+        "test": {
+          "end": "2026-08-07",
+          "start": "2026-04-09"
+        },
+        "train": {
+          "end": "2026-01-06",
+          "start": "2023-09-29"
+        }
+      }
+    }
+  ],
+  "pooled_oos": {
+    "baseline_class_prior": {
+      "accuracy": 0.44603174603174606,
+      "balanced_accuracy": 0.3333333333333333,
+      "brier_multiclass": 0.6500843874472383,
+      "confusion_matrix": [
+        [
+          0,
+          336,
+          0
+        ],
+        [
+          0,
+          562,
+          0
+        ],
+        [
+          0,
+          362,
+          0
+        ]
+      ],
+      "log_loss": 1.0756195906683577,
+      "macro_f1": 0.20563483351628245,
+      "reliability_bins": {
+        "bearish": {
+          "fraction_positive": [
+            0.26666666666666666
+          ],
+          "mean_predicted_value": [
+            0.23263663785372304
+          ]
+        },
+        "bullish": {
+          "fraction_positive": [
+            0.2873015873015873
+          ],
+          "mean_predicted_value": [
+            0.29437772420171704
+          ]
+        },
+        "neutral": {
+          "fraction_positive": [
+            0.44603174603174606
+          ],
+          "mean_predicted_value": [
+            0.4729856379445659
+          ]
+        }
+      }
+    },
+    "baseline_majority_class": {
+      "accuracy": 0.44603174603174606,
+      "balanced_accuracy": 0.3333333333333333,
+      "brier_multiclass": 1.107936507936508,
+      "confusion_matrix": [
+        [
+          0,
+          336,
+          0
+        ],
+        [
+          0,
+          562,
+          0
+        ],
+        [
+          0,
+          362,
+          0
+        ]
+      ],
+      "log_loss": 19.967039734606164,
+      "macro_f1": 0.20563483351628245,
+      "reliability_bins": {
+        "bearish": {
+          "fraction_positive": [
+            0.26666666666666666
+          ],
+          "mean_predicted_value": [
+            0.0
+          ]
+        },
+        "bullish": {
+          "fraction_positive": [
+            0.2873015873015873
+          ],
+          "mean_predicted_value": [
+            0.0
+          ]
+        },
+        "neutral": {
+          "fraction_positive": [
+            0.44603174603174606
+          ],
+          "mean_predicted_value": [
+            1.0
+          ]
+        }
+      }
+    },
+    "baseline_relative_momentum": {
+      "accuracy": 0.32222222222222224,
+      "balanced_accuracy": 0.294534524223038,
+      "brier_multiclass": 1.3555555555555556,
+      "confusion_matrix": [
+        [
+          55,
+          148,
+          133
+        ],
+        [
+          175,
+          254,
+          133
+        ],
+        [
+          93,
+          172,
+          97
+        ]
+      ],
+      "log_loss": 24.42958729706829,
+      "macro_f1": 0.29389629353396995,
+      "reliability_bins": {
+        "bearish": {
+          "fraction_positive": [
+            0.29989327641408753,
+            0.17027863777089783
+          ],
+          "mean_predicted_value": [
+            0.0,
+            1.0
+          ]
+        },
+        "bullish": {
+          "fraction_positive": [
+            0.2954292084726867,
+            0.26721763085399447
+          ],
+          "mean_predicted_value": [
+            0.0,
+            1.0
+          ]
+        },
+        "neutral": {
+          "fraction_positive": [
+            0.4489795918367347,
+            0.4425087108013937
+          ],
+          "mean_predicted_value": [
+            0.0,
+            1.0
+          ]
+        }
+      }
+    },
+    "logistic_calibrated": {
+      "accuracy": 0.4507936507936508,
+      "balanced_accuracy": 0.35844874280758354,
+      "brier_multiclass": 0.6919715132973863,
+      "confusion_matrix": [
+        [
+          22,
+          234,
+          80
+        ],
+        [
+          10,
+          507,
+          45
+        ],
+        [
+          11,
+          312,
+          39
+        ]
+      ],
+      "log_loss": 1.2236605510414063,
+      "macro_f1": 0.29741591242706716,
+      "reliability_bins": {
+        "bearish": {
+          "fraction_positive": [
+            0.2035306334371755,
+            0.452991452991453,
+            0.5106382978723404,
+            0.625
+          ],
+          "mean_predicted_value": [
+            0.09358500917531203,
+            0.2599286266864761,
+            0.48202834773630265,
+            0.6905921335414409
+          ]
+        },
+        "bullish": {
+          "fraction_positive": [
+            0.2736842105263158,
+            0.29775280898876405,
+            0.2861271676300578
+          ],
+          "mean_predicted_value": [
+            0.05904525425420357,
+            0.35522216709717125,
+            0.4217632850796858
+          ]
+        },
+        "neutral": {
+          "fraction_positive": [
+            0.0,
+            0.2604166666666667,
+            0.4507845934379458,
+            0.610062893081761,
+            0.4852941176470588
+          ],
+          "mean_predicted_value": [
+            0.18843112818712507,
+            0.33314724511695903,
+            0.517861084250273,
+            0.6786524600908419,
+            0.890437469441772
+          ]
+        }
+      }
+    },
+    "logistic_raw": {
+      "accuracy": 0.4515873015873016,
+      "balanced_accuracy": 0.3530439755973564,
+      "brier_multiclass": 0.6251772200913884,
+      "confusion_matrix": [
+        [
+          39,
+          295,
+          2
+        ],
+        [
+          32,
+          530,
+          0
+        ],
+        [
+          12,
+          350,
+          0
+        ]
+      ],
+      "log_loss": 1.0464898400300615,
+      "macro_f1": 0.265468357050832,
+      "reliability_bins": {
+        "bearish": {
+          "fraction_positive": [
+            0.18199233716475097,
+            0.314002828854314,
+            0.6129032258064516
+          ],
+          "mean_predicted_value": [
+            0.14614360143580848,
+            0.27744875505333316,
+            0.42190824692996043
+          ]
+        },
+        "bullish": {
+          "fraction_positive": [
+            0.5,
+            0.285140562248996,
+            0.0
+          ],
+          "mean_predicted_value": [
+            0.18239572439704138,
+            0.29500993677881504,
+            0.4041526362803846
+          ]
+        },
+        "neutral": {
+          "fraction_positive": [
+            0.3058823529411765,
+            0.4413793103448276,
+            0.7407407407407407
+          ],
+          "mean_predicted_value": [
+            0.3649272480419742,
+            0.48701188181419275,
+            0.6479686301959845
+          ]
+        }
+      }
+    }
+  },
+  "saved_model_reload_verified": true
+}
