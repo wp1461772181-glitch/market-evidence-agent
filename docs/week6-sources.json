@@ -1,0 +1,177 @@
+{
+  "source_set_version": "week6-public-earnings-v1",
+  "document_count": 10,
+  "source_policy": "First-party public earnings announcements only; cached main-article text is local and gitignored.",
+  "documents": [
+    {
+      "document_id": "aapl-2024-q1",
+      "company": "Apple",
+      "ticker": "AAPL",
+      "source_url": "https://www.apple.com/newsroom/2024/02/apple-reports-first-quarter-results/",
+      "source_domain": "www.apple.com",
+      "published_date": "2024-02-01",
+      "title": "Apple reports first quarter results",
+      "sha256": "79f94676719e85055b58c8cd6995bdd5074eb036d9b2ff4680f97f9da706aef7",
+      "text_characters": 5138,
+      "gold_annotation": {
+        "event_type": "earnings_release",
+        "event_date": "2024-02-01",
+        "expected_summary": "Apple reported fiscal 2024 first-quarter results, including quarterly revenue of $119.6 billion.",
+        "evidence_quote": "Apple today announced financial results for its fiscal 2024 first quarter ended December 30, 2023."
+      }
+    },
+    {
+      "document_id": "aapl-2024-q2",
+      "company": "Apple",
+      "ticker": "AAPL",
+      "source_url": "https://www.apple.com/newsroom/2024/05/apple-reports-second-quarter-results/",
+      "source_domain": "www.apple.com",
+      "published_date": "2024-05-02",
+      "title": "Apple reports second quarter results",
+      "sha256": "c5f20aa14d84233fe5eaf4582ac2926b10d4bccc3873af89b2904a1a845720a8",
+      "text_characters": 5291,
+      "gold_annotation": {
+        "event_type": "earnings_release",
+        "event_date": "2024-05-02",
+        "expected_summary": "Apple reported fiscal 2024 second-quarter results, including quarterly revenue of $90.8 billion.",
+        "evidence_quote": "Apple today announced financial results for its fiscal 2024 second quarter ended March 30, 2024."
+      }
+    },
+    {
+      "document_id": "aapl-2024-q3",
+      "company": "Apple",
+      "ticker": "AAPL",
+      "source_url": "https://www.apple.com/newsroom/2024/08/apple-reports-third-quarter-results/",
+      "source_domain": "www.apple.com",
+      "published_date": "2024-08-01",
+      "title": "Apple reports third quarter results",
+      "sha256": "69e7a1a6d4c5d64d4389d8f0defdd560da2094e16e60b647a029f2f16d0a0e37",
+      "text_characters": 5095,
+      "gold_annotation": {
+        "event_type": "earnings_release",
+        "event_date": "2024-08-01",
+        "expected_summary": "Apple reported fiscal 2024 third-quarter results, including quarterly revenue of $85.8 billion.",
+        "evidence_quote": "Apple today announced financial results for its fiscal 2024 third quarter ended June 29, 2024."
+      }
+    },
+    {
+      "document_id": "aapl-2024-q4",
+      "company": "Apple",
+      "ticker": "AAPL",
+      "source_url": "https://www.apple.com/newsroom/2024/10/apple-reports-fourth-quarter-results/",
+      "source_domain": "www.apple.com",
+      "published_date": "2024-10-31",
+      "title": "Apple reports fourth quarter results",
+      "sha256": "b7dd09912d6bd93f4273cc3eced1861684dd5c0ea78bec543c771e017475e304",
+      "text_characters": 5398,
+      "gold_annotation": {
+        "event_type": "earnings_release",
+        "event_date": "2024-10-31",
+        "expected_summary": "Apple reported fiscal 2024 fourth-quarter results, including quarterly revenue of $94.9 billion.",
+        "evidence_quote": "Apple today announced financial results for its fiscal 2024 fourth quarter ended September 28, 2024."
+      }
+    },
+    {
+      "document_id": "aapl-2025-q1",
+      "company": "Apple",
+      "ticker": "AAPL",
+      "source_url": "https://www.apple.com/newsroom/2025/01/apple-reports-first-quarter-results/",
+      "source_domain": "www.apple.com",
+      "published_date": "2025-01-30",
+      "title": "Apple reports first quarter results",
+      "sha256": "93f7a43fed06b09992ac13022761246f5f1cb75e4b18816706e0cad5617d714f",
+      "text_characters": 4956,
+      "gold_annotation": {
+        "event_type": "earnings_release",
+        "event_date": "2025-01-30",
+        "expected_summary": "Apple reported fiscal 2025 first-quarter results, including quarterly revenue of $124.3 billion.",
+        "evidence_quote": "Apple today announced financial results for its fiscal 2025 first quarter ended December 28, 2024."
+      }
+    },
+    {
+      "document_id": "aapl-2025-q2",
+      "company": "Apple",
+      "ticker": "AAPL",
+      "source_url": "https://www.apple.com/newsroom/2025/05/apple-reports-second-quarter-results/",
+      "source_domain": "www.apple.com",
+      "published_date": "2025-05-01",
+      "title": "Apple reports second quarter results",
+      "sha256": "7915422991ffd9eac78c2d143fff8e4e3f798db176a70adc9275e7656aa9b2ab",
+      "text_characters": 5069,
+      "gold_annotation": {
+        "event_type": "earnings_release",
+        "event_date": "2025-05-01",
+        "expected_summary": "Apple reported fiscal 2025 second-quarter results, including quarterly revenue of $95.4 billion.",
+        "evidence_quote": "Apple today announced financial results for its fiscal 2025 second quarter ended March 29, 2025."
+      }
+    },
+    {
+      "document_id": "aapl-2025-q3",
+      "company": "Apple",
+      "ticker": "AAPL",
+      "source_url": "https://www.apple.com/newsroom/2025/07/apple-reports-third-quarter-results/",
+      "source_domain": "www.apple.com",
+      "published_date": "2025-07-31",
+      "title": "Apple reports third quarter results",
+      "sha256": "84daf737d4023d8ced79d91e66956a2c5b6c894bb96049fef5237a3d3dfe47ca",
+      "text_characters": 4872,
+      "gold_annotation": {
+        "event_type": "earnings_release",
+        "event_date": "2025-07-31",
+        "expected_summary": "Apple reported fiscal 2025 third-quarter results, including quarterly revenue of $94.0 billion.",
+        "evidence_quote": "Apple today announced financial results for its fiscal 2025 third quarter ended June 28, 2025."
+      }
+    },
+    {
+      "document_id": "aapl-2025-q4",
+      "company": "Apple",
+      "ticker": "AAPL",
+      "source_url": "https://www.apple.com/newsroom/2025/10/apple-reports-fourth-quarter-results/",
+      "source_domain": "www.apple.com",
+      "published_date": "2025-10-30",
+      "title": "Apple reports fourth quarter results",
+      "sha256": "09fe20de2e7ea189d976473599e3e9a263abf276d54b6f001e3e1dad15f96a58",
+      "text_characters": 5534,
+      "gold_annotation": {
+        "event_type": "earnings_release",
+        "event_date": "2025-10-30",
+        "expected_summary": "Apple reported fiscal 2025 fourth-quarter results, including quarterly revenue of $102.5 billion.",
+        "evidence_quote": "Apple today announced financial results for its fiscal 2025 fourth quarter ended September 27, 2025."
+      }
+    },
+    {
+      "document_id": "msft-2025-q1",
+      "company": "Microsoft",
+      "ticker": "MSFT",
+      "source_url": "https://news.microsoft.com/source/2024/10/30/microsoft-cloud-strength-drives-first-quarter-results-7/",
+      "source_domain": "news.microsoft.com",
+      "published_date": "2024-10-30",
+      "title": "Microsoft Cloud strength drives first quarter results",
+      "sha256": "66fe6a5534790f3cb3fdfdc2cf023d39cb310c23ea613d560d8fa160cf8f2287",
+      "text_characters": 11994,
+      "gold_annotation": {
+        "event_type": "earnings_release",
+        "event_date": "2024-10-30",
+        "expected_summary": "Microsoft reported fiscal 2025 first-quarter results, including revenue of $65.6 billion.",
+        "evidence_quote": "Microsoft Corp. today announced the following results for the quarter ended September 30, 2024"
+      }
+    },
+    {
+      "document_id": "msft-2025-q2",
+      "company": "Microsoft",
+      "ticker": "MSFT",
+      "source_url": "https://news.microsoft.com/source/2025/01/29/microsoft-cloud-and-ai-strength-drives-second-quarter-results-2/",
+      "source_domain": "news.microsoft.com",
+      "published_date": "2025-01-29",
+      "title": "Microsoft Cloud and AI strength drives second quarter results",
+      "sha256": "84bae59240b2cf95d874d431c3e844f7faec4b74257bd9d7fe2da1078a22936e",
+      "text_characters": 11787,
+      "gold_annotation": {
+        "event_type": "earnings_release",
+        "event_date": "2025-01-29",
+        "expected_summary": "Microsoft reported fiscal 2025 second-quarter results, including revenue of $69.6 billion.",
+        "evidence_quote": "Microsoft Corp. today announced the following results for the quarter ended December 31, 2024"
+      }
+    }
+  ]
+}

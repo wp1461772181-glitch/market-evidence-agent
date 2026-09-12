@@ -109,6 +109,30 @@ class ForecastRevision(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
+class EventExtraction(Base):
+    """A validated, immutable cache entry for one document extraction request.
+
+    The cache key includes the complete document input and prompt settings.  A
+    provider response is only stored after local validation establishes that
+    every quoted passage really occurs in the supplied document.
+    """
+
+    __tablename__ = "event_extractions"
+
+    cache_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    document_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    document_sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    document_metadata: Mapped[dict] = mapped_column(JSON, nullable=False)
+    input_snapshot: Mapped[dict] = mapped_column(JSON, nullable=False)
+    provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    request_model: Mapped[str] = mapped_column(String(128), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    result: Mapped[dict] = mapped_column(JSON, nullable=False)
+    response_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    usage: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
 class MarketPrice(Base):
     __tablename__ = "market_prices"
     __table_args__ = (
