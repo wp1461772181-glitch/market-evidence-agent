@@ -16,6 +16,7 @@ from app.event_extraction import (
     create_event_extraction_table,
     extract_document,
     build_system_prompt,
+    project_events_for_review,
     validate_provider_result,
 )
 from app.event_provider import DeepSeekEventProvider, EventProviderError, ProviderResult
@@ -97,6 +98,89 @@ def test_validates_and_caches_exact_document_result_without_a_second_provider_ca
     assert second.batch.events[0].company == "Example Corp"
     assert second.batch.events[0].source_url == document.source_url
     assert second.batch.events[0].evidence_quote in document.text
+
+
+def test_review_projection_filters_only_historical_capital_return_and_marks_directions():
+    text = (
+        "Revenue increased 6% to $100 billion. "
+        "Microsoft returned $5 billion to shareholders in the second quarter. "
+        "The board declared a cash dividend of $0.25 per share. "
+        "The board authorized a repurchase program."
+    )
+    document = _document(text=text)
+    batch = validate_provider_result(
+        json.dumps(
+            {
+                "events": [
+                    {
+                        "event_type": "earnings_release",
+                        "event_date": "2026-01-30",
+                        "impact_direction": "positive",
+                        "summary": "Revenue increased in the reported results.",
+                        "evidence_quote": "Revenue increased 6% to $100 billion.",
+                    },
+                    {
+                        "event_type": "capital_return",
+                        "event_date": "2026-01-30",
+                        "impact_direction": "neutral",
+                        "summary": "Capital was returned during the quarter.",
+                        "evidence_quote": "Microsoft returned $5 billion to shareholders in the second quarter.",
+                    },
+                    {
+                        "event_type": "capital_return",
+                        "event_date": "2026-01-30",
+                        "impact_direction": "positive",
+                        "summary": "A dividend was declared.",
+                        "evidence_quote": "The board declared a cash dividend of $0.25 per share.",
+                    },
+                    {
+                        "event_type": "capital_return",
+                        "event_date": "2026-01-30",
+                        "impact_direction": "positive",
+                        "summary": "A repurchase was authorized.",
+                        "evidence_quote": "The board authorized a repurchase program.",
+                    },
+                ]
+            }
+        ),
+        document,
+    )
+
+    projected = project_events_for_review(batch)
+
+    assert [event["evidence_quote"] for event in projected["excluded_events"]] == [
+        "Microsoft returned $5 billion to shareholders in the second quarter."
+    ]
+    assert "historical_quarter" in projected["excluded_events"][0]["exclusion_reason"]
+    assert [event["evidence_quote"] for event in projected["events"]] == [
+        "Revenue increased 6% to $100 billion.",
+        "The board declared a cash dividend of $0.25 per share.",
+        "The board authorized a repurchase program.",
+    ]
+    for event in [*projected["events"], *projected["excluded_events"]]:
+        assert event["impact_direction_status"] == "review_required"
+        assert "not used for forecasts" in event["impact_direction_review_note"]
+
+
+def test_cached_result_can_be_projected_without_constructing_a_provider():
+    create_event_extraction_table()
+    provider = FakeProvider(_valid_response())
+    document = _document(document_id="review-cache-only")
+    with SessionLocal() as db:
+        extract_document(document, db=db, provider_factory=lambda: provider)
+        cached = extract_document(
+            document,
+            db=db,
+            provider_factory=lambda: pytest.fail("cache replay must not construct a provider"),
+        )
+
+    projected = project_events_for_review(cached.batch)
+
+    assert cached.cache_hit is True
+    assert provider.calls == 1
+    assert len(projected["events"]) == 1
+    assert projected["excluded_events"] == []
+    assert projected["events"][0]["impact_direction_status"] == "review_required"
 
 
 def test_cache_key_changes_for_document_metadata_model_and_prompt_version():

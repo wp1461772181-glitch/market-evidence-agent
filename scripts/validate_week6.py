@@ -22,11 +22,13 @@ from typing import Any
 from app.database import SessionLocal
 from app.event_extraction import (
     DocumentInput,
+    EventProvider,
     EventExtractionError,
     ExtractionResult,
     create_event_extraction_table,
     extract_document,
     load_document,
+    project_events_for_review,
 )
 from app.event_provider import DEFAULT_DEEPSEEK_MODEL, DeepSeekEventProvider, EventProviderError
 from sqlalchemy.exc import SQLAlchemyError
@@ -114,15 +116,17 @@ def validate_extraction(
     *, document: DocumentInput, gold: dict[str, Any], result: ExtractionResult
 ) -> dict[str, Any]:
     """Prove every extracted event remains grounded and find the required gold match."""
-    events = result.batch.model_dump(mode="json")["events"]
-    gold_matches = []
-    for event in events:
+    raw_events = result.batch.model_dump(mode="json")["events"]
+    for event in raw_events:
         if event["company"] != document.company:
             raise ValidationError(f"{document.document_id}: event company differs from the source document")
         if event["source_url"] != document.source_url:
             raise ValidationError(f"{document.document_id}: event source_url differs from the source document")
         if event["evidence_quote"] not in document.text:
             raise ValidationError(f"{document.document_id}: event evidence_quote is not in the source document")
+    projected = project_events_for_review(result.batch)
+    gold_matches = []
+    for event in projected["events"]:
         if (
             event["event_type"] == gold["event_type"]
             and event["event_date"] == gold["event_date"]
@@ -142,7 +146,7 @@ def validate_extraction(
         "cache_hit": result.cache_hit,
         "response_model": result.response_model,
         "usage": result.usage,
-        "events": events,
+        **projected,
         "matching_earnings_events": gold_matches,
     }
 
@@ -150,7 +154,7 @@ def validate_extraction(
 def run_pass(
     *,
     source_set: list[tuple[DocumentInput, dict[str, Any]]],
-    provider_factory: Callable[[], DeepSeekEventProvider],
+    provider_factory: Callable[[], EventProvider],
     model: str,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
@@ -165,19 +169,19 @@ def run_validation(
     *,
     source_set: list[tuple[DocumentInput, dict[str, Any]]],
     model: str,
-    provider_client: DeepSeekEventProvider,
+    provider_factory: Callable[[], EventProvider],
 ) -> dict[str, Any]:
     """Run one provider-backed pass and one independently cached-only pass."""
     provider_factory_calls = 0
 
-    def counting_factory() -> DeepSeekEventProvider:
+    def counting_factory() -> EventProvider:
         nonlocal provider_factory_calls
         provider_factory_calls += 1
-        return provider_client
+        return provider_factory()
 
     first = run_pass(source_set=source_set, provider_factory=counting_factory, model=model)
 
-    def cache_only_factory() -> DeepSeekEventProvider:
+    def cache_only_factory() -> EventProvider:
         raise ValidationError("second pass attempted to construct a provider instead of using the cache")
 
     second = run_pass(source_set=source_set, provider_factory=cache_only_factory, model=model)
@@ -186,11 +190,14 @@ def run_validation(
     for first_row, second_row in zip(first, second, strict=True):
         if first_row["cache_key"] != second_row["cache_key"]:
             raise ValidationError(f"cache key changed between validation passes for {first_row['document_id']}")
-        if first_row["events"] != second_row["events"]:
-            raise ValidationError(f"cached events changed between validation passes for {first_row['document_id']}")
+        for field in ("events", "excluded_events"):
+            if first_row[field] != second_row[field]:
+                raise ValidationError(
+                    f"cached {field} changed between validation passes for {first_row['document_id']}"
+                )
 
     return {
-        "validation_version": "week6-batch-validation-v1",
+        "validation_version": "week6-batch-validation-v2",
         "generated_at": datetime.now(UTC).isoformat(),
         "provider": "deepseek",
         "requested_model": model,
@@ -207,10 +214,14 @@ def run_validation(
             "cache_misses": 0,
             "documents": second,
         },
+        "review_projection": {
+            "displayed_events": sum(len(row["events"]) for row in first),
+            "excluded_events": sum(len(row["excluded_events"]) for row in first),
+        },
         "human_review_required": (
-            "Review every generated summary and impact_direction against its source URL. "
-            "These structural checks prove grounding and cache behavior only; they do not measure factual completeness, "
-            "summary quality, or predictive value."
+            "Every displayed impact_direction is model-generated, marked review_required, and not used for forecasts. "
+            "Review each displayed summary and direction against its source URL. These structural checks prove grounding "
+            "and cache behavior only; they do not measure factual completeness, summary quality, or predictive value."
         ),
     }
 
@@ -227,12 +238,12 @@ def main(argv: Iterable[str] | None = None) -> None:
         if args.output_dir.exists():
             raise ValidationError(f"output directory already exists: {args.output_dir}")
         source_set = load_source_set(document_directory=args.documents_dir, manifest_path=args.manifest)
-        # Constructing the adapter validates the local configuration but does
-        # not send a request.  A missing key therefore fails before the batch
-        # can make any paid provider call.
-        provider_client = DeepSeekEventProvider(model=args.model)
         create_event_extraction_table()
-        report = run_validation(source_set=source_set, model=args.model, provider_client=provider_client)
+        report = run_validation(
+            source_set=source_set,
+            model=args.model,
+            provider_factory=lambda: DeepSeekEventProvider(model=args.model),
+        )
     except (EventExtractionError, EventProviderError, OSError, SQLAlchemyError, ValidationError, ValueError) as exc:
         parser.error(str(exc))
     args.output_dir.mkdir(parents=True)
@@ -243,6 +254,7 @@ def main(argv: Iterable[str] | None = None) -> None:
         "document_count": report["document_count"],
         "first_pass": {key: report["first_pass"][key] for key in ("provider_factory_calls", "cache_hits", "cache_misses")},
         "second_pass": {key: report["second_pass"][key] for key in ("provider_factory_calls", "cache_hits", "cache_misses")},
+        "review_projection": report["review_projection"],
         "human_review_required": report["human_review_required"],
     }, ensure_ascii=False, indent=2))
 

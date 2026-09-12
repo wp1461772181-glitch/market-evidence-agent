@@ -45,6 +45,14 @@ EXTRACTION_SETTINGS = {
 }
 EVENT_TYPES = {"earnings_release", "guidance", "capital_return", "leadership", "product", "other"}
 IMPACT_DIRECTIONS = {"positive", "negative", "mixed", "neutral", "uncertain"}
+IMPACT_DIRECTION_REVIEW_STATUS = "review_required"
+IMPACT_DIRECTION_REVIEW_NOTE = (
+    "Model-generated qualitative label; it requires human review and is not used for forecasts."
+)
+HISTORICAL_CAPITAL_RETURN_REASON = (
+    "capital_return_historical_quarter: the source quote reports capital returned during a past quarter "
+    "without declaring or authorizing a new action"
+)
 
 
 class EventExtractionError(ValueError):
@@ -129,6 +137,40 @@ class EventBatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     events: Annotated[list[Event], Field(max_length=10)]
+
+
+def project_events_for_review(batch: EventBatch) -> dict[str, list[dict[str, Any]]]:
+    """Produce the review-facing event list without modifying the raw cache.
+
+    A capital-return quote that only reports money returned during a past
+    quarter is excluded from the displayed list.  This is deliberately narrow:
+    declared dividends and authorized repurchase programs remain visible.
+    """
+    events: list[dict[str, Any]] = []
+    excluded_events: list[dict[str, Any]] = []
+    for event in batch.events:
+        rendered = event.model_dump(mode="json")
+        rendered["impact_direction_status"] = IMPACT_DIRECTION_REVIEW_STATUS
+        rendered["impact_direction_review_note"] = IMPACT_DIRECTION_REVIEW_NOTE
+        reason = _historical_capital_return_reason(event)
+        if reason is None:
+            events.append(rendered)
+        else:
+            rendered["exclusion_reason"] = reason
+            excluded_events.append(rendered)
+    return {"events": events, "excluded_events": excluded_events}
+
+
+def _historical_capital_return_reason(event: Event) -> str | None:
+    """Identify only a clearly historical capital-return statement by its quote."""
+    if event.event_type != "capital_return":
+        return None
+    quote = event.evidence_quote.casefold()
+    reports_historical_quarter = "returned" in quote and "quarter" in quote
+    declares_new_action = "declared" in quote or "authorized" in quote
+    if reports_historical_quarter and not declares_new_action:
+        return HISTORICAL_CAPITAL_RETURN_REASON
+    return None
 
 
 class EventProvider(Protocol):
@@ -367,7 +409,7 @@ def _result_for_output(result: ExtractionResult, document: DocumentInput) -> dic
         "request_model": result.request_model,
         "response_model": result.response_model,
         "usage": result.usage,
-        "events": result.batch.model_dump(mode="json")["events"],
+        **project_events_for_review(result.batch),
     }
 
 

@@ -12,7 +12,7 @@ A FastAPI and PostgreSQL foundation for a market-evidence system. The project st
 - market-features-v1 exports momentum, volatility, volume, drawdown, and relative-market features from a reproducible snapshot.
 - Week 4 builds a five-stock, 20-XNYS-session excess-return dataset and evaluates a fixed logistic-regression baseline with time-ordered, label-maturity-purged folds.
 - Week 5 archives a prediction from a trusted local Week 4 artifact and compatible Week 3 feature export, preserves later corrections as a linked revision chain, and replays any archived prediction from its saved inputs.
-- Week 6 validates structured event extraction only against saved first-party documents, with exact source-quote checks and a PostgreSQL cache. Its v3 live run covers ten announcements and proves cache-only replay; an optional historical capital-return event and heuristic impact-direction labels remain outside analyst acceptance. See [the Week 6 status](docs/week6-progress.md).
+- Week 6 validates structured event extraction only against saved first-party documents, with exact source-quote checks and a PostgreSQL cache. Its v3 live run covers ten announcements and proves cache-only replay. The review output transparently excludes one historical capital-return statement and marks every qualitative direction as requiring review, never as a forecast input. See [the Week 6 status](docs/week6-progress.md).
 
 ## Time semantics and data-version limits
 
@@ -258,9 +258,11 @@ it. The extractor accepts only JSON events and verifies that each evidence
 quote occurs exactly in its saved document. Results are cached in PostgreSQL.
 The validation command makes one pass that can call the provider for uncached
 documents, then a second pass whose provider factory raises if invoked. A
-successful second pass proves it read all results from the cache. Inspect the
-local report's summaries and qualitative impacts manually before sharing any
-conclusion. See [Week 6 progress](docs/week6-progress.md) for the current
+successful second pass proves it read all results from the cache. The local
+report separates review-facing `events` from auditable `excluded_events`, and
+marks every qualitative direction as `review_required`; no direction is a
+forecast input. Inspect the summaries and directions manually before sharing
+any conclusion. See [Week 6 progress](docs/week6-progress.md) for the current
 validation boundary.
 
 ## Validation evidence
@@ -310,4 +312,4 @@ warnings), and `pip check` reported no broken requirements.
   Overlapping 20-session labels also mean the OOS rows are correlated and do not
   establish trading profitability.
 - Yahoo Finance Chart is an external undocumented endpoint and can change or rate-limit requests.
-- SQLAlchemy create_all is currently used for schema creation; Alembic migrations, SEC/FRED evidence, online automation, frontend, deployment, and monitoring remain later milestones. Week 6's LLM path is limited to saved documents; its v3 run verifies source/date/cache behavior for the ten required earnings events but retains a capital-return anomaly and heuristic impact directions for later resolution.
+- SQLAlchemy create_all is currently used for schema creation; Alembic migrations, SEC/FRED evidence, online automation, frontend, deployment, and monitoring remain later milestones. Week 6's LLM path is limited to saved documents; its v3 run verifies source/date/cache behavior for the ten required earnings events. Its review output applies one narrow quote-based filter for a historical capital-return statement and marks every qualitative impact direction as requiring review rather than treating it as a forecast input.

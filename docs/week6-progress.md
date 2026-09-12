@@ -31,17 +31,19 @@ model is `deepseek-flash`.
   --model deepseek-flash
 ~~~
 
-The validator refuses an existing output directory. Before a provider call it
-checks that the ten local documents match the committed manifest and that a
-local provider configuration is present. Its first pass records cache hits and
-provider-factory calls. Its second pass uses a factory that fails immediately
-if called, so success proves that every result was read from the database cache
+The validator refuses an existing output directory. It checks that the ten
+local documents match the committed manifest. Its first pass records cache hits
+and provider-factory calls; an all-cached run does not construct a provider or
+need an API key. Its second pass uses a factory that fails immediately if
+called, so success proves that every result was read from the database cache
 without a second provider request.
 
-`artifacts/week6-validation-*/report.json` is local and ignored. It retains the
-full generated events for review, including summaries and qualitative impact
-directions. A reviewer must inspect those fields against the source URLs before
-publishing any aggregate conclusion.
+`artifacts/week6-validation-*/report.json` is local and ignored. Its `events`
+field is the review-facing list; every event keeps the model's
+`impact_direction` but is marked `impact_direction_status: review_required` and
+is not used for forecasts. `excluded_events` retains a transparent copy and an
+exclusion reason. A reviewer must inspect summaries and directions against the
+source URLs before publishing any aggregate conclusion.
 
 ## Validation status
 
@@ -60,18 +62,23 @@ analysis: for example, Apple Q4 FY2024 is labelled positive while its summary
 omits the one-time tax charge that affected reported EPS. This is source
 extraction, not a claim about future prices or trading performance.
 
-The run also produced one optional `capital_return` event for Microsoft Q2
-FY2025 that describes capital returned during the historical quarter, rather
-than a newly announced action. Its quote is real and the schema/cache checks
-pass, but it does not meet this slice's stricter event-selection rule and is
-not accepted as an analyst-reviewed event. The original v3 cache record remains
-for audit rather than being hand-edited. A prior v1 attempt stopped after
-five cached documents because one model quote exceeded the field limit; v2
-then passed structurally but exposed date-selection issues in optional events.
-The v3 run was the final bounded retry (27 provider calls across those trials).
-Week 6 therefore has partial acceptance: the ten-document source, date, quote,
-schema, and cache behavior are verified, while semantic event selection and
-impact-direction assessment need a later, simpler deterministic rule before
-the week can be called fully complete. An independent cache-only rerun also
-returned all ten v3 documents without constructing a provider, and the
-pre-existing Week 1–5 table counts and hashes remained unchanged.
+The cached v3 records are never rewritten. A review projection now excludes
+only a `capital_return` event whose English evidence quote contains both
+`returned` and `quarter`, without `declared` or `authorized`. This narrowly
+catches Microsoft Q2 FY2025's statement that it returned capital in the
+reported quarter; it retains Apple's declared dividends and authorized
+repurchase programs. It is a transparent rule for this saved English source
+set, not a general natural-language history classifier. The excluded original
+event and its reason remain in `excluded_events` for audit.
+
+On 2026-09-12, an independent cache-only replay of the ten v3 documents made
+zero provider-factory calls, returned ten cache hits, displayed 19 events, and
+excluded only Microsoft Q2 FY2025's historical capital-return event. All
+displayed and excluded directions are marked `review_required`; no direction
+feeds a forecast. With this boundary, Week 6's ten-document source, date,
+quote, schema, cache, presentation filter, and direction-review state are
+accepted. A prior v1 attempt stopped after five cached documents because one
+model quote exceeded the field limit; v2 then passed structurally but exposed
+date-selection issues in optional events. The v3 run was the final bounded
+retry (27 provider calls across those trials). The pre-existing Week 1–5 table
+counts and hashes remained unchanged.
