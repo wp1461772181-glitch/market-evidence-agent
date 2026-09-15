@@ -1,4 +1,4 @@
-# Market Evidence Agent — Weeks 1–6
+# Market Evidence Agent — Weeks 1–7
 
 A FastAPI and PostgreSQL foundation for a market-evidence system. The project stores a deterministic Week 1 mock-v1 forecast, then adds reproducible daily market-data snapshots, leakage-safe Week 3 features, a fixed Week 4 offline baseline evaluation, Week 5's versioned offline-prediction archive, and a bounded Week 6 evidence-extraction path. The API does **not** yet serve the trained baseline.
 
@@ -13,6 +13,7 @@ A FastAPI and PostgreSQL foundation for a market-evidence system. The project st
 - Week 4 builds a five-stock, 20-XNYS-session excess-return dataset and evaluates a fixed logistic-regression baseline with time-ordered, label-maturity-purged folds.
 - Week 5 archives a prediction from a trusted local Week 4 artifact and compatible Week 3 feature export, preserves later corrections as a linked revision chain, and replays any archived prediction from its saved inputs.
 - Week 6 validates structured event extraction only against saved first-party documents, with exact source-quote checks and a PostgreSQL cache. Its v3 live run covers ten announcements and proves cache-only replay. The review output transparently excludes one historical capital-return statement and marks every qualitative direction as requiring review, never as a forecast input. See [the Week 6 status](docs/week6-progress.md).
+- Week 7 adds a fixed source-check, supporting-case, counter-case, and review workflow. It only accepts saved source IDs from the Week 6 manifest, records every attempt in `research_runs`, and never produces a report with unvalidated source quotes. See [the Week 7 status](docs/week7-progress.md).
 
 ## Time semantics and data-version limits
 

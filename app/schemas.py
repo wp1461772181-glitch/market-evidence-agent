@@ -1,4 +1,5 @@
 from datetime import date, datetime
+from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -54,3 +55,28 @@ class ForecastSnapshotTimelineEntry(ForecastSnapshotResponse):
 class ForecastSnapshotTimelineResponse(BaseModel):
     root_snapshot_id: UUID
     snapshots: list[ForecastSnapshotTimelineEntry]
+
+
+class ResearchRunRequest(BaseModel):
+    symbol: str = Field(min_length=1, max_length=10)
+    as_of_time: datetime
+    document_ids: list[str] = Field(min_length=1, max_length=10)
+
+
+class ResearchRunResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    symbol: str
+    as_of_time: datetime
+    source_ids: list[str]
+    source_snapshot: list[dict[str, Any]]
+    provider: str
+    request_model: str
+    status: str
+    current_stage: str
+    node_trace: list[dict[str, Any]]
+    report: dict[str, Any] | None
+    error: str | None
+    created_at: datetime
+    completed_at: datetime | None

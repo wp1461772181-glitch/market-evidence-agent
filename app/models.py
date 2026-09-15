@@ -133,6 +133,32 @@ class EventExtraction(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
+class ResearchRun(Base):
+    """One bounded Week 7 source-grounded research attempt.
+
+    The run stores the request, node trace, and either a reviewed report or a
+    safe failure state.  It does not alter forecasts or event-extraction cache
+    rows.
+    """
+
+    __tablename__ = "research_runs"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    symbol: Mapped[str] = mapped_column(String(10), nullable=False, index=True)
+    as_of_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    source_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    source_snapshot: Mapped[list[dict]] = mapped_column(JSON, nullable=False, default=list)
+    provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    request_model: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    current_stage: Mapped[str] = mapped_column(String(32), nullable=False)
+    node_trace: Mapped[list[dict]] = mapped_column(JSON, nullable=False, default=list)
+    report: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    error: Mapped[str | None] = mapped_column(String(280), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class MarketPrice(Base):
     __tablename__ = "market_prices"
     __table_args__ = (

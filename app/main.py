@@ -4,13 +4,21 @@ from fastapi import Depends, FastAPI, HTTPException, status
 from sqlalchemy.orm import Session
 
 from .database import Base, SessionLocal, engine
-from .models import Forecast, ForecastRevision, ForecastSnapshot
+from .models import Forecast, ForecastRevision, ForecastSnapshot, ResearchRun
+from .event_provider import EventProviderError, configured_deepseek_model, create_deepseek_provider_from_env
+from .research_workflow import (
+    DEFAULT_DOCUMENT_DIRECTORY,
+    ResearchWorkflowError,
+    run_research,
+)
 from .schemas import (
     ForecastRequest,
     ForecastResponse,
     ForecastSnapshotResponse,
     ForecastSnapshotTimelineEntry,
     ForecastSnapshotTimelineResponse,
+    ResearchRunRequest,
+    ResearchRunResponse,
 )
 from .services import MODEL_VERSION, is_valid_symbol, mock_forecast, normalize_symbol
 
@@ -34,6 +42,31 @@ def get_db():
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.post("/research-runs", response_model=ResearchRunResponse, status_code=status.HTTP_201_CREATED)
+def create_research_run(payload: ResearchRunRequest, db: Session = Depends(get_db)) -> ResearchRun:
+    try:
+        model = configured_deepseek_model()
+        return run_research(
+            symbol=payload.symbol,
+            as_of_time=payload.as_of_time,
+            document_ids=payload.document_ids,
+            db=db,
+            model=model,
+            document_directory=DEFAULT_DOCUMENT_DIRECTORY,
+            provider_factory=lambda: create_deepseek_provider_from_env(model=model),
+        )
+    except (ResearchWorkflowError, EventProviderError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/research-runs/{run_id}", response_model=ResearchRunResponse)
+def get_research_run(run_id: UUID, db: Session = Depends(get_db)) -> ResearchRun:
+    run = db.get(ResearchRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="research run not found")
+    return run
 
 
 @app.post("/forecasts", response_model=ForecastResponse, status_code=status.HTTP_201_CREATED)
