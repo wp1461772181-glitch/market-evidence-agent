@@ -85,6 +85,7 @@ def run_research(
     db: Session,
     provider_factory: Callable[[], EventProvider],
     document_directory: Path = DEFAULT_DOCUMENT_DIRECTORY,
+    source_manifest: Path | None = None,
     model: str = DEFAULT_DEEPSEEK_MODEL,
 ) -> ResearchRun:
     """Persist one full research attempt and never emit an ungrounded report.
@@ -92,6 +93,9 @@ def run_research(
     A model failure is recorded as a failed run.  Retrying is a new, explicit
     request; completed successful reports are never silently revised.
     """
+    # Resolve this at call time so test and CLI callers can safely substitute
+    # the selected saved source set without changing an already-bound default.
+    source_manifest = source_manifest or DEFAULT_SOURCE_MANIFEST
     normalized_symbol = normalize_symbol(symbol)
     if not is_valid_symbol(normalized_symbol):
         raise ResearchWorkflowError("symbol must contain 1-5 ASCII letters")
@@ -123,7 +127,7 @@ def run_research(
             symbol=normalized_symbol,
             as_of_time=as_of_time,
             document_directory=document_directory,
-            source_manifest=DEFAULT_SOURCE_MANIFEST,
+            source_manifest=source_manifest,
             model=model,
             db=db,
         )

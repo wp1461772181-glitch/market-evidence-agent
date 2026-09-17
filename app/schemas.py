@@ -1,5 +1,5 @@
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -80,3 +80,42 @@ class ResearchRunResponse(BaseModel):
     error: str | None
     created_at: datetime
     completed_at: datetime | None
+
+
+class ForecastRefreshRequest(BaseModel):
+    """One explicit source-triggered rolling refresh request."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    symbol: str = Field(min_length=1, max_length=10)
+    before_as_of_time: datetime
+    after_as_of_time: datetime
+    document_id: str = Field(min_length=1, max_length=128)
+    revision_mode: Literal["rolling_refresh"] = "rolling_refresh"
+
+
+class ForecastRefreshSnapshotResponse(BaseModel):
+    id: UUID
+    symbol: str
+    feature_trading_date: date
+    feature_as_of_time: datetime
+    model_version: str
+    bearish_probability: float
+    neutral_probability: float
+    bullish_probability: float
+
+
+class TargetWindowResponse(BaseModel):
+    start: date
+    end: date
+
+
+class ForecastRefreshResponse(BaseModel):
+    revision_mode: Literal["rolling_refresh"]
+    original_snapshot: ForecastRefreshSnapshotResponse
+    revised_snapshot: ForecastRefreshSnapshotResponse
+    probability_delta: dict[str, float]
+    target_windows: dict[str, TargetWindowResponse]
+    trigger: dict[str, Any]
+    research_run: dict[str, Any]
+    limitations: list[str]

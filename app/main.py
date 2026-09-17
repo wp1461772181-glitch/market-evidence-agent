@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from .database import Base, SessionLocal, engine
 from .models import Forecast, ForecastRevision, ForecastSnapshot, ResearchRun
 from .event_provider import EventProviderError, configured_deepseek_model, create_deepseek_provider_from_env
+from .forecast_refresh import ForecastRefreshError, get_forecast_refresh_report, run_forecast_refresh
 from .research_workflow import (
     DEFAULT_DOCUMENT_DIRECTORY,
     ResearchWorkflowError,
@@ -13,6 +14,8 @@ from .research_workflow import (
 )
 from .schemas import (
     ForecastRequest,
+    ForecastRefreshRequest,
+    ForecastRefreshResponse,
     ForecastResponse,
     ForecastSnapshotResponse,
     ForecastSnapshotTimelineEntry,
@@ -67,6 +70,36 @@ def get_research_run(run_id: UUID, db: Session = Depends(get_db)) -> ResearchRun
     if run is None:
         raise HTTPException(status_code=404, detail="research run not found")
     return run
+
+
+@app.post("/forecast-refresh-runs", response_model=ForecastRefreshResponse, status_code=status.HTTP_201_CREATED)
+def create_forecast_refresh_run(
+    payload: ForecastRefreshRequest, db: Session = Depends(get_db)
+) -> dict:
+    """Run one saved-event rolling refresh using only fixed trusted local inputs."""
+    try:
+        model = configured_deepseek_model()
+        result = run_forecast_refresh(
+            symbol=payload.symbol,
+            before_as_of_time=payload.before_as_of_time,
+            after_as_of_time=payload.after_as_of_time,
+            document_id=payload.document_id,
+            db=db,
+            extraction_provider_factory=lambda: create_deepseek_provider_from_env(model=model),
+            research_provider_factory=lambda: create_deepseek_provider_from_env(model=model),
+            model=model,
+        )
+        return result.as_dict()
+    except (ForecastRefreshError, EventProviderError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/forecast-refresh-runs/{snapshot_id}", response_model=ForecastRefreshResponse)
+def get_forecast_refresh_run(snapshot_id: UUID, db: Session = Depends(get_db)) -> dict:
+    try:
+        return get_forecast_refresh_report(snapshot_id=snapshot_id, db=db).as_dict()
+    except ForecastRefreshError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.post("/forecasts", response_model=ForecastResponse, status_code=status.HTTP_201_CREATED)

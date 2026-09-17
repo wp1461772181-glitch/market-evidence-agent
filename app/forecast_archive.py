@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 from .database import SessionLocal, engine
 from .features import FEATURE_VERSION, SNAPSHOT_MODES
 from .market_time import normalize_utc, xnys_session_close_at
-from .models import ForecastRevision, ForecastSnapshot
+from .models import ForecastRevision, ForecastRevisionEvidence, ForecastSnapshot
 from .services import is_valid_symbol, normalize_symbol
 from .training import CLASS_LABELS, _probabilities_in_order
 from .training_data import FEATURE_COLUMNS
@@ -49,6 +49,26 @@ class TrustedModelArtifact:
     available_from: date
 
 
+@dataclass(frozen=True)
+class RevisionEvidenceData:
+    """Validated event metadata stored with one rolling-refresh child snapshot."""
+
+    revision_mode: str
+    parent_target_start: date
+    parent_target_end: date
+    child_target_start: date
+    child_target_end: date
+    event_document_id: str
+    event_document_sha256: str
+    event_cache_key: str
+    event_type: str
+    event_date: date
+    event_summary: str
+    evidence_quote: str
+    source_url: str
+    research_run_id: UUID
+
+
 def archive_forecast_snapshot(
     *,
     model_dir: str | Path,
@@ -58,6 +78,8 @@ def archive_forecast_snapshot(
     db: Session,
     revises: UUID | str | None = None,
     reason: str | None = None,
+    revision_evidence: RevisionEvidenceData | None = None,
+    commit: bool = True,
 ) -> ForecastSnapshot:
     """Load one checked local artifact and append its offline prediction.
 
@@ -66,6 +88,7 @@ def archive_forecast_snapshot(
     source file cannot alter it.
     """
     parent_id, revision_reason = _validate_revision_request(revises=revises, reason=reason)
+    _validate_revision_evidence_request(parent_id=parent_id, revision_evidence=revision_evidence)
     artifact = load_trusted_model_artifact(model_dir)
     normalized_symbol = _validated_symbol(symbol)
     if normalized_symbol == BENCHMARK_SYMBOL:
@@ -135,13 +158,39 @@ def archive_forecast_snapshot(
                     reason=revision_reason,
                 )
             )
-        db.commit()
-        db.refresh(snapshot)
+            if revision_evidence is not None:
+                db.add(
+                    ForecastRevisionEvidence(
+                        snapshot_id=snapshot.id,
+                        parent_snapshot_id=parent.id,
+                        revision_mode=revision_evidence.revision_mode,
+                        parent_target_start=revision_evidence.parent_target_start,
+                        parent_target_end=revision_evidence.parent_target_end,
+                        child_target_start=revision_evidence.child_target_start,
+                        child_target_end=revision_evidence.child_target_end,
+                        event_document_id=revision_evidence.event_document_id,
+                        event_document_sha256=revision_evidence.event_document_sha256,
+                        event_cache_key=revision_evidence.event_cache_key,
+                        event_type=revision_evidence.event_type,
+                        event_date=revision_evidence.event_date,
+                        event_summary=revision_evidence.event_summary,
+                        evidence_quote=revision_evidence.evidence_quote,
+                        source_url=revision_evidence.source_url,
+                        research_run_id=revision_evidence.research_run_id,
+                    )
+                )
+        if commit:
+            db.commit()
+            db.refresh(snapshot)
+        else:
+            db.flush()
     except IntegrityError as exc:
         db.rollback()
         constraint_name = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
         if constraint_name in {"forecast_revisions_parent_snapshot_id_key", "uq_forecast_revision_parent"}:
             raise ValueError("snapshot already has a revision; revise latest snapshot") from exc
+        if constraint_name == "uq_forecast_revision_event_parent":
+            raise ValueError("this event already has a rolling refresh for the selected forecast") from exc
         raise
     except Exception:
         db.rollback()
@@ -223,7 +272,7 @@ def load_trusted_model_artifact(
 
 
 def create_forecast_snapshot_table() -> None:
-    """Create the additive snapshot and revision tables when the CLI is first used."""
+    """Create the Week 5 snapshot tables when the archive CLI is first used."""
     ForecastSnapshot.__table__.create(bind=engine, checkfirst=True)
     ForecastRevision.__table__.create(bind=engine, checkfirst=True)
 
@@ -379,6 +428,45 @@ def _validate_revision_request(
     if len(normalized_reason) > 280:
         raise ValueError("revision reason must be at most 280 characters")
     return parent_id, normalized_reason
+
+
+def _validate_revision_evidence_request(
+    *, parent_id: UUID | None, revision_evidence: RevisionEvidenceData | None
+) -> None:
+    if revision_evidence is None:
+        return
+    if parent_id is None:
+        raise ValueError("revision evidence requires revises and reason")
+    if revision_evidence.revision_mode != "rolling_refresh":
+        raise ValueError("revision evidence mode must be rolling_refresh")
+    for start, end, name in (
+        (revision_evidence.parent_target_start, revision_evidence.parent_target_end, "parent target"),
+        (revision_evidence.child_target_start, revision_evidence.child_target_end, "child target"),
+    ):
+        if start > end:
+            raise ValueError(f"revision evidence {name} dates are invalid")
+    if len(revision_evidence.event_document_id) > 128 or not revision_evidence.event_document_id:
+        raise ValueError("revision evidence document ID is invalid")
+    for value, name, maximum in (
+        (revision_evidence.event_document_sha256, "document SHA-256", 64),
+        (revision_evidence.event_cache_key, "event cache key", 64),
+        (revision_evidence.event_type, "event type", 64),
+        (revision_evidence.event_summary, "event summary", 700),
+        (revision_evidence.evidence_quote, "evidence quote", 240),
+        (revision_evidence.source_url, "source URL", 2048),
+    ):
+        if not value or len(value) > maximum:
+            raise ValueError(f"revision evidence {name} is invalid")
+    for value, name in (
+        (revision_evidence.event_document_sha256, "document SHA-256"),
+        (revision_evidence.event_cache_key, "event cache key"),
+    ):
+        if len(value) != 64:
+            raise ValueError(f"revision evidence {name} is invalid")
+        try:
+            int(value, 16)
+        except ValueError as exc:
+            raise ValueError(f"revision evidence {name} is invalid") from exc
 
 
 def _validate_revision_compatibility(parent: ForecastSnapshot, child: ForecastSnapshot) -> None:

@@ -1,0 +1,24 @@
+{
+  "source_set_version": "week8-public-announcement-v1",
+  "document_count": 1,
+  "source_policy": "One first-party public Apple announcement for the bounded Week 8 revision demo; full text is local and gitignored.",
+  "documents": [
+    {
+      "document_id": "aapl-2026-q3",
+      "company": "Apple",
+      "ticker": "AAPL",
+      "source_url": "https://www.apple.com/newsroom/2026/07/apple-reports-third-quarter-results/",
+      "source_domain": "www.apple.com",
+      "published_date": "2026-07-30",
+      "title": "Apple reports third quarter results",
+      "sha256": "3b7e5b99d36c7da854be9c7aaad98d96918544cc2edd435c46bbacaa96605210",
+      "text_characters": 5351,
+      "gold_annotation": {
+        "event_type": "earnings_release",
+        "event_date": "2026-07-30",
+        "expected_summary": "Apple reported fiscal 2026 third-quarter results, including quarterly revenue of $109.4 billion.",
+        "evidence_quote": "Apple today announced financial results for its fiscal 2026 third quarter ended June 27, 2026."
+      }
+    }
+  ]
+}

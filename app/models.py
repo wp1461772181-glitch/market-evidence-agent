@@ -109,6 +109,52 @@ class ForecastRevision(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
+class ForecastRevisionEvidence(Base):
+    """The bounded event context attached to one Week 8 rolling refresh.
+
+    The stored event is evidence for why a new feature snapshot was requested.
+    It does not claim that the event caused the probability delta.
+    """
+
+    __tablename__ = "forecast_revision_evidence"
+    __table_args__ = (
+        UniqueConstraint(
+            "parent_snapshot_id", "event_document_id", name="uq_forecast_revision_event_parent"
+        ),
+        CheckConstraint("revision_mode = 'rolling_refresh'", name="ck_forecast_revision_evidence_mode"),
+        CheckConstraint("length(trim(event_document_id)) > 0", name="ck_forecast_revision_evidence_document"),
+    )
+
+    snapshot_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("forecast_snapshots.id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    parent_snapshot_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("forecast_snapshots.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    revision_mode: Mapped[str] = mapped_column(String(32), nullable=False)
+    parent_target_start: Mapped[date] = mapped_column(Date, nullable=False)
+    parent_target_end: Mapped[date] = mapped_column(Date, nullable=False)
+    child_target_start: Mapped[date] = mapped_column(Date, nullable=False)
+    child_target_end: Mapped[date] = mapped_column(Date, nullable=False)
+    event_document_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    event_document_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    event_cache_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    event_date: Mapped[date] = mapped_column(Date, nullable=False)
+    event_summary: Mapped[str] = mapped_column(String(700), nullable=False)
+    evidence_quote: Mapped[str] = mapped_column(String(240), nullable=False)
+    source_url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    research_run_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("research_runs.id", ondelete="RESTRICT"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
 class EventExtraction(Base):
     """A validated, immutable cache entry for one document extraction request.
 

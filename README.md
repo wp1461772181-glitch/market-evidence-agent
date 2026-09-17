@@ -1,4 +1,4 @@
-# Market Evidence Agent — Weeks 1–7
+# Market Evidence Agent — Weeks 1–8
 
 A FastAPI and PostgreSQL foundation for a market-evidence system. The project stores a deterministic Week 1 mock-v1 forecast, then adds reproducible daily market-data snapshots, leakage-safe Week 3 features, a fixed Week 4 offline baseline evaluation, Week 5's versioned offline-prediction archive, and a bounded Week 6 evidence-extraction path. The API does **not** yet serve the trained baseline.
 
@@ -14,6 +14,7 @@ A FastAPI and PostgreSQL foundation for a market-evidence system. The project st
 - Week 5 archives a prediction from a trusted local Week 4 artifact and compatible Week 3 feature export, preserves later corrections as a linked revision chain, and replays any archived prediction from its saved inputs.
 - Week 6 validates structured event extraction only against saved first-party documents, with exact source-quote checks and a PostgreSQL cache. Its v3 live run covers ten announcements and proves cache-only replay. The review output transparently excludes one historical capital-return statement and marks every qualitative direction as requiring review, never as a forecast input. See [the Week 6 status](docs/week6-progress.md).
 - Week 7 adds a fixed source-check, supporting-case, counter-case, and review workflow. It only accepts saved source IDs from the Week 6 manifest, records every attempt in `research_runs`, and never produces a report with unvalidated source quotes. See [the Week 7 status](docs/week7-progress.md).
+- Week 8 adds one bounded event-triggered `rolling_refresh`: a fixed saved source can produce an original and revised AAPL prediction, linked records, a probability delta, rolling target windows, and source/research evidence. The probabilities still come only from two trusted local market-feature snapshots. See [the Week 8 status](docs/week8-progress.md).
 
 ## Time semantics and data-version limits
 
@@ -297,6 +298,13 @@ warnings), and `pip check` reported no broken requirements.
   revision attempt failed with exit code 2 and did not create an orphan. The
   root row hash and the legacy 52 `forecasts`, 4,536 `market_prices`, and 4,536
   `market_price_revisions` rows remained unchanged.
+- The Week 8 local HTTP acceptance run used one saved Apple announcement and
+  exact July 2026 XNYS close cutoffs. It created a two-version AAPL chain,
+  stored event/research evidence with the child, and returned the saved report
+  by child ID. Its probability delta compares two market-feature snapshots; it
+  is not an LLM adjustment or a causal claim about the event. See [the Week 8
+  status](docs/week8-progress.md) for the validation IDs, values,
+  human-review findings, and historical-research limits.
 
 ## Current limitations
 
@@ -314,3 +322,4 @@ warnings), and `pip check` reported no broken requirements.
   establish trading profitability.
 - Yahoo Finance Chart is an external undocumented endpoint and can change or rate-limit requests.
 - SQLAlchemy create_all is currently used for schema creation; Alembic migrations, SEC/FRED evidence, online automation, frontend, deployment, and monitoring remain later milestones. Week 6's LLM path is limited to saved documents; its v3 run verifies source/date/cache behavior for the ten required earnings events. Its review output applies one narrow quote-based filter for a historical capital-return statement and marks every qualitative impact direction as requiring review rather than treating it as a forecast input.
+- Week 8 supports one explicit saved-event rolling refresh only. It has no fixed-target revision mode, arbitrary URL/file/model selection, scheduler, retraining path, online model serving, or causal event-effect estimate. Research claims are source-quote-validated but remain model-generated inferences requiring human review.
