@@ -48,6 +48,7 @@ class ForecastSnapshotTimelineEntry(ForecastSnapshotResponse):
     """One saved snapshot plus its position and link in a revision chain."""
 
     version: int
+    root_snapshot_id: UUID
     parent_snapshot_id: UUID | None
     revision_reason: str | None
 
@@ -119,3 +120,25 @@ class ForecastRefreshResponse(BaseModel):
     trigger: dict[str, Any]
     research_run: dict[str, Any]
     limitations: list[str]
+
+
+class DashboardEvaluation(BaseModel):
+    """Small, fixed-scope summary of the saved Week 4 offline evaluation."""
+
+    artifact_version: str
+    model_name: str
+    scope: str
+    data_as_of_time: datetime
+    feature_version: str
+    snapshot_mode: str
+    fold_count: int
+    test_rows: int
+    models: dict[str, dict[str, float]]
+    limitations: list[str]
+
+
+class DashboardResponse(BaseModel):
+    symbol: str
+    snapshots: list[ForecastSnapshotTimelineEntry]
+    refresh_reports: list[ForecastRefreshResponse]
+    evaluation: DashboardEvaluation | None

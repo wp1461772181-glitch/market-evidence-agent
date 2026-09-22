@@ -1,6 +1,11 @@
-# Market Evidence Agent — Weeks 1–8
+# Market Evidence Agent — Weeks 1–9
 
-A FastAPI and PostgreSQL foundation for a market-evidence system. The project stores a deterministic Week 1 mock-v1 forecast, then adds reproducible daily market-data snapshots, leakage-safe Week 3 features, a fixed Week 4 offline baseline evaluation, Week 5's versioned offline-prediction archive, and a bounded Week 6 evidence-extraction path. The API does **not** yet serve the trained baseline.
+A FastAPI, PostgreSQL, and local React dashboard foundation for a
+market-evidence system. It stores a deterministic Week 1 `mock-v1` forecast,
+then adds reproducible market-data snapshots, leakage-safe features, a fixed
+offline baseline, versioned archived predictions, source-grounded research,
+and a read-only evidence view. The application does **not** serve the trained
+baseline as a live prediction model.
 
 ## Implemented scope
 
@@ -15,6 +20,7 @@ A FastAPI and PostgreSQL foundation for a market-evidence system. The project st
 - Week 6 validates structured event extraction only against saved first-party documents, with exact source-quote checks and a PostgreSQL cache. Its v3 live run covers ten announcements and proves cache-only replay. The review output transparently excludes one historical capital-return statement and marks every qualitative direction as requiring review, never as a forecast input. See [the Week 6 status](docs/week6-progress.md).
 - Week 7 adds a fixed source-check, supporting-case, counter-case, and review workflow. It only accepts saved source IDs from the Week 6 manifest, records every attempt in `research_runs`, and never produces a report with unvalidated source quotes. See [the Week 7 status](docs/week7-progress.md).
 - Week 8 adds one bounded event-triggered `rolling_refresh`: a fixed saved source can produce an original and revised AAPL prediction, linked records, a probability delta, rolling target windows, and source/research evidence. The probabilities still come only from two trusted local market-feature snapshots. See [the Week 8 status](docs/week8-progress.md).
+- Week 9 adds a local React + TypeScript reader for saved evidence. `GET /dashboard/{symbol}` returns every persisted archive chain for that symbol, any saved rolling-refresh reports, and a fixed whitelist of Week 4 offline metrics. The page reads these records only; it cannot create forecasts, trigger a refresh, or make provider calls. See [the Week 9 status](docs/week9-progress.md).
 
 ## Time semantics and data-version limits
 
@@ -115,6 +121,24 @@ curl -s -X POST http://127.0.0.1:8000/forecasts \
 The forecast API accepts normalized 1–5 letter ASCII symbols and returns HTTP 422 for an invalid symbol.
 
 The checked-in VS Code Run and Debug configuration uses the workspace .venv/bin/python, starts the local PostgreSQL container, then runs uvicorn app.main:app --reload at 127.0.0.1:8000.
+
+## Week 9 local dashboard
+
+Start the API, then install and run the local dashboard in a second terminal.
+Vite proxies `/api` requests to the API at `127.0.0.1:8000`; the dashboard's
+default AAPL request is read-only and only retrieves archived evidence.
+
+~~~bash
+uvicorn app.main:app --host 127.0.0.1 --port 8000
+cd frontend
+npm ci
+npm run dev -- --host 127.0.0.1 --port 5173
+~~~
+
+Open `http://127.0.0.1:5173`, then enter a saved symbol such as `AAPL`. For a
+production build check, run `npm run build` in `frontend/`. The page calls
+`GET /api/dashboard/{symbol}` only; it never creates a forecast or refresh
+run, calls a model, or fetches external data.
 
 ## Ingest and export features
 
@@ -321,5 +345,6 @@ warnings), and `pip check` reported no broken requirements.
   Overlapping 20-session labels also mean the OOS rows are correlated and do not
   establish trading profitability.
 - Yahoo Finance Chart is an external undocumented endpoint and can change or rate-limit requests.
-- SQLAlchemy create_all is currently used for schema creation; Alembic migrations, SEC/FRED evidence, online automation, frontend, deployment, and monitoring remain later milestones. Week 6's LLM path is limited to saved documents; its v3 run verifies source/date/cache behavior for the ten required earnings events. Its review output applies one narrow quote-based filter for a historical capital-return statement and marks every qualitative impact direction as requiring review rather than treating it as a forecast input.
+- SQLAlchemy create_all is currently used for schema creation; Alembic migrations, SEC/FRED evidence, online automation, deployment, and monitoring remain later milestones. Week 6's LLM path is limited to saved documents; its v3 run verifies source/date/cache behavior for the ten required earnings events. Its review output applies one narrow quote-based filter for a historical capital-return statement and marks every qualitative impact direction as requiring review rather than treating it as a forecast input.
 - Week 8 supports one explicit saved-event rolling refresh only. It has no fixed-target revision mode, arbitrary URL/file/model selection, scheduler, retraining path, online model serving, or causal event-effect estimate. Research claims are source-quote-validated but remain model-generated inferences requiring human review.
+- The Week 9 dashboard is local and read-only. It displays archived historical-research reports, not current market predictions. It has no login, live quotes, portfolio actions, deployment, or monitoring; if its trusted local Week 4 evaluation files are unavailable, it reports no offline metrics instead of recalculating them.

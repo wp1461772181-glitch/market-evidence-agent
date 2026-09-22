@@ -1,0 +1,229 @@
+from __future__ import annotations
+
+import json
+from datetime import UTC, date, datetime
+from pathlib import Path
+
+import pytest
+from sqlalchemy import func, select
+
+from app.database import SessionLocal
+from app.models import ForecastRevision, ForecastRevisionEvidence, ForecastSnapshot, ResearchRun
+
+
+def _snapshot(*, symbol: str, moment: datetime, probability: float) -> ForecastSnapshot:
+    return ForecastSnapshot(
+        symbol=symbol,
+        feature_trading_date=moment.date(),
+        feature_as_of_time=moment,
+        model_version="week4-calibrated-test",
+        model_sha256="a" * 64,
+        model_manifest_sha256="b" * 64,
+        feature_export_sha256="c" * 64,
+        feature_version="market-features-v1",
+        feature_source="yahoo-finance-chart",
+        feature_snapshot_mode="historical_research",
+        feature_values={"momentum_5d": 0.01},
+        bearish_probability=probability,
+        neutral_probability=1.0 - probability,
+        bullish_probability=0.0,
+    )
+
+
+def _table_counts() -> tuple[int, int, int, int]:
+    with SessionLocal() as db:
+        return tuple(
+            int(db.scalar(select(func.count()).select_from(model)) or 0)
+            for model in (ForecastSnapshot, ForecastRevision, ForecastRevisionEvidence, ResearchRun)
+        )
+
+
+@pytest.fixture
+def trusted_evaluation(monkeypatch, tmp_path: Path) -> Path:
+    import app.dashboard as dashboard
+
+    report = {
+        "experiment": {"purpose": "Offline baseline evaluation only."},
+        "data_metadata": {
+            "as_of_time": "2026-09-04T21:00:00+00:00",
+            "feature_version": "market-features-v1",
+            "snapshot_mode": "historical_research",
+        },
+        "folds": [{"row_counts": {"test": 10}}, {"row_counts": {"test": 11}}, {"row_counts": {"test": 12}}],
+        "pooled_oos": {
+            "logistic_calibrated": {
+                "accuracy": 0.45,
+                "balanced_accuracy": 0.35,
+                "brier_multiclass": 0.69,
+                "log_loss": 1.22,
+                "macro_f1": 0.29,
+            },
+            "logistic_raw": {
+                "accuracy": 0.46,
+                "balanced_accuracy": 0.34,
+                "brier_multiclass": 0.62,
+                "log_loss": 1.04,
+                "macro_f1": 0.26,
+            },
+            "baseline_class_prior": {
+                "accuracy": 0.44,
+                "balanced_accuracy": 0.33,
+                "brier_multiclass": 0.65,
+                "log_loss": 1.07,
+                "macro_f1": 0.20,
+            },
+        },
+    }
+    (tmp_path / "report.json").write_text(json.dumps(report), encoding="utf-8")
+    (tmp_path / "manifest.json").write_text(
+        json.dumps({"artifact_version": "week4-training-artifacts-v1"}), encoding="utf-8"
+    )
+    monkeypatch.setattr(dashboard, "TRUSTED_EVALUATION_DIRECTORY", tmp_path)
+    return tmp_path
+
+
+def test_dashboard_normalizes_symbol_and_returns_empty_read_only_result(client, trusted_evaluation):
+    before = _table_counts()
+
+    response = client.get("/dashboard/%20msft%20")
+
+    assert response.status_code == 200
+    assert response.json()["symbol"] == "MSFT"
+    assert response.json()["snapshots"] == []
+    assert response.json()["refresh_reports"] == []
+    evaluation = response.json()["evaluation"]
+    assert evaluation["scope"].startswith("Pooled out-of-sample")
+    assert evaluation["fold_count"] == 3
+    assert evaluation["test_rows"] == 33
+    assert evaluation["models"]["logistic_calibrated"]["brier_multiclass"] == 0.69
+    assert evaluation["models"]["logistic_raw"]["brier_multiclass"] == 0.62
+    assert evaluation["models"]["baseline_class_prior"]["brier_multiclass"] == 0.65
+    assert _table_counts() == before
+
+
+def test_dashboard_returns_all_chains_and_saved_evidence_without_model_calls(
+    client, trusted_evaluation, monkeypatch
+):
+    from app import main
+
+    def unexpected_provider(*_: object) -> object:
+        raise AssertionError("dashboard must not construct an LLM provider")
+
+    monkeypatch.setattr(main, "create_deepseek_provider_from_env", unexpected_provider)
+    monkeypatch.setattr(main, "configured_deepseek_model", unexpected_provider)
+    early = datetime(2026, 7, 29, 20, tzinfo=UTC)
+    late = datetime(2026, 7, 31, 20, tzinfo=UTC)
+    separate = datetime(2026, 9, 4, 20, tzinfo=UTC)
+    with SessionLocal() as db:
+        original = _snapshot(symbol="DASH", moment=early, probability=0.7)
+        revised = _snapshot(symbol="DASH", moment=late, probability=0.2)
+        unlinked = _snapshot(symbol="DASH", moment=separate, probability=0.6)
+        research = ResearchRun(
+            symbol="DASH",
+            as_of_time=late,
+            source_ids=["dashboard-source"],
+            source_snapshot=[],
+            provider="test-provider",
+            request_model="test-model",
+            status="succeeded",
+            current_stage="complete",
+            node_trace=[],
+            report={"conclusion": "human review required"},
+            error=None,
+            completed_at=late,
+        )
+        db.add_all([original, revised, unlinked, research])
+        db.flush()
+        db.add(
+            ForecastRevision(
+                snapshot_id=revised.id,
+                parent_snapshot_id=original.id,
+                root_snapshot_id=original.id,
+                reason="Saved source became eligible",
+            )
+        )
+        db.add(
+            ForecastRevisionEvidence(
+                snapshot_id=revised.id,
+                parent_snapshot_id=original.id,
+                revision_mode="rolling_refresh",
+                parent_target_start=date(2026, 7, 30),
+                parent_target_end=date(2026, 8, 26),
+                child_target_start=date(2026, 8, 3),
+                child_target_end=date(2026, 8, 28),
+                event_document_id="dashboard-source",
+                event_document_sha256="d" * 64,
+                event_cache_key="e" * 64,
+                event_type="earnings_release",
+                event_date=date(2026, 7, 30),
+                event_summary="A saved earnings release became eligible.",
+                evidence_quote="The company reported quarterly results.",
+                source_url="https://example.com/source",
+                research_run_id=research.id,
+            )
+        )
+        db.commit()
+
+    try:
+        before = _table_counts()
+        response = client.get("/dashboard/dash")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert [item["id"] for item in body["snapshots"]] == [
+            str(original.id),
+            str(revised.id),
+            str(unlinked.id),
+        ]
+        assert body["snapshots"][0]["version"] == 1
+        assert body["snapshots"][1]["version"] == 2
+        assert body["snapshots"][0]["root_snapshot_id"] == str(original.id)
+        assert body["snapshots"][1]["root_snapshot_id"] == str(original.id)
+        assert body["snapshots"][2]["version"] == 1
+        assert body["snapshots"][2]["root_snapshot_id"] == str(unlinked.id)
+        assert body["refresh_reports"][0]["revised_snapshot"]["id"] == str(revised.id)
+        assert body["refresh_reports"][0]["trigger"]["source_url"] == "https://example.com/source"
+        assert _table_counts() == before
+    finally:
+        with SessionLocal() as db:
+            db.query(ForecastRevisionEvidence).filter(
+                ForecastRevisionEvidence.snapshot_id.in_([original.id, revised.id, unlinked.id])
+            ).delete(synchronize_session=False)
+            db.query(ForecastRevision).filter(
+                ForecastRevision.snapshot_id.in_([original.id, revised.id, unlinked.id])
+            ).delete(synchronize_session=False)
+            db.query(ForecastSnapshot).filter(
+                ForecastSnapshot.id.in_([original.id, revised.id, unlinked.id])
+            ).delete(synchronize_session=False)
+            db.query(ResearchRun).filter(ResearchRun.id == research.id).delete(synchronize_session=False)
+            db.commit()
+
+
+def test_dashboard_returns_null_evaluation_when_trusted_artifacts_are_missing(client, monkeypatch, tmp_path: Path):
+    import app.dashboard as dashboard
+
+    monkeypatch.setattr(dashboard, "TRUSTED_EVALUATION_DIRECTORY", tmp_path)
+
+    response = client.get("/dashboard/none")
+
+    assert response.status_code == 200
+    assert response.json()["evaluation"] is None
+
+
+def test_dashboard_returns_null_evaluation_when_metrics_are_nonfinite(client, trusted_evaluation):
+    report_path = trusted_evaluation / "report.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report["pooled_oos"]["logistic_calibrated"]["accuracy"] = float("nan")
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+
+    response = client.get("/dashboard/none")
+
+    assert response.status_code == 200
+    assert response.json()["evaluation"] is None
+
+
+def test_dashboard_rejects_invalid_symbol(client):
+    response = client.get("/dashboard/AAPL%21")
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "symbol must contain 1-5 ASCII letters"

@@ -4,7 +4,8 @@ from fastapi import Depends, FastAPI, HTTPException, status
 from sqlalchemy.orm import Session
 
 from .database import Base, SessionLocal, engine
-from .models import Forecast, ForecastRevision, ForecastSnapshot, ResearchRun
+from .dashboard import dashboard_evaluation, dashboard_snapshot_entries
+from .models import Forecast, ForecastRevision, ForecastRevisionEvidence, ForecastSnapshot, ResearchRun
 from .event_provider import EventProviderError, configured_deepseek_model, create_deepseek_provider_from_env
 from .forecast_refresh import ForecastRefreshError, get_forecast_refresh_report, run_forecast_refresh
 from .research_workflow import (
@@ -17,6 +18,7 @@ from .schemas import (
     ForecastRefreshRequest,
     ForecastRefreshResponse,
     ForecastResponse,
+    DashboardResponse,
     ForecastSnapshotResponse,
     ForecastSnapshotTimelineEntry,
     ForecastSnapshotTimelineResponse,
@@ -102,6 +104,45 @@ def get_forecast_refresh_run(snapshot_id: UUID, db: Session = Depends(get_db)) -
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@app.get("/dashboard/{symbol}", response_model=DashboardResponse)
+def get_dashboard(symbol: str, db: Session = Depends(get_db)) -> dict:
+    """Read saved forecast evidence for the simple Week 9 dashboard.
+
+    This endpoint deliberately never creates a mock forecast, loads a model,
+    calls an LLM, or modifies a database row.
+    """
+    normalized_symbol = normalize_symbol(symbol)
+    if not is_valid_symbol(normalized_symbol):
+        raise HTTPException(status_code=422, detail="symbol must contain 1-5 ASCII letters")
+
+    snapshots = (
+        db.query(ForecastSnapshot)
+        .filter(ForecastSnapshot.symbol == normalized_symbol)
+        .order_by(ForecastSnapshot.feature_as_of_time, ForecastSnapshot.created_at, ForecastSnapshot.id)
+        .all()
+    )
+    evidence_rows = (
+        db.query(ForecastRevisionEvidence)
+        .join(ForecastSnapshot, ForecastRevisionEvidence.snapshot_id == ForecastSnapshot.id)
+        .filter(ForecastSnapshot.symbol == normalized_symbol)
+        .order_by(ForecastSnapshot.feature_as_of_time, ForecastSnapshot.created_at, ForecastSnapshot.id)
+        .all()
+    )
+    refresh_reports: list[dict] = []
+    for evidence in evidence_rows:
+        try:
+            refresh_reports.append(get_forecast_refresh_report(snapshot_id=evidence.snapshot_id, db=db).as_dict())
+        except ForecastRefreshError as exc:
+            raise HTTPException(status_code=500, detail="saved forecast refresh report is incomplete") from exc
+
+    return {
+        "symbol": normalized_symbol,
+        "snapshots": dashboard_snapshot_entries(snapshots, db),
+        "refresh_reports": refresh_reports,
+        "evaluation": dashboard_evaluation(),
+    }
+
+
 @app.post("/forecasts", response_model=ForecastResponse, status_code=status.HTTP_201_CREATED)
 def create_forecast(payload: ForecastRequest, db: Session = Depends(get_db)) -> Forecast:
     symbol = normalize_symbol(payload.symbol)
@@ -174,6 +215,7 @@ def _forecast_timeline(
             ForecastSnapshotTimelineEntry(
                 **ForecastSnapshotResponse.model_validate(current).model_dump(),
                 version=version,
+                root_snapshot_id=root.id,
                 parent_snapshot_id=parent_link.parent_snapshot_id if parent_link else None,
                 revision_reason=parent_link.reason if parent_link else None,
             )
