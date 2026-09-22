@@ -89,8 +89,8 @@ event evidence.
 
 - [x] a valid saved AAPL query renders named probabilities, cutoff, source,
   research-review label, timeline, revision reason, and offline metrics;
-- [x] source URLs are rendered only as safe clickable HTTPS links and open the
-  saved Apple source in a new tab;
+- [x] source URLs are rendered as HTTPS links to the saved Apple source, with
+  a new-tab target and `noreferrer` verified in the browser;
 - [x] all persisted AAPL chains are present, rather than only the latest chain;
 - [x] an unknown symbol shows the empty state, while malformed input shows the
   API error state;
