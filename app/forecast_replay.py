@@ -138,8 +138,16 @@ def _validate_snapshot_contract(snapshot: ForecastSnapshot, artifact: TrustedMod
         raise ValueError("snapshot feature_source does not match the retained model artifact")
     if snapshot.feature_snapshot_mode not in SNAPSHOT_MODES:
         raise ValueError("snapshot feature_snapshot_mode is not supported")
-    if snapshot.feature_snapshot_mode != artifact.snapshot_mode:
-        raise ValueError("snapshot feature_snapshot_mode does not match the retained model artifact")
+    if snapshot.feature_snapshot_mode == artifact.snapshot_mode:
+        return
+    # An on-demand run records ``observed`` truthfully: its bars were visible
+    # to this system at its own feature_as_of_time. The historical-research
+    # training artifact has the same checked feature formulas and source, and
+    # the persisted feature vector plus checked model hashes are sufficient for
+    # numeric replay. This is not a claim that training used a live feed.
+    if snapshot.feature_snapshot_mode == "observed" and artifact.snapshot_mode == "historical_research":
+        return
+    raise ValueError("snapshot feature_snapshot_mode does not match the retained model artifact")
 
 
 def _validated_feature_values(value: object) -> dict[str, float]:

@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ApiError, getDashboard } from "./api";
-import type { Claim, DashboardResponse, PriceCandle, PriceHistory, RefreshReport, Snapshot } from "./types";
+import { ApiError, createForecastRun, fetchFilingContent, getDashboard, getFilingInventory, reviewFiling, scanOfficialFilings } from "./api";
+import type { Claim, DashboardResponse, FilingContent, FilingInventory, FilingReview, OfficialFiling, PriceCandle, PriceHistory, RefreshReport, Snapshot } from "./types";
 
 type LoadState =
   | { kind: "loading" }
@@ -9,6 +9,10 @@ type LoadState =
   | { kind: "error"; message: string; symbol: string };
 
 const DEFAULT_SYMBOL = "AAPL";
+const SUPPORTED_SYMBOLS = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA"] as const;
+type SupportedSymbol = typeof SUPPORTED_SYMBOLS[number];
+type ActionState = { kind: "idle" } | { kind: "running" } | { kind: "success"; message: string } | { kind: "error"; message: string };
+type FilingState = { kind: "idle" } | { kind: "loading" } | { kind: "ready"; data: FilingInventory } | { kind: "error"; message: string };
 
 export function App() {
   const [input, setInput] = useState(DEFAULT_SYMBOL);
@@ -17,6 +21,9 @@ export function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [evidenceOnly, setEvidenceOnly] = useState(false);
   const [retryKey, setRetryKey] = useState(0);
+  const [forecastAction, setForecastAction] = useState<ActionState>({ kind: "idle" });
+  const [scanAction, setScanAction] = useState<ActionState>({ kind: "idle" });
+  const [filings, setFilings] = useState<FilingState>({ kind: "idle" });
   const requestVersion = useRef(0);
 
   useEffect(() => {
@@ -44,17 +51,73 @@ export function App() {
     return () => controller.abort();
   }, [requestedSymbol, retryKey]);
 
+  useEffect(() => {
+    if (!isSupportedSymbol(requestedSymbol)) {
+      setFilings({ kind: "idle" });
+      return;
+    }
+    const controller = new AbortController();
+    setFilings({ kind: "loading" });
+    getFilingInventory(requestedSymbol, controller.signal)
+      .then((data) => setFilings({ kind: "ready", data }))
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted) setFilings({ kind: "error", message: actionMessage(error, "暂时无法读取官方申报清单。") });
+      });
+    return () => controller.abort();
+  }, [requestedSymbol]);
+
   function submit(event: FormEvent) {
     event.preventDefault();
     const next = input.trim().toUpperCase();
     if (!next) return;
     if (next === requestedSymbol) setRetryKey((value) => value + 1);
-    else setRequestedSymbol(next);
+    else {
+      setForecastAction({ kind: "idle" });
+      setScanAction({ kind: "idle" });
+      setRequestedSymbol(next);
+    }
   }
 
+  async function startForecast() {
+    if (!isSupportedSymbol(requestedSymbol)) return;
+    setForecastAction({ kind: "running" });
+    try {
+      const result = await createForecastRun(requestedSymbol);
+      const cutoff = result.cutoff_date ? `数据截止 ${result.cutoff_date}` : "新的保存版本";
+      const modelLabel = result.model_status === "experimental_offline_model" ? "实验性离线模型预测" : "预测版本";
+      setForecastAction({ kind: "success", message: `已生成并保存${modelLabel}（${cutoff}），档案已刷新。` });
+      setRetryKey((value) => value + 1);
+    } catch (error: unknown) {
+      setForecastAction({ kind: "error", message: actionMessage(error, "生成预测失败。") });
+    }
+  }
+
+  async function startFilingScan() {
+    if (!isSupportedSymbol(requestedSymbol)) return;
+    setScanAction({ kind: "running" });
+    try {
+      const result = await scanOfficialFilings(requestedSymbol);
+      setFilings({ kind: "ready", data: result });
+      setScanAction({ kind: "success", message: `扫描完成：发现 ${result.discovered_count} 份，新增 ${result.created_count} 份。` });
+    } catch (error: unknown) {
+      setScanAction({ kind: "error", message: actionMessage(error, "扫描官方申报失败。") });
+    }
+  }
+
+  const actionDesk = <ActionDesk
+    symbol={requestedSymbol}
+    supported={isSupportedSymbol(requestedSymbol)}
+    priceHistory={state.kind === "ready" || state.kind === "empty" ? state.data.price_history : null}
+    forecastAction={forecastAction}
+    scanAction={scanAction}
+    filings={filings}
+    onForecast={startForecast}
+    onScan={startFilingScan}
+  />;
+
   if (state.kind === "loading") return <Shell input={input} setInput={setInput} submit={submit}><Loading symbol={requestedSymbol} /></Shell>;
-  if (state.kind === "error") return <Shell input={input} setInput={setInput} submit={submit}><ErrorState message={state.message} retry={() => setRetryKey((value) => value + 1)} /></Shell>;
-  if (state.kind === "empty") return <Shell input={input} setInput={setInput} submit={submit}><EmptyState data={state.data} /></Shell>;
+  if (state.kind === "error") return <Shell input={input} setInput={setInput} submit={submit}><ErrorState message={state.message} retry={() => setRetryKey((value) => value + 1)} />{actionDesk}</Shell>;
+  if (state.kind === "empty") return <Shell input={input} setInput={setInput} submit={submit}><EmptyState data={state.data} />{actionDesk}</Shell>;
 
   const { data } = state;
   const selected = data.snapshots.find((snapshot) => snapshot.id === selectedId) ?? latestSnapshot(data.snapshots);
@@ -67,15 +130,17 @@ export function App() {
     <Shell input={input} setInput={setInput} submit={submit}>
       <main className="dashboard">
         <section className="headline" aria-labelledby="report-title">
-          <p className="kicker">ARCHIVED RESEARCH / NO LIVE TRADE CALL</p>
+          <p className="kicker">RESEARCH WORKSPACE / HUMAN REVIEW REQUIRED</p>
           <div className="headline-row">
             <div>
               <h1 id="report-title">{data.symbol}<span> / evidence ledger</span></h1>
-              <p className="lede">已保存的离线预测版本、证据与评测。这里展示历史研究记录，不生成新的预测。</p>
+              <p className="lede">已保存的预测版本、官方资料与评测。可以从本地已存数据发起新预测；所有结论仍须人工复核。</p>
             </div>
             <p className="record-count"><strong>{data.snapshots.length}</strong><br />archived snapshots</p>
           </div>
         </section>
+
+        {actionDesk}
 
         <section className="version-strip" aria-label="选择存档版本">
           <div className="version-controls">
@@ -110,7 +175,7 @@ export function App() {
                 aria-selected={snapshot.id === selected.id}
               >
                 <span>{formatDate(snapshot.feature_as_of_time)}</span>
-                <small>{evidenceIds.has(snapshot.id) ? "事件后修订" : snapshot.version > 1 ? `第 ${snapshot.version} 版` : "存档版本"}</small>
+                <small>{isOnDemandSnapshot(snapshot) ? "主动生成 · 实验模型" : evidenceIds.has(snapshot.id) ? "事件后修订" : snapshot.version > 1 ? `第 ${snapshot.version} 版` : "存档版本"}</small>
               </button>
             ))}
           </div>
@@ -137,6 +202,141 @@ export function App() {
       </main>
     </Shell>
   );
+}
+
+function ActionDesk({
+  symbol, supported, priceHistory, forecastAction, scanAction, filings, onForecast, onScan,
+}: {
+  symbol: string;
+  supported: boolean;
+  priceHistory: PriceHistory | null | undefined;
+  forecastAction: ActionState;
+  scanAction: ActionState;
+  filings: FilingState;
+  onForecast: () => void;
+  onScan: () => void;
+}) {
+  const freshness = priceHistory?.latest_trading_date ? `本地行情截至 ${priceHistory.latest_trading_date}` : "尚未读取到本地行情状态";
+  return <section className="action-desk" aria-labelledby="action-title">
+    <div className="action-desk-heading">
+      <div><span className="section-label">研究操作</span><h2 id="action-title">主动更新这只股票的研究记录</h2></div>
+      <span className="tag">{supported ? "supported universe" : "archive view only"}</span>
+    </div>
+    {!supported && <p className="action-unavailable">当前主动操作仅支持 {SUPPORTED_SYMBOLS.join(" · ")}；SPY 仅作基准，其他代码仍可查看已有档案和行情。</p>}
+    <div className="action-grid">
+      <article className="action-card">
+        <span className="action-number">01</span>
+        <h3>扫描官方申报</h3>
+        <p>从 SEC EDGAR 发现该公司新提交的 10-K、10-Q、8-K 等文件，并保存原始链接和发现时间。</p>
+        <button className="action-button secondary" disabled={!supported || scanAction.kind === "running"} onClick={onScan}>
+          {scanAction.kind === "running" ? "正在扫描…" : "扫描官方申报"}
+        </button>
+        <ActionNotice state={scanAction} />
+        <p className="action-note">扫描只建立待核验资料目录，不会自动认可内容，也不会自动纳入预测。</p>
+      </article>
+      <article className="action-card action-card-primary">
+        <span className="action-number">02</span>
+        <h3>生成新预测</h3>
+        <p>用服务更新并验证过的行情与特征生成一份可追溯的实验性离线模型版本。服务会检查数据是否完整、是否过期。</p>
+        <button className="action-button" disabled={!supported || forecastAction.kind === "running"} onClick={onForecast}>
+          {forecastAction.kind === "running" ? "正在生成…" : "生成新预测"}
+        </button>
+        <ActionNotice state={forecastAction} />
+        <p className="action-note">{freshness}。不调用旧的示例 mock 接口；预测失败时不会生成替代结果。</p>
+      </article>
+    </div>
+    <FilingInventoryPanel symbol={symbol} state={filings} />
+  </section>;
+}
+
+function ActionNotice({ state }: { state: ActionState }) {
+  if (state.kind === "idle" || state.kind === "running") return null;
+  return <p className={`action-notice ${state.kind}`} role={state.kind === "error" ? "alert" : "status"}>{state.message}</p>;
+}
+
+function FilingInventoryPanel({ symbol, state }: { symbol: string; state: FilingState }) {
+  const [content, setContent] = useState<Record<string, { kind: "loading" } | { kind: "ready"; data: FilingContent } | { kind: "error"; message: string }>>({});
+  const [reviewDrafts, setReviewDrafts] = useState<Record<string, { decision: "accepted" | "rejected"; note: string }>>({});
+  const [reviews, setReviews] = useState<Record<string, { kind: "loading" } | { kind: "ready"; data: FilingReview } | { kind: "error"; message: string }>>({});
+  useEffect(() => setContent({}), [symbol]);
+  useEffect(() => { setReviewDrafts({}); setReviews({}); }, [symbol]);
+  async function loadContent(accessionNumber: string) {
+    setContent((previous) => ({ ...previous, [accessionNumber]: { kind: "loading" } }));
+    try {
+      const data = await fetchFilingContent(symbol, accessionNumber);
+      setContent((previous) => ({ ...previous, [accessionNumber]: { kind: "ready", data } }));
+    } catch (error: unknown) {
+      setContent((previous) => ({ ...previous, [accessionNumber]: { kind: "error", message: actionMessage(error, "无法读取这份 SEC 原文摘要。") } }));
+    }
+  }
+  function draftFor(accessionNumber: string) { return reviewDrafts[accessionNumber] ?? { decision: "accepted" as const, note: "" }; }
+  function updateDraft(accessionNumber: string, update: Partial<{ decision: "accepted" | "rejected"; note: string }>) {
+    setReviewDrafts((previous) => ({ ...previous, [accessionNumber]: { ...draftFor(accessionNumber), ...update } }));
+  }
+  async function submitReview(accessionNumber: string) {
+    const draft = draftFor(accessionNumber);
+    if (!draft.note.trim()) return;
+    setReviews((previous) => ({ ...previous, [accessionNumber]: { kind: "loading" } }));
+    try {
+      const data = await reviewFiling(symbol, accessionNumber, draft.decision, draft.note.trim());
+      setReviews((previous) => ({ ...previous, [accessionNumber]: { kind: "ready", data } }));
+    } catch (error: unknown) {
+      setReviews((previous) => ({ ...previous, [accessionNumber]: { kind: "error", message: actionMessage(error, "保存人工核验结果失败。") } }));
+    }
+  }
+  if (state.kind === "idle") return null;
+  return <section className="filing-inventory" aria-labelledby="filing-title">
+    <div className="inventory-heading"><div><span className="section-label">官方资料目录</span><h3 id="filing-title">{symbol} 的 SEC 申报</h3></div><span className="review-flag">待人工核验</span></div>
+    {state.kind === "loading" && <p className="inventory-status">正在读取已发现的官方申报…</p>}
+    {state.kind === "error" && <p className="inventory-status inventory-error">{state.message}</p>}
+    {state.kind === "ready" && (state.data.filings.length
+      ? <div className="filing-list">
+          {state.data.filings.map((baseFiling) => {
+            const review = reviews[baseFiling.accession_number];
+            const filing = review?.kind === "ready" ? review.data : baseFiling;
+            return <article className="filing-row" key={filing.accession_number}>
+            <div><strong>{filing.form}</strong><span>{filing.filed_at}</span></div>
+            <p>{filing.primary_document}</p>
+            <SafeLink href={filing.source_url}>SEC 原始文件 <span>↗</span></SafeLink>
+            <small>{filing.accepted_at ? `SEC 受理 ${formatSecAcceptedAt(filing.accepted_at)} · ` : ""}已于 {formatDateTime(filing.observed_at)} 发现 · {filingStatus(filing.content_status)}</small>
+            <FilingContentPreview filing={filing} state={content[filing.accession_number]} onLoad={() => loadContent(filing.accession_number)} />
+            <FilingReviewPanel filing={filing} draft={draftFor(filing.accession_number)} state={review} onDraft={(update) => updateDraft(filing.accession_number, update)} onSubmit={() => submitReview(filing.accession_number)} />
+          </article>;
+          })}
+        </div>
+      : <p className="inventory-status">尚未发现已保存的官方申报。点击“扫描官方申报”后会在这里列出文件。</p>)}
+    <p className="fine-print inventory-note">这些是原始 SEC 文件索引。人工结论仅核验来源相关性；文件不会自动用于本次预测。</p>
+  </section>;
+}
+
+function FilingReviewPanel({ filing, draft, state, onDraft, onSubmit }: { filing: OfficialFiling; draft: { decision: "accepted" | "rejected"; note: string }; state: { kind: "loading" } | { kind: "ready"; data: FilingReview } | { kind: "error"; message: string } | undefined; onDraft: (update: Partial<{ decision: "accepted" | "rejected"; note: string }>) => void; onSubmit: () => void }) {
+  const finalized = filing.review_status === "accepted" || filing.review_status === "rejected";
+  if (finalized) return <p className={`review-result ${filing.review_status}`}><strong>人工来源核验：{filing.review_status === "accepted" ? "接受" : "驳回"}</strong>{filing.human_review_note && <span> · {filing.human_review_note}</span>}<small>{filing.reviewed_at ? `核验于 ${formatDateTime(filing.reviewed_at)} · ` : ""}{filing.review_scope_note ?? "仅确认来源相关性；不验证观点、方向或预测。"}</small></p>;
+  return <details className="filing-review">
+    <summary>人工核验这份来源</summary>
+    <p>仅记录这份 SEC 来源是否与研究相关，不会验证模型观点，也不会自动用于预测。</p>
+    <div className="review-decisions" role="group" aria-label="人工核验结论">
+      <button type="button" className={draft.decision === "accepted" ? "selected" : ""} onClick={() => onDraft({ decision: "accepted" })}>接受来源</button>
+      <button type="button" className={draft.decision === "rejected" ? "selected reject" : ""} onClick={() => onDraft({ decision: "rejected" })}>驳回来源</button>
+    </div>
+    <label>核验备注<textarea value={draft.note} onChange={(event) => onDraft({ note: event.target.value })} placeholder="说明该官方文件为何与本研究相关或不相关" rows={3} /></label>
+    <button type="button" className="text-button review-submit" disabled={state?.kind === "loading" || !draft.note.trim()} onClick={onSubmit}>{state?.kind === "loading" ? "正在保存…" : "保存人工结论"}</button>
+    {state?.kind === "error" && <p className="content-error" role="alert">{state.message}</p>}
+  </details>;
+}
+
+function FilingContentPreview({ filing, state, onLoad }: { filing: FilingInventory["filings"][number]; state: { kind: "loading" } | { kind: "ready"; data: FilingContent } | { kind: "error"; message: string } | undefined; onLoad: () => void }) {
+  const loaded = state?.kind === "ready" ? state.data : null;
+  return <div className="filing-content">
+    {!loaded && <button className="text-button" disabled={state?.kind === "loading"} onClick={onLoad}>{state?.kind === "loading" ? "正在读取原文摘要…" : "读取原文摘要"}</button>}
+    {state?.kind === "error" && <p className="content-error" role="alert">{state.message}</p>}
+    {loaded?.content_status === "unavailable" && <p className="content-error">{loaded.content_error ?? "原文暂时不可用。"}</p>}
+    {loaded?.content_status === "fetched" && loaded.content_excerpt && <details className="filing-excerpt">
+      <summary>原文摘要（待人工核验）</summary>
+      <p>{excerptForDisplay(loaded.content_excerpt)}</p>
+      <small>{loaded.content_truncated ? "服务返回的是受限摘录" : "已读取的原文摘要"}{loaded.content_excerpt.length > 6000 ? "；此页仅显示前 6000 字符，全文请打开 SEC 原始文件" : ""} · 内容指纹 {loaded.content_excerpt_sha256?.slice(0, 12) ?? "—"} · 不会自动用于预测</small>
+    </details>}
+  </div>;
 }
 
 function Shell({ input, setInput, submit, children }: { input: string; setInput: (value: string) => void; submit: (event: FormEvent) => void; children: ReactNode }) {
@@ -188,9 +388,10 @@ function ProbabilityPanel({ snapshot, report }: { snapshot: Snapshot; report?: R
 }
 
 function MetadataPanel({ snapshot, report }: { snapshot: Snapshot; report?: RefreshReport }) {
-  const target = report?.target_windows.revised;
+  const target = targetWindowForSnapshot(report, snapshot);
+  const onDemand = isOnDemandSnapshot(snapshot);
   return <article className="panel metadata-panel">
-    <div className="panel-title"><span className="section-label">数据边界</span><span className="folio">0{snapshot.version}</span></div>
+    <div className="panel-title"><span className="section-label">数据边界</span>{onDemand ? <span className="tag generated-tag">主动生成 · 实验模型</span> : <span className="folio">0{snapshot.version}</span>}</div>
     <dl>
       <div><dt>数据截止</dt><dd>{formatDateTime(snapshot.feature_as_of_time)}</dd></div>
       <div><dt>交易日</dt><dd>{snapshot.feature_trading_date}</dd></div>
@@ -220,6 +421,9 @@ function PriceComparisonPanel({ history, selected, report }: { history?: PriceHi
   const comparison = target && coverage?.complete
     ? comparisonReturn(candles, selected.feature_trading_date, target.end)
     : comparisonReturn(candles, selected.feature_trading_date, history.latest_trading_date ?? candles.at(-1)!.trading_date);
+  const comparisonEnd = target && coverage?.complete ? target.end : history.latest_trading_date ?? candles.at(-1)!.trading_date;
+  const awaitingEvaluation = Boolean(target && !coverage?.complete);
+  const showReturn = Boolean(comparison && !awaitingEvaluation && comparisonEnd > selected.feature_trading_date);
   const targetStatus = !target
     ? "当前版本没有保存的滚动目标窗口。"
     : coverage?.complete
@@ -231,7 +435,7 @@ function PriceComparisonPanel({ history, selected, report }: { history?: PriceHi
       <div><span className="section-label">价格对照</span><h2 id="price-title">股价与存档版本的时间边界</h2></div>
       <span className="tag">{history.source}</span>
     </div>
-    <p className="price-intro">蜡烛图来自已存日线。竖线标出版本数据截止日；阴影仅在有保存的滚动修订报告时表示目标窗口。</p>
+    <p className="price-intro">蜡烛图来自已存日线。竖线标出版本数据截止日；阴影表示该版本保存的 20 个交易日目标窗口，可来自主动预测或后续修订。</p>
     <CandlestickChart
       candles={shown}
       selected={selected}
@@ -246,8 +450,8 @@ function PriceComparisonPanel({ history, selected, report }: { history?: PriceHi
     </div>
     <div className="price-summary">
       <div><span>行情截至</span><strong>{history.latest_trading_date ?? candles.at(-1)!.trading_date}</strong></div>
-      <div><span>{coverage?.complete ? "版本截止 → 目标结束" : "版本截止 → 已存行情日期"}</span><strong>{comparison ? formatReturn(comparison.stock) : "—"}</strong><small>股票</small></div>
-      <div><span>同期 SPY</span><strong>{comparison?.benchmark === null || !comparison ? "—" : formatReturn(comparison.benchmark)}</strong><small>{comparison?.benchmark === null ? "无完整对齐基准" : "基准"}</small></div>
+      <div><span>{showReturn && coverage?.complete ? "版本截止 → 目标结束" : awaitingEvaluation ? "20 日目标窗口" : "版本后已存行情"}</span><strong>{awaitingEvaluation ? "待评测" : showReturn && comparison ? formatReturn(comparison.stock) : "—"}</strong><small>{awaitingEvaluation ? "尚无完整目标结果" : showReturn ? "股票" : "尚无版本后行情"}</small></div>
+      <div><span>同期 SPY</span><strong>{awaitingEvaluation ? "待评测" : !showReturn || comparison?.benchmark === null || !comparison ? "—" : formatReturn(comparison.benchmark)}</strong><small>{awaitingEvaluation ? "尚无完整目标结果" : comparison?.benchmark === null ? "无完整对齐基准" : showReturn ? "基准" : "尚无版本后行情"}</small></div>
     </div>
     <p className="fine-print price-fine-print">{targetStatus} 以上对比只描述已存价格变动，不表示预测分类、准确率或事件因果。</p>
   </section>;
@@ -278,16 +482,19 @@ function CandlestickChart({ candles, selected, report, target, activeDate, onIns
   const padding = Math.max((high - low) * 0.08, 0.5);
   const min = low - padding;
   const max = high + padding;
-  const x = (index: number) => margin.left + ((index + 0.5) / candles.length) * plotWidth;
-  const y = (value: number) => margin.top + ((max - value) / (max - min)) * plotHeight;
-  const bodyWidth = Math.max(2, Math.min(10, (plotWidth / candles.length) * 0.58));
   const originalDate = report?.original_snapshot.feature_trading_date;
   const revisedDate = report?.revised_snapshot.feature_trading_date;
   const markerIndex = (date: string | undefined) => date ? candles.findIndex((candle) => candle.trading_date === date) : -1;
-  const originalIndex = markerIndex(originalDate);
-  const revisedIndex = markerIndex(revisedDate ?? selected?.feature_trading_date);
   const targetStart = markerIndex(target?.start);
   const targetEnd = markerIndex(target?.end);
+  const futureTargetSlots = target && targetStart < 0 && target.start > candles.at(-1)!.trading_date ? 20 : 0;
+  const slotCount = candles.length + futureTargetSlots;
+  const x = (index: number) => margin.left + ((index + 0.5) / slotCount) * plotWidth;
+  const y = (value: number) => margin.top + ((max - value) / (max - min)) * plotHeight;
+  const bodyWidth = Math.max(2, Math.min(10, (plotWidth / slotCount) * 0.58));
+  const originalIndex = markerIndex(originalDate);
+  const revisedIndex = report ? markerIndex(revisedDate) : -1;
+  const cutoffIndex = report ? -1 : markerIndex(selected?.feature_trading_date);
   const actualStart = targetEnd >= 0 ? targetEnd + 1 : -1;
   const ticks = [max, (max + min) / 2, min];
   const dateTicks = [0, Math.floor((candles.length - 1) / 2), candles.length - 1];
@@ -298,6 +505,7 @@ function CandlestickChart({ candles, selected, report, target, activeDate, onIns
       <desc id="candle-chart-description">使用鼠标停留或键盘聚焦蜡烛图中的日线，读取当天开盘、最高、最低和收盘价格。{target ? "阴影区域是保存的 20 个交易日滚动目标窗口。" : "当前版本没有保存的滚动目标窗口。"}</desc>
       {ticks.map((tick) => <g key={tick}><line x1={margin.left} x2={width - margin.right} y1={y(tick)} y2={y(tick)} className="chart-grid" /><text x={width - margin.right + 9} y={y(tick) + 4} className="chart-price-label">{formatPrice(tick)}</text></g>)}
       {targetStart >= 0 && targetEnd >= targetStart && <g className="target-window"><rect x={x(targetStart) - bodyWidth} y={margin.top} width={x(targetEnd) - x(targetStart) + bodyWidth * 2} height={plotHeight} /><text x={x(targetStart) + 5} y={margin.top + 14}>20-session target</text></g>}
+      {futureTargetSlots > 0 && <g className="target-window target-window-future"><rect x={x(candles.length - 1) + bodyWidth} y={margin.top} width={width - margin.right - (x(candles.length - 1) + bodyWidth)} height={plotHeight} /><text x={x(candles.length - 1) + bodyWidth + 5} y={margin.top + 14}>20-session target / awaiting results</text></g>}
       {actualStart >= 0 && actualStart < candles.length && <g className="actual-region"><line x1={x(actualStart) - bodyWidth} x2={x(actualStart) - bodyWidth} y1={margin.top} y2={margin.top + plotHeight} /><text x={x(actualStart) + 5} y={height - margin.bottom - 8}>目标后实际行情</text></g>}
       {candles.map((candle, index) => {
         const up = candle.close >= candle.open;
@@ -318,6 +526,7 @@ function CandlestickChart({ candles, selected, report, target, activeDate, onIns
       })}
       {originalIndex >= 0 && <Marker x={x(originalIndex)} label="原始截止" />}
       {revisedIndex >= 0 && revisedIndex !== originalIndex && <Marker x={x(revisedIndex)} label="修订截止" tone="revised" />}
+      {cutoffIndex >= 0 && <Marker x={x(cutoffIndex)} label="版本截止" />}
       {dateTicks.map((index) => <text key={index} x={x(index)} y={height - 10} textAnchor="middle" className="chart-date-label">{shortDate(candles[index]!.trading_date)}</text>)}
     </svg>
     <figcaption><span><i className="legend-up" />收高于开</span><span><i className="legend-down" />收低于开</span>{target && <span><i className="legend-window" />保存的目标窗口</span>}</figcaption>
@@ -387,6 +596,14 @@ function Evaluation({ evaluation }: { evaluation: DashboardResponse["evaluation"
 
 function MetricRow({ name, metrics }: { name: string; metrics: { accuracy?: number; brier_multiclass?: number; log_loss?: number } | undefined }) { return <tr><th>{name}</th><td>{metrics?.accuracy === undefined ? "—" : formatPercent(metrics.accuracy)}</td><td>{metrics?.brier_multiclass?.toFixed(3) ?? "—"}</td><td>{metrics?.log_loss?.toFixed(3) ?? "—"}</td></tr>; }
 function SafeLink({ href, children }: { href: string; children: ReactNode }) { return /^https:\/\//i.test(href) ? <a className="source-link" href={href} target="_blank" rel="noreferrer">{children}</a> : <span className="source-link disabled">来源链接不可用</span>; }
+function isSupportedSymbol(symbol: string): symbol is SupportedSymbol { return (SUPPORTED_SYMBOLS as readonly string[]).includes(symbol); }
+function isOnDemandSnapshot(snapshot: Snapshot) { return snapshot.feature_snapshot_mode === "observed" && Boolean(snapshot.target_window); }
+function actionMessage(error: unknown, fallback: string) {
+  if (!(error instanceof ApiError)) return fallback;
+  if (error.message.includes("SEC_EDGAR_USER_AGENT")) return "尚未配置 SEC 联系邮箱。请先按 README 配置后重试。";
+  return error.message;
+}
+function filingStatus(status: OfficialFiling["content_status"]) { return status === "fetched" ? "原文摘要已读取，仍待核验" : status === "unavailable" ? "原文摘要暂不可用" : "仅发现目录，尚未读取原文"; }
 function reportForRevisedSnapshot(snapshotId: string, reports: RefreshReport[]) { return reports.find((report) => report.revised_snapshot.id === snapshotId); }
 function reportForSnapshotInChain(snapshotId: string, reports: RefreshReport[]) { return reports.find((report) => report.revised_snapshot.id === snapshotId || report.original_snapshot.id === snapshotId); }
 function latestSnapshot(snapshots: Snapshot[]) { return [...snapshots].sort((a, b) => Date.parse(b.feature_as_of_time) - Date.parse(a.feature_as_of_time) || Date.parse(b.created_at) - Date.parse(a.created_at) || b.version - a.version)[0]!; }
@@ -405,9 +622,9 @@ function isUsableCandle(value: PriceCandle) {
   return Boolean(value.trading_date) && [value.open, value.high, value.low, value.close].every((number) => Number.isFinite(number) && number > 0)
     && value.high >= Math.max(value.open, value.close) && value.low <= Math.min(value.open, value.close);
 }
-type TargetWindow = RefreshReport["target_windows"]["revised"];
+type TargetWindow = { start: string; end: string };
 function targetWindowForSnapshot(report: RefreshReport | undefined, selected: Snapshot): TargetWindow | undefined {
-  if (!report) return undefined;
+  if (!report) return selected.target_window ?? undefined;
   return report.original_snapshot.id === selected.id ? report.target_windows.original : report.target_windows.revised;
 }
 function chartCandles(candles: PriceCandle[], selected: Snapshot, report: RefreshReport | undefined, target: TargetWindow | undefined) {
@@ -447,3 +664,8 @@ function signedPoints(value: number) { return `${value >= 0 ? "+" : ""}${(value 
 function probabilityLabel(key: "bearish" | "neutral" | "bullish") { return { bearish: "看跌", neutral: "中性", bullish: "看涨" }[key]; }
 function formatDate(value: string) { return new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "short", day: "numeric", timeZone: "UTC" }).format(new Date(value)); }
 function formatDateTime(value: string) { return new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", timeZone: "UTC", timeZoneName: "short" }).format(new Date(value)); }
+function formatSecAcceptedAt(value: string) {
+  if (/^\d{14}$/.test(value)) return `${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)} ${value.slice(8, 10)}:${value.slice(10, 12)} UTC`;
+  return Number.isNaN(Date.parse(value)) ? value : formatDateTime(value);
+}
+function excerptForDisplay(value: string) { return value.length > 6000 ? `${value.slice(0, 6000)}…` : value; }

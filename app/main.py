@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, status
@@ -7,14 +8,26 @@ from .database import Base, SessionLocal, engine
 from .dashboard import dashboard_evaluation, dashboard_price_history, dashboard_snapshot_entries
 from .models import Forecast, ForecastRevision, ForecastRevisionEvidence, ForecastSnapshot, ResearchRun
 from .event_provider import EventProviderError, configured_deepseek_model, create_deepseek_provider_from_env
-from .forecast_refresh import ForecastRefreshError, get_forecast_refresh_report, run_forecast_refresh
+from .forecast_refresh import ForecastRefreshError, get_forecast_refresh_report, run_forecast_refresh, target_window
+from .on_demand_forecast import OnDemandForecastError, create_on_demand_forecast
 from .research_workflow import (
     DEFAULT_DOCUMENT_DIRECTORY,
     ResearchWorkflowError,
     run_research,
 )
+from .sec_filings import (
+    SecFilingNotFoundError,
+    SecFilingsError,
+    create_sec_filing_inventory_table,
+    fetch_inventory_content,
+    inventory_for_symbol,
+    review_inventory_filing,
+    scan_sec_filings,
+)
 from .schemas import (
     ForecastRequest,
+    ForecastRunResponse,
+    ForecastRunRequest,
     ForecastRefreshRequest,
     ForecastRefreshResponse,
     ForecastResponse,
@@ -24,6 +37,11 @@ from .schemas import (
     ForecastSnapshotTimelineResponse,
     ResearchRunRequest,
     ResearchRunResponse,
+    SecFilingContentResponse,
+    SecFilingInventoryItem,
+    SecFilingInventoryResponse,
+    SecFilingReviewRequest,
+    SecFilingScanResponse,
 )
 from .services import MODEL_VERSION, is_valid_symbol, mock_forecast, normalize_symbol
 
@@ -34,6 +52,7 @@ app = FastAPI(title="Market Evidence Agent", version="0.1.0")
 @app.on_event("startup")
 def create_tables() -> None:
     Base.metadata.create_all(bind=engine)
+    create_sec_filing_inventory_table()
 
 
 def get_db():
@@ -144,6 +163,91 @@ def get_dashboard(symbol: str, db: Session = Depends(get_db)) -> dict:
     }
 
 
+@app.post(
+    "/filing-inventories/{symbol}/scan",
+    response_model=SecFilingScanResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def scan_filing_inventory(symbol: str, db: Session = Depends(get_db)) -> dict:
+    """Discover recent official SEC metadata for one supported symbol.
+
+    The scan does not download filing bodies, call a model, or create a
+    prediction.  A filing body is fetched only by the explicit per-filing
+    endpoint below.
+    """
+    observed_at = datetime.now(UTC)
+    try:
+        filings, created_count, skipped_count = scan_sec_filings(
+            symbol=symbol, db=db, observed_at=observed_at
+        )
+    except SecFilingsError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    normalized_symbol = normalize_symbol(symbol)
+    return {
+        "symbol": normalized_symbol,
+        "cik": filings[0].cik if filings else None,
+        "discovered_count": len(filings),
+        "created_count": created_count,
+        "skipped_count": skipped_count,
+        "observed_at": observed_at,
+        "filings": filings,
+    }
+
+
+@app.get("/filing-inventories/{symbol}", response_model=SecFilingInventoryResponse)
+def get_filing_inventory(symbol: str, db: Session = Depends(get_db)) -> dict:
+    try:
+        filings = inventory_for_symbol(symbol=symbol, db=db)
+    except SecFilingsError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"symbol": normalize_symbol(symbol), "filings": filings}
+
+
+@app.post(
+    "/filing-inventories/{symbol}/{accession_number}/fetch",
+    response_model=SecFilingContentResponse,
+)
+def fetch_filing_content(symbol: str, accession_number: str, db: Session = Depends(get_db)) -> dict:
+    """Fetch a bounded text excerpt from one already-inventoried SEC URL."""
+    try:
+        filing, cache_hit = fetch_inventory_content(
+            symbol=symbol,
+            accession_number=accession_number,
+            db=db,
+            observed_at=datetime.now(UTC),
+        )
+    except SecFilingsError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    item = SecFilingInventoryItem.model_validate(filing).model_dump()
+    return {**item, "content_excerpt": filing.content_excerpt, "cache_hit": cache_hit}
+
+
+@app.post(
+    "/filing-inventories/{symbol}/{accession_number}/review",
+    response_model=SecFilingInventoryItem,
+)
+def review_filing_inventory(
+    symbol: str,
+    accession_number: str,
+    payload: SecFilingReviewRequest,
+    db: Session = Depends(get_db),
+) -> object:
+    """Record a human decision about source relevance only."""
+    try:
+        return review_inventory_filing(
+            symbol=symbol,
+            accession_number=accession_number,
+            decision=payload.decision,
+            note=payload.note,
+            db=db,
+            reviewed_at=datetime.now(UTC),
+        )
+    except SecFilingNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except SecFilingsError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @app.post("/forecasts", response_model=ForecastResponse, status_code=status.HTTP_201_CREATED)
 def create_forecast(payload: ForecastRequest, db: Session = Depends(get_db)) -> Forecast:
     symbol = normalize_symbol(payload.symbol)
@@ -161,6 +265,25 @@ def create_forecast(payload: ForecastRequest, db: Session = Depends(get_db)) -> 
     db.commit()
     db.refresh(forecast)
     return forecast
+
+
+@app.post("/forecast-runs", response_model=ForecastRunResponse, status_code=status.HTTP_201_CREATED)
+def create_forecast_run(payload: ForecastRunRequest, db: Session = Depends(get_db)) -> dict:
+    """Refresh observed daily bars and append one real numeric forecast snapshot."""
+    try:
+        snapshot = create_on_demand_forecast(symbol=payload.symbol, db=db)
+        return {
+            **ForecastSnapshotResponse.model_validate(snapshot).model_dump(),
+            "cutoff_date": snapshot.feature_trading_date,
+            "target_window": target_window(snapshot.feature_trading_date).as_dict(),
+            "model_status": "experimental_offline_model",
+            "limitations": [
+                "This is an experimental offline market-feature model, not investment advice or a price target.",
+                "The model uses observed daily bars only; SEC filings and other evidence are not automatically used in this numeric forecast.",
+            ],
+        }
+    except OnDemandForecastError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.get("/forecast-snapshots/{snapshot_id}", response_model=ForecastSnapshotResponse)

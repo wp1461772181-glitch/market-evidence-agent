@@ -8,10 +8,20 @@ read-only `GET /dashboard/{symbol}` view. The response is assembled from saved
 forecast chains, saved Week 8 refresh reports, and a fixed local whitelist from
 the trusted Week 4 evaluation artifacts.
 
-The page is deliberately a reader, not a new forecasting workflow. It does not
-call `POST /forecasts`, start a refresh run, fetch market data, accept a URL or
-file, or call an LLM. A browser request therefore cannot create an API cost or
-change the database.
+The dashboard's archive view remains read-only. Its separate explicit
+`POST /forecast-runs` action can create a new immutable numerical snapshot;
+it is not the legacy `POST /forecasts` mock endpoint. The action refreshes the
+selected stock and SPY with the existing Yahoo ingestion path, then uses only
+bars observed by this application at a post-refresh cutoff and no unfinished
+XNYS session. It loads the fixed local Week 4 artifact, never a caller-supplied
+model, and does not call an LLM.
+
+The response declares `experimental_offline_model`, its 20-session forward
+target window, and its limitations. SEC filing inventory entries are still
+pending human review and are not automatically used as numeric forecast input.
+Provider failure with stale or missing observed bars returns HTTP 422 without
+writing a replacement record; a repeated request with identical observed
+features returns the existing immutable snapshot.
 
 ## Page content
 
@@ -69,10 +79,11 @@ fields. It is read-only and draws only from persisted local records:
    it does not call Yahoo Finance or any other external source.
 
 At the start of Week 9, the local demonstration database contains four AAPL
-snapshots across two chains and one refresh-evidence record. These are archived
-historical-research records, not current market predictions. The dashboard must
-make that distinction visible and should show a clear no-data state for symbols
-without saved archive records.
+snapshots across two chains and one refresh-evidence record. Those seed records
+are archived historical-research examples. The later explicit forecast action
+can create a prospective, local experimental snapshot only after the fixed
+Week 4 artifact publication bound, using observed bars and a completed-session
+cutoff. It remains a research result, not a price target or trading signal.
 
 ## Candlestick data freshness
 
@@ -103,7 +114,7 @@ The Vite development proxy sends `/api/dashboard/{symbol}` to the local API.
 
 ## Acceptance evidence
 
-The full local Python suite passed with 104 tests and ten pre-existing dependency
+The original local-reader acceptance suite passed with 104 tests and ten pre-existing dependency
 deprecation warnings. The frontend production build also passed. Browser
 acceptance used the persisted local AAPL archive: four snapshots across two
 chains, one refresh report, and ten saved research claims. The later revised
@@ -125,8 +136,10 @@ event evidence.
   network failures are expected and were tested separately; and
 - [x] the documented local build and backend test commands have been run.
 
-This acceptance covers a local historical reader only. It does not show a live
-quote, a prospective prediction, or an online service.
+This original acceptance covers the local historical reader. The later
+on-demand action has separate backend acceptance for market refresh, observed
+cutoff, immutable persistence, model-publication bounds, and target-window
+exposure; it is not a live quote stream or deployed online service.
 
 Separate browser acceptance verified the AAPL candlestick chart at desktop and
 390px mobile widths, including original/revised target windows and the
@@ -137,6 +150,7 @@ horizontal overflow were observed.
 ## Still outside scope
 
 This is not a live market terminal, portfolio tool, trading recommendation, or
-online model-serving interface. It does not add a scheduler, deployment,
-Docker, CI, cloud hosting, monitoring, automatic refreshes, or a fixed-target
-revision mode. Week 10 has not started.
+deployed online service. It does not add a scheduler, cloud hosting,
+monitoring, automatic background refreshes, retraining, or a fixed-target
+revision mode. SEC filing inventory is still a human-review queue and is not
+automatically used as model evidence. Week 10 has not started.

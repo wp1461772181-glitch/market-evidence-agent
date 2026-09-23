@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import json
 import math
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from .forecast_refresh import PROJECT_ROOT
+from .features import BENCHMARK_SYMBOL
+from .forecast_refresh import PROJECT_ROOT, target_window
 from .market_data import YAHOO_SOURCE
-from .models import ForecastRevision, ForecastSnapshot, MarketPrice
+from .models import ForecastRevision, ForecastSnapshot, MarketPrice, MarketPriceRevision
 from .schemas import (
     DashboardCandle,
     DashboardEvaluation,
@@ -28,36 +30,26 @@ _EVALUATION_MODELS = ("logistic_calibrated", "logistic_raw", "baseline_class_pri
 _DASHBOARD_CANDLE_LIMIT = 250
 
 
-def dashboard_price_history(symbol: str, db: Session) -> DashboardPriceHistory:
-    """Return a bounded, display-only daily-price history from trusted rows.
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
 
-    This deliberately reads the database's current historical research
-    backfill. It does not claim that the rows were visible at a forecast's
-    original ``as_of_time`` and does not fetch market data.
+
+def dashboard_price_history(symbol: str, db: Session) -> DashboardPriceHistory:
+    """Return a bounded display history from the current visible price versions.
+
+    Revisions are selected by the dashboard request time, so a later provider
+    correction appears in the chart without changing an immutable forecast
+    snapshot. Legacy ``market_prices`` rows are a fallback only for dates that
+    have not yet been migrated to the append-only revision table.
     """
-    latest_first = (
-        db.query(MarketPrice)
-        .filter(MarketPrice.symbol == symbol, MarketPrice.source == YAHOO_SOURCE)
-        .order_by(MarketPrice.trading_date.desc())
-        .limit(_DASHBOARD_CANDLE_LIMIT)
-        .all()
-    )
-    prices = list(reversed(latest_first))
-    if not prices:
+    visible_at = _utc_now()
+    stock_by_date = _visible_price_by_date(symbol, db=db, visible_at=visible_at)
+    if not stock_by_date:
         return DashboardPriceHistory(source=YAHOO_SOURCE, latest_trading_date=None, candles=[])
 
-    benchmark_by_date = {
-        row.trading_date: row.close
-        for row in (
-            db.query(MarketPrice)
-            .filter(
-                MarketPrice.symbol == "SPY",
-                MarketPrice.source == YAHOO_SOURCE,
-                MarketPrice.trading_date.in_([price.trading_date for price in prices]),
-            )
-            .all()
-        )
-    }
+    prices = [stock_by_date[trading_date] for trading_date in sorted(stock_by_date)[-_DASHBOARD_CANDLE_LIMIT:]]
+    benchmark_by_date = _visible_price_by_date(BENCHMARK_SYMBOL, db=db, visible_at=visible_at)
+
     return DashboardPriceHistory(
         source=YAHOO_SOURCE,
         latest_trading_date=prices[-1].trading_date,
@@ -69,11 +61,39 @@ def dashboard_price_history(symbol: str, db: Session) -> DashboardPriceHistory:
                 low=price.low,
                 close=price.close,
                 volume=price.volume,
-                benchmark_close=benchmark_by_date.get(price.trading_date),
+                benchmark_close=(
+                    benchmark_by_date[price.trading_date].close
+                    if price.trading_date in benchmark_by_date
+                    else None
+                ),
             )
             for price in prices
         ],
     )
+
+
+def _visible_price_by_date(symbol: str, *, db: Session, visible_at: datetime) -> dict:
+    """Choose the highest observed revision per date, with legacy fallback."""
+    revisions = (
+        db.query(MarketPriceRevision)
+        .filter(
+            MarketPriceRevision.symbol == symbol,
+            MarketPriceRevision.source == YAHOO_SOURCE,
+            MarketPriceRevision.available_at <= visible_at,
+            MarketPriceRevision.observed_at <= visible_at,
+        )
+        .order_by(MarketPriceRevision.trading_date.asc(), MarketPriceRevision.revision_number.asc())
+        .all()
+    )
+    visible = {row.trading_date: row for row in revisions}
+    legacy_rows = (
+        db.query(MarketPrice)
+        .filter(MarketPrice.symbol == symbol, MarketPrice.source == YAHOO_SOURCE)
+        .all()
+    )
+    for row in legacy_rows:
+        visible.setdefault(row.trading_date, row)
+    return visible
 
 
 def dashboard_snapshot_entries(
@@ -105,6 +125,7 @@ def dashboard_snapshot_entries(
                 root_snapshot_id=root_id,
                 parent_snapshot_id=revision.parent_snapshot_id if revision else None,
                 revision_reason=revision.reason if revision else None,
+                target_window=target_window(snapshot.feature_trading_date).as_dict(),
             )
         )
     return entries

@@ -4,8 +4,8 @@ A FastAPI, PostgreSQL, and local React dashboard foundation for a
 market-evidence system. It stores a deterministic Week 1 `mock-v1` forecast,
 then adds reproducible market-data snapshots, leakage-safe features, a fixed
 offline baseline, versioned archived predictions, source-grounded research,
-and a read-only evidence view. The application does **not** serve the trained
-baseline as a live prediction model.
+and an evidence workspace. It exposes one explicit, local user-triggered path
+for an experimental Week 4 numeric forecast; it is not a live trading service.
 
 ## Implemented scope
 
@@ -20,7 +20,7 @@ baseline as a live prediction model.
 - Week 6 validates structured event extraction only against saved first-party documents, with exact source-quote checks and a PostgreSQL cache. Its v3 live run covers ten announcements and proves cache-only replay. The review output transparently excludes one historical capital-return statement and marks every qualitative direction as requiring review, never as a forecast input. See [the Week 6 status](docs/week6-progress.md).
 - Week 7 adds a fixed source-check, supporting-case, counter-case, and review workflow. It only accepts saved source IDs from the Week 6 manifest, records every attempt in `research_runs`, and never produces a report with unvalidated source quotes. See [the Week 7 status](docs/week7-progress.md).
 - Week 8 adds one bounded event-triggered `rolling_refresh`: a fixed saved source can produce an original and revised AAPL prediction, linked records, a probability delta, rolling target windows, and source/research evidence. The probabilities still come only from two trusted local market-feature snapshots. See [the Week 8 status](docs/week8-progress.md).
-- Week 9 adds a local React + TypeScript reader for saved evidence. `GET /dashboard/{symbol}` returns every persisted archive chain for that symbol, any saved rolling-refresh reports, a fixed whitelist of Week 4 offline metrics, and up to 250 saved daily stock/SPY price pairs for a candlestick comparison. The page reads these records only; it cannot create forecasts, trigger a refresh, or make provider calls. See [the Week 9 status](docs/week9-progress.md).
+- Week 9 adds a local React + TypeScript evidence workspace. `GET /dashboard/{symbol}` returns every persisted archive chain for that symbol, any saved rolling-refresh reports, a fixed whitelist of Week 4 offline metrics, and up to 250 saved daily stock/SPY price pairs for a candlestick comparison. Its explicit on-demand action can also create a new experimental numeric snapshot. See [the Week 9 status](docs/week9-progress.md).
 
 ## Time semantics and data-version limits
 
@@ -122,11 +122,64 @@ The forecast API accepts normalized 1–5 letter ASCII symbols and returns HTTP 
 
 The checked-in VS Code Run and Debug configuration uses the workspace .venv/bin/python, starts the local PostgreSQL container, then runs uvicorn app.main:app --reload at 127.0.0.1:8000.
 
+## On-demand numeric forecast
+
+`POST /forecast-runs` is the user-triggered path for a new saved numerical
+forecast. It accepts `{"symbol":"AAPL"}` (and the other supported stock
+symbols), refreshes that stock and SPY through the existing Yahoo ingestion
+path, then builds one feature row from the latest **completed** XNYS session
+whose bars were observed by this application after the refresh. A provider
+failure with stale or incomplete saved bars returns HTTP 422 and creates no
+fallback prediction.
+
+The endpoint loads only the fixed trusted local Week 4 artifact at
+`artifacts/week4-2026-09-10`; it does not load a caller-supplied model, call
+DeepSeek, or use `mock-v1`. Its response includes the immutable snapshot,
+cutoff date, the next 20-XNYS-session forward target window, and the explicit
+status `experimental_offline_model`. A repeated click with the same observed
+features returns the existing snapshot rather than overwriting or appending a
+duplicate. SEC filing inventory items and human-reviewed evidence remain
+separate: they are not automatically used by this numeric forecast.
+
 ## Week 9 local dashboard
 
 Start the API, then install and run the local dashboard in a second terminal.
 Vite proxies `/api` requests to the API at `127.0.0.1:8000`; the dashboard's
-default AAPL request is read-only and only retrieves archived evidence.
+default AAPL request retrieves archived evidence. The explicit "generate new
+forecast" action is the only browser operation here that refreshes market data
+and writes a new immutable snapshot.
+
+## Official SEC filing inventory
+
+The API can now discover recent `10-K`, `10-Q`, and `8-K` metadata for the
+current five-symbol universe (`AAPL`, `MSFT`, `GOOGL`, `AMZN`, `NVDA`) using
+SEC's documented company-ticker and submissions JSON endpoints. `POST
+/filing-inventories/{symbol}/scan` saves only the official URL, form, filed
+date, SEC acceptance timestamp, and the time this application observed it.
+`POST /filing-inventories/{symbol}/{accession_number}/fetch` then retrieves a
+bounded text excerpt from that exact saved SEC primary-document URL; it never
+accepts an arbitrary URL. New items start as `pending_review` and are not a
+forecast input. A local reviewer can make one explicit `accepted` or `rejected`
+source-relevance decision through `POST
+/filing-inventories/{symbol}/{accession_number}/review` with a non-empty note.
+This decision only records whether the source should remain in review; it does
+not validate extracted claims, direction, or a forecast.
+
+SEC requires an identifiable automated client. Before scanning or fetching,
+set a process environment variable with an application name and a contact
+email; the service fails clearly without it and does not load an environment
+file itself:
+
+~~~bash
+export SEC_EDGAR_USER_AGENT='Market Evidence Agent contact: you@example.com'
+~~~
+
+Replace `you@example.com` with a real contact email before use.
+
+The client waits at least 0.2 seconds between its requests, discovers at most
+40 recent supported forms per scan, retains at most 80,000 text characters per
+fetched document, and marks PDFs, unsupported response types, binary data, or
+unavailable sources as unavailable rather than treating them as evidence.
 
 ~~~bash
 uvicorn app.main:app --host 127.0.0.1 --port 8000
@@ -341,12 +394,11 @@ warnings), and `pip check` reported no broken requirements.
 
 ## Current limitations
 
-- `POST /forecasts` still creates only the deterministic `mock-v1` placeholder;
-  it does not serve the Week 4 model.
-- Week 5 archives, revisions, and replays offline inferences only. It does not
-  provide online model serving, automatic re-evaluation after a data revision,
-  or monitoring. The application exposes no update or delete route for
-  snapshots, but this is not a database-level tamper-proof guarantee.
+- `POST /forecasts` remains the deterministic `mock-v1` compatibility
+  placeholder. `POST /forecast-runs` is the separate, local experimental Week
+  4 path; it has no retraining, automatic re-evaluation after a data revision,
+  scheduler, or monitoring. The application exposes no update or delete route
+  for snapshots, but this is not a database-level tamper-proof guarantee.
 - The Week 4 artifact is experimental. This archive feature makes no accuracy
   improvement or trading-profit claim. It was built on 2026-09-10 from a
   historical-research export, so it is not evidence of a prospective live run.
@@ -354,6 +406,6 @@ warnings), and `pip check` reported no broken requirements.
   Overlapping 20-session labels also mean the OOS rows are correlated and do not
   establish trading profitability.
 - Yahoo Finance Chart is an external undocumented endpoint and can change or rate-limit requests.
-- SQLAlchemy create_all is currently used for schema creation; Alembic migrations, SEC/FRED evidence, online automation, deployment, and monitoring remain later milestones. Week 6's LLM path is limited to saved documents; its v3 run verifies source/date/cache behavior for the ten required earnings events. Its review output applies one narrow quote-based filter for a historical capital-return statement and marks every qualitative impact direction as requiring review rather than treating it as a forecast input.
+- SQLAlchemy create_all is currently used for schema creation; Alembic migrations, FRED evidence, online automation, deployment, and monitoring remain later milestones. The SEC inventory is an official-file discovery and bounded-fetch feature only: it does not automatically supply forecast evidence. Week 6's LLM path is limited to saved documents; its v3 run verifies source/date/cache behavior for the ten required earnings events. Its review output applies one narrow quote-based filter for a historical capital-return statement and marks every qualitative impact direction as requiring review rather than treating it as a forecast input.
 - Week 8 supports one explicit saved-event rolling refresh only. It has no fixed-target revision mode, arbitrary URL/file/model selection, scheduler, retraining path, online model serving, or causal event-effect estimate. Research claims are source-quote-validated but remain model-generated inferences requiring human review.
-- The Week 9 dashboard is local and read-only. It displays archived historical-research reports, not current market predictions. It has no login, live quotes, portfolio actions, deployment, or monitoring; if its trusted local Week 4 evaluation files are unavailable, it reports no offline metrics instead of recalculating them.
+- The Week 9 archive view is local and read-only, while its explicit forecast action can refresh local market data and create one experimental immutable snapshot after the fixed artifact's publication bound. It has no login, live quote stream, portfolio actions, deployment, or monitoring; SEC inventory items require review and are not automatically fed into the numeric model. If its trusted local Week 4 evaluation files are unavailable, it reports no offline metrics instead of recalculating them.

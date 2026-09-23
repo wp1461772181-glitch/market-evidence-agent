@@ -9,7 +9,14 @@ from sqlalchemy import func, select
 
 from app.database import SessionLocal
 from app.market_data import YAHOO_SOURCE
-from app.models import ForecastRevision, ForecastRevisionEvidence, ForecastSnapshot, MarketPrice, ResearchRun
+from app.models import (
+    ForecastRevision,
+    ForecastRevisionEvidence,
+    ForecastSnapshot,
+    MarketPrice,
+    MarketPriceRevision,
+    ResearchRun,
+)
 
 
 def _snapshot(*, symbol: str, moment: datetime, probability: float) -> ForecastSnapshot:
@@ -50,6 +57,31 @@ def _price(*, symbol: str, trading_date: date, close: float) -> MarketPrice:
         volume=int(close * 100),
         source=YAHOO_SOURCE,
         fetched_at=datetime(2035, 1, 1, tzinfo=UTC),
+    )
+
+
+def _revision(
+    *,
+    symbol: str,
+    trading_date: date,
+    close: float,
+    revision_number: int,
+    observed_at: datetime,
+) -> MarketPriceRevision:
+    return MarketPriceRevision(
+        symbol=symbol,
+        trading_date=trading_date,
+        open=close - 1.0,
+        high=close + 2.0,
+        low=close - 2.0,
+        close=close,
+        volume=int(close * 100),
+        source=YAHOO_SOURCE,
+        revision_number=revision_number,
+        content_hash=(str(revision_number) * 64)[:64],
+        available_at=datetime(2035, 1, 3, 21, tzinfo=UTC),
+        observed_at=observed_at,
+        is_initial_backfill=False,
     )
 
 
@@ -279,6 +311,59 @@ def test_dashboard_returns_sorted_ohlcv_candles_and_same_day_spy_close(client, t
                 MarketPrice.trading_date.in_(dates),
                 MarketPrice.source == YAHOO_SOURCE,
             ).delete(synchronize_session=False)
+            db.commit()
+
+
+def test_dashboard_uses_latest_observed_revision_without_mutating_forecast_snapshot(
+    client, trusted_evaluation, monkeypatch
+):
+    import app.dashboard as dashboard
+
+    now = datetime(2035, 1, 8, 22, tzinfo=UTC)
+    monkeypatch.setattr(dashboard, "_utc_now", lambda: now)
+    symbol = "REVW"
+    trading_date = date(2035, 1, 3)
+    snapshot = _snapshot(symbol=symbol, moment=datetime(2035, 1, 3, 21, tzinfo=UTC), probability=0.7)
+    with SessionLocal() as db:
+        db.add_all(
+            [
+                _price(symbol=symbol, trading_date=trading_date, close=100.0),
+                _revision(symbol=symbol, trading_date=trading_date, close=101.0, revision_number=1, observed_at=datetime(2035, 1, 4, tzinfo=UTC)),
+                _revision(symbol=symbol, trading_date=trading_date, close=111.0, revision_number=2, observed_at=datetime(2035, 1, 5, tzinfo=UTC)),
+                _revision(symbol="SPY", trading_date=trading_date, close=501.0, revision_number=1, observed_at=datetime(2035, 1, 4, tzinfo=UTC)),
+                snapshot,
+            ]
+        )
+        db.commit()
+        snapshot_id = snapshot.id
+        stored_probability = snapshot.bearish_probability
+
+    try:
+        response = client.get(f"/dashboard/{symbol}")
+        assert response.status_code == 200
+        candle = response.json()["price_history"]["candles"]
+        assert len(candle) == 1
+        assert candle[0]["close"] == 111.0
+        assert candle[0]["benchmark_close"] == 501.0
+        assert response.json()["snapshots"][0]["id"] == str(snapshot_id)
+
+        with SessionLocal() as db:
+            persisted = db.get(ForecastSnapshot, snapshot_id)
+        assert persisted is not None
+        assert persisted.bearish_probability == stored_probability
+    finally:
+        with SessionLocal() as db:
+            db.query(MarketPriceRevision).filter(
+                MarketPriceRevision.symbol.in_([symbol, "SPY"]),
+                MarketPriceRevision.trading_date == trading_date,
+                MarketPriceRevision.source == YAHOO_SOURCE,
+            ).delete(synchronize_session=False)
+            db.query(MarketPrice).filter(
+                MarketPrice.symbol == symbol,
+                MarketPrice.trading_date == trading_date,
+                MarketPrice.source == YAHOO_SOURCE,
+            ).delete(synchronize_session=False)
+            db.query(ForecastSnapshot).filter(ForecastSnapshot.id == snapshot_id).delete(synchronize_session=False)
             db.commit()
 
 

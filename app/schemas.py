@@ -1,11 +1,19 @@
 from datetime import date, datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
 
 class ForecastRequest(BaseModel):
+    symbol: str = Field(min_length=1, max_length=10)
+
+
+class ForecastRunRequest(BaseModel):
+    """One explicit request for a saved numeric market forecast."""
+
+    model_config = ConfigDict(extra="forbid")
+
     symbol: str = Field(min_length=1, max_length=10)
 
 
@@ -44,6 +52,15 @@ class ForecastSnapshotResponse(BaseModel):
     created_at: datetime
 
 
+class ForecastRunResponse(ForecastSnapshotResponse):
+    """A newly archived numeric forecast plus the target it will be judged on."""
+
+    cutoff_date: date
+    target_window: dict[str, date]
+    model_status: Literal["experimental_offline_model"]
+    limitations: list[str]
+
+
 class ForecastSnapshotTimelineEntry(ForecastSnapshotResponse):
     """One saved snapshot plus its position and link in a revision chain."""
 
@@ -51,6 +68,7 @@ class ForecastSnapshotTimelineEntry(ForecastSnapshotResponse):
     root_snapshot_id: UUID
     parent_snapshot_id: UUID | None
     revision_reason: str | None
+    target_window: dict[str, date] | None = None
 
 
 class ForecastSnapshotTimelineResponse(BaseModel):
@@ -163,3 +181,56 @@ class DashboardResponse(BaseModel):
     refresh_reports: list[ForecastRefreshResponse]
     evaluation: DashboardEvaluation | None
     price_history: DashboardPriceHistory
+
+
+class SecFilingInventoryItem(BaseModel):
+    """An official filing awaiting review; never forecast input by itself."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    accession_number: str
+    form: str
+    filed_at: date
+    accepted_at: str | None
+    primary_document: str
+    source_url: str
+    source: str
+    review_status: str
+    human_review_note: str | None
+    reviewed_at: datetime | None
+    observed_at: datetime
+    content_status: str
+    content_observed_at: datetime | None
+    content_excerpt_sha256: str | None
+    content_truncated: bool
+    content_error: str | None
+    review_scope_note: str = (
+        "Manual source relevance review only; it does not validate claims, directions, or forecasts."
+    )
+
+
+class SecFilingInventoryResponse(BaseModel):
+    symbol: str
+    filings: list[SecFilingInventoryItem]
+
+
+class SecFilingScanResponse(SecFilingInventoryResponse):
+    cik: str | None
+    discovered_count: int
+    created_count: int
+    skipped_count: int
+    observed_at: datetime
+
+
+class SecFilingContentResponse(SecFilingInventoryItem):
+    content_excerpt: str | None
+    cache_hit: bool
+
+
+class SecFilingReviewRequest(BaseModel):
+    """A local human decision about whether this official source is relevant."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    decision: Literal["accepted", "rejected"]
+    note: Annotated[str, Field(min_length=1, max_length=700)]

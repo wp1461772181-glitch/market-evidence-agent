@@ -274,3 +274,46 @@ class MarketPriceRevision(Base):
     available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
     is_initial_backfill: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
+class SecFilingInventory(Base):
+    """Official EDGAR filing metadata plus an optional bounded text excerpt.
+
+    Rows are discovery records for human review.  They are deliberately not
+    linked to forecast inputs or model-generated evidence.
+    """
+
+    __tablename__ = "sec_filing_inventory"
+    __table_args__ = (
+        UniqueConstraint("cik", "accession_number", name="uq_sec_filing_inventory_cik_accession"),
+        CheckConstraint("form IN ('10-K', '10-Q', '8-K')", name="ck_sec_filing_inventory_form"),
+        CheckConstraint(
+            "review_status IN ('pending_review', 'accepted', 'rejected')",
+            name="ck_sec_filing_inventory_review_status",
+        ),
+        CheckConstraint(
+            "content_status IN ('not_fetched', 'fetched', 'unavailable')",
+            name="ck_sec_filing_inventory_content_status",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    symbol: Mapped[str] = mapped_column(String(10), nullable=False, index=True)
+    cik: Mapped[str] = mapped_column(String(10), nullable=False, index=True)
+    accession_number: Mapped[str] = mapped_column(String(20), nullable=False)
+    form: Mapped[str] = mapped_column(String(10), nullable=False)
+    filed_at: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    accepted_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    primary_document: Mapped[str] = mapped_column(String(512), nullable=False)
+    source_url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    source: Mapped[str] = mapped_column(String(64), nullable=False)
+    review_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    human_review_note: Mapped[str | None] = mapped_column(String(700), nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    content_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    content_observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    content_excerpt: Mapped[str | None] = mapped_column(String(80_000), nullable=True)
+    content_excerpt_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    content_truncated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    content_error: Mapped[str | None] = mapped_column(String(280), nullable=True)

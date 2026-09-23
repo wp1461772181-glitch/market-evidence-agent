@@ -19,6 +19,7 @@ export type Snapshot = {
   parent_snapshot_id: string | null;
   root_snapshot_id: string;
   revision_reason: string | null;
+  target_window?: { start: string; end: string } | null;
 };
 
 export type Claim = {
@@ -87,6 +88,65 @@ export type PriceHistory = {
   source: string;
   latest_trading_date: string | null;
   candles: PriceCandle[];
+};
+
+export type OfficialFiling = {
+  accession_number: string;
+  form: string;
+  filed_at: string;
+  accepted_at?: string | null;
+  primary_document: string;
+  source_url: string;
+  observed_at: string;
+  source?: string;
+  review_status?: string;
+  human_review_note?: string | null;
+  reviewed_at?: string | null;
+  review_scope_note?: string;
+  content_status?: "fetched" | "unavailable" | "not_fetched";
+  content_observed_at?: string | null;
+  content_excerpt_sha256?: string | null;
+  content_truncated?: boolean;
+  content_error?: string | null;
+};
+
+export type FilingInventory = {
+  symbol: string;
+  filings: OfficialFiling[];
+};
+
+export type FilingScanResult = FilingInventory & {
+  cik: string;
+  discovered_count: number;
+  created_count: number;
+  skipped_count: number;
+  observed_at: string;
+};
+
+export type FilingContent = OfficialFiling & {
+  content_status: "fetched" | "unavailable";
+  content_observed_at: string | null;
+  content_excerpt_sha256: string | null;
+  content_truncated: boolean;
+  content_error: string | null;
+  content_excerpt: string | null;
+  cache_hit: boolean;
+};
+
+export type FilingReview = OfficialFiling & {
+  review_status: "accepted" | "rejected";
+  human_review_note: string;
+  reviewed_at: string;
+  review_scope_note: string;
+};
+
+export type ForecastRunResult = {
+  symbol: string;
+  cutoff_date?: string;
+  target_window?: { start: string; end: string };
+  model_version?: string;
+  model_status?: "experimental_offline_model";
+  limitations?: string[];
 };
 
 export type DashboardResponse = {
