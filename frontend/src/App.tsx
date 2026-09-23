@@ -1,11 +1,11 @@
 import { FormEvent, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ApiError, getDashboard } from "./api";
-import type { Claim, DashboardResponse, RefreshReport, Snapshot } from "./types";
+import type { Claim, DashboardResponse, PriceCandle, PriceHistory, RefreshReport, Snapshot } from "./types";
 
 type LoadState =
   | { kind: "loading" }
   | { kind: "ready"; data: DashboardResponse }
-  | { kind: "empty"; symbol: string }
+  | { kind: "empty"; data: DashboardResponse }
   | { kind: "error"; message: string; symbol: string };
 
 const DEFAULT_SYMBOL = "AAPL";
@@ -30,7 +30,7 @@ export function App() {
       .then((data) => {
         if (version !== requestVersion.current) return;
         if (data.snapshots.length === 0) {
-          setState({ kind: "empty", symbol: data.symbol });
+          setState({ kind: "empty", data });
           return;
         }
         setState({ kind: "ready", data });
@@ -54,11 +54,12 @@ export function App() {
 
   if (state.kind === "loading") return <Shell input={input} setInput={setInput} submit={submit}><Loading symbol={requestedSymbol} /></Shell>;
   if (state.kind === "error") return <Shell input={input} setInput={setInput} submit={submit}><ErrorState message={state.message} retry={() => setRetryKey((value) => value + 1)} /></Shell>;
-  if (state.kind === "empty") return <Shell input={input} setInput={setInput} submit={submit}><EmptyState symbol={state.symbol} /></Shell>;
+  if (state.kind === "empty") return <Shell input={input} setInput={setInput} submit={submit}><EmptyState data={state.data} /></Shell>;
 
   const { data } = state;
   const selected = data.snapshots.find((snapshot) => snapshot.id === selectedId) ?? latestSnapshot(data.snapshots);
   const selectedReport = reportForRevisedSnapshot(selected.id, data.refresh_reports);
+  const selectedChainReport = reportForSnapshotInChain(selected.id, data.refresh_reports);
   const evidenceIds = new Set(data.refresh_reports.map((report) => report.revised_snapshot.id));
   const pickable = evidenceOnly ? data.snapshots.filter((snapshot) => evidenceIds.has(snapshot.id)) : data.snapshots;
 
@@ -120,6 +121,13 @@ export function App() {
           <MetadataPanel snapshot={selected} report={selectedReport} />
         </section>
 
+        <PriceComparisonPanel
+          key={selected.id}
+          history={data.price_history}
+          selected={selected}
+          report={selectedChainReport}
+        />
+
         <section className="lower-grid">
           <EvidencePanel report={selectedReport} selected={selected} />
           <Timeline snapshots={data.snapshots} reports={data.refresh_reports} selectedId={selected.id} onSelect={(id) => { setEvidenceOnly(false); setSelectedId(id); }} />
@@ -150,8 +158,9 @@ function Loading({ symbol }: { symbol: string }) {
   return <main className="state-card" aria-live="polite" aria-busy="true"><span className="loading-mark" aria-hidden="true" /><p className="kicker">RETRIEVING ARCHIVE</p><h1>正在读取 {symbol} 的已保存记录</h1><p>只请求本地已存档的版本与评测，不会调用模型或产生费用。</p></main>;
 }
 
-function EmptyState({ symbol }: { symbol: string }) {
-  return <main className="state-card"><p className="kicker">NO ARCHIVED RECORD</p><h1>{symbol} 还没有可展示的离线预测版本。</h1><p>输入的代码有效，但目前没有保存的快照；可尝试 AAPL 查看现有示例。</p></main>;
+function EmptyState({ data }: { data: DashboardResponse }) {
+  const hasPrices = Boolean(data.price_history?.candles.length);
+  return <main className="state-card"><p className="kicker">NO ARCHIVED FORECAST</p><h1>{data.symbol} 暂无预测存档。</h1><p>{hasPrices ? "没有保存的离线预测、证据或版本链；下面仅展示本地已存的历史行情。" : "输入的代码有效，但目前没有保存的快照或行情；可尝试 AAPL 查看现有示例。"}</p>{hasPrices && <PriceOnlyPanel history={data.price_history!} symbol={data.symbol} />}</main>;
 }
 
 function ErrorState({ message, retry }: { message: string; retry: () => void }) {
@@ -192,6 +201,130 @@ function MetadataPanel({ snapshot, report }: { snapshot: Snapshot; report?: Refr
     {report && <p className="fine-print">此修订使用更晚的 20 个 XNYS 交易日目标窗口；概率差并不代表事件造成了变化。</p>}
   </article>;
 }
+
+function PriceComparisonPanel({ history, selected, report }: { history?: PriceHistory | null; selected: Snapshot; report?: RefreshReport }) {
+  const candles = (history?.candles ?? []).filter(isUsableCandle).sort((a, b) => a.trading_date.localeCompare(b.trading_date));
+  const target = targetWindowForSnapshot(report, selected);
+  const shown = chartCandles(candles, selected, report, target);
+  const [activeDate, setActiveDate] = useState<string | null>(shown.at(-1)?.trading_date ?? null);
+
+  if (!history || candles.length === 0 || shown.length === 0) {
+    return <section className="price-panel price-panel-empty" aria-labelledby="price-title">
+      <div><span className="section-label">价格对照</span><h2 id="price-title">没有可展示的历史蜡烛图。</h2></div>
+      <p>这个存档版本没有对应的已保存行情。价格面板只读取本地数据库中的历史 OHLCV 数据。</p>
+    </section>;
+  }
+
+  const active = shown.find((candle) => candle.trading_date === activeDate) ?? shown.at(-1)!;
+  const coverage = target ? targetCoverage(candles, selected.feature_trading_date, target.start, target.end) : null;
+  const comparison = target && coverage?.complete
+    ? comparisonReturn(candles, selected.feature_trading_date, target.end)
+    : comparisonReturn(candles, selected.feature_trading_date, history.latest_trading_date ?? candles.at(-1)!.trading_date);
+  const targetStatus = !target
+    ? "当前版本没有保存的滚动目标窗口。"
+    : coverage?.complete
+      ? `20 个交易日目标窗口已完整覆盖至 ${target.end}。`
+      : `20 个交易日目标窗口尚未到期或本地行情不足（目标结束：${target.end}）。`;
+
+  return <section className="price-panel" aria-labelledby="price-title">
+    <div className="price-panel-heading">
+      <div><span className="section-label">价格对照</span><h2 id="price-title">股价与存档版本的时间边界</h2></div>
+      <span className="tag">{history.source}</span>
+    </div>
+    <p className="price-intro">蜡烛图来自已存日线。竖线标出版本数据截止日；阴影仅在有保存的滚动修订报告时表示目标窗口。</p>
+    <CandlestickChart
+      candles={shown}
+      selected={selected}
+      report={report}
+      target={target}
+      activeDate={active.trading_date}
+      onInspect={setActiveDate}
+    />
+    <div className="candle-detail" aria-live="polite">
+      <strong>{active.trading_date}</strong><span>开 {formatPrice(active.open)} · 高 {formatPrice(active.high)} · 低 {formatPrice(active.low)} · 收 {formatPrice(active.close)}</span>
+      {active.benchmark_close !== null && active.benchmark_close !== undefined && <span>SPY 收 {formatPrice(active.benchmark_close)}</span>}
+    </div>
+    <div className="price-summary">
+      <div><span>行情截至</span><strong>{history.latest_trading_date ?? candles.at(-1)!.trading_date}</strong></div>
+      <div><span>{coverage?.complete ? "版本截止 → 目标结束" : "版本截止 → 已存行情日期"}</span><strong>{comparison ? formatReturn(comparison.stock) : "—"}</strong><small>股票</small></div>
+      <div><span>同期 SPY</span><strong>{comparison?.benchmark === null || !comparison ? "—" : formatReturn(comparison.benchmark)}</strong><small>{comparison?.benchmark === null ? "无完整对齐基准" : "基准"}</small></div>
+    </div>
+    <p className="fine-print price-fine-print">{targetStatus} 以上对比只描述已存价格变动，不表示预测分类、准确率或事件因果。</p>
+  </section>;
+}
+
+function PriceOnlyPanel({ history, symbol }: { history: PriceHistory; symbol: string }) {
+  const candles = history.candles.filter(isUsableCandle).sort((a, b) => a.trading_date.localeCompare(b.trading_date)).slice(-90);
+  const [activeDate, setActiveDate] = useState<string | null>(candles.at(-1)?.trading_date ?? null);
+  if (!candles.length) return null;
+  const active = candles.find((candle) => candle.trading_date === activeDate) ?? candles.at(-1)!;
+  return <section className="price-panel price-only-panel" aria-labelledby="price-title">
+    <div className="price-panel-heading"><div><span className="section-label">已存行情</span><h2 id="price-title">{symbol} 的历史蜡烛图</h2></div><span className="tag">{history.source}</span></div>
+    <p className="price-intro">当前没有预测存档，因此没有版本截止线、目标窗口或预测对比。可悬停或聚焦蜡烛查看当天 OHLC。</p>
+    <CandlestickChart candles={candles} activeDate={active.trading_date} onInspect={setActiveDate} />
+    <div className="candle-detail" aria-live="polite"><strong>{active.trading_date}</strong><span>开 {formatPrice(active.open)} · 高 {formatPrice(active.high)} · 低 {formatPrice(active.low)} · 收 {formatPrice(active.close)}</span>{active.benchmark_close !== null && active.benchmark_close !== undefined && <span>SPY 收 {formatPrice(active.benchmark_close)}</span>}</div>
+    <div className="price-summary price-only-summary"><div><span>行情截至</span><strong>{history.latest_trading_date ?? candles.at(-1)!.trading_date}</strong></div><div><span>最新收盘</span><strong>{formatPrice(candles.at(-1)!.close)}</strong><small>{symbol}</small></div><div><span>同期 SPY 收盘</span><strong>{candles.at(-1)!.benchmark_close === null || candles.at(-1)!.benchmark_close === undefined ? "—" : formatPrice(candles.at(-1)!.benchmark_close!)}</strong><small>基准</small></div></div>
+  </section>;
+}
+
+function CandlestickChart({ candles, selected, report, target, activeDate, onInspect }: { candles: PriceCandle[]; selected?: Snapshot; report?: RefreshReport; target?: TargetWindow; activeDate: string; onInspect: (date: string) => void }) {
+  const width = 1000;
+  const height = 320;
+  const margin = { top: 22, right: 58, bottom: 34, left: 8 };
+  const plotWidth = width - margin.left - margin.right;
+  const plotHeight = height - margin.top - margin.bottom;
+  const low = Math.min(...candles.map((candle) => candle.low));
+  const high = Math.max(...candles.map((candle) => candle.high));
+  const padding = Math.max((high - low) * 0.08, 0.5);
+  const min = low - padding;
+  const max = high + padding;
+  const x = (index: number) => margin.left + ((index + 0.5) / candles.length) * plotWidth;
+  const y = (value: number) => margin.top + ((max - value) / (max - min)) * plotHeight;
+  const bodyWidth = Math.max(2, Math.min(10, (plotWidth / candles.length) * 0.58));
+  const originalDate = report?.original_snapshot.feature_trading_date;
+  const revisedDate = report?.revised_snapshot.feature_trading_date;
+  const markerIndex = (date: string | undefined) => date ? candles.findIndex((candle) => candle.trading_date === date) : -1;
+  const originalIndex = markerIndex(originalDate);
+  const revisedIndex = markerIndex(revisedDate ?? selected?.feature_trading_date);
+  const targetStart = markerIndex(target?.start);
+  const targetEnd = markerIndex(target?.end);
+  const actualStart = targetEnd >= 0 ? targetEnd + 1 : -1;
+  const ticks = [max, (max + min) / 2, min];
+  const dateTicks = [0, Math.floor((candles.length - 1) / 2), candles.length - 1];
+
+  return <figure className="candlestick-figure">
+    <svg className="candlestick-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-labelledby="candle-chart-title candle-chart-description">
+      <title id="candle-chart-title">{selected?.symbol ?? "股票"} 历史日线蜡烛图</title>
+      <desc id="candle-chart-description">使用鼠标停留或键盘聚焦蜡烛图中的日线，读取当天开盘、最高、最低和收盘价格。{target ? "阴影区域是保存的 20 个交易日滚动目标窗口。" : "当前版本没有保存的滚动目标窗口。"}</desc>
+      {ticks.map((tick) => <g key={tick}><line x1={margin.left} x2={width - margin.right} y1={y(tick)} y2={y(tick)} className="chart-grid" /><text x={width - margin.right + 9} y={y(tick) + 4} className="chart-price-label">{formatPrice(tick)}</text></g>)}
+      {targetStart >= 0 && targetEnd >= targetStart && <g className="target-window"><rect x={x(targetStart) - bodyWidth} y={margin.top} width={x(targetEnd) - x(targetStart) + bodyWidth * 2} height={plotHeight} /><text x={x(targetStart) + 5} y={margin.top + 14}>20-session target</text></g>}
+      {actualStart >= 0 && actualStart < candles.length && <g className="actual-region"><line x1={x(actualStart) - bodyWidth} x2={x(actualStart) - bodyWidth} y1={margin.top} y2={margin.top + plotHeight} /><text x={x(actualStart) + 5} y={height - margin.bottom - 8}>目标后实际行情</text></g>}
+      {candles.map((candle, index) => {
+        const up = candle.close >= candle.open;
+        const bodyY = y(Math.max(candle.open, candle.close));
+        const bodyHeight = Math.max(1.5, Math.abs(y(candle.open) - y(candle.close)));
+        const afterTarget = actualStart >= 0 && index >= actualStart;
+        return <g
+          key={candle.trading_date}
+          className={`candle ${up ? "is-up" : "is-down"} ${afterTarget ? "is-actual" : ""} ${activeDate === candle.trading_date ? "is-active" : ""}`}
+          tabIndex={0}
+          role="img"
+          aria-label={candleLabel(candle)}
+          onFocus={() => onInspect(candle.trading_date)}
+          onMouseEnter={() => onInspect(candle.trading_date)}
+        >
+          <title>{candleLabel(candle)}</title><line x1={x(index)} x2={x(index)} y1={y(candle.high)} y2={y(candle.low)} /><rect x={x(index) - bodyWidth / 2} y={bodyY} width={bodyWidth} height={bodyHeight} />
+        </g>;
+      })}
+      {originalIndex >= 0 && <Marker x={x(originalIndex)} label="原始截止" />}
+      {revisedIndex >= 0 && revisedIndex !== originalIndex && <Marker x={x(revisedIndex)} label="修订截止" tone="revised" />}
+      {dateTicks.map((index) => <text key={index} x={x(index)} y={height - 10} textAnchor="middle" className="chart-date-label">{shortDate(candles[index]!.trading_date)}</text>)}
+    </svg>
+    <figcaption><span><i className="legend-up" />收高于开</span><span><i className="legend-down" />收低于开</span>{target && <span><i className="legend-window" />保存的目标窗口</span>}</figcaption>
+  </figure>;
+}
+
+function Marker({ x, label, tone }: { x: number; label: string; tone?: "revised" }) { return <g className={`snapshot-marker ${tone ?? ""}`}><line x1={x} x2={x} y1={19} y2={287} /><text x={x + 5} y={18}>{label}</text></g>; }
 
 function EvidencePanel({ report, selected }: { report?: RefreshReport; selected: Snapshot }) {
   if (!report) return <article className="panel evidence-panel no-evidence">
@@ -255,6 +388,7 @@ function Evaluation({ evaluation }: { evaluation: DashboardResponse["evaluation"
 function MetricRow({ name, metrics }: { name: string; metrics: { accuracy?: number; brier_multiclass?: number; log_loss?: number } | undefined }) { return <tr><th>{name}</th><td>{metrics?.accuracy === undefined ? "—" : formatPercent(metrics.accuracy)}</td><td>{metrics?.brier_multiclass?.toFixed(3) ?? "—"}</td><td>{metrics?.log_loss?.toFixed(3) ?? "—"}</td></tr>; }
 function SafeLink({ href, children }: { href: string; children: ReactNode }) { return /^https:\/\//i.test(href) ? <a className="source-link" href={href} target="_blank" rel="noreferrer">{children}</a> : <span className="source-link disabled">来源链接不可用</span>; }
 function reportForRevisedSnapshot(snapshotId: string, reports: RefreshReport[]) { return reports.find((report) => report.revised_snapshot.id === snapshotId); }
+function reportForSnapshotInChain(snapshotId: string, reports: RefreshReport[]) { return reports.find((report) => report.revised_snapshot.id === snapshotId || report.original_snapshot.id === snapshotId); }
 function latestSnapshot(snapshots: Snapshot[]) { return [...snapshots].sort((a, b) => Date.parse(b.feature_as_of_time) - Date.parse(a.feature_as_of_time) || Date.parse(b.created_at) - Date.parse(a.created_at) || b.version - a.version)[0]!; }
 function buildChains(snapshots: Snapshot[]) {
   const byParent = new Map<string | null, Snapshot[]>();
@@ -267,6 +401,47 @@ function buildChains(snapshots: Snapshot[]) {
   });
 }
 function sortSnapshot(a: Snapshot, b: Snapshot) { return Date.parse(a.feature_as_of_time) - Date.parse(b.feature_as_of_time); }
+function isUsableCandle(value: PriceCandle) {
+  return Boolean(value.trading_date) && [value.open, value.high, value.low, value.close].every((number) => Number.isFinite(number) && number > 0)
+    && value.high >= Math.max(value.open, value.close) && value.low <= Math.min(value.open, value.close);
+}
+type TargetWindow = RefreshReport["target_windows"]["revised"];
+function targetWindowForSnapshot(report: RefreshReport | undefined, selected: Snapshot): TargetWindow | undefined {
+  if (!report) return undefined;
+  return report.original_snapshot.id === selected.id ? report.target_windows.original : report.target_windows.revised;
+}
+function chartCandles(candles: PriceCandle[], selected: Snapshot, report: RefreshReport | undefined, target: TargetWindow | undefined) {
+  const anchorDates = [selected.feature_trading_date, report?.original_snapshot.feature_trading_date, report?.revised_snapshot.feature_trading_date, target?.end]
+    .filter((value): value is string => Boolean(value));
+  const indexes = anchorDates.map((date) => candles.findIndex((candle) => candle.trading_date === date)).filter((index) => index >= 0);
+  if (!indexes.length) return candles.slice(-90);
+  const start = Math.max(0, Math.min(...indexes) - 18);
+  const end = Math.min(candles.length, Math.max(...indexes) + 34);
+  const focused = candles.slice(start, end);
+  return focused.length > 96 ? focused.slice(0, 96) : focused;
+}
+function targetCoverage(candles: PriceCandle[], cutoffDate: string, targetStart: string, targetEnd: string) {
+  const cutoff = candles.find((candle) => candle.trading_date === cutoffDate);
+  const targetBars = candles.filter((candle) => candle.trading_date >= targetStart && candle.trading_date <= targetEnd);
+  const spyAligned = Boolean(cutoff && cutoff.benchmark_close !== null && cutoff.benchmark_close !== undefined)
+    && targetBars.every((candle) => candle.benchmark_close !== null && candle.benchmark_close !== undefined);
+  return { complete: Boolean(cutoff) && targetBars.length === 20 && targetBars[0]?.trading_date === targetStart && targetBars.at(-1)?.trading_date === targetEnd && spyAligned };
+}
+function comparisonReturn(candles: PriceCandle[], startDate: string, endDate: string | null) {
+  if (!endDate) return null;
+  const start = candles.find((candle) => candle.trading_date === startDate);
+  const end = candles.find((candle) => candle.trading_date === endDate);
+  if (!start || !end) return null;
+  const stock = end.close / start.close - 1;
+  const benchmark = start.benchmark_close !== null && start.benchmark_close !== undefined && end.benchmark_close !== null && end.benchmark_close !== undefined
+    ? end.benchmark_close / start.benchmark_close - 1
+    : null;
+  return { stock, benchmark };
+}
+function candleLabel(candle: PriceCandle) { return `${candle.trading_date}：开 ${formatPrice(candle.open)}，高 ${formatPrice(candle.high)}，低 ${formatPrice(candle.low)}，收 ${formatPrice(candle.close)}。`; }
+function shortDate(value: string) { return value.slice(5).replace("-", "/"); }
+function formatPrice(value: number) { return new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value); }
+function formatReturn(value: number) { return `${value >= 0 ? "+" : ""}${(value * 100).toFixed(1)}%`; }
 function formatPercent(value: number) { return `${(value * 100).toFixed(1)}%`; }
 function signedPoints(value: number) { return `${value >= 0 ? "+" : ""}${(value * 100).toFixed(1)}pp`; }
 function probabilityLabel(key: "bearish" | "neutral" | "bullish") { return { bearish: "看跌", neutral: "中性", bullish: "看涨" }[key]; }

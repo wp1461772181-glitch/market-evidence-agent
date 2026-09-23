@@ -4,7 +4,7 @@ from fastapi import Depends, FastAPI, HTTPException, status
 from sqlalchemy.orm import Session
 
 from .database import Base, SessionLocal, engine
-from .dashboard import dashboard_evaluation, dashboard_snapshot_entries
+from .dashboard import dashboard_evaluation, dashboard_price_history, dashboard_snapshot_entries
 from .models import Forecast, ForecastRevision, ForecastRevisionEvidence, ForecastSnapshot, ResearchRun
 from .event_provider import EventProviderError, configured_deepseek_model, create_deepseek_provider_from_env
 from .forecast_refresh import ForecastRefreshError, get_forecast_refresh_report, run_forecast_refresh
@@ -140,6 +140,7 @@ def get_dashboard(symbol: str, db: Session = Depends(get_db)) -> dict:
         "snapshots": dashboard_snapshot_entries(snapshots, db),
         "refresh_reports": refresh_reports,
         "evaluation": dashboard_evaluation(),
+        "price_history": dashboard_price_history(normalized_symbol, db),
     }
 
 

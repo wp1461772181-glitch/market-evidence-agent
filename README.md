@@ -20,7 +20,7 @@ baseline as a live prediction model.
 - Week 6 validates structured event extraction only against saved first-party documents, with exact source-quote checks and a PostgreSQL cache. Its v3 live run covers ten announcements and proves cache-only replay. The review output transparently excludes one historical capital-return statement and marks every qualitative direction as requiring review, never as a forecast input. See [the Week 6 status](docs/week6-progress.md).
 - Week 7 adds a fixed source-check, supporting-case, counter-case, and review workflow. It only accepts saved source IDs from the Week 6 manifest, records every attempt in `research_runs`, and never produces a report with unvalidated source quotes. See [the Week 7 status](docs/week7-progress.md).
 - Week 8 adds one bounded event-triggered `rolling_refresh`: a fixed saved source can produce an original and revised AAPL prediction, linked records, a probability delta, rolling target windows, and source/research evidence. The probabilities still come only from two trusted local market-feature snapshots. See [the Week 8 status](docs/week8-progress.md).
-- Week 9 adds a local React + TypeScript reader for saved evidence. `GET /dashboard/{symbol}` returns every persisted archive chain for that symbol, any saved rolling-refresh reports, and a fixed whitelist of Week 4 offline metrics. The page reads these records only; it cannot create forecasts, trigger a refresh, or make provider calls. See [the Week 9 status](docs/week9-progress.md).
+- Week 9 adds a local React + TypeScript reader for saved evidence. `GET /dashboard/{symbol}` returns every persisted archive chain for that symbol, any saved rolling-refresh reports, a fixed whitelist of Week 4 offline metrics, and up to 250 saved daily stock/SPY price pairs for a candlestick comparison. The page reads these records only; it cannot create forecasts, trigger a refresh, or make provider calls. See [the Week 9 status](docs/week9-progress.md).
 
 ## Time semantics and data-version limits
 
@@ -138,7 +138,16 @@ npm run dev -- --host 127.0.0.1 --port 5173
 Open `http://127.0.0.1:5173`, then enter a saved symbol such as `AAPL`. For a
 production build check, run `npm run build` in `frontend/`. The page calls
 `GET /api/dashboard/{symbol}` only; it never creates a forecast or refresh
-run, calls a model, or fetches external data.
+run, calls a model, or fetches external data. Its candlestick comparison reads
+up to 250 saved daily OHLCV bars and same-date SPY closes; it can mark archived
+forecast cutoffs and the related rolling target window, then show realized
+stock and SPY price returns only when the required saved closes are present.
+
+The local AAPL and SPY records were refreshed once through the existing
+validated ingestion path for 2026-09-08 through 2026-09-21, adding ten saved
+daily rows for each symbol (latest saved date: 2026-09-21). This is not an
+automatic live feed. Run the existing ingestion command manually for later
+updates, and retain the historical-research backfill limits described above.
 
 ## Ingest and export features
 

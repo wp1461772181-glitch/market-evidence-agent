@@ -11,13 +11,69 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from .forecast_refresh import PROJECT_ROOT
-from .models import ForecastRevision, ForecastSnapshot
-from .schemas import DashboardEvaluation, ForecastSnapshotResponse, ForecastSnapshotTimelineEntry
+from .market_data import YAHOO_SOURCE
+from .models import ForecastRevision, ForecastSnapshot, MarketPrice
+from .schemas import (
+    DashboardCandle,
+    DashboardEvaluation,
+    DashboardPriceHistory,
+    ForecastSnapshotResponse,
+    ForecastSnapshotTimelineEntry,
+)
 
 
 TRUSTED_EVALUATION_DIRECTORY = PROJECT_ROOT / "artifacts" / "week4-2026-09-10"
 _METRIC_NAMES = ("accuracy", "balanced_accuracy", "brier_multiclass", "log_loss", "macro_f1")
 _EVALUATION_MODELS = ("logistic_calibrated", "logistic_raw", "baseline_class_prior")
+_DASHBOARD_CANDLE_LIMIT = 250
+
+
+def dashboard_price_history(symbol: str, db: Session) -> DashboardPriceHistory:
+    """Return a bounded, display-only daily-price history from trusted rows.
+
+    This deliberately reads the database's current historical research
+    backfill. It does not claim that the rows were visible at a forecast's
+    original ``as_of_time`` and does not fetch market data.
+    """
+    latest_first = (
+        db.query(MarketPrice)
+        .filter(MarketPrice.symbol == symbol, MarketPrice.source == YAHOO_SOURCE)
+        .order_by(MarketPrice.trading_date.desc())
+        .limit(_DASHBOARD_CANDLE_LIMIT)
+        .all()
+    )
+    prices = list(reversed(latest_first))
+    if not prices:
+        return DashboardPriceHistory(source=YAHOO_SOURCE, latest_trading_date=None, candles=[])
+
+    benchmark_by_date = {
+        row.trading_date: row.close
+        for row in (
+            db.query(MarketPrice)
+            .filter(
+                MarketPrice.symbol == "SPY",
+                MarketPrice.source == YAHOO_SOURCE,
+                MarketPrice.trading_date.in_([price.trading_date for price in prices]),
+            )
+            .all()
+        )
+    }
+    return DashboardPriceHistory(
+        source=YAHOO_SOURCE,
+        latest_trading_date=prices[-1].trading_date,
+        candles=[
+            DashboardCandle(
+                trading_date=price.trading_date,
+                open=price.open,
+                high=price.high,
+                low=price.low,
+                close=price.close,
+                volume=price.volume,
+                benchmark_close=benchmark_by_date.get(price.trading_date),
+            )
+            for price in prices
+        ],
+    )
 
 
 def dashboard_snapshot_entries(

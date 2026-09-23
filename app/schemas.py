@@ -137,8 +137,29 @@ class DashboardEvaluation(BaseModel):
     limitations: list[str]
 
 
+class DashboardCandle(BaseModel):
+    """One saved daily price bar for the dashboard's historical chart."""
+
+    trading_date: date
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: int
+    benchmark_close: float | None = None
+
+
+class DashboardPriceHistory(BaseModel):
+    """Bounded historical market data displayed alongside saved research."""
+
+    source: str
+    latest_trading_date: date | None
+    candles: list[DashboardCandle]
+
+
 class DashboardResponse(BaseModel):
     symbol: str
     snapshots: list[ForecastSnapshotTimelineEntry]
     refresh_reports: list[ForecastRefreshResponse]
     evaluation: DashboardEvaluation | None
+    price_history: DashboardPriceHistory

@@ -73,9 +73,26 @@ export type Evaluation = {
   limitations?: string[];
 };
 
+export type PriceCandle = {
+  trading_date: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+  benchmark_close?: number | null;
+};
+
+export type PriceHistory = {
+  source: string;
+  latest_trading_date: string | null;
+  candles: PriceCandle[];
+};
+
 export type DashboardResponse = {
   symbol: string;
   snapshots: Snapshot[];
   refresh_reports: RefreshReport[];
   evaluation: Evaluation | null;
+  price_history?: PriceHistory | null;
 };

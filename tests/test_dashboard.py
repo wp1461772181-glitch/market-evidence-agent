@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
 from sqlalchemy import func, select
 
 from app.database import SessionLocal
-from app.models import ForecastRevision, ForecastRevisionEvidence, ForecastSnapshot, ResearchRun
+from app.market_data import YAHOO_SOURCE
+from app.models import ForecastRevision, ForecastRevisionEvidence, ForecastSnapshot, MarketPrice, ResearchRun
 
 
 def _snapshot(*, symbol: str, moment: datetime, probability: float) -> ForecastSnapshot:
@@ -30,12 +31,26 @@ def _snapshot(*, symbol: str, moment: datetime, probability: float) -> ForecastS
     )
 
 
-def _table_counts() -> tuple[int, int, int, int]:
+def _table_counts() -> tuple[int, int, int, int, int]:
     with SessionLocal() as db:
         return tuple(
             int(db.scalar(select(func.count()).select_from(model)) or 0)
-            for model in (ForecastSnapshot, ForecastRevision, ForecastRevisionEvidence, ResearchRun)
+            for model in (ForecastSnapshot, ForecastRevision, ForecastRevisionEvidence, ResearchRun, MarketPrice)
         )
+
+
+def _price(*, symbol: str, trading_date: date, close: float) -> MarketPrice:
+    return MarketPrice(
+        symbol=symbol,
+        trading_date=trading_date,
+        open=close - 1.0,
+        high=close + 2.0,
+        low=close - 2.0,
+        close=close,
+        volume=int(close * 100),
+        source=YAHOO_SOURCE,
+        fetched_at=datetime(2035, 1, 1, tzinfo=UTC),
+    )
 
 
 @pytest.fixture
@@ -91,6 +106,11 @@ def test_dashboard_normalizes_symbol_and_returns_empty_read_only_result(client, 
     assert response.json()["symbol"] == "MSFT"
     assert response.json()["snapshots"] == []
     assert response.json()["refresh_reports"] == []
+    assert response.json()["price_history"] == {
+        "source": YAHOO_SOURCE,
+        "latest_trading_date": None,
+        "candles": [],
+    }
     evaluation = response.json()["evaluation"]
     assert evaluation["scope"].startswith("Pooled out-of-sample")
     assert evaluation["fold_count"] == 3
@@ -196,6 +216,97 @@ def test_dashboard_returns_all_chains_and_saved_evidence_without_model_calls(
                 ForecastSnapshot.id.in_([original.id, revised.id, unlinked.id])
             ).delete(synchronize_session=False)
             db.query(ResearchRun).filter(ResearchRun.id == research.id).delete(synchronize_session=False)
+            db.commit()
+
+
+def test_dashboard_returns_sorted_ohlcv_candles_and_same_day_spy_close(client, trusted_evaluation):
+    symbol = "CNDL"
+    dates = [date(2035, 1, 2), date(2035, 1, 3), date(2035, 1, 6)]
+    with SessionLocal() as db:
+        db.add_all(
+            [
+                _price(symbol=symbol, trading_date=dates[2], close=303.0),
+                _price(symbol=symbol, trading_date=dates[0], close=101.0),
+                _price(symbol=symbol, trading_date=dates[1], close=202.0),
+                _price(symbol="SPY", trading_date=dates[0], close=501.0),
+                _price(symbol="SPY", trading_date=dates[2], close=503.0),
+            ]
+        )
+        db.commit()
+
+    try:
+        before = _table_counts()
+        response = client.get(f"/dashboard/{symbol}")
+
+        assert response.status_code == 200
+        history = response.json()["price_history"]
+        assert history["source"] == YAHOO_SOURCE
+        assert history["latest_trading_date"] == "2035-01-06"
+        assert history["candles"] == [
+            {
+                "trading_date": "2035-01-02",
+                "open": 100.0,
+                "high": 103.0,
+                "low": 99.0,
+                "close": 101.0,
+                "volume": 10100,
+                "benchmark_close": 501.0,
+            },
+            {
+                "trading_date": "2035-01-03",
+                "open": 201.0,
+                "high": 204.0,
+                "low": 200.0,
+                "close": 202.0,
+                "volume": 20200,
+                "benchmark_close": None,
+            },
+            {
+                "trading_date": "2035-01-06",
+                "open": 302.0,
+                "high": 305.0,
+                "low": 301.0,
+                "close": 303.0,
+                "volume": 30300,
+                "benchmark_close": 503.0,
+            },
+        ]
+        assert _table_counts() == before
+    finally:
+        with SessionLocal() as db:
+            db.query(MarketPrice).filter(
+                MarketPrice.symbol.in_([symbol, "SPY"]),
+                MarketPrice.trading_date.in_(dates),
+                MarketPrice.source == YAHOO_SOURCE,
+            ).delete(synchronize_session=False)
+            db.commit()
+
+
+def test_dashboard_limits_price_history_to_250_most_recent_candles(client, trusted_evaluation):
+    symbol = "LIMT"
+    first_date = date(2030, 1, 1)
+    dates = [first_date + timedelta(days=index) for index in range(251)]
+    with SessionLocal() as db:
+        db.add_all(
+            [_price(symbol=symbol, trading_date=trading_date, close=float(index)) for index, trading_date in enumerate(dates)]
+        )
+        db.commit()
+
+    try:
+        response = client.get(f"/dashboard/{symbol}")
+
+        assert response.status_code == 200
+        candles = response.json()["price_history"]["candles"]
+        assert len(candles) == 250
+        assert candles[0]["trading_date"] == "2030-01-02"
+        assert candles[-1]["trading_date"] == "2030-09-08"
+    finally:
+        with SessionLocal() as db:
+            db.query(MarketPrice).filter(
+                MarketPrice.symbol == symbol,
+                MarketPrice.trading_date.in_(dates),
+                MarketPrice.source == YAHOO_SOURCE,
+            ).delete(synchronize_session=False)
             db.commit()
 
 

@@ -28,6 +28,14 @@ For a symbol with saved data, the single page should show:
   evidence exists; and
 - the trusted Week 4 offline metrics and their historical-evaluation label.
 
+The page also contains a lightweight SVG candlestick comparison. It displays up
+to 250 saved daily OHLCV bars for the selected stock, with same-date saved SPY
+closes for comparison. Archived original and revised feature cutoffs are marked
+when they fall inside the saved series. A rolling target window is marked only
+for the report to which it belongs. Where the required stored closes exist, the
+view shows realized stock and SPY price returns for that window; incomplete
+windows have no realized-return claim.
+
 The dashboard does not imply a causal event effect. For rolling refreshes, a
 probability change means that the fixed trusted model was applied to a later
 market-feature snapshot with a different rolling 20-session target window.
@@ -44,8 +52,8 @@ than introduce a second interaction model.
 
 `GET /dashboard/{symbol}` normalizes a one-to-five-letter symbol to uppercase
 and returns HTTP 422 for malformed input. A successful response has
-`symbol`, `snapshots`, `refresh_reports`, and `evaluation` fields. It is
-read-only and draws only from persisted local records:
+`symbol`, `snapshots`, `refresh_reports`, `evaluation`, and `price_history`
+fields. It is read-only and draws only from persisted local records:
 
 1. every `forecast_snapshots` chain for the normalized symbol, including
    versions that have no Week 8 evidence;
@@ -55,13 +63,29 @@ read-only and draws only from persisted local records:
    fixed server-side whitelist. It exposes pooled five-stock, three-fold OOS
    metrics for the archived logistic and baseline comparisons; they are not
    symbol-specific. Missing or malformed artifacts produce `evaluation: null`,
-   never a browser-side recomputation, model load, file path, or traceback.
+   never a browser-side recomputation, model load, file path, or traceback; and
+4. the last 250 saved daily stock OHLCV rows plus an aligned same-date SPY
+   close. The endpoint reads the existing local historical-research records;
+   it does not call Yahoo Finance or any other external source.
 
 At the start of Week 9, the local demonstration database contains four AAPL
 snapshots across two chains and one refresh-evidence record. These are archived
 historical-research records, not current market predictions. The dashboard must
 make that distinction visible and should show a clear no-data state for symbols
 without saved archive records.
+
+## Candlestick data freshness
+
+The local AAPL and SPY archive was refreshed once through the existing
+validated ingestion pipeline for 2026-09-08 through 2026-09-21. It added ten
+saved daily rows for each symbol, with 2026-09-21 as the latest saved date.
+Future updates use the established ingestion command manually. There is no
+scheduled fetch or automatic live feed.
+
+The chart shares the project-wide historical-research limitation: initial
+backfilled bars use conservative availability assumptions and are not a true
+provider point-in-time feed. It is a visual comparison of saved records, not a
+live-price chart, prospective forecast, or trading signal.
 
 ## Local run
 
@@ -103,6 +127,12 @@ event evidence.
 
 This acceptance covers a local historical reader only. It does not show a live
 quote, a prospective prediction, or an online service.
+
+Separate browser acceptance verified the AAPL candlestick chart at desktop and
+390px mobile widths, including original/revised target windows and the
+event-evidence boundary. MSFT correctly rendered its saved price history without
+an archived forecast, and ZZZZZ showed the empty state. No page errors or
+horizontal overflow were observed.
 
 ## Still outside scope
 
