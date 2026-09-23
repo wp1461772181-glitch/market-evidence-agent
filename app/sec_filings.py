@@ -18,6 +18,7 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from html.parser import HTMLParser
+from pathlib import Path
 from threading import Lock
 from typing import Callable
 from urllib.error import HTTPError, URLError
@@ -407,7 +408,10 @@ def create_sec_filing_inventory_table() -> None:
 
 
 def configured_sec_user_agent() -> str:
-    """Read an explicit process setting without loading an env file itself."""
+    """Read the local project setting without overriding a process setting."""
+    from dotenv import load_dotenv
+
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
     user_agent = os.getenv("SEC_EDGAR_USER_AGENT", "").strip()
     if not user_agent:
         raise SecFilingsError(

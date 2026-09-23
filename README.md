@@ -166,12 +166,12 @@ This decision only records whether the source should remain in review; it does
 not validate extracted claims, direction, or a forecast.
 
 SEC requires an identifiable automated client. Before scanning or fetching,
-set a process environment variable with an application name and a contact
-email; the service fails clearly without it and does not load an environment
-file itself:
+set `SEC_EDGAR_USER_AGENT` in the ignored local `.env` with an application name
+and a contact email. A process environment variable also works and takes
+precedence. The service fails clearly without either setting:
 
 ~~~bash
-export SEC_EDGAR_USER_AGENT='Market Evidence Agent contact: you@example.com'
+SEC_EDGAR_USER_AGENT='Market Evidence Agent contact: you@example.com'
 ~~~
 
 Replace `you@example.com` with a real contact email before use.

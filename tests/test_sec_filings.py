@@ -246,7 +246,7 @@ def test_marks_non_text_or_binary_primary_document_unavailable():
 
 
 def test_endpoint_returns_clear_config_error_when_sec_contact_is_not_configured(client, monkeypatch):
-    monkeypatch.delenv("SEC_EDGAR_USER_AGENT", raising=False)
+    monkeypatch.setenv("SEC_EDGAR_USER_AGENT", "")
 
     response = client.post("/filing-inventories/AAPL/scan")
 
@@ -293,7 +293,8 @@ def test_endpoint_exposes_inventory_and_fetched_content_with_no_llm_calls(client
     assert listed["content_excerpt_sha256"] == fetched_body["content_excerpt_sha256"]
 
 
-def test_rejects_unknown_symbols_and_unconfigured_provider():
+def test_rejects_unknown_symbols_and_unconfigured_provider(monkeypatch):
+    monkeypatch.setenv("SEC_EDGAR_USER_AGENT", "")
     try:
         SecEdgarProvider()
     except SecFilingsError as exc:
