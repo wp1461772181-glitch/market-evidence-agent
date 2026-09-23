@@ -13,6 +13,10 @@ const SUPPORTED_SYMBOLS = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA"] as const;
 type SupportedSymbol = typeof SUPPORTED_SYMBOLS[number];
 type ActionState = { kind: "idle" } | { kind: "running" } | { kind: "success"; message: string } | { kind: "error"; message: string };
 type FilingState = { kind: "idle" } | { kind: "loading" } | { kind: "ready"; data: FilingInventory } | { kind: "error"; message: string };
+type FilingFormFilter = "all" | "10-K" | "10-Q" | "8-K";
+type FilingReviewFilter = "all" | "pending" | "accepted" | "rejected";
+
+const INITIAL_FILING_COUNT = 5;
 
 export function App() {
   const [input, setInput] = useState(DEFAULT_SYMBOL);
@@ -245,6 +249,14 @@ function ActionDesk({
         <p className="action-note">{freshness}。不调用旧的示例 mock 接口；预测失败时不会生成替代结果。</p>
       </article>
     </div>
+    <aside className="revision-explainer" aria-labelledby="revision-explainer-title">
+      <span className="section-label">版本边界</span>
+      <div>
+        <h3 id="revision-explainer-title">事件修订何时触发？</h3>
+        <p>目前不会因 SEC 扫描、人工核验或“生成新预测”自动触发。只有历史 Week 8 来源在手动调用 <code>/forecast-refresh-runs</code> 后，通过可用时间、市场快照和来源校验，才会保存一份独立修订。</p>
+        <p>修订前后的概率差来自不同的市场特征快照，不能据此说某一份文件导致了变化。</p>
+      </div>
+    </aside>
     <FilingInventoryPanel symbol={symbol} state={filings} />
   </section>;
 }
@@ -258,8 +270,17 @@ function FilingInventoryPanel({ symbol, state }: { symbol: string; state: Filing
   const [content, setContent] = useState<Record<string, { kind: "loading" } | { kind: "ready"; data: FilingContent } | { kind: "error"; message: string }>>({});
   const [reviewDrafts, setReviewDrafts] = useState<Record<string, { decision: "accepted" | "rejected"; note: string }>>({});
   const [reviews, setReviews] = useState<Record<string, { kind: "loading" } | { kind: "ready"; data: FilingReview } | { kind: "error"; message: string }>>({});
+  const [formFilter, setFormFilter] = useState<FilingFormFilter>("all");
+  const [reviewFilter, setReviewFilter] = useState<FilingReviewFilter>("all");
+  const [visibleCount, setVisibleCount] = useState(INITIAL_FILING_COUNT);
   useEffect(() => setContent({}), [symbol]);
-  useEffect(() => { setReviewDrafts({}); setReviews({}); }, [symbol]);
+  useEffect(() => {
+    setReviewDrafts({});
+    setReviews({});
+    setFormFilter("all");
+    setReviewFilter("all");
+    setVisibleCount(INITIAL_FILING_COUNT);
+  }, [symbol]);
   async function loadContent(accessionNumber: string) {
     setContent((previous) => ({ ...previous, [accessionNumber]: { kind: "loading" } }));
     try {
@@ -285,16 +306,53 @@ function FilingInventoryPanel({ symbol, state }: { symbol: string; state: Filing
     }
   }
   if (state.kind === "idle") return null;
+  const displayedFilings = state.kind === "ready"
+    ? state.data.filings
+      .map((baseFiling) => {
+        const review = reviews[baseFiling.accession_number];
+        return review?.kind === "ready" ? review.data : baseFiling;
+      })
+      .sort(sortFilingsNewestFirst)
+    : [];
+  const filteredFilings = displayedFilings.filter((filing) => (
+    (formFilter === "all" || filing.form === formFilter)
+    && (reviewFilter === "all" || filingReviewBucket(filing) === reviewFilter)
+  ));
+  const pendingReviewCount = displayedFilings.filter((filing) => filingReviewBucket(filing) === "pending").length;
+  const visibleFilings = filteredFilings.slice(0, visibleCount);
+  const hasMore = visibleCount < filteredFilings.length;
   return <section className="filing-inventory" aria-labelledby="filing-title">
-    <div className="inventory-heading"><div><span className="section-label">官方资料目录</span><h3 id="filing-title">{symbol} 的 SEC 申报</h3></div><span className="review-flag">待人工核验</span></div>
+    <div className="inventory-heading"><div><span className="section-label">官方资料目录</span><h3 id="filing-title">{symbol} 的 SEC 申报</h3></div><span className="review-flag">{pendingReviewCount ? `${pendingReviewCount} 份待人工核验` : "已全部人工核验"}</span></div>
     {state.kind === "loading" && <p className="inventory-status">正在读取已发现的官方申报…</p>}
     {state.kind === "error" && <p className="inventory-status inventory-error">{state.message}</p>}
-    {state.kind === "ready" && (state.data.filings.length
-      ? <div className="filing-list">
-          {state.data.filings.map((baseFiling) => {
-            const review = reviews[baseFiling.accession_number];
-            const filing = review?.kind === "ready" ? review.data : baseFiling;
-            return <article className="filing-row" key={filing.accession_number}>
+    {state.kind === "ready" && (displayedFilings.length
+      ? <>
+          <div className="filing-controls" aria-label="筛选 SEC 申报">
+            <label>
+              <span>文件类型</span>
+              <select value={formFilter} onChange={(event) => { setFormFilter(event.target.value as FilingFormFilter); setVisibleCount(INITIAL_FILING_COUNT); }}>
+                <option value="all">全部类型</option>
+                <option value="10-K">10-K</option>
+                <option value="10-Q">10-Q</option>
+                <option value="8-K">8-K</option>
+              </select>
+            </label>
+            <label>
+              <span>人工核验</span>
+              <select value={reviewFilter} onChange={(event) => { setReviewFilter(event.target.value as FilingReviewFilter); setVisibleCount(INITIAL_FILING_COUNT); }}>
+                <option value="all">全部状态</option>
+                <option value="pending">待核验</option>
+                <option value="accepted">已接受</option>
+                <option value="rejected">已驳回</option>
+              </select>
+            </label>
+            <p className="filing-count" aria-live="polite">共 {displayedFilings.length} 份 · 当前筛选 {filteredFilings.length} 份 · 显示 {visibleFilings.length} 份</p>
+          </div>
+          {filteredFilings.length
+            ? <div className="filing-list">
+              {visibleFilings.map((filing) => {
+                const review = reviews[filing.accession_number];
+                return <article className="filing-row" key={filing.accession_number}>
             <div><strong>{filing.form}</strong><span>{filing.filed_at}</span></div>
             <p>{filing.primary_document}</p>
             <SafeLink href={filing.source_url}>SEC 原始文件 <span>↗</span></SafeLink>
@@ -302,8 +360,15 @@ function FilingInventoryPanel({ symbol, state }: { symbol: string; state: Filing
             <FilingContentPreview filing={filing} state={content[filing.accession_number]} onLoad={() => loadContent(filing.accession_number)} />
             <FilingReviewPanel filing={filing} draft={draftFor(filing.accession_number)} state={review} onDraft={(update) => updateDraft(filing.accession_number, update)} onSubmit={() => submitReview(filing.accession_number)} />
           </article>;
-          })}
-        </div>
+              })}
+            </div>
+            : <p className="inventory-status">当前筛选没有匹配的已保存申报。</p>}
+          {filteredFilings.length > INITIAL_FILING_COUNT && <div className="filing-pagination">
+            {hasMore
+              ? <button className="text-button" type="button" onClick={() => setVisibleCount((count) => count + INITIAL_FILING_COUNT)}>显示更多（余 {filteredFilings.length - visibleFilings.length} 份）</button>
+              : <button className="text-button" type="button" onClick={() => setVisibleCount(INITIAL_FILING_COUNT)}>收起至最近 {INITIAL_FILING_COUNT} 份</button>}
+          </div>}
+        </>
       : <p className="inventory-status">尚未发现已保存的官方申报。点击“扫描官方申报”后会在这里列出文件。</p>)}
     <p className="fine-print inventory-note">这些是原始 SEC 文件索引。人工结论仅核验来源相关性；文件不会自动用于本次预测。</p>
   </section>;
@@ -604,6 +669,12 @@ function actionMessage(error: unknown, fallback: string) {
   return error.message;
 }
 function filingStatus(status: OfficialFiling["content_status"]) { return status === "fetched" ? "原文摘要已读取，仍待核验" : status === "unavailable" ? "原文摘要暂不可用" : "仅发现目录，尚未读取原文"; }
+function filingReviewBucket(filing: OfficialFiling): Exclude<FilingReviewFilter, "all"> {
+  return filing.review_status === "accepted" || filing.review_status === "rejected" ? filing.review_status : "pending";
+}
+function sortFilingsNewestFirst(a: OfficialFiling, b: OfficialFiling) {
+  return b.filed_at.localeCompare(a.filed_at) || b.accession_number.localeCompare(a.accession_number);
+}
 function reportForRevisedSnapshot(snapshotId: string, reports: RefreshReport[]) { return reports.find((report) => report.revised_snapshot.id === snapshotId); }
 function reportForSnapshotInChain(snapshotId: string, reports: RefreshReport[]) { return reports.find((report) => report.revised_snapshot.id === snapshotId || report.original_snapshot.id === snapshotId); }
 function latestSnapshot(snapshots: Snapshot[]) { return [...snapshots].sort((a, b) => Date.parse(b.feature_as_of_time) - Date.parse(a.feature_as_of_time) || Date.parse(b.created_at) - Date.parse(a.created_at) || b.version - a.version)[0]!; }

@@ -165,6 +165,16 @@ source-relevance decision through `POST
 This decision only records whether the source should remain in review; it does
 not validate extracted claims, direction, or a forecast.
 
+Scanning, fetching, and reviewing a SEC filing do **not** start an event
+revision. Neither does the on-demand `POST /forecast-runs` action. The only
+implemented event-revision trigger is an explicit `POST /forecast-refresh-runs`
+request for the fixed Week 8 historical demonstration: its saved source must
+become available between two supplied XNYS session-close cutoffs, and both
+market snapshots and the source-grounded research must pass validation. That
+path archives a separate linked revision; its probability difference comes
+from later market features, not a numerical adjustment attributed to the
+source event. Live SEC-to-revision monitoring is not implemented.
+
 SEC requires an identifiable automated client. Before scanning or fetching,
 set `SEC_EDGAR_USER_AGENT` in the ignored local `.env` with an application name
 and a contact email. A process environment variable also works and takes
