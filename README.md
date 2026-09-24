@@ -1,5 +1,7 @@
 # Market Evidence Agent — Weeks 1–9
 
+Planned next iteration: [V2 evidence-driven forecast implementation plan](docs/evidence-driven-forecast-v2-plan.md), [GPT-6 handoff](docs/gpt6-v2-handoff.md), and [V2 progress](docs/v2-progress.md). These are development plans; V2 is not implemented yet.
+
 A FastAPI, PostgreSQL, and local React dashboard foundation for a
 market-evidence system. It stores a deterministic Week 1 `mock-v1` forecast,
 then adds reproducible market-data snapshots, leakage-safe features, a fixed
