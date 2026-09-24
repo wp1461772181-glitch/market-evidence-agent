@@ -218,9 +218,11 @@ npm run dev -- --host 127.0.0.1 --port 5173
 ~~~
 
 Open `http://127.0.0.1:5173`, then enter a saved symbol such as `AAPL`. For a
-production build check, run `npm run build` in `frontend/`. The page calls
-`GET /api/dashboard/{symbol}` only; it never creates a forecast or refresh
-run, calls a model, or fetches external data. Its candlestick comparison reads
+production build check, run `npm run build` in `frontend/`. The five-area
+research workspace separates overview, forecasts, evidence, prediction
+revisions, and evaluation. It reads saved dashboard and price data for display;
+forecast generation, SEC scans, source review, media upload, and manual
+revisions are explicit user-clicked actions. Its candlestick comparison reads
 up to 250 saved daily OHLCV bars and same-date SPY closes; it can mark archived
 forecast cutoffs and the related rolling target window, then show realized
 stock and SPY price returns only when the required saved closes are present.
