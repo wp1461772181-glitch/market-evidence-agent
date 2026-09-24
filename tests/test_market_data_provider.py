@@ -1,10 +1,14 @@
 import json
 from datetime import UTC, date, datetime
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import pytest
 
 from app.market_data import MarketDataError, YahooFinanceProvider
+
+
+FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
 class FakeResponse:
@@ -51,6 +55,10 @@ def chart_payload(symbol: str = "AAPL") -> dict:
     }
 
 
+def fixture_payload(name: str) -> dict:
+    return json.loads((FIXTURES_DIR / name).read_text(encoding="utf-8"))
+
+
 def test_fetch_daily_prices_normalizes_symbol_and_parses_ohlcv():
     captured_request = {}
 
@@ -75,6 +83,7 @@ def test_fetch_daily_prices_normalizes_symbol_and_parses_ohlcv():
     query = parse_qs(urlparse(request.full_url).query)
     assert request.full_url.startswith("https://query2.finance.yahoo.com/v8/finance/chart/AAPL?")
     assert query["interval"] == ["1d"]
+    assert query["events"] == ["div,splits,capitalGains"]
     assert int(query["period2"][0]) == int(datetime(2026, 9, 4, tzinfo=UTC).timestamp())
     assert request.headers["User-agent"]
     assert captured_request["timeout"] == 20
@@ -106,3 +115,68 @@ def test_fetch_daily_prices_surfaces_provider_error():
 
     with pytest.raises(MarketDataError, match="No data found"):
         provider.fetch_daily_prices("AAPL", date(2026, 9, 1), date(2026, 9, 3))
+
+
+def test_provider_metadata_records_quote_basis_and_corporate_actions_without_using_adjclose():
+    payload = fixture_payload("yahoo_chart_split_and_dividend.json")
+    provider = YahooFinanceProvider(opener=lambda request, timeout: FakeResponse(payload))
+
+    result = provider.fetch_daily_prices_with_metadata("AAPL", date(2020, 8, 28), date(2020, 9, 1))
+
+    assert [row.close for row in result.prices] == [124.8075, 129.04, 134.18]
+    assert result.price_basis.basis == "provider_quote_close_v1"
+    assert result.price_basis.adjusted_close_present is True
+    assert result.price_basis.adjusted_close_matches_quote is False
+    assert result.price_basis.provider_behavior_verified is True
+    assert result.price_basis.verification_notes == (
+        "daily_price_close=indicators.quote.close",
+        "indicators.adjclose was inspected but not used as DailyPrice.close",
+        "adjusted-close values differed from quote close for this response",
+        "corporate-action response included an events object",
+    )
+    assert [
+        (action.kind, action.effective_date, action.known, action.amount, action.numerator, action.denominator)
+        for action in result.price_basis.corporate_actions
+    ] == [
+        ("split", date(2020, 8, 31), True, None, 4, 1),
+        ("cash_dividend", date(2020, 9, 10), True, 0.205, None, None),
+    ]
+
+
+def test_legacy_fetch_contract_still_returns_a_list_of_daily_prices():
+    payload = fixture_payload("yahoo_chart_split_and_dividend.json")
+    provider = YahooFinanceProvider(opener=lambda request, timeout: FakeResponse(payload))
+
+    prices = provider.fetch_daily_prices("AAPL", date(2020, 8, 28), date(2020, 9, 1))
+
+    assert isinstance(prices, list)
+    assert [row.close for row in prices] == [124.8075, 129.04, 134.18]
+
+
+def test_provider_metadata_fails_closed_when_returned_quote_rows_have_incomplete_adjclose():
+    payload = fixture_payload("yahoo_chart_split_and_dividend.json")
+    payload["chart"]["result"][0]["indicators"]["adjclose"][0]["adjclose"][1] = None
+    provider = YahooFinanceProvider(opener=lambda request, timeout: FakeResponse(payload))
+
+    result = provider.fetch_daily_prices_with_metadata("AAPL", date(2020, 8, 28), date(2020, 9, 1))
+
+    assert result.price_basis.adjusted_close_present is True
+    assert result.price_basis.adjusted_close_matches_quote is None
+    assert result.price_basis.provider_behavior_verified is False
+    assert "adjusted-close series was incomplete for returned quote rows" in result.price_basis.verification_notes
+
+
+def test_provider_metadata_records_zero_provider_reported_actions_when_events_are_absent():
+    payload = fixture_payload("yahoo_chart_split_and_dividend.json")
+    del payload["chart"]["result"][0]["events"]
+    provider = YahooFinanceProvider(opener=lambda request, timeout: FakeResponse(payload))
+
+    result = provider.fetch_daily_prices_with_metadata("AAPL", date(2020, 8, 28), date(2020, 9, 1))
+
+    assert result.price_basis.corporate_actions == ()
+    assert result.price_basis.corporate_actions_available is True
+    assert result.price_basis.corporate_actions_response_shape == "events_omitted"
+    assert result.price_basis.provider_behavior_verified is True
+    assert result.price_basis.verification_notes[-1] == (
+        "provider returned no split/dividend entries after explicitly requested events"
+    )
