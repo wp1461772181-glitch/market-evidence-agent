@@ -12,6 +12,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from .features import BENCHMARK_SYMBOL
+from .evidence_revision_models import EvidenceRevision
 from .forecast_refresh import PROJECT_ROOT, target_window
 from .market_data import YAHOO_SOURCE
 from .models import ForecastRevision, ForecastSnapshot, MarketPrice, MarketPriceRevision
@@ -111,20 +112,44 @@ def dashboard_snapshot_entries(
     snapshots_by_id = {snapshot.id: snapshot for snapshot in snapshots}
     revisions = db.query(ForecastRevision).filter(ForecastRevision.snapshot_id.in_(snapshots_by_id)).all()
     revision_by_snapshot = {revision.snapshot_id: revision for revision in revisions}
+    evidence_revisions = (
+        db.query(EvidenceRevision)
+        .filter(EvidenceRevision.revised_snapshot_id.in_(snapshots_by_id))
+        .all()
+    )
+    evidence_revision_by_snapshot = {
+        revision.revised_snapshot_id: revision for revision in evidence_revisions
+    }
+    if set(revision_by_snapshot) & set(evidence_revision_by_snapshot):
+        raise HTTPException(status_code=500, detail="forecast revision history has conflicting child links")
 
     entries: list[ForecastSnapshotTimelineEntry] = []
     for snapshot in snapshots:
         root_id, version = _chain_position(
-            snapshot.id, snapshots_by_id=snapshots_by_id, revision_by_snapshot=revision_by_snapshot
+            snapshot.id,
+            snapshots_by_id=snapshots_by_id,
+            revision_by_snapshot=revision_by_snapshot,
+            evidence_revision_by_snapshot=evidence_revision_by_snapshot,
         )
         revision = revision_by_snapshot.get(snapshot.id)
+        evidence_revision = evidence_revision_by_snapshot.get(snapshot.id)
         entries.append(
             ForecastSnapshotTimelineEntry(
                 **ForecastSnapshotResponse.model_validate(snapshot).model_dump(),
                 version=version,
                 root_snapshot_id=root_id,
-                parent_snapshot_id=revision.parent_snapshot_id if revision else None,
-                revision_reason=revision.reason if revision else None,
+                parent_snapshot_id=(
+                    revision.parent_snapshot_id
+                    if revision
+                    else evidence_revision.parent_snapshot_id if evidence_revision else None
+                ),
+                revision_reason=(
+                    revision.reason
+                    if revision
+                    else f"{evidence_revision.mode.title()} evidence revision; human review pending"
+                    if evidence_revision
+                    else None
+                ),
                 target_window=target_window(snapshot.feature_trading_date).as_dict(),
             )
         )
@@ -136,19 +161,27 @@ def _chain_position(
     *,
     snapshots_by_id: dict[UUID, ForecastSnapshot],
     revision_by_snapshot: dict[UUID, ForecastRevision],
+    evidence_revision_by_snapshot: dict[UUID, EvidenceRevision] | None = None,
 ) -> tuple[UUID, int]:
+    evidence_revision_by_snapshot = evidence_revision_by_snapshot or {}
     current_id = snapshot_id
     seen: set[UUID] = set()
     traversed: list[ForecastRevision] = []
     version = 1
-    while (revision := revision_by_snapshot.get(current_id)) is not None:
+    while True:
+        revision = revision_by_snapshot.get(current_id)
+        evidence_revision = evidence_revision_by_snapshot.get(current_id)
+        if revision is None and evidence_revision is None:
+            break
         if current_id in seen:
             raise HTTPException(status_code=500, detail="forecast revision history contains a cycle")
         seen.add(current_id)
-        parent = snapshots_by_id.get(revision.parent_snapshot_id)
+        parent_id = revision.parent_snapshot_id if revision else evidence_revision.parent_snapshot_id
+        parent = snapshots_by_id.get(parent_id)
         if parent is None:
             raise HTTPException(status_code=500, detail="forecast revision history has a missing or cross-symbol parent")
-        traversed.append(revision)
+        if revision is not None:
+            traversed.append(revision)
         current_id = parent.id
         version += 1
     if any(revision.root_snapshot_id != current_id for revision in traversed):

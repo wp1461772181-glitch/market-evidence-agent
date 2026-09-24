@@ -11,7 +11,9 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     JSON,
+    LargeBinary,
     String,
+    Text,
     UniqueConstraint,
     Uuid,
     func,
@@ -317,3 +319,34 @@ class SecFilingInventory(Base):
     content_excerpt_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     content_truncated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     content_error: Mapped[str | None] = mapped_column(String(280), nullable=True)
+
+
+class UploadedEvidence(Base):
+    """A user-supplied, explicitly unconfirmed source document.
+
+    Uploaded material is retained for later human review only.  It has no
+    relationship to official filings, model inputs, or forecast revisions.
+    """
+
+    __tablename__ = "uploaded_evidence"
+    __table_args__ = (
+        UniqueConstraint("symbol", "content_sha256", name="uq_uploaded_evidence_symbol_content"),
+        CheckConstraint("credibility_stars >= 1 AND credibility_stars <= 5", name="ck_uploaded_evidence_stars"),
+        CheckConstraint("impact_severity IN ('low', 'medium', 'high')", name="ck_uploaded_evidence_impact_severity"),
+        CheckConstraint("status = 'unconfirmed'", name="ck_uploaded_evidence_status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    symbol: Mapped[str] = mapped_column(String(10), nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    source_url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    credibility_stars: Mapped[int] = mapped_column(Integer, nullable=False)
+    credibility_reason: Mapped[str] = mapped_column(String(700), nullable=False)
+    impact_severity: Mapped[str] = mapped_column(String(16), nullable=False, default="medium")
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    raw_content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    content_text: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="unconfirmed")

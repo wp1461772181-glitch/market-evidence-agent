@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ApiError, createForecastRun, fetchFilingContent, getDashboard, getFilingInventory, reviewFiling, scanOfficialFilings } from "./api";
-import type { Claim, DashboardResponse, FilingContent, FilingInventory, FilingReview, OfficialFiling, PriceCandle, PriceHistory, RefreshReport, Snapshot } from "./types";
+import { ApiError, createEvidenceRevision, createForecastRun, fetchFilingContent, getDashboard, getEvidenceRevisions, getFilingInventory, getUploadedEvidence, reviewFiling, scanOfficialFilings, uploadEvidence } from "./api";
+import type { Claim, DashboardResponse, EvidenceRevision, FilingContent, FilingInventory, FilingReview, OfficialFiling, PriceCandle, PriceHistory, RefreshReport, Snapshot, UploadedEvidence } from "./types";
 
 type LoadState =
   | { kind: "loading" }
@@ -13,8 +13,11 @@ const SUPPORTED_SYMBOLS = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA"] as const;
 type SupportedSymbol = typeof SUPPORTED_SYMBOLS[number];
 type ActionState = { kind: "idle" } | { kind: "running" } | { kind: "success"; message: string } | { kind: "error"; message: string };
 type FilingState = { kind: "idle" } | { kind: "loading" } | { kind: "ready"; data: FilingInventory } | { kind: "error"; message: string };
+type EvidenceRevisionState = { kind: "loading" } | { kind: "ready"; items: EvidenceRevision[] } | { kind: "error"; message: string };
 type FilingFormFilter = "all" | "10-K" | "10-Q" | "8-K";
 type FilingReviewFilter = "all" | "pending" | "accepted" | "rejected";
+type UploadActionState = ActionState;
+type RevisionActionState = ActionState & { revision?: EvidenceRevision };
 
 const INITIAL_FILING_COUNT = 5;
 
@@ -28,6 +31,7 @@ export function App() {
   const [forecastAction, setForecastAction] = useState<ActionState>({ kind: "idle" });
   const [scanAction, setScanAction] = useState<ActionState>({ kind: "idle" });
   const [filings, setFilings] = useState<FilingState>({ kind: "idle" });
+  const [evidenceRevisions, setEvidenceRevisions] = useState<EvidenceRevisionState>({ kind: "loading" });
   const requestVersion = useRef(0);
 
   useEffect(() => {
@@ -70,6 +74,17 @@ export function App() {
     return () => controller.abort();
   }, [requestedSymbol]);
 
+  useEffect(() => {
+    const controller = new AbortController();
+    setEvidenceRevisions({ kind: "loading" });
+    getEvidenceRevisions(requestedSymbol, controller.signal)
+      .then((result) => setEvidenceRevisions({ kind: "ready", items: result.revisions ?? [] }))
+      .catch((error: unknown) => {
+        if (!controller.signal.aborted) setEvidenceRevisions({ kind: "error", message: actionMessage(error, "暂时无法读取证据修订记录。") });
+      });
+    return () => controller.abort();
+  }, [requestedSymbol]);
+
   function submit(event: FormEvent) {
     event.preventDefault();
     const next = input.trim().toUpperCase();
@@ -108,6 +123,22 @@ export function App() {
     }
   }
 
+  function updateFilingInventory(filing: OfficialFiling) {
+    setFilings((previous) => {
+      if (previous.kind !== "ready") return previous;
+      const found = previous.data.filings.some((item) => item.accession_number === filing.accession_number);
+      return {
+        kind: "ready",
+        data: {
+          ...previous.data,
+          filings: found
+            ? previous.data.filings.map((item) => item.accession_number === filing.accession_number ? { ...item, ...filing } : item)
+            : [...previous.data.filings, filing],
+        },
+      };
+    });
+  }
+
   const actionDesk = <ActionDesk
     symbol={requestedSymbol}
     supported={isSupportedSymbol(requestedSymbol)}
@@ -115,8 +146,15 @@ export function App() {
     forecastAction={forecastAction}
     scanAction={scanAction}
     filings={filings}
+    evidenceRevisions={evidenceRevisions}
+    snapshots={state.kind === "ready" || state.kind === "empty" ? state.data.snapshots : []}
     onForecast={startForecast}
     onScan={startFilingScan}
+    onFilingChanged={updateFilingInventory}
+    onRevisionCreated={(revision) => {
+      setEvidenceRevisions((previous) => ({ kind: "ready", items: [revision, ...(previous.kind === "ready" ? previous.items : [])] }));
+      setRetryKey((value) => value + 1);
+    }}
   />;
 
   if (state.kind === "loading") return <Shell input={input} setInput={setInput} submit={submit}><Loading symbol={requestedSymbol} /></Shell>;
@@ -124,11 +162,18 @@ export function App() {
   if (state.kind === "empty") return <Shell input={input} setInput={setInput} submit={submit}><EmptyState data={state.data} />{actionDesk}</Shell>;
 
   const { data } = state;
-  const selected = data.snapshots.find((snapshot) => snapshot.id === selectedId) ?? latestSnapshot(data.snapshots);
+  const manualRevisions = evidenceRevisions.kind === "ready" ? evidenceRevisions.items : [];
+  const manualRevisionByChild = new Map(manualRevisions.map((revision) => [revision.revised_snapshot_id, revision]));
+  const presentedSnapshots = data.snapshots.map((snapshot) => {
+    const revision = manualRevisionByChild.get(snapshot.id);
+    return revision ? { ...snapshot, parent_snapshot_id: revision.parent_snapshot_id, revision_reason: "证据修订 · 待人工核验" } : snapshot;
+  });
+  const selected = presentedSnapshots.find((snapshot) => snapshot.id === selectedId) ?? latestSnapshot(presentedSnapshots);
   const selectedReport = reportForRevisedSnapshot(selected.id, data.refresh_reports);
   const selectedChainReport = reportForSnapshotInChain(selected.id, data.refresh_reports);
-  const evidenceIds = new Set(data.refresh_reports.map((report) => report.revised_snapshot.id));
-  const pickable = evidenceOnly ? data.snapshots.filter((snapshot) => evidenceIds.has(snapshot.id)) : data.snapshots;
+  const selectedManualRevision = manualRevisionByChild.get(selected.id);
+  const evidenceIds = new Set([...data.refresh_reports.map((report) => report.revised_snapshot.id), ...manualRevisionByChild.keys()]);
+  const pickable = evidenceOnly ? presentedSnapshots.filter((snapshot) => evidenceIds.has(snapshot.id)) : presentedSnapshots;
 
   return (
     <Shell input={input} setInput={setInput} submit={submit}>
@@ -156,12 +201,12 @@ export function App() {
               <input
                 type="checkbox"
                 checked={evidenceOnly}
-                disabled={data.refresh_reports.length === 0}
+                disabled={evidenceIds.size === 0}
                 onChange={(event) => {
                   const enabled = event.target.checked;
                   setEvidenceOnly(enabled);
                   if (enabled) {
-                    const eventSnapshots = data.snapshots.filter((snapshot) => evidenceIds.has(snapshot.id));
+                    const eventSnapshots = presentedSnapshots.filter((snapshot) => evidenceIds.has(snapshot.id));
                     if (eventSnapshots.length) setSelectedId(latestSnapshot(eventSnapshots).id);
                   }
                 }}
@@ -179,14 +224,14 @@ export function App() {
                 aria-selected={snapshot.id === selected.id}
               >
                 <span>{formatDate(snapshot.feature_as_of_time)}</span>
-                <small>{isOnDemandSnapshot(snapshot) ? "主动生成 · 实验模型" : evidenceIds.has(snapshot.id) ? "事件后修订" : snapshot.version > 1 ? `第 ${snapshot.version} 版` : "存档版本"}</small>
+                <small>{manualRevisionByChild.has(snapshot.id) ? "证据修订 · 待人工核验" : isOnDemandSnapshot(snapshot) ? "主动生成 · 实验模型" : evidenceIds.has(snapshot.id) ? "事件后修订" : snapshot.version > 1 ? `第 ${snapshot.version} 版` : "存档版本"}</small>
               </button>
             ))}
           </div>
         </section>
 
         <section className="analysis-grid">
-          <ProbabilityPanel snapshot={selected} report={selectedReport} />
+              <ProbabilityPanel snapshot={selected} report={selectedReport} />
           <MetadataPanel snapshot={selected} report={selectedReport} />
         </section>
 
@@ -198,8 +243,8 @@ export function App() {
         />
 
         <section className="lower-grid">
-          <EvidencePanel report={selectedReport} selected={selected} />
-          <Timeline snapshots={data.snapshots} reports={data.refresh_reports} selectedId={selected.id} onSelect={(id) => { setEvidenceOnly(false); setSelectedId(id); }} />
+          <EvidencePanel report={selectedReport} manualRevision={selectedManualRevision} selected={selected} />
+          <Timeline snapshots={presentedSnapshots} reports={data.refresh_reports} manualRevisions={manualRevisions} selectedId={selected.id} onSelect={(id) => { setEvidenceOnly(false); setSelectedId(id); }} />
         </section>
 
         <Evaluation evaluation={data.evaluation} />
@@ -209,7 +254,7 @@ export function App() {
 }
 
 function ActionDesk({
-  symbol, supported, priceHistory, forecastAction, scanAction, filings, onForecast, onScan,
+  symbol, supported, priceHistory, forecastAction, scanAction, filings, evidenceRevisions, snapshots, onForecast, onScan, onFilingChanged, onRevisionCreated,
 }: {
   symbol: string;
   supported: boolean;
@@ -217,8 +262,12 @@ function ActionDesk({
   forecastAction: ActionState;
   scanAction: ActionState;
   filings: FilingState;
+  evidenceRevisions: EvidenceRevisionState;
+  snapshots: Snapshot[];
   onForecast: () => void;
   onScan: () => void;
+  onFilingChanged: (filing: OfficialFiling) => void;
+  onRevisionCreated: (revision: EvidenceRevision) => void;
 }) {
   const freshness = priceHistory?.latest_trading_date ? `本地行情截至 ${priceHistory.latest_trading_date}` : "尚未读取到本地行情状态";
   return <section className="action-desk" aria-labelledby="action-title">
@@ -253,11 +302,12 @@ function ActionDesk({
       <span className="section-label">版本边界</span>
       <div>
         <h3 id="revision-explainer-title">事件修订何时触发？</h3>
-        <p>目前不会因 SEC 扫描、人工核验或“生成新预测”自动触发。只有历史 Week 8 来源在手动调用 <code>/forecast-refresh-runs</code> 后，通过可用时间、市场快照和来源校验，才会保存一份独立修订。</p>
-        <p>修订前后的概率差来自不同的市场特征快照，不能据此说某一份文件导致了变化。</p>
+        <p>你可以上传媒体材料，或选择一份历史预测和可读的官方 SEC 文件，主动生成一份待人工核验的证据修订。它保留原预测，并建立独立的新旧版本关联。</p>
+        <p>本机配置并安装定时任务后，会每小时检查 SEC；若新官方文件满足 72 小时窗口等条件，会生成待人工核验的证据修订。媒体材料不会自动修订。所有证据修订复制原模型概率；任何方向结论均待人工审核。</p>
       </div>
     </aside>
-    <FilingInventoryPanel symbol={symbol} state={filings} />
+    <EvidenceWorkflowPanel symbol={symbol} supported={supported} snapshots={snapshots} filings={filings} revisions={evidenceRevisions} onRevisionCreated={onRevisionCreated} />
+    <FilingInventoryPanel symbol={symbol} state={filings} onInventoryChanged={onFilingChanged} />
   </section>;
 }
 
@@ -266,7 +316,232 @@ function ActionNotice({ state }: { state: ActionState }) {
   return <p className={`action-notice ${state.kind}`} role={state.kind === "error" ? "alert" : "status"}>{state.message}</p>;
 }
 
-function FilingInventoryPanel({ symbol, state }: { symbol: string; state: FilingState }) {
+function EvidenceWorkflowPanel({ symbol, supported, snapshots, filings, revisions, onRevisionCreated }: { symbol: string; supported: boolean; snapshots: Snapshot[]; filings: FilingState; revisions: EvidenceRevisionState; onRevisionCreated: (revision: EvidenceRevision) => void }) {
+  const [uploaded, setUploaded] = useState<{ kind: "loading" } | { kind: "ready"; items: UploadedEvidence[] } | { kind: "error"; message: string }>({ kind: "loading" });
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setUploaded({ kind: "loading" });
+    getUploadedEvidence(symbol, controller.signal)
+      .then((result) => setUploaded({ kind: "ready", items: result.items ?? [] }))
+      .catch((error: unknown) => { if (!controller.signal.aborted) setUploaded({ kind: "error", message: actionMessage(error, "暂时无法读取已上传材料。") }); });
+    return () => controller.abort();
+  }, [symbol]);
+
+  async function handleUpload(input: Parameters<typeof uploadEvidence>[1]) {
+    const item = await uploadEvidence(symbol, input);
+    setUploaded((previous) => ({ kind: "ready", items: sortUploadedEvidence([item, ...(previous.kind === "ready" ? previous.items : [])]) }));
+  }
+
+  async function handleRevision(parentSnapshotId: string, sourceType: "official_filing" | "uploaded_media", sourceId: string) {
+    const revision = await createEvidenceRevision(symbol, { parent_snapshot_id: parentSnapshotId, source_type: sourceType, source_id: sourceId, mode: "manual" });
+    onRevisionCreated(revision);
+    return revision;
+  }
+
+  const uploadedItems = uploaded.kind === "ready" ? uploaded.items : [];
+  const existingRevisions = revisions.kind === "ready" ? revisions.items : [];
+  const revisionReadyFilings = filings.kind === "ready"
+    ? filings.data.filings.filter((filing) => filing.content_status === "fetched" && filing.review_status !== "rejected" && Boolean(filing.id)).sort(sortFilingsNewestFirst)
+    : [];
+
+  return <section className="evidence-workbench" aria-labelledby="evidence-workbench-title">
+    <div className="workbench-heading">
+      <div><span className="section-label">新增材料与手动修订</span><h3 id="evidence-workbench-title">让新信息进入下一次判断</h3></div>
+      <span className="tag">human initiated</span>
+    </div>
+    <p className="workbench-intro">上传媒体消息后，可选择一份具体历史预测并生成待核验修订。系统保留原预测；模型概率不会因为这一步被人为改写。</p>
+    <div className="workbench-grid">
+      <UploadEvidencePanel symbol={symbol} supported={supported} uploaded={uploaded} onUpload={handleUpload} />
+      <ManualRevisionPanel
+        supported={supported}
+        snapshots={snapshots}
+        revisionReadyFilings={revisionReadyFilings}
+        uploaded={uploadedItems}
+        priorRevisions={existingRevisions}
+        loadingSources={filings.kind === "loading" || uploaded.kind === "loading"}
+        sourceError={filings.kind === "error" ? filings.message : uploaded.kind === "error" ? uploaded.message : revisions.kind === "error" ? revisions.message : undefined}
+        onCreate={handleRevision}
+      />
+    </div>
+  </section>;
+}
+
+function UploadEvidencePanel({ symbol, supported, uploaded, onUpload }: {
+  symbol: string;
+  supported: boolean;
+  uploaded: { kind: "loading" } | { kind: "ready"; items: UploadedEvidence[] } | { kind: "error"; message: string };
+  onUpload: (input: Parameters<typeof uploadEvidence>[1]) => Promise<void>;
+}) {
+  const [file, setFile] = useState<File | null>(null);
+  const [title, setTitle] = useState("");
+  const [sourceUrl, setSourceUrl] = useState("");
+  const [publishedAt, setPublishedAt] = useState("");
+  const [stars, setStars] = useState(3);
+  const [impactSeverity, setImpactSeverity] = useState<"low" | "medium" | "high">("medium");
+  const [reason, setReason] = useState("");
+  const [action, setAction] = useState<UploadActionState>({ kind: "idle" });
+  const fileInput = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    setFile(null); setTitle(""); setSourceUrl(""); setPublishedAt(""); setStars(3); setImpactSeverity("medium"); setReason(""); setAction({ kind: "idle" });
+    if (fileInput.current) fileInput.current.value = "";
+  }, [symbol]);
+
+  async function submitUpload(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!file || !isAllowedEvidenceFile(file) || !isHttpsUrl(sourceUrl) || !title.trim() || !publishedAt || !reason.trim()) return;
+    setAction({ kind: "running" });
+    try {
+      await onUpload({ file, title: title.trim(), sourceUrl: sourceUrl.trim(), publishedAt: new Date(publishedAt).toISOString(), credibilityStars: stars, credibilityReason: reason.trim(), impactSeverity });
+      setAction({ kind: "success", message: "材料已保存为未获官方证实的媒体证据；现在可用于手动修订。" });
+      setFile(null); setTitle(""); setSourceUrl(""); setPublishedAt(""); setStars(3); setImpactSeverity("medium"); setReason("");
+      if (fileInput.current) fileInput.current.value = "";
+    } catch (error: unknown) {
+      setAction({ kind: "error", message: actionMessage(error, "上传材料失败。") });
+    }
+  }
+
+  const invalidFile = file !== null && !isAllowedEvidenceFile(file);
+  return <article className="workbench-card upload-card">
+    <span className="action-number">03</span>
+    <h3>上传媒体材料</h3>
+    <p>用于媒体报道、行业消息或未获官网确认的内容。只接受 TXT、Markdown、PDF，并保留原始 HTTPS 链接与发布时间。</p>
+    <form className="evidence-form" onSubmit={submitUpload}>
+      <label>材料文件
+        <input ref={fileInput} type="file" accept=".txt,.md,.markdown,.pdf,text/plain,text/markdown,application/pdf" required disabled={!supported || action.kind === "running"} onChange={(event) => setFile(event.target.files?.[0] ?? null)} />
+      </label>
+      {invalidFile && <p className="content-error" role="alert">请选择 TXT、Markdown 或 PDF 文件。</p>}
+      <label>标题<input value={title} required maxLength={240} disabled={!supported || action.kind === "running"} onChange={(event) => setTitle(event.target.value)} placeholder="例如：权威媒体报道产品重大问题" /></label>
+      <label>原始 HTTPS 来源<input value={sourceUrl} required type="url" inputMode="url" disabled={!supported || action.kind === "running"} onChange={(event) => setSourceUrl(event.target.value)} placeholder="https://…" /></label>
+      <label>发布时间<input value={publishedAt} required type="datetime-local" disabled={!supported || action.kind === "running"} onChange={(event) => setPublishedAt(event.target.value)} /></label>
+      <fieldset className="credibility-picker">
+        <legend>用户评估的消息可信度</legend>
+        <div>{[1, 2, 3, 4, 5].map((value) => <label key={value} title={`${value} 星`}><input type="radio" name={`credibility-${symbol}`} value={value} checked={stars === value} disabled={!supported || action.kind === "running"} onChange={() => setStars(value)} /><span aria-hidden="true">★</span><span className="sr-only">{value} 星</span></label>)}</div>
+        <small>{stars} / 5 星 · 记录你的初步判断，不是精确概率，也不代表内容已获官方证实。</small>
+      </fieldset>
+      <label>潜在影响程度
+        <select value={impactSeverity} disabled={!supported || action.kind === "running"} onChange={(event) => setImpactSeverity(event.target.value as "low" | "medium" | "high")}>
+          <option value="low">低 · 可能影响有限</option>
+          <option value="medium">中 · 值得人工审阅</option>
+          <option value="high">高 · 可能显著影响市场预期</option>
+        </select>
+        <small className="field-note">这是对潜在重要性的判断，不是涨跌方向或概率预测。</small>
+      </label>
+      <label>评分理由<textarea value={reason} required rows={3} maxLength={1000} disabled={!supported || action.kind === "running"} onChange={(event) => setReason(event.target.value)} placeholder="例如：媒体的一手采访、交叉报道情况，或尚待确认的原因" /></label>
+      <button className="action-button" type="submit" disabled={!supported || action.kind === "running" || !file || invalidFile || !isHttpsUrl(sourceUrl) || !title.trim() || !publishedAt || !reason.trim()}>{action.kind === "running" ? "正在保存…" : "保存未证实材料"}</button>
+      <ActionNotice state={action} />
+    </form>
+    <UploadedEvidenceList state={uploaded} />
+  </article>;
+}
+
+function UploadedEvidenceList({ state }: { state: { kind: "loading" } | { kind: "ready"; items: UploadedEvidence[] } | { kind: "error"; message: string } }) {
+  if (state.kind === "loading") return <p className="material-status">正在读取已上传材料…</p>;
+  if (state.kind === "error") return <p className="content-error" role="alert">{state.message}</p>;
+  if (!state.items.length) return <p className="material-status">还没有手动上传的媒体材料。</p>;
+  return <div className="uploaded-list" aria-label="已上传媒体材料">
+    <p className="list-caption">已保存 {state.items.length} 份 · 均待进一步核验</p>
+    {sortUploadedEvidence(state.items).slice(0, 4).map((item) => <article className="uploaded-item" key={item.id}>
+      <div><strong>{item.title}</strong><span aria-label={`用户评估 ${item.credibility_stars} 星`}>{"★".repeat(clampStars(item.credibility_stars))}{"☆".repeat(5 - clampStars(item.credibility_stars))}</span></div>
+      <small>{formatDateTime(item.published_at)} · 未获官方证实{item.impact_severity ? ` · 潜在影响${severityLabel(item.impact_severity)}` : ""}</small>
+      <SafeLink href={item.source_url}>打开原始来源 <span>↗</span></SafeLink>
+    </article>)}
+  </div>;
+}
+
+function ManualRevisionPanel({ supported, snapshots, revisionReadyFilings, uploaded, priorRevisions, loadingSources, sourceError, onCreate }: {
+  supported: boolean;
+  snapshots: Snapshot[];
+  revisionReadyFilings: OfficialFiling[];
+  uploaded: UploadedEvidence[];
+  priorRevisions: EvidenceRevision[];
+  loadingSources: boolean;
+  sourceError?: string;
+  onCreate: (parentSnapshotId: string, sourceType: "official_filing" | "uploaded_media", sourceId: string) => Promise<EvidenceRevision>;
+}) {
+  const manualRevisionIds = new Set(priorRevisions.map((revision) => revision.revised_snapshot_id));
+  const sortedSnapshots = snapshots
+    .filter((snapshot) => isOnDemandSnapshot(snapshot) && !manualRevisionIds.has(snapshot.id))
+    .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at) || b.version - a.version);
+  const [parentId, setParentId] = useState("");
+  const [sourceValue, setSourceValue] = useState("");
+  const [action, setAction] = useState<RevisionActionState>({ kind: "idle" });
+
+  const selectedParent = sortedSnapshots.find((snapshot) => snapshot.id === parentId);
+  const sourceOptions = [
+    ...revisionReadyFilings.map((filing) => ({ value: `official_filing:${filing.id}`, sourceType: "official_filing" as const, sourceId: filing.id!, availableAt: filingAvailableAt(filing), label: `SEC ${filing.form} · ${filing.filed_at} · ${filing.review_status === "accepted" ? "已接受" : "待核验"}` })),
+    ...sortUploadedEvidence(uploaded).map((item) => ({ value: `uploaded_media:${item.id}`, sourceType: "uploaded_media" as const, sourceId: item.id, availableAt: item.published_at, label: `媒体材料 · ${item.title} · ${clampStars(item.credibility_stars)} 星` })),
+  ].filter((source) => selectedParent ? Date.parse(source.availableAt) > Date.parse(selectedParent.created_at) : true);
+  const snapshotChoiceKey = sortedSnapshots.map((snapshot) => snapshot.id).join("|");
+  const sourceChoiceKey = sourceOptions.map((source) => source.value).join("|");
+
+  useEffect(() => {
+    setParentId((current) => sortedSnapshots.some((snapshot) => snapshot.id === current) ? current : (sortedSnapshots[0]?.id ?? ""));
+    setAction({ kind: "idle" });
+  }, [snapshotChoiceKey]);
+
+  useEffect(() => {
+    setSourceValue((current) => sourceOptions.some((source) => source.value === current) ? current : (sourceOptions[0]?.value ?? ""));
+  }, [sourceChoiceKey]);
+
+  const selectedSource = sourceOptions.find((option) => option.value === sourceValue);
+  async function submitRevision(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!parentId || !selectedSource) return;
+    setAction({ kind: "running" });
+    try {
+      const revision = await onCreate(parentId, selectedSource.sourceType, selectedSource.sourceId);
+      setAction({ kind: "success", revision, message: "已建立待人工核验的修订记录；原预测保持不变，模型概率暂未改变。" });
+    } catch (error: unknown) {
+      setAction({ kind: "error", message: actionMessage(error, "生成修订失败。") });
+    }
+  }
+
+  return <article className="workbench-card revision-card">
+    <span className="action-number">04</span>
+    <h3>修正预测</h3>
+    <p>选择要修订的具体历史版本，再绑定一条新 SEC 文件或媒体材料。会建立不可变的新关联，原版本始终保留。</p>
+    <form className="evidence-form" onSubmit={submitRevision}>
+      <label>要修订的历史预测
+        <select value={parentId} disabled={!supported || action.kind === "running" || !sortedSnapshots.length} onChange={(event) => { setParentId(event.target.value); setAction({ kind: "idle" }); }}>
+          {!sortedSnapshots.length && <option value="">暂无可修订的主动生成版本</option>}
+          {sortedSnapshots.map((snapshot) => <option value={snapshot.id} key={snapshot.id}>生成 {formatDateTime(snapshot.created_at)} · 数据截止 {formatDateTime(snapshot.feature_as_of_time)} · 第 {snapshot.version} 版 · {snapshot.id.slice(0, 8)}</option>)}
+        </select>
+      </label>
+      <label>新材料
+        <select value={sourceValue} disabled={!supported || action.kind === "running" || !sourceOptions.length || loadingSources} onChange={(event) => setSourceValue(event.target.value)}>
+          {!sourceOptions.length && <option value="">{loadingSources ? "正在读取材料…" : selectedParent ? "没有发布时间晚于该预测的新材料" : "请先选择预测版本"}</option>}
+          {sourceOptions.map((source) => <option key={source.value} value={source.value}>{source.label}</option>)}
+        </select>
+      </label>
+      <p className="revision-note">只可修订“主动生成”的 observed 预测版本；旧 Week 8 历史演示仅供回放。SEC 仅列出已读取原文且未驳回、并在该预测之后公开的来源。媒体材料保留“未获官方证实”和你的星级判断，必须在人工核验中审阅。</p>
+      <button className="action-button" type="submit" disabled={!supported || action.kind === "running" || !parentId || !selectedSource}>{action.kind === "running" ? "正在生成待核验修订…" : "生成待核验修订"}</button>
+      <ActionNotice state={action} />
+      {action.kind === "success" && action.revision && <RevisionLink revision={action.revision} />}
+      {sourceError && <p className="content-error" role="alert">{sourceError}</p>}
+    </form>
+    <RevisionHistory revisions={priorRevisions} />
+  </article>;
+}
+
+function RevisionLink({ revision }: { revision: EvidenceRevision }) {
+  return <p className="revision-result" role="status"><strong>版本关联已保存</strong><span>{revision.parent_snapshot_id.slice(0, 8)} → {revision.revised_snapshot_id.slice(0, 8)}</span><small>待人工核验 · 模型概率暂未改变</small></p>;
+}
+
+function RevisionHistory({ revisions }: { revisions: EvidenceRevision[] }) {
+  if (!revisions.length) return <p className="material-status">还没有由新材料发起的手动修订。</p>;
+  return <div className="revision-history" aria-label="手动修订记录">
+    <p className="list-caption">最近手动修订</p>
+    {revisions.slice(0, 3).map((revision) => <div className="revision-history-item" key={revision.id}>
+      <strong>{revision.source_type === "official_filing" ? "SEC 文件" : "媒体材料"}</strong>
+      <span>{revision.parent_snapshot_id.slice(0, 8)} → {revision.revised_snapshot_id.slice(0, 8)}</span>
+      <small>待人工核验 · 模型概率暂未改变</small>
+    </div>)}
+  </div>;
+}
+
+function FilingInventoryPanel({ symbol, state, onInventoryChanged }: { symbol: string; state: FilingState; onInventoryChanged: (filing: OfficialFiling) => void }) {
   const [content, setContent] = useState<Record<string, { kind: "loading" } | { kind: "ready"; data: FilingContent } | { kind: "error"; message: string }>>({});
   const [reviewDrafts, setReviewDrafts] = useState<Record<string, { decision: "accepted" | "rejected"; note: string }>>({});
   const [reviews, setReviews] = useState<Record<string, { kind: "loading" } | { kind: "ready"; data: FilingReview } | { kind: "error"; message: string }>>({});
@@ -286,6 +561,7 @@ function FilingInventoryPanel({ symbol, state }: { symbol: string; state: Filing
     try {
       const data = await fetchFilingContent(symbol, accessionNumber);
       setContent((previous) => ({ ...previous, [accessionNumber]: { kind: "ready", data } }));
+      onInventoryChanged(data);
     } catch (error: unknown) {
       setContent((previous) => ({ ...previous, [accessionNumber]: { kind: "error", message: actionMessage(error, "无法读取这份 SEC 原文摘要。") } }));
     }
@@ -301,6 +577,7 @@ function FilingInventoryPanel({ symbol, state }: { symbol: string; state: Filing
     try {
       const data = await reviewFiling(symbol, accessionNumber, draft.decision, draft.note.trim());
       setReviews((previous) => ({ ...previous, [accessionNumber]: { kind: "ready", data } }));
+      onInventoryChanged(data);
     } catch (error: unknown) {
       setReviews((previous) => ({ ...previous, [accessionNumber]: { kind: "error", message: actionMessage(error, "保存人工核验结果失败。") } }));
     }
@@ -600,7 +877,19 @@ function CandlestickChart({ candles, selected, report, target, activeDate, onIns
 
 function Marker({ x, label, tone }: { x: number; label: string; tone?: "revised" }) { return <g className={`snapshot-marker ${tone ?? ""}`}><line x1={x} x2={x} y1={19} y2={287} /><text x={x + 5} y={18}>{label}</text></g>; }
 
-function EvidencePanel({ report, selected }: { report?: RefreshReport; selected: Snapshot }) {
+function EvidencePanel({ report, manualRevision, selected }: { report?: RefreshReport; manualRevision?: EvidenceRevision; selected: Snapshot }) {
+  if (manualRevision) {
+    const source = manualRevision.source;
+    const evidence = manualRevision.evidence;
+    return <article className="panel evidence-panel">
+      <div className="panel-title"><span className="section-label">主要证据 / {manualRevision.mode === "automatic" ? "自动修订" : "手动修订"}</span><span className="review-flag">待人工核验</span></div>
+      <h2>{evidence?.summary ?? source?.title ?? "已保存新的证据修订"}</h2>
+      {evidence?.quote && <blockquote>“{evidence.quote}”</blockquote>}
+      {source?.url && <SafeLink href={source.url}>打开原始来源 <span>↗</span></SafeLink>}
+      <p className="trigger-line">{manualRevision.source_type === "official_filing" ? "官方 SEC 文件" : "用户上传的媒体材料 · 未获官方证实"}{source?.credibility_stars ? ` · 用户评估 ${source.credibility_stars} / 5 星` : ""}</p>
+      <p className="fine-print">该证据修订与原预测使用相同的模型概率。方向结论来自材料分析，尚未完成人工核验，也不代表因果价格估计。</p>
+    </article>;
+  }
   if (!report) return <article className="panel evidence-panel no-evidence">
     <span className="section-label">主要证据</span>
     <h2>此版本没有绑定的公告事件证据。</h2>
@@ -629,9 +918,10 @@ function Claims({ title, claims, tone }: { title: string; claims: Claim[]; tone:
   return <div className={`claims ${tone}`}><h3>{title}<span>AI 观点 · 未经确认</span></h3>{claims.length ? claims.map((claim, index) => <div className="claim" key={`${claim.source_id}-${index}`}><p>{claim.claim}</p><small>“{claim.evidence_quote}”</small></div>) : <p className="empty-claim">没有保存可展示的观点。</p>}</div>;
 }
 
-function Timeline({ snapshots, reports, selectedId, onSelect }: { snapshots: Snapshot[]; reports: RefreshReport[]; selectedId: string; onSelect: (id: string) => void }) {
+function Timeline({ snapshots, reports, manualRevisions, selectedId, onSelect }: { snapshots: Snapshot[]; reports: RefreshReport[]; manualRevisions: EvidenceRevision[]; selectedId: string; onSelect: (id: string) => void }) {
   const chains = useMemo(() => buildChains(snapshots), [snapshots]);
   const reportIds = new Set(reports.map((report) => report.revised_snapshot.id));
+  const manualRevisionIds = new Set(manualRevisions.map((revision) => revision.revised_snapshot_id));
   return <article className="panel timeline-panel">
     <div className="panel-title"><span className="section-label">历史版本</span><span className="tag">immutable archive</span></div>
     <p className="timeline-intro">每条线是一条独立的版本链；不同根版本不代表连续修订。</p>
@@ -640,7 +930,7 @@ function Timeline({ snapshots, reports, selectedId, onSelect }: { snapshots: Sna
         <span className="chain-label">链 {String(chainIndex + 1).padStart(2, "0")}</span>
         {chain.map((snapshot) => <button key={snapshot.id} className={`timeline-item ${snapshot.id === selectedId ? "active" : ""}`} onClick={() => onSelect(snapshot.id)}>
           <i aria-hidden="true" />
-          <span><strong>{formatDate(snapshot.feature_as_of_time)}</strong><small>{reportIds.has(snapshot.id) ? "事件后修订" : snapshot.parent_snapshot_id ? (snapshot.revision_reason ?? "修订") : "原始存档"}</small></span>
+          <span><strong>{formatDate(snapshot.feature_as_of_time)}</strong><small>{manualRevisionIds.has(snapshot.id) ? "证据修订 · 待人工核验" : reportIds.has(snapshot.id) ? "事件后修订" : snapshot.parent_snapshot_id ? (snapshot.revision_reason ?? "修订") : "原始存档"}</small></span>
         </button>)}
       </div>)}
     </div>
@@ -662,6 +952,18 @@ function Evaluation({ evaluation }: { evaluation: DashboardResponse["evaluation"
 function MetricRow({ name, metrics }: { name: string; metrics: { accuracy?: number; brier_multiclass?: number; log_loss?: number } | undefined }) { return <tr><th>{name}</th><td>{metrics?.accuracy === undefined ? "—" : formatPercent(metrics.accuracy)}</td><td>{metrics?.brier_multiclass?.toFixed(3) ?? "—"}</td><td>{metrics?.log_loss?.toFixed(3) ?? "—"}</td></tr>; }
 function SafeLink({ href, children }: { href: string; children: ReactNode }) { return /^https:\/\//i.test(href) ? <a className="source-link" href={href} target="_blank" rel="noreferrer">{children}</a> : <span className="source-link disabled">来源链接不可用</span>; }
 function isSupportedSymbol(symbol: string): symbol is SupportedSymbol { return (SUPPORTED_SYMBOLS as readonly string[]).includes(symbol); }
+function isHttpsUrl(value: string) {
+  try { return new URL(value.trim()).protocol === "https:"; } catch { return false; }
+}
+function isAllowedEvidenceFile(file: File) {
+  return /\.(txt|md|markdown|pdf)$/i.test(file.name)
+    || ["text/plain", "text/markdown", "application/pdf"].includes(file.type);
+}
+function clampStars(value: number) { return Math.min(5, Math.max(1, Math.round(value || 1))); }
+function severityLabel(value: "low" | "medium" | "high") { return { low: "低", medium: "中", high: "高" }[value]; }
+function sortUploadedEvidence(items: UploadedEvidence[]) {
+  return [...items].sort((a, b) => Date.parse(b.published_at) - Date.parse(a.published_at) || (b.id ?? "").localeCompare(a.id ?? ""));
+}
 function isOnDemandSnapshot(snapshot: Snapshot) { return snapshot.feature_snapshot_mode === "observed" && Boolean(snapshot.target_window); }
 function actionMessage(error: unknown, fallback: string) {
   if (!(error instanceof ApiError)) return fallback;
@@ -674,6 +976,16 @@ function filingReviewBucket(filing: OfficialFiling): Exclude<FilingReviewFilter,
 }
 function sortFilingsNewestFirst(a: OfficialFiling, b: OfficialFiling) {
   return b.filed_at.localeCompare(a.filed_at) || b.accession_number.localeCompare(a.accession_number);
+}
+function filingAvailableAt(filing: OfficialFiling) {
+  if (filing.accepted_at) {
+    if (/^\d{14}$/.test(filing.accepted_at)) {
+      const value = filing.accepted_at;
+      return `${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}T${value.slice(8, 10)}:${value.slice(10, 12)}:${value.slice(12, 14)}Z`;
+    }
+    if (!Number.isNaN(Date.parse(filing.accepted_at))) return filing.accepted_at;
+  }
+  return `${filing.filed_at}T00:00:00Z`;
 }
 function reportForRevisedSnapshot(snapshotId: string, reports: RefreshReport[]) { return reports.find((report) => report.revised_snapshot.id === snapshotId); }
 function reportForSnapshotInChain(snapshotId: string, reports: RefreshReport[]) { return reports.find((report) => report.revised_snapshot.id === snapshotId || report.original_snapshot.id === snapshotId); }

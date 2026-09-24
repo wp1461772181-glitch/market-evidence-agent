@@ -188,6 +188,7 @@ class SecFilingInventoryItem(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
+    id: UUID
     accession_number: str
     form: str
     filed_at: date
@@ -234,3 +235,65 @@ class SecFilingReviewRequest(BaseModel):
 
     decision: Literal["accepted", "rejected"]
     note: Annotated[str, Field(min_length=1, max_length=700)]
+
+
+class UploadedEvidenceItem(BaseModel):
+    """One manual source.  Star ratings are human input, never probabilities."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    symbol: str
+    title: str
+    source_url: str
+    published_at: datetime
+    observed_at: datetime
+    credibility_stars: int
+    credibility_reason: str
+    impact_severity: Literal["low", "medium", "high"]
+    filename: str
+    content_sha256: str
+    content_preview: str = ""
+    status: Literal["unconfirmed"]
+
+
+class UploadedEvidenceResponse(BaseModel):
+    symbol: str
+    items: list[UploadedEvidenceItem]
+
+
+class EvidenceRevisionRequest(BaseModel):
+    """One selected historical forecast plus one later source document."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    parent_snapshot_id: UUID
+    source_type: Literal["official_filing", "uploaded_media"]
+    source_id: UUID
+    mode: Literal["manual", "automatic"] = "manual"
+
+
+class EvidenceRevisionResponse(BaseModel):
+    """A source-grounded conclusion whose direction still needs human review."""
+
+    id: UUID
+    symbol: str
+    mode: Literal["manual", "automatic"]
+    source_type: Literal["official_filing", "uploaded_media"]
+    source_id: UUID
+    parent_snapshot_id: UUID
+    revised_snapshot_id: UUID
+    status: Literal["pending_review"]
+    review_status: Literal["pending_review"]
+    evidence_conclusion: str
+    model_probability_changed: Literal[False]
+    source: dict[str, Any]
+    evidence: dict[str, Any]
+    probabilities: dict[str, Any]
+    created_at: datetime
+    limitations: list[str]
+
+
+class EvidenceRevisionInventoryResponse(BaseModel):
+    symbol: str
+    revisions: list[EvidenceRevisionResponse]

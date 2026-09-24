@@ -20,6 +20,7 @@ data/
 exports/
 artifacts/
 postgres_data/
+logs/
 
 # Frontend dependencies and Vite build output.
 frontend/node_modules/

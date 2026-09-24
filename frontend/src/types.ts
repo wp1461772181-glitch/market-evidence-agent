@@ -91,6 +91,8 @@ export type PriceHistory = {
 };
 
 export type OfficialFiling = {
+  /** Database identity used only when an accepted filing is selected for an evidence revision. */
+  id?: string;
   accession_number: string;
   form: string;
   filed_at: string;
@@ -138,6 +140,81 @@ export type FilingReview = OfficialFiling & {
   human_review_note: string;
   reviewed_at: string;
   review_scope_note: string;
+};
+
+/**
+ * A user-supplied report or article.  It is deliberately kept separate from
+ * SEC filings: the score records the user's judgement, not a verified fact or
+ * a probability supplied by the model.
+ */
+export type UploadedEvidence = {
+  id: string;
+  symbol: string;
+  title: string;
+  source_url: string;
+  published_at: string;
+  uploaded_at?: string;
+  observed_at?: string;
+  credibility_stars: number;
+  credibility_reason: string;
+  impact_severity?: "low" | "medium" | "high";
+  filename?: string;
+  content_sha256?: string;
+  content_preview?: string;
+  status?: "unconfirmed";
+};
+
+export type UploadedEvidenceInventory = {
+  symbol: string;
+  items: UploadedEvidence[];
+};
+
+export type EvidenceRevisionRequest = {
+  parent_snapshot_id: string;
+  source_type: "official_filing" | "uploaded_media";
+  source_id: string;
+  mode: "manual";
+};
+
+/** The API may include richer research fields over time; the front end only depends on the immutable link. */
+export type EvidenceRevision = {
+  id: string;
+  symbol: string;
+  parent_snapshot_id: string;
+  revised_snapshot_id: string;
+  source_type: "official_filing" | "uploaded_media";
+  source_id: string;
+  mode: "manual" | "automatic";
+  status: "pending_review";
+  review_status: "pending_review";
+  evidence_conclusion: string;
+  model_probability_changed: false;
+  created_at: string;
+  source?: {
+    title: string;
+    url: string;
+    published_at: string;
+    observed_at: string;
+    official_confirmation: boolean;
+    status: string;
+    credibility_stars: number | null;
+    credibility_reason: string | null;
+  };
+  evidence?: {
+    summary: string;
+    quote: string;
+    model_impact_direction: string;
+    direction_status: "review_required";
+  };
+  probabilities?: {
+    numeric_probability_changed: false;
+  };
+  limitations?: string[];
+};
+
+export type EvidenceRevisionInventory = {
+  symbol: string;
+  revisions: EvidenceRevision[];
 };
 
 export type ForecastRunResult = {

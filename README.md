@@ -165,15 +165,18 @@ source-relevance decision through `POST
 This decision only records whether the source should remain in review; it does
 not validate extracted claims, direction, or a forecast.
 
-Scanning, fetching, and reviewing a SEC filing do **not** start an event
-revision. Neither does the on-demand `POST /forecast-runs` action. The only
-implemented event-revision trigger is an explicit `POST /forecast-refresh-runs`
-request for the fixed Week 8 historical demonstration: its saved source must
-become available between two supplied XNYS session-close cutoffs, and both
-market snapshots and the source-grounded research must pass validation. That
-path archives a separate linked revision; its probability difference comes
-from later market features, not a numerical adjustment attributed to the
-source event. Live SEC-to-revision monitoring is not implemented.
+Scanning and fetching do not change a numerical probability. A manual evidence
+revision may be requested for a chosen saved prediction. The hourly official
+monitor can additionally request an automatic, review-pending evidence
+revision only for a newly fetched official filing: its SEC acceptance time must
+be after the latest observed root forecast and that forecast must have been
+created within 72 hours. It does not use uploaded media or treat a source as a
+causal numerical adjustment.
+
+To avoid a first-run backfill of every historical filing, the monitor fetches
+new official text without a recent forecast only when the SEC acceptance time
+is within the last 72 hours. Older newly discovered filings are still saved as
+inventory metadata for manual review, but their bodies are not downloaded.
 
 SEC requires an identifiable automated client. Before scanning or fetching,
 set `SEC_EDGAR_USER_AGENT` in the ignored local `.env` with an application name
@@ -190,6 +193,22 @@ The client waits at least 0.2 seconds between its requests, discovers at most
 40 recent supported forms per scan, retains at most 80,000 text characters per
 fetched document, and marks PDFs, unsupported response types, binary data, or
 unavailable sources as unavailable rather than treating them as evidence.
+
+Run one monitoring pass locally with:
+
+~~~bash
+./.venv/bin/python -m app.official_monitor
+~~~
+
+After reviewing the command, install the current-user hourly macOS
+LaunchAgent with `./.venv/bin/python scripts/install_sec_monitor_launchagent.py`.
+Use `--print` to preview the plist first. It is not run automatically, stores
+no key, reads the ignored local `.env` only at runtime, and writes output to
+`logs/official-sec-monitor.*.log`. Each scheduled run first waits for Docker;
+when needed it opens OrbStack and starts the **existing**
+`market-evidence-postgres` container, then waits for PostgreSQL. It never
+creates, resets, or restarts a database container. Preview that non-mutating
+launcher with `sh scripts/run_official_monitor.sh --print`.
 
 ~~~bash
 uvicorn app.main:app --host 127.0.0.1 --port 8000
@@ -406,9 +425,9 @@ warnings), and `pip check` reported no broken requirements.
 
 - `POST /forecasts` remains the deterministic `mock-v1` compatibility
   placeholder. `POST /forecast-runs` is the separate, local experimental Week
-  4 path; it has no retraining, automatic re-evaluation after a data revision,
-  scheduler, or monitoring. The application exposes no update or delete route
-  for snapshots, but this is not a database-level tamper-proof guarantee.
+  4 path; it has no retraining or automatic numerical re-evaluation after a
+  data revision. The application exposes no update or delete route for
+  snapshots, but this is not a database-level tamper-proof guarantee.
 - The Week 4 artifact is experimental. This archive feature makes no accuracy
   improvement or trading-profit claim. It was built on 2026-09-10 from a
   historical-research export, so it is not evidence of a prospective live run.
@@ -416,6 +435,6 @@ warnings), and `pip check` reported no broken requirements.
   Overlapping 20-session labels also mean the OOS rows are correlated and do not
   establish trading profitability.
 - Yahoo Finance Chart is an external undocumented endpoint and can change or rate-limit requests.
-- SQLAlchemy create_all is currently used for schema creation; Alembic migrations, FRED evidence, online automation, deployment, and monitoring remain later milestones. The SEC inventory is an official-file discovery and bounded-fetch feature only: it does not automatically supply forecast evidence. Week 6's LLM path is limited to saved documents; its v3 run verifies source/date/cache behavior for the ten required earnings events. Its review output applies one narrow quote-based filter for a historical capital-return statement and marks every qualitative impact direction as requiring review rather than treating it as a forecast input.
-- Week 8 supports one explicit saved-event rolling refresh only. It has no fixed-target revision mode, arbitrary URL/file/model selection, scheduler, retraining path, online model serving, or causal event-effect estimate. Research claims are source-quote-validated but remain model-generated inferences requiring human review.
-- The Week 9 archive view is local and read-only, while its explicit forecast action can refresh local market data and create one experimental immutable snapshot after the fixed artifact's publication bound. It has no login, live quote stream, portfolio actions, deployment, or monitoring; SEC inventory items require review and are not automatically fed into the numeric model. If its trusted local Week 4 evaluation files are unavailable, it reports no offline metrics instead of recalculating them.
+- SQLAlchemy create_all is currently used for schema creation; Alembic migrations, FRED evidence, IR-website polling, and cloud deployment remain later milestones. The optional, current-user hourly SEC monitor runs only after its local LaunchAgent is installed. It can fetch a newly discovered official filing and create an automatic, human-review-pending evidence revision only when the exact SEC acceptance time is after the latest observed forecast and that forecast is at most 72 hours old. It does not treat an old filing first seen today as new evidence.
+- A user can upload a media report, record its credibility stars and impact severity, then choose a specific saved forecast version for a manual evidence revision. Uploaded media remain unconfirmed; neither stars nor severity alters the numerical probabilities. Evidence revisions retain the source, exact extracted quote, and review-pending qualitative conclusion while copying the selected model probabilities unchanged. The LLM analysis is capped to a saved text excerpt and is not a causal event-effect estimate.
+- Week 8 remains a separate fixed historical rolling-refresh demonstration. The local Week 9 workspace can create experimental forecasts, manage material review, and display branching evidence revisions, but has no login, live quote stream, portfolio actions, IR-site polling, cloud deployment, retraining, online model serving, or causal numerical estimate. If its trusted local Week 4 evaluation files are unavailable, it reports no offline metrics instead of recalculating them.

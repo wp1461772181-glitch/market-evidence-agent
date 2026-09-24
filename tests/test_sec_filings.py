@@ -273,6 +273,7 @@ def test_endpoint_exposes_inventory_and_fetched_content_with_no_llm_calls(client
     assert scanned.status_code == 201
     body = scanned.json()
     assert body["created_count"] == 3
+    assert body["filings"][0]["id"]
     accession = body["filings"][0]["accession_number"]
     assert body["filings"][0]["human_review_note"] is None
     assert "does not validate claims" in body["filings"][0]["review_scope_note"]
