@@ -1,8 +1,8 @@
 """Single-process durable V2 forecast worker.
 
-P1 provides a test-injected processor. The real evidence/market processor is
-connected in later phases; until then a claimed job ends as blocked_data with
-an explicit reason, never with invented probabilities.
+The default processor freezes observed market and evidence inputs into a
+``research_only`` version.  It deliberately leaves every probability field
+empty until a validated model is available.
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ from .database import SessionLocal
 from .forecast_jobs import claim_next_job, finish_job, heartbeat_job
 from .forecast_v2 import ForecastDraft, ForecastPublicationError, publish_forecast_version
 from .forecast_v2_models import ForecastJobV2
+from .forecast_v2_processor import ForecastInputError, ResearchOnlyForecastProcessor
 
 
 LEASE_DURATION = timedelta(minutes=5)
@@ -115,7 +116,7 @@ def run_once(
     heart.start()
     try:
         if processor is None:
-            raise ForecastDataBlocked("v2_processor_not_configured")
+            processor = ResearchOnlyForecastProcessor(session_factory=session_factory)
         draft = processor(job)
         if heart.lost_lease:
             return {"status": "lease_lost", "job_id": str(job.id), "result_version_id": None}
@@ -146,6 +147,17 @@ def run_once(
         return _record_failure(
             session_factory, job, identity, status="failed", error_type=exc.reason,
             error_message=str(exc), retryable=True,
+        )
+    except ForecastInputError as exc:
+        heart.stop()
+        return _record_failure(
+            session_factory,
+            job,
+            identity,
+            status="failed" if exc.retryable else "blocked_data",
+            error_type=exc.reason,
+            error_message=str(exc),
+            retryable=exc.retryable,
         )
     except ForecastPublicationError as exc:
         heart.stop()
@@ -207,9 +219,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     while True:
         result = run_once()
-        print(json.dumps(result, sort_keys=True), flush=True)
         if result["status"] == "idle":
             time.sleep(args.poll_seconds)
+            continue
+        # A persistent worker polls frequently; logging ordinary empty polls
+        # would add 43,200 unhelpful lines per day at the default two seconds.
+        print(json.dumps(result, sort_keys=True), flush=True)
 
 
 if __name__ == "__main__":

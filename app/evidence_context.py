@@ -23,7 +23,13 @@ from .models import SecFilingInventory, UploadedEvidence
 from .services import normalize_symbol
 
 
-CONTEXT_SCHEMA_VERSION = "evidence-context-v1"
+# V1 rows predate the mandatory coverage/truncation provenance fields.  They
+# remain immutable records for already-published forecasts, but must not be
+# reused as a current V2 input: otherwise a newer UI could mistake missing
+# coverage metadata for complete coverage.  A schema bump changes both the
+# lookup key and the evidence-version fingerprint, appending one compatible
+# version per source state instead of mutating the old row.
+CONTEXT_SCHEMA_VERSION = "evidence-context-v2"
 MAX_NEW_DOCUMENTS = 10
 MAX_ANALYSIS_CHARACTERS = 24_000
 ContextMode = Literal["observed", "historical_research"]

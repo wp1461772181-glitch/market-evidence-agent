@@ -132,7 +132,7 @@ def publish_forecast_version(
         if root.target_contract_hash != contract_hash or root.target_contract != canonical_contract:
             db.rollback()
             raise ForecastPublicationError("revision changed the fixed target", code="target_mismatch")
-        if job.kind == "automatic_revision" and instant > root.created_at + timedelta(hours=72):
+        if job.kind == "automatic_revision" and instant > root.decision_at + timedelta(hours=72):
             db.rollback()
             raise ForecastPublicationError("automatic revision window expired", code="auto_window_expired")
         existing = db.scalar(

@@ -9,7 +9,7 @@ from sqlalchemy.exc import OperationalError
 import app.forecast_v2_api as api
 from app.database import Base, SessionLocal, engine
 from app.forecast_jobs import enqueue_job
-from app.forecast_v2_models import ForecastJobV2, ForecastVersionV2
+from app.forecast_v2_models import ForecastJobV2, ForecastVersionV2, OfficialMonitorRunV2
 from app.models import SecFilingInventory, UploadedEvidence
 from app.main import app as main_app
 
@@ -97,6 +97,12 @@ def _media_source(*, symbol="AAPL", published_at=None, observed_at=None):
         db.commit()
         db.refresh(source)
         return source.id
+
+
+def _clear_monitor_runs():
+    with SessionLocal() as db:
+        db.query(OfficialMonitorRunV2).delete(synchronize_session=False)
+        db.commit()
 
 
 def test_new_job_is_durable_idempotent_and_does_not_run_forecast_work(client):
@@ -200,6 +206,151 @@ def test_read_version_timeline_and_explicit_empty_workspace_never_invent_joint_p
     assert empty.json()["status"] == "empty"
     assert empty.json()["joint_model_status"] == "unavailable"
     assert available.json()["current_version"]["joint_probabilities"] is None
+
+
+def test_root_list_keeps_multiple_forecast_dates_selectable_and_excludes_other_stocks(client):
+    old_root = _create_version(
+        symbol="AMZN",
+        target_end=date(2025, 1, 2),
+        decision_at=datetime(2024, 12, 2, 22, tzinfo=UTC),
+    )
+    newest_root = _create_version(
+        symbol="AMZN",
+        target_end=date(2027, 1, 29),
+        decision_at=datetime(2026, 9, 24, 22, tzinfo=UTC),
+    )
+    _create_version(symbol="MSFT", target_end=date(2027, 1, 29), decision_at=datetime(2026, 9, 25, 22, tzinfo=UTC))
+    with SessionLocal() as db:
+        root = db.get(ForecastVersionV2, newest_root)
+        child_job = enqueue_job(
+            db=db,
+            symbol="AMZN",
+            kind="manual_revision",
+            idempotency_key=f"api-root-list-child-{uuid4()}",
+            root_version_id=root.id,
+            parent_version_id=root.id,
+        )
+        child = ForecastVersionV2(
+            id=uuid4(),
+            root_id=root.id,
+            parent_version_id=root.id,
+            job_id=child_job.id,
+            version_no=2,
+            symbol="AMZN",
+            target_contract=root.target_contract,
+            target_contract_hash=root.target_contract_hash,
+            decision_at=datetime(2026, 9, 25, 22, tzinfo=UTC),
+            market_cutoff_at=datetime(2026, 9, 25, 21, tzinfo=UTC),
+            price_input_manifest={},
+            evidence_version_manifest=[],
+            feature_snapshot={},
+            baseline_probabilities=None,
+            joint_probabilities=None,
+            model_status="research_only",
+            model_manifest={},
+            trigger_type="manual_revision",
+        )
+        db.add(child)
+        db.commit()
+
+    response = client.get("/v2/stocks/amzn/forecast-roots")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["symbol"] == "AMZN"
+    assert payload["limit"] == 50
+    assert [item["id"] for item in payload["roots"]] == [str(newest_root), str(old_root)]
+    assert payload["roots"][0] == {
+        "id": str(newest_root),
+        "decision_at": "2026-09-24T22:00:00Z",
+        "target_end_date": "2027-01-29",
+        "model_status": "research_only",
+        "latest_version_id": str(child.id),
+        "latest_version_no": 2,
+        "expired": False,
+    }
+    assert payload["roots"][1]["target_end_date"] == "2025-01-02"
+    assert payload["roots"][1]["expired"] is True
+
+
+def test_monitor_status_is_derived_from_persisted_runs_and_never_invents_health(client):
+    _clear_monitor_runs()
+    try:
+        empty = client.get("/v2/monitor/status")
+        assert empty.status_code == 200
+        assert empty.json() == {
+            "health": "not_recorded",
+            "schedule_interval_seconds": 3600,
+            "stale_after_seconds": 7200,
+            "last_run": None,
+            "last_success": None,
+        }
+
+        now = datetime.now(UTC)
+        with SessionLocal() as db:
+            succeeded = OfficialMonitorRunV2(
+                status="succeeded",
+                started_at=now - timedelta(minutes=30),
+                completed_at=now - timedelta(minutes=29),
+                next_due_at=now + timedelta(minutes=31),
+                per_symbol_results={"AAPL": {"status": "succeeded"}},
+                last_success_watermark={"AAPL": "2026-09-25T00:00:00Z"},
+            )
+            partial = OfficialMonitorRunV2(
+                status="partial",
+                started_at=now - timedelta(minutes=5),
+                completed_at=now - timedelta(minutes=4),
+                next_due_at=now + timedelta(minutes=56),
+                per_symbol_results={"AAPL": {"status": "succeeded"}, "NVDA": {"status": "failed"}},
+                error_summary={"NVDA": "SEC unavailable"},
+            )
+            db.add_all([succeeded, partial])
+            db.commit()
+            db.refresh(succeeded)
+            db.refresh(partial)
+
+        response = client.get("/v2/monitor/status")
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["health"] == "degraded"
+        assert payload["last_run"]["id"] == str(partial.id)
+        assert payload["last_run"]["status"] == "partial"
+        assert payload["last_run"]["per_symbol_results"]["NVDA"]["status"] == "failed"
+        assert payload["last_success"] == {
+            "id": str(succeeded.id),
+            "completed_at": succeeded.completed_at.isoformat().replace("+00:00", "Z"),
+            "last_success_watermark": {"AAPL": "2026-09-25T00:00:00Z"},
+        }
+        assert client.get("/v2/stocks/AAPL/workspace").json()["monitor_status"] == "degraded"
+    finally:
+        _clear_monitor_runs()
+
+
+def test_monitor_status_reports_healthy_for_a_recent_complete_persisted_run(client):
+    _clear_monitor_runs()
+    try:
+        now = datetime.now(UTC)
+        with SessionLocal() as db:
+            succeeded = OfficialMonitorRunV2(
+                status="succeeded",
+                started_at=now - timedelta(minutes=10),
+                completed_at=now - timedelta(minutes=9),
+                next_due_at=now + timedelta(minutes=51),
+                per_symbol_results={"AAPL": {"status": "succeeded"}},
+                last_success_watermark={"AAPL": "2026-09-25T00:00:00Z"},
+            )
+            db.add(succeeded)
+            db.commit()
+            db.refresh(succeeded)
+
+        response = client.get("/v2/monitor/status")
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["health"] == "healthy"
+        assert payload["last_run"]["id"] == str(succeeded.id)
+        assert payload["last_success"]["id"] == str(succeeded.id)
+        assert payload["last_success"]["completed_at"] == succeeded.completed_at.isoformat().replace("+00:00", "Z")
+    finally:
+        _clear_monitor_runs()
 
 
 def test_missing_database_returns_503_instead_of_accepting_a_job(client, monkeypatch):

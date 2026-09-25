@@ -7,7 +7,7 @@ or publish a forecast version.
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
@@ -19,13 +19,16 @@ from sqlalchemy.orm import Session
 
 from .database import SessionLocal
 from .forecast_jobs import ForecastJobError, enqueue_job
-from .forecast_v2_models import ForecastJobV2, ForecastVersionV2
+from .forecast_v2_models import ForecastJobV2, ForecastVersionV2, OfficialMonitorRunV2
 from .market_time import xnys_session_close_at
 from .models import SecFilingInventory, UploadedEvidence
 from .services import normalize_symbol
 
 
 router = APIRouter(prefix="/v2", tags=["forecast-v2"])
+FORECAST_ROOT_LIST_LIMIT = 50
+MONITOR_INTERVAL_SECONDS = 60 * 60
+MONITOR_STALE_AFTER_SECONDS = MONITOR_INTERVAL_SECONDS * 2
 
 
 class SourceRefRequest(BaseModel):
@@ -185,9 +188,47 @@ def get_v2_forecast_timeline(root_id: UUID, db: Session = Depends(get_v2_db)) ->
         raise HTTPException(status_code=503, detail="V2 job store is unavailable") from exc
 
 
+@router.get("/monitor/status")
+def get_v2_monitor_status(db: Session = Depends(get_v2_db)) -> dict[str, Any]:
+    """Expose persisted monitor state; process presence is never treated as health."""
+    try:
+        return _monitor_status_payload(db=db, now=datetime.now(UTC))
+    except SQLAlchemyError as exc:
+        raise HTTPException(status_code=503, detail="V2 job store is unavailable") from exc
+
+
+@router.get("/stocks/{symbol}/forecast-roots")
+def list_v2_forecast_roots(symbol: str, db: Session = Depends(get_v2_db)) -> dict[str, Any]:
+    """List compact root choices for selecting a manual-revision parent.
+
+    The workspace endpoint intentionally returns only one current root.  This
+    separate read view keeps prior forecast dates selectable without copying
+    their evidence, market, or research manifests into the browser response.
+    """
+    now = datetime.now(UTC)
+    try:
+        normalized = _supported_symbol(symbol)
+        roots = db.scalars(
+            select(ForecastVersionV2)
+            .where(ForecastVersionV2.symbol == normalized, ForecastVersionV2.root_id == ForecastVersionV2.id)
+            .order_by(ForecastVersionV2.decision_at.desc(), ForecastVersionV2.created_at.desc(), ForecastVersionV2.id.desc())
+            .limit(FORECAST_ROOT_LIST_LIMIT)
+        ).all()
+        return {
+            "symbol": normalized,
+            "roots": [_root_list_entry(db=db, root=root, now=now) for root in roots],
+            "limit": FORECAST_ROOT_LIST_LIMIT,
+        }
+    except V2RequestError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    except SQLAlchemyError as exc:
+        raise HTTPException(status_code=503, detail="V2 job store is unavailable") from exc
+
+
 @router.get("/stocks/{symbol}/workspace")
 def get_v2_stock_workspace(symbol: str, db: Session = Depends(get_v2_db)) -> dict[str, Any]:
     """Return a deliberately small, explicit read model for the V2 workspace."""
+    now = datetime.now(UTC)
     try:
         normalized = _supported_symbol(symbol)
         root = db.scalar(
@@ -209,7 +250,7 @@ def get_v2_stock_workspace(symbol: str, db: Session = Depends(get_v2_db)) -> dic
                 "current_version": None,
                 "pending_job_count": int(pending_jobs),
                 "joint_model_status": "unavailable",
-                "monitor_status": "not_recorded",
+                "monitor_status": _monitor_status_payload(db=db, now=now)["health"],
             }
         current = db.scalar(
             select(ForecastVersionV2)
@@ -226,7 +267,7 @@ def get_v2_stock_workspace(symbol: str, db: Session = Depends(get_v2_db)) -> dic
             "current_version": _workspace_version(current),
             "pending_job_count": int(pending_jobs),
             "joint_model_status": current.model_status,
-            "monitor_status": "not_recorded",
+            "monitor_status": _monitor_status_payload(db=db, now=now)["health"],
         }
     except V2RequestError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
@@ -378,6 +419,103 @@ def _workspace_version(version: ForecastVersionV2) -> dict[str, Any]:
         "model_status": version.model_status,
         "baseline_probabilities": version.baseline_probabilities,
         "joint_probabilities": version.joint_probabilities,
+    }
+
+
+def _root_list_entry(*, db: Session, root: ForecastVersionV2, now: datetime) -> dict[str, Any]:
+    latest = db.scalar(
+        select(ForecastVersionV2)
+        .where(ForecastVersionV2.root_id == root.id)
+        .order_by(ForecastVersionV2.version_no.desc(), ForecastVersionV2.created_at.desc(), ForecastVersionV2.id.desc())
+        .limit(1)
+    )
+    # A root always has itself, but retain a safe partial record rather than
+    # turning this read endpoint into a 500 if historical storage is damaged.
+    selected = latest or root
+    target_end_date, expired = _root_target_end(root, now=now)
+    return {
+        "id": str(root.id),
+        "decision_at": root.decision_at,
+        "target_end_date": target_end_date,
+        "model_status": selected.model_status,
+        "latest_version_id": str(selected.id),
+        "latest_version_no": selected.version_no,
+        "expired": expired,
+    }
+
+
+def _root_target_end(root: ForecastVersionV2, *, now: datetime) -> tuple[str | None, bool | None]:
+    raw = root.target_contract.get("target_end_date") if isinstance(root.target_contract, dict) else None
+    try:
+        target_end = raw if isinstance(raw, date) else date.fromisoformat(raw)
+        return target_end.isoformat(), _utc(now) >= xnys_session_close_at(target_end)
+    except (TypeError, ValueError):
+        # A malformed legacy target remains visible for audit, but cannot be
+        # safely advertised as revisable by the frontend.
+        return None, None
+
+
+def _monitor_status_payload(*, db: Session, now: datetime) -> dict[str, Any]:
+    instant = _utc(now)
+    latest = db.scalar(
+        select(OfficialMonitorRunV2)
+        .order_by(OfficialMonitorRunV2.started_at.desc(), OfficialMonitorRunV2.id.desc())
+        .limit(1)
+    )
+    latest_success = db.scalar(
+        select(OfficialMonitorRunV2)
+        .where(OfficialMonitorRunV2.status == "succeeded", OfficialMonitorRunV2.completed_at.is_not(None))
+        .order_by(OfficialMonitorRunV2.completed_at.desc(), OfficialMonitorRunV2.id.desc())
+        .limit(1)
+    )
+    if latest is None:
+        return {
+            "health": "not_recorded",
+            "schedule_interval_seconds": MONITOR_INTERVAL_SECONDS,
+            "stale_after_seconds": MONITOR_STALE_AFTER_SECONDS,
+            "last_run": None,
+            "last_success": None,
+        }
+    return {
+        "health": _monitor_health(latest=latest, latest_success=latest_success, now=instant),
+        "schedule_interval_seconds": MONITOR_INTERVAL_SECONDS,
+        "stale_after_seconds": MONITOR_STALE_AFTER_SECONDS,
+        "last_run": _monitor_run_payload(latest),
+        "last_success": _monitor_success_payload(latest_success),
+    }
+
+
+def _monitor_health(
+    *, latest: OfficialMonitorRunV2, latest_success: OfficialMonitorRunV2 | None, now: datetime
+) -> str:
+    if latest.status in {"failed", "partial"} or latest_success is None:
+        return "degraded"
+    completed_at = latest_success.completed_at
+    if completed_at is None or _utc(completed_at) < now - timedelta(seconds=MONITOR_STALE_AFTER_SECONDS):
+        return "delayed"
+    return "healthy"
+
+
+def _monitor_run_payload(run: OfficialMonitorRunV2) -> dict[str, Any]:
+    return {
+        "id": str(run.id),
+        "status": run.status,
+        "started_at": run.started_at,
+        "completed_at": run.completed_at,
+        "next_due_at": run.next_due_at,
+        "per_symbol_results": run.per_symbol_results,
+        "error_summary": run.error_summary,
+        "retry_reason": run.retry_reason,
+    }
+
+
+def _monitor_success_payload(run: OfficialMonitorRunV2 | None) -> dict[str, Any] | None:
+    if run is None:
+        return None
+    return {
+        "id": str(run.id),
+        "completed_at": run.completed_at,
+        "last_success_watermark": run.last_success_watermark,
     }
 
 

@@ -233,3 +233,123 @@ export type DashboardResponse = {
   evaluation: Evaluation | null;
   price_history?: PriceHistory | null;
 };
+
+/** Durable V2 work is intentionally separate from the legacy snapshot archive. */
+export type V2SourceRef = {
+  source_type: "official_filing" | "uploaded_media";
+  source_id: string;
+};
+
+export type V2ForecastJob = {
+  id: string;
+  symbol: string;
+  kind: "new" | "manual_revision" | "automatic_revision";
+  root_version_id: string | null;
+  parent_version_id: string | null;
+  source_refs: V2SourceRef[];
+  status: "queued" | "running" | "succeeded" | "succeeded_no_change" | "blocked_data" | "failed";
+  current_stage: string;
+  attempts: number;
+  error: { type: string } | null;
+  result_version_id: string | null;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+};
+
+export type V2Probabilities = Record<"bearish" | "neutral" | "bullish", number>;
+
+export type V2Version = {
+  id: string;
+  root_id: string;
+  parent_version_id: string | null;
+  job_id: string;
+  version_no: number;
+  symbol: string;
+  target_contract: Record<string, unknown>;
+  decision_at: string;
+  market_cutoff_at: string;
+  baseline_probabilities: V2Probabilities | null;
+  joint_probabilities: V2Probabilities | null;
+  model_status: "research_only" | "experimental_joint";
+  model_manifest: Record<string, unknown>;
+  research_report: Record<string, unknown> | null;
+  change_reason: string | null;
+  trigger_type: string;
+  created_at: string;
+};
+
+export type V2VersionDetail = V2Version & {
+  price_input_manifest: Record<string, unknown>;
+  evidence_version_manifest: Array<Record<string, unknown>>;
+  feature_snapshot: Record<string, unknown>;
+};
+
+export type V2TimelineEntry = Pick<V2Version,
+  "id" | "parent_version_id" | "version_no" | "decision_at" | "market_cutoff_at" |
+  "baseline_probabilities" | "joint_probabilities" | "model_status" | "change_reason" | "trigger_type" | "created_at"
+>;
+
+export type V2Timeline = {
+  root_id: string;
+  symbol: string;
+  target_contract: Record<string, unknown>;
+  versions: V2TimelineEntry[];
+};
+
+export type V2ForecastRoot = {
+  id: string;
+  decision_at: string;
+  target_end_date: string;
+  model_status: "research_only" | "experimental_joint";
+  latest_version_id: string;
+  latest_version_no: number;
+  expired: boolean | null;
+};
+
+export type V2ForecastRoots = {
+  symbol: string;
+  roots: V2ForecastRoot[];
+};
+
+export type V2MonitorSymbolResult = {
+  symbol?: string;
+  status: "succeeded" | "incomplete" | "failed";
+  discovered_count?: number;
+  created_count?: number;
+  queued_count?: number;
+  skipped_count?: number;
+  complete?: boolean;
+  error?: string | null;
+};
+
+export type V2MonitorRun = {
+  id: string;
+  status: "running" | "succeeded" | "partial" | "failed";
+  started_at: string;
+  completed_at: string | null;
+  next_due_at: string | null;
+  per_symbol_results: Record<string, V2MonitorSymbolResult>;
+  error_summary: Record<string, string> | null;
+  retry_reason: string | null;
+};
+
+export type V2MonitorStatus = {
+  health: "not_recorded" | "healthy" | "delayed" | "degraded";
+  schedule_interval_seconds: number;
+  stale_after_seconds: number;
+  last_run: V2MonitorRun | null;
+  last_success: { id: string; completed_at: string; last_success_watermark: Record<string, unknown> } | null;
+};
+
+export type V2Workspace = {
+  symbol: string;
+  status: "empty" | "available";
+  current_root: { id: string; target_contract: Record<string, unknown> } | null;
+  current_version: Pick<V2Version,
+    "id" | "version_no" | "decision_at" | "market_cutoff_at" | "model_status" | "baseline_probabilities" | "joint_probabilities"
+  > | null;
+  pending_job_count: number;
+  joint_model_status: "unavailable" | "research_only" | "experimental_joint";
+  monitor_status: "not_recorded";
+};

@@ -108,6 +108,26 @@ def test_same_root_and_same_effective_input_returns_existing_version():
         assert db.get(ForecastJobV2, repeated_job.id).status == "succeeded_no_change"
 
 
+def test_automatic_revision_window_is_measured_from_root_decision_time():
+    instant = datetime.now(UTC)
+    with SessionLocal() as db:
+        root_job = _claim(db, kind="new", symbol="AAPL")
+        root, _ = publish_forecast_version(
+            db=db, job_id=root_job.id, worker_id="test-worker", lease_epoch=root_job.lease_epoch,
+            draft=_draft(now=instant), now=instant,
+        )
+        root.created_at = instant - timedelta(hours=80)
+        root.decision_at = instant - timedelta(hours=71)
+        db.commit()
+        child_job = _claim(db, kind="automatic_revision", symbol="AAPL", root=root.id, parent=root.id)
+        child, created = publish_forecast_version(
+            db=db, job_id=child_job.id, worker_id="test-worker", lease_epoch=child_job.lease_epoch,
+            draft=_draft(evidence=[{"id": "event-auto"}], now=instant), now=instant,
+        )
+
+    assert created and child.parent_version_id == root.id
+
+
 def test_changed_target_is_rejected_without_publishing_a_child():
     with SessionLocal() as db:
         root_job = _claim(db, kind="new", symbol="NVDA")

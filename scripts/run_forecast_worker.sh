@@ -1,31 +1,25 @@
 #!/bin/sh
-# Prepare the existing local PostgreSQL dependency before a launchd run.
-# This intentionally never creates, resets, or restarts a container.
+# Run the durable V2 forecast worker from launchd or a local shell.
+#
+# The wrapper only starts an existing development database container. It never
+# creates, resets, or deletes data, so an accidental background launch cannot
+# silently replace a developer's database.
 set -eu
 
 PROJECT_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 CONTAINER_NAME="market-evidence-postgres"
 DATABASE_NAME="market_evidence"
 DATABASE_USER="market_evidence"
-MAX_WAIT_SECONDS="${MARKET_EVIDENCE_MONITOR_WAIT_SECONDS:-60}"
-MONITOR_MODE="${OFFICIAL_MONITOR_MODE:-legacy}"
+MAX_WAIT_SECONDS="${MARKET_EVIDENCE_WORKER_WAIT_SECONDS:-60}"
+POLL_SECONDS="${FORECAST_WORKER_POLL_SECONDS:-2}"
 
-case "$MONITOR_MODE" in
-    legacy) MONITOR_MODULE="app.official_monitor" ;;
-    v2) MONITOR_MODULE="app.official_monitor_v2" ;;
-    *)
-        printf '%s\n' "OFFICIAL_MONITOR_MODE must be legacy or v2." >&2
-        exit 2
-        ;;
-esac
-
-# launchd has a deliberately small PATH. OrbStack's per-user CLI location is
-# included as well as the common Homebrew and Docker Desktop locations.
+# launchd provides a deliberately small PATH. Include the local container
+# clients that are commonly installed on this machine before checking Docker.
 PATH="${HOME:-}/.orbstack/bin:/opt/homebrew/bin:/usr/local/bin:/Applications/OrbStack.app/Contents/MacOS/bin:/usr/bin:/bin"
 export PATH
 
 if [ "${1:-}" = "--print" ]; then
-    printf '%s\n' "Monitor mode: ${MONITOR_MODE} (${PROJECT_ROOT}/.venv/bin/python -m ${MONITOR_MODULE})"
+    printf '%s\n' "Forecast worker launcher: ${PROJECT_ROOT}/.venv/bin/python -m app.forecast_worker --poll-seconds ${POLL_SECONDS}"
     printf '%s\n' "Required existing container: ${CONTAINER_NAME} (${DATABASE_USER}/${DATABASE_NAME})"
     printf '%s\n' "PATH: ${PATH}"
     printf '%s\n' "Dry run only: OrbStack and Docker state were not changed."
@@ -35,6 +29,11 @@ fi
 if [ "$#" -ne 0 ]; then
     printf '%s\n' "Usage: $0 [--print]" >&2
     exit 2
+fi
+
+if [ ! -x "${PROJECT_ROOT}/.venv/bin/python" ]; then
+    printf '%s\n' "Project virtualenv Python is missing: ${PROJECT_ROOT}/.venv/bin/python" >&2
+    exit 1
 fi
 
 if ! command -v docker >/dev/null 2>&1; then
@@ -77,5 +76,5 @@ until "$DOCKER_BIN" exec "$CONTAINER_NAME" pg_isready -U "$DATABASE_USER" -d "$D
     /bin/sleep 1
 done
 
-printf '%s\n' "PostgreSQL is ready; starting the ${MONITOR_MODE} SEC monitor."
-exec "${PROJECT_ROOT}/.venv/bin/python" -m "$MONITOR_MODULE"
+printf '%s\n' "PostgreSQL is ready; starting the forecast worker."
+exec "${PROJECT_ROOT}/.venv/bin/python" -m app.forecast_worker --poll-seconds "$POLL_SECONDS"

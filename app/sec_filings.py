@@ -165,6 +165,7 @@ class SecEdgarProvider:
         end_date: date,
         max_pages: int = 3,
         max_filings: int = 1_000,
+        resume_page: str | None = None,
     ) -> SecDiscoveryCoverage:
         """Scan recent and declared older SEC submissions pages with a hard cap."""
         normalized = _supported_symbol(symbol)
@@ -190,6 +191,10 @@ class SecEdgarProvider:
                 raise SecFilingsError("SEC history page dates are invalid") from exc
             if first <= end_date and last >= start_date:
                 eligible.append(name)
+        if resume_page is not None:
+            if resume_page not in eligible:
+                raise SecFilingsError("SEC history resume page is no longer available for this scan")
+            eligible = eligible[eligible.index(resume_page) :]
         pages_read = 0
         for name in eligible[:max_pages]:
             page = self._get_json(f"{SEC_SUBMISSIONS_URL}/{name}")
@@ -407,6 +412,7 @@ def fetch_inventory_content(
     db: Session,
     provider: SecEdgarProvider | None = None,
     observed_at: datetime | None = None,
+    content_observed_at_factory: Callable[[], datetime] | None = None,
 ) -> tuple[SecFilingInventory, bool]:
     """Fetch one inventoried SEC document and preserve 8-K attachment provenance.
 
@@ -436,6 +442,7 @@ def fetch_inventory_content(
         return filing, True
 
     observed_at = _require_aware_utc(observed_at or datetime.now(UTC))
+    completed_at = content_observed_at_factory or (lambda: observed_at)
     try:
         active_provider = provider or SecEdgarProvider()
         content = None
@@ -471,7 +478,7 @@ def fetch_inventory_content(
     except SecFilingsError as exc:
         filing.content_status = "unavailable"
         filing.content_error = str(exc)
-        filing.content_observed_at = observed_at
+        filing.content_observed_at = _require_aware_utc(completed_at())
         db.commit()
         db.refresh(filing)
         return filing, False
@@ -481,7 +488,9 @@ def fetch_inventory_content(
     filing.content_truncated = content.truncated
     filing.content_status = "fetched"
     filing.content_error = None
-    filing.content_observed_at = observed_at
+    # Record the moment after the provider returned, never the request's
+    # start time.  V2 callers inject this clock in controlled time tests.
+    filing.content_observed_at = _require_aware_utc(completed_at())
     filing.content_source_url = content_source_url
     filing.content_document_name = content_document_name
     filing.content_kind = content_kind

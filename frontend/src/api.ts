@@ -1,4 +1,4 @@
-import type { DashboardResponse, EvidenceRevision, EvidenceRevisionInventory, EvidenceRevisionRequest, FilingContent, FilingInventory, FilingReview, FilingScanResult, ForecastRunResult, UploadedEvidence, UploadedEvidenceInventory } from "./types";
+import type { DashboardResponse, EvidenceRevision, EvidenceRevisionInventory, EvidenceRevisionRequest, FilingContent, FilingInventory, FilingReview, FilingScanResult, ForecastRunResult, UploadedEvidence, UploadedEvidenceInventory, V2ForecastJob, V2ForecastRoots, V2MonitorStatus, V2SourceRef, V2Timeline, V2VersionDetail, V2Workspace } from "./types";
 
 export class ApiError extends Error {
   constructor(message: string, readonly status?: number) {
@@ -95,6 +95,52 @@ export async function createEvidenceRevision(symbol: string, input: EvidenceRevi
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(input),
   });
+}
+
+export async function getV2Workspace(symbol: string, signal?: AbortSignal): Promise<V2Workspace> {
+  return requestJson<V2Workspace>(`/api/v2/stocks/${encodeURIComponent(symbol)}/workspace`, { signal });
+}
+
+export async function getV2Job(jobId: string, signal?: AbortSignal): Promise<V2ForecastJob> {
+  return requestJson<V2ForecastJob>(`/api/v2/jobs/${encodeURIComponent(jobId)}`, { signal });
+}
+
+export async function getV2Timeline(rootId: string, signal?: AbortSignal): Promise<V2Timeline> {
+  return requestJson<V2Timeline>(`/api/v2/forecast-roots/${encodeURIComponent(rootId)}/timeline`, { signal });
+}
+
+export async function getV2ForecastRoots(symbol: string, signal?: AbortSignal): Promise<V2ForecastRoots> {
+  return requestJson<V2ForecastRoots>(`/api/v2/stocks/${encodeURIComponent(symbol)}/forecast-roots`, { signal });
+}
+
+export async function getV2MonitorStatus(signal?: AbortSignal): Promise<V2MonitorStatus> {
+  return requestJson<V2MonitorStatus>("/api/v2/monitor/status", { signal });
+}
+
+export async function getV2ForecastVersion(versionId: string, signal?: AbortSignal): Promise<V2VersionDetail> {
+  return requestJson<V2VersionDetail>(`/api/v2/forecast-versions/${encodeURIComponent(versionId)}`, { signal });
+}
+
+export async function createV2ForecastJob(symbol: string, sourceRefs: V2SourceRef[] = []): Promise<V2ForecastJob> {
+  return requestJson<V2ForecastJob>("/api/v2/forecast-jobs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": newIdempotencyKey() },
+    body: JSON.stringify({ symbol, kind: "new", source_refs: sourceRefs }),
+  });
+}
+
+export async function createV2ManualRevisionJob(versionId: string, sourceRefs: V2SourceRef[]): Promise<V2ForecastJob> {
+  return requestJson<V2ForecastJob>(`/api/v2/forecast-versions/${encodeURIComponent(versionId)}/revision-jobs`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": newIdempotencyKey() },
+    body: JSON.stringify({ source_refs: sourceRefs }),
+  });
+}
+
+function newIdempotencyKey(): string {
+  return typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : `ui-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
 async function requestJson<T>(url: string, init: RequestInit = {}): Promise<T> {

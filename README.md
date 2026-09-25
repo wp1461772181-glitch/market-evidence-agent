@@ -1,6 +1,6 @@
-# Market Evidence Agent — Weeks 1–9
+# Market Evidence Agent
 
-Planned next iteration: [V2 evidence-driven forecast implementation plan](docs/evidence-driven-forecast-v2-plan.md), [GPT-6 handoff](docs/gpt6-v2-handoff.md), and [V2 progress](docs/v2-progress.md). These are development plans; V2 is not implemented yet.
+The original Weeks 1–9 archive remains available. V2 development is now in progress: users can queue research-only forecasts, select a saved forecast date for a manual revision, and inspect immutable source and market inputs. A local worker consumes durable jobs, while an hourly SEC monitor records actual scans and can queue eligible official-source revisions. The [V2 progress log](docs/v2-progress.md) distinguishes implemented code, live checks, and open acceptance work; the [implementation plan](docs/evidence-driven-forecast-v2-plan.md) is the target design.
 
 A FastAPI, PostgreSQL, and local React dashboard foundation for a
 market-evidence system. It stores a deterministic Week 1 `mock-v1` forecast,
@@ -8,6 +8,13 @@ then adds reproducible market-data snapshots, leakage-safe features, a fixed
 offline baseline, versioned archived predictions, source-grounded research,
 and an evidence workspace. It exposes one explicit, local user-triggered path
 for an experimental Week 4 numeric forecast; it is not a live trading service.
+
+## Current V2 entrypoints and limits
+
+- The browser's forecast workspace shows the V2 queue, saved forecast dates, fixed 20-session targets, frozen evidence, manual-revision entry, and actual monitor run status. The older numeric archive is displayed separately.
+- `POST /v2/forecast-jobs` accepts a new durable job; `GET /v2/jobs/{job_id}` reports processing; `GET /v2/monitor/status` reports persisted SEC scans. The local worker uses `python -m app.forecast_worker --once` for one job or `--poll-seconds 2` for continuous consumption.
+- The currently installed macOS SEC LaunchAgent runs V2 every 3600 seconds, and a separate worker LaunchAgent is active. For another machine, preview and install them with `scripts/install_sec_monitor_launchagent.py --mode v2 --print` / `--mode v2` and `scripts/install_forecast_worker_launchagent.py --print` / no flag. The SEC installer defaults to legacy unless V2 is explicitly selected.
+- V2 versions are `research_only`: the baseline and joint probabilities are empty because the first V2 market-only model missed its evaluation gate and the evidence-aware numerical model is not validated. Real new-announcement auto-revision and prospective outcome evaluation still need evidence. A successful task or scan is not proof of numeric forecast quality.
 
 ## Implemented scope
 
@@ -196,14 +203,15 @@ The client waits at least 0.2 seconds between its requests, discovers at most
 fetched document, and marks PDFs, unsupported response types, binary data, or
 unavailable sources as unavailable rather than treating them as evidence.
 
-Run one monitoring pass locally with:
+Run one legacy monitoring pass locally with:
 
 ~~~bash
 ./.venv/bin/python -m app.official_monitor
 ~~~
 
-After reviewing the command, install the current-user hourly macOS
-LaunchAgent with `./.venv/bin/python scripts/install_sec_monitor_launchagent.py`.
+For V2, run `./.venv/bin/python -m app.official_monitor_v2` instead. After
+reviewing the command, install the current-user hourly macOS LaunchAgent with
+`./.venv/bin/python scripts/install_sec_monitor_launchagent.py --mode v2`.
 Use `--print` to preview the plist first. It is not run automatically, stores
 no key, reads the ignored local `.env` only at runtime, and writes output to
 `logs/official-sec-monitor.*.log`. Each scheduled run first waits for Docker;

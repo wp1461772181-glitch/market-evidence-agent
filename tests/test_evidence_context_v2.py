@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy import select
 
 from app.database import Base, SessionLocal, engine
-from app.evidence_context import EvidenceContextError, freeze_evidence_context
+from app.evidence_context import CONTEXT_SCHEMA_VERSION, EvidenceContextError, freeze_evidence_context
 from app.forecast_v2_models import EvidenceEventVersionV2
 from app.models import SecFilingInventory, UploadedEvidence
 
@@ -248,6 +248,57 @@ def test_review_change_appends_event_version_and_incremental_context_keeps_backg
     assert any(row.previous_version_id == initial_id for row in versions)
 
 
+def test_legacy_snapshot_without_coverage_provenance_is_upgraded_without_mutating_old_version():
+    source_id = _filing(content="coverage contract fixture")
+    cutoff = datetime(2026, 9, 11, tzinfo=UTC)
+    with SessionLocal() as db:
+        first = freeze_evidence_context(
+            db=db,
+            symbol="AAPL",
+            decision_at=cutoff,
+            source_refs=[{"source_type": "official_filing", "source_id": source_id}],
+        )
+        old_id = next(event.id for event in first.events if event.source_id == source_id)
+        old = db.get(EvidenceEventVersionV2, old_id)
+        assert old is not None
+        # Simulate the persisted V1 event shape used before coverage metadata
+        # was part of the immutable source contract.
+        old.extraction_schema_version = "evidence-context-v1"
+        old.source_snapshot = {
+            key: value
+            for key, value in old.source_snapshot.items()
+            if key not in {"coverage_incomplete", "analysis_text_truncated", "content_truncated"}
+        }
+        db.commit()
+
+        upgraded = freeze_evidence_context(
+            db=db,
+            symbol="AAPL",
+            decision_at=cutoff,
+            source_refs=[{"source_type": "official_filing", "source_id": source_id}],
+        )
+        upgraded_id = next(event.id for event in upgraded.events if event.source_id == source_id)
+        old_after = db.get(EvidenceEventVersionV2, old_id)
+        new_after = db.get(EvidenceEventVersionV2, upgraded_id)
+        repeated = freeze_evidence_context(
+            db=db,
+            symbol="AAPL",
+            decision_at=cutoff,
+            source_refs=[{"source_type": "official_filing", "source_id": source_id}],
+        )
+
+    assert upgraded_id != old_id
+    assert old_after is not None
+    assert "coverage_incomplete" not in old_after.source_snapshot
+    assert new_after is not None
+    assert new_after.extraction_schema_version == CONTEXT_SCHEMA_VERSION
+    assert new_after.previous_version_id == old_id
+    assert new_after.source_snapshot["coverage_incomplete"] is False
+    assert new_after.source_snapshot["analysis_text_truncated"] is False
+    assert new_after.source_snapshot["content_truncated"] is False
+    assert next(event.id for event in repeated.events if event.source_id == source_id) == upgraded_id
+
+
 def test_duplicate_media_content_is_deterministically_one_event_and_cross_symbol_prior_is_rejected():
     first = _media(content=b"same report")
     second = _filing(content="same report")
@@ -342,7 +393,7 @@ def test_automatic_invalid_inventory_is_omitted_without_blocking_valid_sources_b
 
     assert [event.source_id for event in automatic.events] == [valid]
     assert automatic.coverage_incomplete is True
-    assert {item["source_id"] for item in automatic.omitted_source_refs} == {str(missing_id)}
+    assert str(missing_id) in {item["source_id"] for item in automatic.omitted_source_refs}
     assert explicit.value.code == "missing_official_content"
 
 

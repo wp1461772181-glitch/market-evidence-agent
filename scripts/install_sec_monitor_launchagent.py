@@ -19,6 +19,7 @@ LABEL = "com.market-evidence-agent.official-sec-monitor"
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--print", action="store_true", dest="print_only", help="print the plist without installing it")
+    parser.add_argument("--mode", choices=("legacy", "v2"), default="legacy", help="monitor implementation to run")
     args = parser.parse_args()
 
     project_root = Path(__file__).resolve().parent.parent
@@ -39,12 +40,14 @@ def main() -> None:
         "WorkingDirectory": str(project_root),
         "StartInterval": 3600,
         "RunAtLoad": False,
+        "EnvironmentVariables": {"OFFICIAL_MONITOR_MODE": args.mode},
         "StandardOutPath": str(log_directory / "official-sec-monitor.out.log"),
         "StandardErrorPath": str(log_directory / "official-sec-monitor.err.log"),
         "ProcessType": "Background",
     }
     rendered = plistlib.dumps(payload, sort_keys=False)
     if args.print_only:
+        print(f"OFFICIAL_MONITOR_MODE={args.mode}")
         print(rendered.decode())
         return
 
@@ -54,7 +57,7 @@ def main() -> None:
     domain = f"gui/{os.getuid()}"
     subprocess.run(["launchctl", "bootout", domain, str(plist_path)], check=False, capture_output=True)
     subprocess.run(["launchctl", "bootstrap", domain, str(plist_path)], check=True)
-    print(f"Installed {LABEL}. Logs: {log_directory}")
+    print(f"Installed {LABEL} in {args.mode} mode. Logs: {log_directory}")
 
 
 if __name__ == "__main__":

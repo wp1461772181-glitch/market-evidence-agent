@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ApiError, createEvidenceRevision, createForecastRun, fetchFilingContent, getDashboard, getEvidenceRevisions, getFilingInventory, getUploadedEvidence, reviewFiling, scanOfficialFilings, uploadEvidence } from "./api";
 import type { Claim, DashboardResponse, EvidenceRevision, FilingContent, FilingInventory, FilingReview, OfficialFiling, PriceCandle, PriceHistory, RefreshReport, Snapshot, UploadedEvidence } from "./types";
+import { V2ForecastWorkspace } from "./V2ForecastWorkspace";
 
 type LoadState =
   | { kind: "loading" }
@@ -248,7 +249,8 @@ export function App() {
       />}
 
       {activeSection === "forecast" && <section className="workspace-stack">
-        <WorkspaceIntro eyebrow="预测版本" title="生成、检查与回放预测" description="新预测只使用服务已更新并校验过的本地行情与特征。每一版都会保留数据截止时间和可回放的价格窗口。" action={<button className="primary-action" disabled={!supported || forecastAction.kind === "running"} onClick={startForecast}>{forecastAction.kind === "running" ? "正在生成…" : "生成新预测"}</button>} />
+        <V2ForecastWorkspace symbol={requestedSymbol} filings={filings.kind === "ready" ? filings.data : null} />
+        <WorkspaceIntro eyebrow="旧档案" title="生成、检查与回放历史预测" description="这是旧版实验性离线模型档案。它和上方 V2 任务流分开保留，不代表联合模型结果。" action={<button className="primary-action" disabled={!supported || forecastAction.kind === "running"} onClick={startForecast}>{forecastAction.kind === "running" ? "正在生成…" : "生成旧版预测"}</button>} />
         <ActionNotice state={forecastAction} />
         {!supported && <WorkspaceRestriction />}
         {recordVersionPicker}
@@ -319,7 +321,7 @@ function EmptyWorkspace({ data, section, supported, forecastAction, onForecast, 
   onFilingChanged: (filing: OfficialFiling) => void;
 }) {
   if (section === "overview") return <OverviewWorkspace current={data} symbol={data.symbol} revisions={revisions.kind === "ready" ? revisions.items : []} filings={filings} onNavigate={onNavigate} onOpenStock={onOpenStock} onSelectSnapshot={() => undefined} />;
-  if (section === "forecast") return <section className="workspace-stack"><WorkspaceIntro eyebrow="预测版本" title="尚无可回放预测" description="可以从已准备好的本地行情创建新的实验性离线预测；若服务检查失败，不会生成替代结果。" action={<button className="primary-action" disabled={!supported || forecastAction.kind === "running"} onClick={onForecast}>{forecastAction.kind === "running" ? "正在生成…" : "生成新预测"}</button>} /><ActionNotice state={forecastAction} /><EmptyState data={data} /></section>;
+  if (section === "forecast") return <section className="workspace-stack"><V2ForecastWorkspace symbol={data.symbol} filings={filings.kind === "ready" ? filings.data : null} /><WorkspaceIntro eyebrow="旧档案" title="尚无可回放的旧版预测" description="旧版实验性离线模型档案为空。上方的 V2 任务不会用它的概率作为联合结果。" action={<button className="primary-action" disabled={!supported || forecastAction.kind === "running"} onClick={onForecast}>{forecastAction.kind === "running" ? "正在生成…" : "生成旧版预测"}</button>} /><ActionNotice state={forecastAction} /><EmptyState data={data} /></section>;
   if (section === "evidence") return <section className="workspace-stack"><WorkspaceIntro eyebrow="官方来源" title="SEC 证据中心" description="即使还没有预测版本，也可以先保存媒体材料并建立官方资料目录，为后续研究准备可核验来源。" action={<button className="primary-action" disabled={!supported || scanAction.kind === "running"} onClick={onScan}>{scanAction.kind === "running" ? "正在扫描…" : "扫描官方申报"}</button>} /><ActionNotice state={scanAction} /><section className="evidence-layout"><EvidenceWorkflowPanel mode="upload" symbol={data.symbol} supported={supported} snapshots={[]} filings={filings} revisions={revisions} onRevisionCreated={() => undefined} /><FilingInventoryPanel symbol={data.symbol} state={filings} onInventoryChanged={onFilingChanged} /></section></section>;
   if (section === "evaluation") return <section className="workspace-stack"><WorkspaceIntro eyebrow="模型验证" title="尚无可展示的离线评估" description="此股票目前没有固定的历史评测摘要。评估区不会把缺失预测替换成行情或其他模块内容。" /><EvaluationEmptyState /></section>;
   return <section className="workspace-stack"><WorkspaceIntro eyebrow="预测修订" title="尚无可修订预测" description="手动修订需要先存在一份主动生成的预测版本。已保存材料会在预测可用后保留为候选来源。" /><RevisionAutomationNote /></section>;
