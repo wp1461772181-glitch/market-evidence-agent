@@ -113,6 +113,7 @@ class FrozenEvidenceEvent:
             "independent_source_key": self.independent_source_key,
             "source_url": snapshot.get("source_url"),
             "coverage": snapshot.get("coverage"),
+            "coverage_incomplete": snapshot.get("coverage_incomplete"),
             "analysis_text_characters": snapshot.get("analysis_text_characters"),
             "analysis_text_truncated": snapshot.get("analysis_text_truncated"),
             "content_truncated": snapshot.get("content_truncated"),
@@ -223,7 +224,6 @@ def freeze_evidence_context(
         automatic_new.sort(key=_candidate_sort_key, reverse=True)
         selected_new = [*explicit_new, *automatic_new]
         omitted_automatic = [_source_ref(candidate) for candidate in selected_new[max_new_documents:] if not candidate.explicit]
-        coverage_incomplete = bool(automatic_omissions) or bool(omitted_automatic)
         omitted = tuple([*automatic_omissions, *omitted_automatic])
         for candidate in selected_new[:max_new_documents]:
             current, _ = _get_or_create_event(db, candidate)
@@ -234,6 +234,11 @@ def freeze_evidence_context(
                     discovery_kind=_discovery_kind(candidate, prior_cutoff, has_prior=bool(prior_keys)),
                 )
             )
+        coverage_incomplete = (
+            bool(automatic_omissions)
+            or bool(omitted_automatic)
+            or any(bool(event.source_snapshot.get("coverage_incomplete")) for event in selected)
+        )
         db.commit()
     except IntegrityError as exc:
         db.rollback()
@@ -359,6 +364,22 @@ def _candidate_from_filing(row: SecFilingInventory, *, decision_at: datetime) ->
     if computed_hash != row.content_excerpt_sha256:
         raise EvidenceContextError("official filing excerpt hash does not match its saved content", code="content_hash_mismatch")
     review_status, review_snapshot = _filing_review_at(row, decision_at=decision_at)
+    content_source_url = row.content_source_url or row.source_url
+    content_document_name = row.content_document_name or row.primary_document
+    content_kind = row.content_kind or "primary_document"
+    attachment_status = row.related_attachment_status or ("unknown" if row.form == "8-K" else "not_applicable")
+    attachment_incomplete = row.form == "8-K" and attachment_status in {"unknown", "not_checked", "unavailable"}
+    analysis_truncated = len(content) > MAX_ANALYSIS_CHARACTERS
+    content_incomplete = bool(row.content_truncated) or analysis_truncated or attachment_incomplete
+    if content_kind == "exhibit_99_1":
+        coverage = "8k_related_exhibit"
+    elif row.form == "8-K" and attachment_status == "not_found":
+        coverage = "8k_primary_document_no_related_exhibit"
+    elif row.form == "8-K":
+        coverage = "8k_primary_document_attachment_coverage_incomplete"
+    else:
+        coverage = "excerpt_only" if row.content_truncated else "fetched_excerpt"
+    analysis_end = min(len(content), MAX_ANALYSIS_CHARACTERS)
     return _Candidate(
         source_type="official_filing",
         source_id=row.id,
@@ -371,16 +392,29 @@ def _candidate_from_filing(row: SecFilingInventory, *, decision_at: datetime) ->
             "symbol": row.symbol,
             "accession_number": row.accession_number,
             "form": row.form,
-            "source_url": row.source_url,
+            "source_url": content_source_url,
+            "filing_source_url": row.source_url,
+            "document_name": content_document_name,
+            "document_kind": content_kind,
+            "related_attachment_status": attachment_status,
+            "related_attachment_error": row.related_attachment_error,
+            "publication_time_basis": "sec_accession_acceptance_time",
             "published_at": published_at.isoformat(),
             "observed_at": observed_at.isoformat(),
             "content_excerpt": content,
             "analysis_text": content[:MAX_ANALYSIS_CHARACTERS],
-            "analysis_text_characters": min(len(content), MAX_ANALYSIS_CHARACTERS),
-            "analysis_text_truncated": len(content) > MAX_ANALYSIS_CHARACTERS,
+            "analysis_text_characters": analysis_end,
+            "analysis_text_truncated": analysis_truncated,
+            "analysis_locator": {
+                "kind": "extracted_text_char_range",
+                "start": 0,
+                "end": analysis_end,
+            },
             "content_truncated": row.content_truncated,
             "content_sha256": row.content_excerpt_sha256,
-            "coverage": "excerpt_only" if row.content_truncated else "fetched_excerpt",
+            "content_text_sha256": row.content_excerpt_sha256,
+            "coverage": coverage,
+            "coverage_incomplete": content_incomplete,
         },
         published_at=published_at,
         observed_at=observed_at,
@@ -430,11 +464,17 @@ def _candidate_from_upload(row: UploadedEvidence, *, decision_at: datetime) -> _
             "analysis_text": row.content_text[:MAX_ANALYSIS_CHARACTERS],
             "analysis_text_characters": min(len(row.content_text), MAX_ANALYSIS_CHARACTERS),
             "analysis_text_truncated": len(row.content_text) > MAX_ANALYSIS_CHARACTERS,
+            "analysis_locator": {
+                "kind": "extracted_text_char_range",
+                "start": 0,
+                "end": min(len(row.content_text), MAX_ANALYSIS_CHARACTERS),
+            },
             "content_sha256": row.content_sha256,
             "content_hash_basis": "raw_bytes",
             "raw_content_sha256": row.content_sha256,
             "content_text_sha256": content_text_sha256,
             "coverage": "uploaded_text",
+            "coverage_incomplete": len(row.content_text) > MAX_ANALYSIS_CHARACTERS,
         },
         published_at=published_at,
         observed_at=observed_at,

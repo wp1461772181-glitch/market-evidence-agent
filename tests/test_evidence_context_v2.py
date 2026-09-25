@@ -74,12 +74,87 @@ def test_observed_context_freezes_two_source_types_and_reuses_same_content_revie
     assert media.user_rating_stars == 4
     assert media.source_url == "https://news.example.test/report"
     assert media.frozen_text == "media evidence"
+    assert media.source_snapshot["analysis_locator"] == {
+        "kind": "extracted_text_char_range", "start": 0, "end": len("media evidence")
+    }
+    assert media.source_snapshot["coverage_incomplete"] is False
     manifest = next(item for item in first.evidence_manifest() if item["source_id"] == str(media_id))
     assert manifest["event_version_id"] == str(media.id)
     assert "source_snapshot" not in manifest
     assert "content_text" not in manifest
     assert "analysis_text" not in manifest
     assert "media evidence" not in repr(manifest)
+
+
+def test_8k_attachment_snapshot_preserves_accession_time_hash_locator_and_coverage():
+    accepted_at = datetime(2026, 9, 10, 14, tzinfo=UTC)
+    attachment_text = "Quarterly results exhibit: revenue increased."
+    attachment_hash = hashlib.sha256(attachment_text.encode()).hexdigest()
+    attachment_url = "https://www.sec.gov/Archives/edgar/data/320193/000032019326000099/ex99-1.htm"
+    with SessionLocal() as db:
+        row = SecFilingInventory(
+            symbol="AAPL", cik="0000320193", accession_number="0000320193-26-000099",
+            form="8-K", filed_at=accepted_at.date(), accepted_at=accepted_at.isoformat(),
+            primary_document="aapl-8k.htm",
+            source_url="https://www.sec.gov/Archives/edgar/data/320193/000032019326000099/aapl-8k.htm",
+            source="sec-edgar", review_status="pending_review", human_review_note=None, reviewed_at=None,
+            observed_at=accepted_at, content_status="fetched", content_observed_at=accepted_at,
+            content_excerpt=attachment_text, content_excerpt_sha256=attachment_hash, content_truncated=False,
+            content_error=None, content_source_url=attachment_url, content_document_name="ex99-1.htm",
+            content_kind="exhibit_99_1", related_attachment_status="fetched", related_attachment_error=None,
+        )
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        context = freeze_evidence_context(
+            db=db, symbol="AAPL", decision_at=datetime(2026, 9, 11, tzinfo=UTC),
+            source_refs=[{"source_type": "official_filing", "source_id": row.id}],
+        )
+
+    event = context.events[0]
+    snapshot = event.source_snapshot
+    assert event.source_url == attachment_url
+    assert event.content_sha256 == attachment_hash
+    assert event.published_at == accepted_at
+    assert snapshot["filing_source_url"].endswith("/aapl-8k.htm")
+    assert snapshot["publication_time_basis"] == "sec_accession_acceptance_time"
+    assert snapshot["document_kind"] == "exhibit_99_1"
+    assert snapshot["related_attachment_status"] == "fetched"
+    assert snapshot["analysis_locator"] == {"kind": "extracted_text_char_range", "start": 0, "end": len(attachment_text)}
+    assert snapshot["coverage"] == "8k_related_exhibit"
+    assert snapshot["coverage_incomplete"] is False
+
+
+def test_new_8k_with_unavailable_attachment_or_analysis_limit_marks_context_incomplete():
+    accepted_at = datetime(2026, 9, 10, 14, tzinfo=UTC)
+    content = "x" * 24_001
+    with SessionLocal() as db:
+        row = SecFilingInventory(
+            symbol="AAPL", cik="0000320193", accession_number="0000320193-26-000098",
+            form="8-K", filed_at=accepted_at.date(), accepted_at=accepted_at.isoformat(),
+            primary_document="aapl-8k.htm",
+            source_url="https://www.sec.gov/Archives/edgar/data/320193/000032019326000098/aapl-8k.htm",
+            source="sec-edgar", review_status="pending_review", human_review_note=None, reviewed_at=None,
+            observed_at=accepted_at, content_status="fetched", content_observed_at=accepted_at,
+            content_excerpt=content, content_excerpt_sha256=hashlib.sha256(content.encode()).hexdigest(),
+            content_truncated=False, content_error=None,
+            content_source_url="https://www.sec.gov/Archives/edgar/data/320193/000032019326000098/aapl-8k.htm",
+            content_document_name="aapl-8k.htm", content_kind="primary_document",
+            related_attachment_status="unavailable", related_attachment_error="fixture directory error",
+        )
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        context = freeze_evidence_context(
+            db=db, symbol="AAPL", decision_at=datetime(2026, 9, 11, tzinfo=UTC),
+            source_refs=[{"source_type": "official_filing", "source_id": row.id}],
+        )
+
+    event = next(event for event in context.events if event.source_id == row.id)
+    assert event.source_snapshot["coverage_incomplete"] is True
+    assert event.source_snapshot["analysis_text_truncated"] is True
+    assert event.source_snapshot["related_attachment_status"] == "unavailable"
+    assert context.coverage_incomplete is True
 
 
 def test_observed_filter_excludes_late_source_while_historical_research_records_backfill():

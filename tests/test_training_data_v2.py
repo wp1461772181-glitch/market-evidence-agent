@@ -81,6 +81,7 @@ def _snapshot(symbol, close_by_date, actions=()):
 
 
 def _write_fixture_dataset(tmp_path, *, closes=None, actions=()):
+    tmp_path.mkdir(parents=True, exist_ok=True)
     closes = closes or {}
     manifest = _base_manifest()
     for symbol in ("AAPL", "SPY"):
@@ -187,3 +188,73 @@ def test_rejects_a_snapshot_when_its_manifest_hash_no_longer_matches(tmp_path):
 
     with pytest.raises(ValueError, match="hash mismatch"):
         load_v2_market_training_data(manifest_path, symbols=("AAPL",))
+
+
+def test_revision_candidates_keep_one_fixed_root_target_and_group(tmp_path):
+    sessions = _xnys_sessions(TRAINING_START, TRAINING_END)
+    anchor = sessions[100]
+    first_revision = sessions[101]
+    target = sessions[120]
+    manifest_path = _write_fixture_dataset(
+        tmp_path,
+        closes={anchor: 100.0, first_revision: 101.0, target: 103.0},
+    )
+
+    dataset = load_v2_market_training_data(manifest_path, symbols=("AAPL",), include_revision_rows=True)
+    root = next(row for row in dataset.rows if row.row_kind == "root" and row.anchor_date == anchor)
+    revisions = [row for row in dataset.rows if row.root_id == root.root_id and row.row_kind == "revision"]
+    first = next(row for row in revisions if row.decision_date == first_revision)
+
+    assert root.decision_date == anchor
+    assert root.decision_close == root.anchor_close == 100.0
+    assert root.remaining_sessions == 20
+    assert root.realized_return_from_anchor == 0.0
+    assert len(revisions) == 19
+    assert first.remaining_sessions == 19
+    assert first.realized_return_from_anchor == pytest.approx(0.01)
+    assert first.anchor_date == root.anchor_date
+    assert first.target_end_date == root.target_end_date == target
+    assert first.target_close == root.target_close == 103.0
+    assert first.label == root.label == "bullish"
+    assert first.label_available_at == target
+    assert all(row.partition == root.partition for row in revisions)
+    assert all(row.decision_date < target for row in revisions)
+    assert dataset.audit["rows_by_kind"]["root"] > 0
+    assert dataset.audit["rows_by_kind"]["revision"] == dataset.audit["rows_by_kind"]["root"] * 19
+
+
+def test_revision_features_and_realized_return_do_not_read_the_future_target_close(tmp_path):
+    sessions = _xnys_sessions(TRAINING_START, TRAINING_END)
+    anchor = sessions[100]
+    decision = sessions[105]
+    target = sessions[120]
+    common = {anchor: 100.0, decision: 101.0}
+    bullish = _write_fixture_dataset(tmp_path / "bullish", closes={**common, target: 103.0})
+    bearish = _write_fixture_dataset(tmp_path / "bearish", closes={**common, target: 97.0})
+
+    bullish_rows = load_v2_market_training_data(bullish, symbols=("AAPL",), include_revision_rows=True).rows
+    bearish_rows = load_v2_market_training_data(bearish, symbols=("AAPL",), include_revision_rows=True).rows
+    bullish_row = next(row for row in bullish_rows if row.row_kind == "revision" and row.anchor_date == anchor and row.decision_date == decision)
+    bearish_row = next(row for row in bearish_rows if row.row_kind == "revision" and row.anchor_date == anchor and row.decision_date == decision)
+
+    assert bullish_row.label == "bullish"
+    assert bearish_row.label == "bearish"
+    assert bullish_row.realized_return_from_anchor == bearish_row.realized_return_from_anchor == pytest.approx(0.01)
+    assert bullish_row.remaining_sessions == bearish_row.remaining_sessions == 15
+    assert (
+        bullish_row.momentum_5d,
+        bullish_row.momentum_20d,
+        bullish_row.volatility_20d,
+        bullish_row.volume_ratio_20d,
+        bullish_row.drawdown_20d,
+        bullish_row.relative_return_20d,
+    ) == pytest.approx(
+        (
+            bearish_row.momentum_5d,
+            bearish_row.momentum_20d,
+            bearish_row.volatility_20d,
+            bearish_row.volume_ratio_20d,
+            bearish_row.drawdown_20d,
+            bearish_row.relative_return_20d,
+        )
+    )

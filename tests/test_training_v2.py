@@ -102,6 +102,24 @@ def test_plan_uses_only_fixed_root_rows_and_has_fixed_partition_counts(dataset):
     with pytest.raises(MarketTrainingError, match="initial root rows"):
         build_market_training_plan(invalid)
 
+    candidate_revision = V2MarketTrainingDataset(
+        rows=(
+            replace(
+                dataset.rows[0],
+                row_kind="revision",
+                root_id="AAPL:2023-01-03",
+                decision_date=future_xnys_sessions(dataset.rows[0].anchor_date, 1)[-1],
+                decision_close=101.0,
+                remaining_sessions=19,
+                realized_return_from_anchor=0.01,
+            ),
+            *dataset.rows[1:],
+        ),
+        audit={},
+    )
+    with pytest.raises(MarketTrainingError, match="not candidate revisions"):
+        build_market_training_plan(candidate_revision)
+
     wrong_target = V2MarketTrainingDataset(
         rows=(replace(dataset.rows[0], target_end_date=dataset.rows[0].target_end_date + timedelta(days=1)), *dataset.rows[1:]),
         audit=dataset.audit,

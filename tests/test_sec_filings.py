@@ -102,6 +102,9 @@ def _responses() -> tuple[FakeSecOpener, str]:
                 SEC_TICKERS_URL: json.dumps(ticker_payload).encode(),
                 f"{SEC_SUBMISSIONS_URL}/CIK{cik}.json": json.dumps(submissions_payload).encode(),
                 primary_url: document_body,
+                f"{SEC_ARCHIVES_URL}/320193/000032019326000011/index.json": json.dumps(
+                    {"directory": {"item": [{"name": "aapl-8k.htm"}]}}
+                ).encode(),
                 f"{SEC_ARCHIVES_URL}/320193/000032019326000011/aapl-8k.htm": document_body,
                 f"{SEC_ARCHIVES_URL}/320193/000032019326000012/aapl-20260630.htm": document_body,
             }
@@ -211,6 +214,39 @@ def test_8k_exhibit_99_1_is_read_only_from_same_accession_directory():
     assert exhibit.source_url == exhibit_url
     assert exhibit.content.excerpt == "Quarterly results exhibit."
     assert exhibit_url in opener.urls
+
+
+def test_fetch_8k_prefers_related_exhibit_and_persists_exact_document_provenance():
+    create_sec_filing_inventory_table()
+    _clear_inventory()
+    opener, _ = _responses()
+    provider = _provider(opener)
+    with SessionLocal() as db:
+        rows, _, _ = scan_sec_filings(symbol="AAPL", db=db, provider=provider)
+        filing = next(row for row in rows if row.form == "8-K")
+        directory = filing.source_url.rsplit("/", 1)[0]
+        exhibit_url = f"{directory}/ex99-1.htm"
+        opener.responses[f"{directory}/index.json"] = json.dumps(
+            {"directory": {"item": [{"name": "aapl-8k.htm"}, {"name": "ex99-1.htm"}]}}
+        ).encode()
+        opener.responses[exhibit_url] = b"<html><body>Quarterly results exhibit.</body></html>"
+        fetched, cache_hit = fetch_inventory_content(
+            symbol="AAPL", accession_number=filing.accession_number, db=db, provider=provider,
+            observed_at=datetime(2026, 11, 2, 10, tzinfo=UTC),
+        )
+        cached, cached_hit = fetch_inventory_content(
+            symbol="AAPL", accession_number=filing.accession_number, db=db, provider=provider,
+        )
+
+    assert cache_hit is False and cached_hit is True
+    assert fetched.content_excerpt == "Quarterly results exhibit."
+    assert fetched.content_source_url == exhibit_url
+    assert fetched.content_document_name == "ex99-1.htm"
+    assert fetched.content_kind == "exhibit_99_1"
+    assert fetched.related_attachment_status == "fetched"
+    assert fetched.related_attachment_error is None
+    assert cached.content_source_url == exhibit_url
+    assert filing.source_url not in opener.urls[2:]
 
 
 def test_scan_is_idempotent_and_keeps_official_metadata_only():

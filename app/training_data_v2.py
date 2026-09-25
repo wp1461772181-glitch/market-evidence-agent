@@ -46,7 +46,13 @@ HISTORY_SESSIONS = 61
 
 @dataclass(frozen=True)
 class V2MarketTrainingRow:
-    """One leakage-safe, market-only root question ready for later fitting."""
+    """One leakage-safe market decision for a fixed root question.
+
+    Root rows retain the original P3 contract.  Candidate revision rows keep
+    that root's ``anchor_date`` and ``target_end_date`` while exposing the
+    later decision date and price separately.  This makes it impossible for a
+    revision to quietly turn into a new rolling 20-session target.
+    """
 
     symbol: str
     partition: str
@@ -67,11 +73,19 @@ class V2MarketTrainingRow:
     feature_version: str
     stock_price_sha256: str
     benchmark_price_sha256: str
+    row_kind: str = "root"
+    root_id: str | None = None
+    decision_date: date | None = None
+    decision_close: float | None = None
+    label_available_at: date | None = None
 
     def as_dict(self) -> dict[str, Any]:
         value = asdict(self)
         value["anchor_date"] = self.anchor_date.isoformat()
         value["target_end_date"] = self.target_end_date.isoformat()
+        for field in ("decision_date", "label_available_at"):
+            if value[field] is not None:
+                value[field] = value[field].isoformat()
         return value
 
 
@@ -88,12 +102,15 @@ def load_v2_market_training_data(
     manifest_path: str | Path,
     *,
     symbols: Sequence[str] = STOCK_SYMBOLS,
+    include_revision_rows: bool = False,
 ) -> V2MarketTrainingDataset:
-    """Verify saved V2 prices and construct fixed-horizon market baseline rows.
+    """Verify saved V2 prices and construct fixed-target V2 market rows.
 
     ``symbols`` is configurable only to make small fixtures practical.  The
     default requires all five stocks plus SPY, exactly as the production
-    manifest contract specifies.
+    manifest contract specifies.  The default preserves the root-only P3
+    baseline input.  ``include_revision_rows`` is for the later grouped
+    revision experiment; it never changes a root's target or label.
     """
     manifest_location = Path(manifest_path)
     requested_symbols = _normalize_symbols(symbols)
@@ -120,6 +137,7 @@ def load_v2_market_training_data(
     excluded: Counter[str] = Counter()
     roots_considered: Counter[str] = Counter()
     rows_by_partition: Counter[str] = Counter()
+    rows_by_kind: Counter[str] = Counter()
     rows: list[V2MarketTrainingRow] = []
 
     for symbol in requested_symbols:
@@ -171,21 +189,32 @@ def load_v2_market_training_data(
             anchor = price_by_date[symbol][anchor_date]
             target = price_by_date[symbol][target_end_date]
             value = absolute_return(anchor_close=anchor.close, target_close=target.close)
-            rows.append(
-                _make_row(
-                    symbol=symbol,
-                    partition=partition,
-                    anchor=anchor,
-                    target=target,
-                    feature=feature,
-                    value=value,
-                    stock_hash=snapshot_hashes[symbol],
-                    benchmark_hash=snapshot_hashes[BENCHMARK_SYMBOL],
-                )
+            root = _make_row(
+                symbol=symbol,
+                partition=partition,
+                anchor=anchor,
+                target=target,
+                feature=feature,
+                value=value,
+                stock_hash=snapshot_hashes[symbol],
+                benchmark_hash=snapshot_hashes[BENCHMARK_SYMBOL],
             )
+            rows.append(root)
             rows_by_partition[partition] += 1
+            rows_by_kind["root"] += 1
+            if include_revision_rows:
+                revisions = _candidate_revision_rows(
+                    root=root,
+                    target_sessions=target_sessions,
+                    price_by_date=price_by_date[symbol],
+                    feature_by_key=feature_by_key,
+                )
+                rows.extend(revisions)
+                rows_by_partition[partition] += len(revisions)
+                rows_by_kind["revision"] += len(revisions)
 
-    rows.sort(key=lambda row: (row.partition, row.anchor_date, row.symbol))
+    rows.sort(key=lambda row: (row.partition, row.anchor_date, row.symbol, row.decision_date or row.anchor_date))
+    _validate_fixed_target_groups(rows)
     return V2MarketTrainingDataset(
         rows=tuple(rows),
         audit={
@@ -197,6 +226,8 @@ def load_v2_market_training_data(
             "target_sessions_required": HORIZON_SESSIONS,
             "roots_considered_by_partition": _partition_counts(roots_considered),
             "rows_by_partition": _partition_counts(rows_by_partition),
+            "rows_by_kind": {name: rows_by_kind.get(name, 0) for name in ("root", "revision")},
+            "revision_candidates_included": include_revision_rows,
             "excluded_by_reason": dict(sorted(excluded.items())),
             "total_rows": len(rows),
         },
@@ -236,7 +267,132 @@ def _make_row(
         feature_version=feature.feature_version,
         stock_price_sha256=stock_hash,
         benchmark_price_sha256=benchmark_hash,
+        row_kind="root",
+        root_id=_root_id(symbol, anchor.trading_date),
+        decision_date=anchor.trading_date,
+        decision_close=anchor.close,
+        label_available_at=target.trading_date,
     )
+
+
+def _candidate_revision_rows(
+    *,
+    root: V2MarketTrainingRow,
+    target_sessions: Sequence[date],
+    price_by_date: Mapping[date, DailyPrice],
+    feature_by_key: Mapping[tuple[str, date], FeatureRow],
+) -> tuple[V2MarketTrainingRow, ...]:
+    """Build one candidate for each still-revisable session of one root.
+
+    A decision on the first session after the root has nineteen sessions left;
+    the target session itself is deliberately absent because the V2 contract
+    requires ``remaining_sessions > 0`` for a revision.  Features are looked
+    up by the candidate's decision date, so no target price is used as a
+    feature.  The target price appears only in the mature shared label.
+    """
+    if root.row_kind != "root" or root.decision_date != root.anchor_date:
+        raise ValueError("revision candidates require a normalized root row")
+    target_count = len(target_sessions)
+    if target_count != HORIZON_SESSIONS or target_sessions[-1] != root.target_end_date:
+        raise ValueError("revision candidate target sessions do not match the root contract")
+
+    candidates: list[V2MarketTrainingRow] = []
+    for index, decision_date in enumerate(target_sessions[:-1], start=1):
+        remaining = HORIZON_SESSIONS - index
+        feature = feature_by_key.get((root.symbol, decision_date))
+        decision = price_by_date.get(decision_date)
+        if feature is None or decision is None:
+            # The root itself was already checked for every required session;
+            # keeping this fail-closed protects future callers that provide a
+            # narrower fixture or a changed price loader.
+            continue
+        realized = absolute_return(anchor_close=root.anchor_close, target_close=decision.close)
+        candidates.append(
+            V2MarketTrainingRow(
+                symbol=root.symbol,
+                partition=root.partition,
+                anchor_date=root.anchor_date,
+                target_end_date=root.target_end_date,
+                anchor_close=root.anchor_close,
+                target_close=root.target_close,
+                absolute_return=root.absolute_return,
+                label=root.label,
+                remaining_sessions=remaining,
+                realized_return_from_anchor=realized,
+                momentum_5d=feature.momentum_5d,
+                momentum_20d=feature.momentum_20d,
+                volatility_20d=feature.volatility_20d,
+                volume_ratio_20d=feature.volume_ratio_20d,
+                drawdown_20d=feature.drawdown_20d,
+                relative_return_20d=feature.relative_return_20d,
+                feature_version=feature.feature_version,
+                stock_price_sha256=root.stock_price_sha256,
+                benchmark_price_sha256=root.benchmark_price_sha256,
+                row_kind="revision",
+                root_id=root.root_id,
+                decision_date=decision_date,
+                decision_close=decision.close,
+                label_available_at=root.target_end_date,
+            )
+        )
+    return tuple(candidates)
+
+
+def _root_id(symbol: str, anchor_date: date) -> str:
+    """Stable group key for splitting/weighting root and revision rows together."""
+    return f"{symbol}:{anchor_date.isoformat()}"
+
+
+def _validate_fixed_target_groups(rows: Sequence[V2MarketTrainingRow]) -> None:
+    """Assert the internal P3 invariant shared by roots and revisions.
+
+    This is intentionally a construction-time validation, not a trainer that
+    treats the 19 candidates as independent observations.  Later grouped
+    modelling must choose an explicit per-root weighting or sampling policy.
+    """
+    groups: dict[str, list[V2MarketTrainingRow]] = {}
+    for row in rows:
+        if row.row_kind not in {"root", "revision"} or not row.root_id:
+            raise ValueError("V2 row has no valid root grouping identity")
+        groups.setdefault(row.root_id, []).append(row)
+    for root_id, group in groups.items():
+        roots = [row for row in group if row.row_kind == "root"]
+        if len(roots) != 1:
+            raise ValueError(f"V2 root group must contain exactly one root: {root_id}")
+        root = roots[0]
+        if root.decision_date != root.anchor_date or root.decision_close != root.anchor_close:
+            raise ValueError(f"V2 root decision state is invalid: {root_id}")
+        if root.remaining_sessions != HORIZON_SESSIONS or root.realized_return_from_anchor != 0.0:
+            raise ValueError(f"V2 root state is invalid: {root_id}")
+        expected_remaining = {
+            decision_date: HORIZON_SESSIONS - index
+            for index, decision_date in enumerate(
+                future_xnys_sessions(root.anchor_date, HORIZON_SESSIONS)[:-1], start=1
+            )
+        }
+        for row in group:
+            if (
+                row.symbol != root.symbol
+                or row.partition != root.partition
+                or row.anchor_date != root.anchor_date
+                or row.anchor_close != root.anchor_close
+                or row.target_end_date != root.target_end_date
+                or row.target_close != root.target_close
+                or row.absolute_return != root.absolute_return
+                or row.label != root.label
+                or row.label_available_at != root.target_end_date
+            ):
+                raise ValueError(f"V2 row changes its fixed root target: {root_id}")
+            if row.row_kind == "revision":
+                if row.decision_date is None or row.decision_close is None:
+                    raise ValueError(f"V2 revision has no decision price: {root_id}")
+                if not root.anchor_date < row.decision_date < root.target_end_date:
+                    raise ValueError(f"V2 revision decision is outside the fixed target: {root_id}")
+                if row.remaining_sessions != expected_remaining.get(row.decision_date):
+                    raise ValueError(f"V2 revision remaining sessions do not reach the fixed target: {root_id}")
+                expected_realized = absolute_return(anchor_close=root.anchor_close, target_close=row.decision_close)
+                if not math.isclose(row.realized_return_from_anchor, expected_realized, rel_tol=0.0, abs_tol=1e-12):
+                    raise ValueError(f"V2 revision realised return is inconsistent: {root_id}")
 
 
 def _load_snapshots(

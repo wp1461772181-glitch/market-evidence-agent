@@ -371,6 +371,11 @@ def scan_sec_filings(
                 content_excerpt_sha256=None,
                 content_truncated=False,
                 content_error=None,
+                content_source_url=None,
+                content_document_name=None,
+                content_kind=None,
+                related_attachment_status="not_checked" if filing.form == "8-K" else "not_applicable",
+                related_attachment_error=None,
             )
         )
         created += 1
@@ -403,7 +408,14 @@ def fetch_inventory_content(
     provider: SecEdgarProvider | None = None,
     observed_at: datetime | None = None,
 ) -> tuple[SecFilingInventory, bool]:
-    """Fetch one existing official primary document, never an arbitrary URL."""
+    """Fetch one inventoried SEC document and preserve 8-K attachment provenance.
+
+    For an 8-K, the checked same-accession Exhibit 99.1 is preferred when it
+    exists.  If no matching exhibit exists, the primary document remains a
+    usable source and the negative lookup is retained.  A failed attachment
+    lookup also retains the primary document, but records incomplete coverage
+    instead of implying that every related document was read.
+    """
     normalized_symbol = _supported_symbol(symbol)
     filing = (
         db.query(SecFilingInventory)
@@ -415,12 +427,47 @@ def fetch_inventory_content(
     )
     if filing is None:
         raise SecFilingNotFoundError("SEC filing is not in this symbol's inventory; scan it first")
-    if filing.content_status == "fetched" and filing.content_excerpt is not None:
+    attachment_checked = filing.related_attachment_status in {"fetched", "not_found", "unavailable"}
+    if (
+        filing.content_status == "fetched"
+        and filing.content_excerpt is not None
+        and (filing.form != "8-K" or attachment_checked)
+    ):
         return filing, True
 
     observed_at = _require_aware_utc(observed_at or datetime.now(UTC))
     try:
-        content = (provider or SecEdgarProvider()).fetch_primary_document(filing)
+        active_provider = provider or SecEdgarProvider()
+        content = None
+        content_source_url = filing.source_url
+        content_document_name = filing.primary_document
+        content_kind = "primary_document"
+        related_attachment_status = "not_applicable"
+        related_attachment_error = None
+        if filing.form == "8-K":
+            fetch_exhibit = getattr(active_provider, "fetch_exhibit_99_1", None)
+            if not callable(fetch_exhibit):
+                exhibit = None
+                related_attachment_status = "unavailable"
+                related_attachment_error = "SEC provider cannot inspect related 8-K attachments"
+            else:
+                try:
+                    exhibit = fetch_exhibit(filing)
+                except SecFilingsError as exc:
+                    exhibit = None
+                    related_attachment_status = "unavailable"
+                    related_attachment_error = str(exc)
+                else:
+                    if exhibit is None:
+                        related_attachment_status = "not_found"
+                    else:
+                        content = exhibit.content
+                        content_source_url = exhibit.source_url
+                        content_document_name = exhibit.document_name
+                        content_kind = "exhibit_99_1"
+                        related_attachment_status = "fetched"
+        if content is None:
+            content = active_provider.fetch_primary_document(filing)
     except SecFilingsError as exc:
         filing.content_status = "unavailable"
         filing.content_error = str(exc)
@@ -435,6 +482,11 @@ def fetch_inventory_content(
     filing.content_status = "fetched"
     filing.content_error = None
     filing.content_observed_at = observed_at
+    filing.content_source_url = content_source_url
+    filing.content_document_name = content_document_name
+    filing.content_kind = content_kind
+    filing.related_attachment_status = related_attachment_status
+    filing.related_attachment_error = related_attachment_error
     db.commit()
     db.refresh(filing)
     return filing, False
@@ -499,6 +551,16 @@ def create_sec_filing_inventory_table() -> None:
                 "ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMP WITH TIME ZONE"
             )
         )
+        for definition in (
+            "content_source_url VARCHAR(2048)",
+            "content_document_name VARCHAR(512)",
+            "content_kind VARCHAR(32)",
+            "related_attachment_status VARCHAR(32)",
+            "related_attachment_error VARCHAR(280)",
+        ):
+            connection.execute(
+                text(f"ALTER TABLE sec_filing_inventory ADD COLUMN IF NOT EXISTS {definition}")
+            )
         connection.execute(
             text("ALTER TABLE sec_filing_inventory DROP CONSTRAINT IF EXISTS ck_sec_filing_inventory_review_status")
         )

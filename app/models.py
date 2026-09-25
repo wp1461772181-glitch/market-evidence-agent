@@ -319,6 +319,14 @@ class SecFilingInventory(Base):
     content_excerpt_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     content_truncated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     content_error: Mapped[str | None] = mapped_column(String(280), nullable=True)
+    # ``source_url`` always identifies the accession's primary filing.  A
+    # fetched 8-K may instead retain its related Exhibit 99.1, so persist the
+    # exact document that supplied the frozen text separately.
+    content_source_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    content_document_name: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    content_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    related_attachment_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    related_attachment_error: Mapped[str | None] = mapped_column(String(280), nullable=True)
 
 
 class UploadedEvidence(Base):

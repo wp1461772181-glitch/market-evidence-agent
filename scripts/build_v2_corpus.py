@@ -107,10 +107,10 @@ def build_corpus(
             source_url=filing.source_url,
         )
         try:
-            content = provider.fetch_primary_document(inventory)
+            content = None
             content_url = filing.source_url
             document_name = filing.primary_document
-            coverage_incomplete = content.truncated
+            attachment_status = "not_applicable"
             exhibit_error = None
             if filing.form == "8-K":
                 try:
@@ -118,12 +118,18 @@ def build_corpus(
                 except SecFilingsError as exc:
                     exhibit = None
                     exhibit_error = str(exc)
+                    attachment_status = "unavailable"
                     coverage_incomplete = True
                 if exhibit is not None:
                     content = exhibit.content
                     content_url = exhibit.source_url
                     document_name = exhibit.document_name
-                    coverage_incomplete = content.truncated
+                    attachment_status = "fetched"
+                elif attachment_status != "unavailable":
+                    attachment_status = "not_found"
+            if content is None:
+                content = provider.fetch_primary_document(inventory)
+            coverage_incomplete = content.truncated or attachment_status == "unavailable"
         except SecFilingsError as exc:
             errors.append({"source_id": filing.accession_number, "reason": str(exc)})
             continue
@@ -140,10 +146,16 @@ def build_corpus(
             "form": filing.form,
             "document_name": document_name,
             "source_url": content_url,
+            "filing_source_url": filing.source_url,
+            "document_kind": "exhibit_99_1" if attachment_status == "fetched" else "primary_document",
+            "related_attachment_status": attachment_status,
+            "related_attachment_error": exhibit_error,
+            "publication_time_basis": "sec_accession_acceptance_time",
             "published_at": published_at.isoformat(),
             "observed_at": observed_at.isoformat(),
             "text": content.excerpt,
             "text_sha256": content.excerpt_sha256,
+            "citation_locator": {"kind": "extracted_text_char_range", "start": 0, "end": len(content.excerpt)},
             "coverage_incomplete": coverage_incomplete,
             "exhibit_error": exhibit_error,
         }

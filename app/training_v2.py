@@ -327,6 +327,8 @@ def _root_frame(rows: Sequence[V2MarketTrainingRow]) -> pd.DataFrame:
     invalid_labels = set(frame["label"]) - set(CLASS_LABELS)
     if invalid_labels:
         raise MarketTrainingError(f"V2 market rows have invalid labels: {sorted(invalid_labels)}")
+    if "row_kind" in frame and not (frame["row_kind"] == "root").all():
+        raise MarketTrainingError("P3 market baseline accepts only initial root rows, not candidate revisions")
     if not (frame["remaining_sessions"] == 20).all() or not (frame["realized_return_from_anchor"] == 0.0).all():
         raise MarketTrainingError("P3 accepts only initial root rows (remaining_sessions=20, realized_return_from_anchor=0)")
     if frame.duplicated(["symbol", "anchor_date"]).any():
