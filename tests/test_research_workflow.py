@@ -13,7 +13,13 @@ import pytest
 from app.database import SessionLocal
 from app.event_extraction import DocumentInput, create_event_extraction_table, extract_document
 from app.event_provider import ProviderResult
-from app.research_workflow import _research_event_context, create_research_run_table, run_research
+from app.research_workflow import (
+    FrozenResearchSource,
+    _research_event_context,
+    create_research_run_table,
+    run_frozen_research,
+    run_research,
+)
 import app.research_workflow as workflow
 
 
@@ -88,6 +94,35 @@ def _run(tmp_path: Path, monkeypatch, responses: list[str], *, as_of_time: datet
             as_of_time=as_of_time or datetime(2026, 2, 1, tzinfo=UTC),
             document_ids=["example-q1"],
             document_directory=documents,
+            db=db,
+            provider_factory=lambda: provider,
+        )
+    return run, provider
+
+
+def _frozen_source(**changes: object) -> FrozenResearchSource:
+    values: dict[str, object] = {
+        "source_id": "example-q1",
+        "source_type": "official_filing",
+        "source_record_id": "filing-123",
+        "document": _document(),
+        "published_at": datetime(2026, 1, 31, 18, tzinfo=UTC),
+        "observed_at": datetime(2026, 1, 31, 19, tzinfo=UTC),
+        "provenance": {"accession": "0000000000-26-000001", "coverage": "excerpt"},
+        "coverage_incomplete": True,
+    }
+    values.update(changes)
+    return FrozenResearchSource.model_validate(values)
+
+
+def _run_frozen(responses: list[str], *, sources: list[FrozenResearchSource] | None = None):
+    provider = FakeResearchProvider(responses)
+    create_research_run_table()
+    with SessionLocal() as db:
+        run = run_frozen_research(
+            symbol="EXM",
+            decision_at=datetime(2026, 2, 1, tzinfo=UTC),
+            sources=sources or [_frozen_source()],
             db=db,
             provider_factory=lambda: provider,
         )
@@ -264,3 +299,46 @@ def test_empty_counter_evidence_is_a_gap_but_empty_both_sides_is_not_a_report(tm
     assert empty.current_stage == "review"
     assert empty.report is None
     assert "no grounded" in empty.error
+
+
+def test_frozen_source_adapter_uses_only_caller_snapshot_and_preserves_provenance():
+    run, provider = _run_frozen(
+        [
+            _claim("Revenue growth supports the business case.", "Revenue increased 6% to $100 billion."),
+            _claim("Higher operating expenses qualify the business case.", "Operating expenses rose by 4%."),
+        ]
+    )
+
+    assert run.status == "succeeded"
+    assert provider.calls == 2
+    assert run.report is not None
+    assert run.report["time_scope"]["data_mode"] == "observed"
+    assert run.report["supporting_evidence"][0]["evidence_quote"] in _TEXT
+    snapshot = run.source_snapshot[0]
+    assert snapshot["source_type"] == "official_filing"
+    assert snapshot["source_record_id"] == "filing-123"
+    assert snapshot["coverage_incomplete"] is True
+    assert snapshot["provenance"]["coverage"] == "excerpt"
+    assert snapshot["event_cache_key"] is None
+
+
+def test_frozen_source_after_observation_cutoff_fails_before_provider_creation():
+    run, provider = _run_frozen(
+        [],
+        sources=[_frozen_source(observed_at=datetime(2026, 2, 1, 0, 1, tzinfo=UTC))],
+    )
+
+    assert provider.calls == 0
+    assert run.status == "failed"
+    assert run.current_stage == "source_check"
+    assert run.report is None
+    assert "unavailable" in run.error
+
+
+def test_frozen_source_claim_quote_is_checked_against_the_frozen_text():
+    run, provider = _run_frozen([_claim("Ungrounded claim.", "not in frozen source")])
+
+    assert provider.calls == 1
+    assert run.status == "failed"
+    assert run.report is None
+    assert "exact substring" in run.error

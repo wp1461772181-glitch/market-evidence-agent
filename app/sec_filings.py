@@ -48,6 +48,8 @@ MAX_DISCOVERED_FILINGS = 40
 PRIMARY_DOCUMENT_CONTENT_TYPES = frozenset({"text/html", "text/plain", "application/xhtml+xml"})
 _SAFE_PRIMARY_DOCUMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,511}$")
 _SAFE_ACCESSION = re.compile(r"^\d{10}-\d{2}-\d{6}$")
+_SAFE_SUBMISSIONS_PAGE = re.compile(r"^CIK\d{10}-submissions-\d{3}\.json$")
+_EXHIBIT_99_1 = re.compile(r"(?i)(?:^|[-_])ex(?:hibit)?[-_]?99[._-]?1\.(?:htm|html|txt)$")
 _PROCESS_RATE_LOCK = Lock()
 _NEXT_PROCESS_REQUEST_AT: float | None = None
 
@@ -79,6 +81,23 @@ class DiscoveredSecFiling:
     accepted_at: str | None
     primary_document: str
     source_url: str
+
+
+@dataclass(frozen=True)
+class SecDiscoveryCoverage:
+    """Bounded history result; incomplete scans must never advance a watermark."""
+
+    filings: tuple[DiscoveredSecFiling, ...]
+    complete: bool
+    pages_read: int
+    next_page: str | None
+
+
+@dataclass(frozen=True)
+class SecRelatedExhibit:
+    document_name: str
+    source_url: str
+    content: "SecFilingContent"
 
 
 @dataclass(frozen=True)
@@ -138,6 +157,100 @@ class SecEdgarProvider:
         submissions = self._get_json(f"{SEC_SUBMISSIONS_URL}/CIK{cik}.json")
         return _recent_filings(submissions, cik)
 
+    def discover_between(
+        self,
+        symbol: str,
+        *,
+        start_date: date,
+        end_date: date,
+        max_pages: int = 3,
+        max_filings: int = 1_000,
+    ) -> SecDiscoveryCoverage:
+        """Scan recent and declared older SEC submissions pages with a hard cap."""
+        normalized = _supported_symbol(symbol)
+        if start_date > end_date or max_pages < 0 or max_filings < 1:
+            raise SecFilingsError("invalid SEC history range or retrieval budget")
+        cik = _cik_for_symbol(self._get_json(SEC_TICKERS_URL), normalized)
+        submissions = self._get_json(f"{SEC_SUBMISSIONS_URL}/CIK{cik}.json")
+        candidates = list(_recent_filings(submissions, cik, limit=None))
+        page_descriptors = submissions.get("filings", {}).get("files") or []
+        if not isinstance(page_descriptors, list):
+            raise SecFilingsError("SEC history page list is invalid")
+        eligible: list[str] = []
+        for descriptor in page_descriptors:
+            if not isinstance(descriptor, dict):
+                raise SecFilingsError("SEC history page metadata is invalid")
+            name = descriptor.get("name")
+            if not isinstance(name, str) or not _SAFE_SUBMISSIONS_PAGE.fullmatch(name) or not name.startswith(f"CIK{cik}-"):
+                raise SecFilingsError("SEC history page name is unsafe")
+            try:
+                first = date.fromisoformat(descriptor["filingFrom"])
+                last = date.fromisoformat(descriptor["filingTo"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise SecFilingsError("SEC history page dates are invalid") from exc
+            if first <= end_date and last >= start_date:
+                eligible.append(name)
+        pages_read = 0
+        for name in eligible[:max_pages]:
+            page = self._get_json(f"{SEC_SUBMISSIONS_URL}/{name}")
+            candidates.extend(_recent_filings({"filings": {"recent": page}}, cik, limit=None))
+            pages_read += 1
+        deduped = {filing.accession_number: filing for filing in candidates if start_date <= filing.filed_at <= end_date}
+        ordered = sorted(deduped.values(), key=lambda filing: (filing.filed_at, filing.accession_number), reverse=True)
+        incomplete_pages = eligible[max_pages:]
+        complete = not incomplete_pages and len(ordered) <= max_filings
+        return SecDiscoveryCoverage(
+            filings=tuple(ordered[:max_filings]),
+            complete=complete,
+            pages_read=pages_read,
+            next_page=incomplete_pages[0] if incomplete_pages else None,
+        )
+
+    def fetch_exhibit_99_1(self, filing: SecFilingInventory) -> SecRelatedExhibit | None:
+        """Read one 8-K results exhibit from its canonical accession directory."""
+        if filing.form != "8-K":
+            return None
+        canonical_url = canonical_sec_filing_url(
+            cik=filing.cik,
+            accession_number=filing.accession_number,
+            primary_document=filing.primary_document,
+        )
+        if filing.source_url != canonical_url:
+            raise SecFilingsError("saved SEC filing URL does not match its official filing identity")
+        directory_url = canonical_url.rsplit("/", 1)[0]
+        index = self._get_json(f"{directory_url}/index.json")
+        directory = index.get("directory")
+        items = directory.get("item") if isinstance(directory, dict) else None
+        if not isinstance(items, list):
+            raise SecFilingsError("SEC accession directory has no valid item list")
+        names = [item.get("name") for item in items if isinstance(item, dict)]
+        candidates = sorted(
+            name for name in names
+            if isinstance(name, str) and _SAFE_PRIMARY_DOCUMENT.fullmatch(name) and _EXHIBIT_99_1.search(name)
+        )
+        if not candidates:
+            return None
+        if len(candidates) > 1:
+            raise SecFilingsError("SEC accession has multiple possible exhibit 99.1 documents")
+        document_name = candidates[0]
+        source_url = f"{directory_url}/{document_name}"
+        raw = self._get_bytes(
+            source_url,
+            allowed_content_types=PRIMARY_DOCUMENT_CONTENT_TYPES,
+            reject_nul_bytes=True,
+        )
+        text = _html_text(raw)
+        excerpt = text[:MAX_EXCERPT_CHARACTERS]
+        return SecRelatedExhibit(
+            document_name=document_name,
+            source_url=source_url,
+            content=SecFilingContent(
+                excerpt=excerpt,
+                excerpt_sha256=hashlib.sha256(excerpt.encode("utf-8")).hexdigest(),
+                truncated=len(text) > len(excerpt),
+            ),
+        )
+
     def fetch_primary_document(self, filing: SecFilingInventory) -> SecFilingContent:
         if not filing.primary_document.casefold().endswith((".htm", ".html", ".txt")):
             raise SecFilingsError("SEC primary document format is not supported for text review")
@@ -153,16 +266,7 @@ class SecEdgarProvider:
             allowed_content_types=PRIMARY_DOCUMENT_CONTENT_TYPES,
             reject_nul_bytes=True,
         )
-        decoded = raw.decode("utf-8", errors="replace")
-        collector = _TextCollector()
-        try:
-            collector.feed(decoded)
-            collector.close()
-        except Exception as exc:
-            raise SecFilingsError("SEC primary document could not be parsed") from exc
-        text = collector.text()
-        if not text:
-            raise SecFilingsError("SEC primary document did not contain readable text")
+        text = _html_text(raw)
         excerpt = text[:MAX_EXCERPT_CHARACTERS]
         return SecFilingContent(
             excerpt=excerpt,
@@ -454,7 +558,7 @@ def _cik_for_symbol(tickers: dict, symbol: str) -> str:
     raise SecFilingsError("SEC does not list this supported ticker")
 
 
-def _recent_filings(payload: dict, cik: str) -> list[DiscoveredSecFiling]:
+def _recent_filings(payload: dict, cik: str, *, limit: int | None = MAX_DISCOVERED_FILINGS) -> list[DiscoveredSecFiling]:
     recent = payload.get("filings", {}).get("recent")
     if not isinstance(recent, dict):
         raise SecFilingsError("SEC submissions response is missing recent filings")
@@ -502,9 +606,22 @@ def _recent_filings(payload: dict, cik: str) -> list[DiscoveredSecFiling]:
                 source_url=f"{SEC_ARCHIVES_URL}/{int(cik)}/{accession_compact}/{primary_document}",
             )
         )
-        if len(filings) >= MAX_DISCOVERED_FILINGS:
+        if limit is not None and len(filings) >= limit:
             break
     return filings
+
+
+def _html_text(raw: bytes) -> str:
+    collector = _TextCollector()
+    try:
+        collector.feed(raw.decode("utf-8", errors="replace"))
+        collector.close()
+    except Exception as exc:
+        raise SecFilingsError("SEC document could not be parsed") from exc
+    text = collector.text()
+    if not text:
+        raise SecFilingsError("SEC document did not contain readable text")
+    return text
 
 
 def _require_aware_utc(value: datetime) -> datetime:

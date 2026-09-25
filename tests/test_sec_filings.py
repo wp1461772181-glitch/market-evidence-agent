@@ -139,6 +139,80 @@ def test_discovers_only_supported_forms_from_official_json_and_declares_user_age
     assert all(user_agent == "Market Evidence Agent test@example.com" for user_agent in opener.user_agents)
 
 
+def test_bounded_history_reads_declared_older_page_and_reports_incomplete_coverage():
+    opener, _ = _responses()
+    cik = "0000320193"
+    base_url = f"{SEC_SUBMISSIONS_URL}/CIK{cik}.json"
+    base = json.loads(opener.responses[base_url])
+    name = f"CIK{cik}-submissions-001.json"
+    base["filings"]["files"] = [
+        {"name": name, "filingFrom": "2024-01-01", "filingTo": "2025-12-31"}
+    ]
+    opener.responses[base_url] = json.dumps(base).encode()
+    opener.responses[f"{SEC_SUBMISSIONS_URL}/{name}"] = json.dumps({
+        "form": ["10-Q", "4"],
+        "accessionNumber": ["0000320193-25-000001", "0000320193-25-000002"],
+        "filingDate": ["2025-05-01", "2025-04-01"],
+        "acceptanceDateTime": ["2025-05-01T20:00:00Z", "2025-04-01T20:00:00Z"],
+        "primaryDocument": ["q.htm", "ownership.xml"],
+    }).encode()
+
+    provider = _provider(opener)
+    limited = provider.discover_between(
+        "AAPL", start_date=datetime(2025, 1, 1, tzinfo=UTC).date(),
+        end_date=datetime(2025, 12, 31, tzinfo=UTC).date(), max_pages=0,
+    )
+    assert limited.complete is False
+    assert limited.next_page == name
+    assert limited.filings == ()
+
+    complete = provider.discover_between(
+        "AAPL", start_date=datetime(2025, 1, 1, tzinfo=UTC).date(),
+        end_date=datetime(2025, 12, 31, tzinfo=UTC).date(), max_pages=1,
+    )
+    assert complete.complete is True
+    assert complete.pages_read == 1
+    assert [item.accession_number for item in complete.filings] == ["0000320193-25-000001"]
+
+
+def test_history_rejects_untrusted_page_filename():
+    opener, _ = _responses()
+    base_url = f"{SEC_SUBMISSIONS_URL}/CIK0000320193.json"
+    base = json.loads(opener.responses[base_url])
+    base["filings"]["files"] = [
+        {"name": "../another-company.json", "filingFrom": "2024-01-01", "filingTo": "2025-12-31"}
+    ]
+    opener.responses[base_url] = json.dumps(base).encode()
+    with pytest.raises(SecFilingsError, match="unsafe"):
+        _provider(opener).discover_between(
+            "AAPL", start_date=datetime(2025, 1, 1, tzinfo=UTC).date(),
+            end_date=datetime(2025, 12, 31, tzinfo=UTC).date(),
+        )
+
+
+def test_8k_exhibit_99_1_is_read_only_from_same_accession_directory():
+    create_sec_filing_inventory_table()
+    _clear_inventory()
+    opener, _ = _responses()
+    provider = _provider(opener)
+    with SessionLocal() as db:
+        rows, _, _ = scan_sec_filings(symbol="AAPL", db=db, provider=provider)
+        filing = next(row for row in rows if row.form == "8-K")
+        directory = filing.source_url.rsplit("/", 1)[0]
+        index_url = f"{directory}/index.json"
+        exhibit_url = f"{directory}/ex99-1.htm"
+        opener.responses[index_url] = json.dumps({
+            "directory": {"item": [{"name": "aapl-8k.htm"}, {"name": "ex99-1.htm"}]}
+        }).encode()
+        opener.responses[exhibit_url] = b"<html><body>Quarterly results exhibit.</body></html>"
+        exhibit = provider.fetch_exhibit_99_1(filing)
+
+    assert exhibit is not None
+    assert exhibit.source_url == exhibit_url
+    assert exhibit.content.excerpt == "Quarterly results exhibit."
+    assert exhibit_url in opener.urls
+
+
 def test_scan_is_idempotent_and_keeps_official_metadata_only():
     create_sec_filing_inventory_table()
     _clear_inventory()

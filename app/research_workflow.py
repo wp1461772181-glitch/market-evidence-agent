@@ -10,11 +10,11 @@ from __future__ import annotations
 
 import argparse
 import json
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
@@ -47,6 +47,7 @@ DEFAULT_DOCUMENT_DIRECTORY = Path(__file__).resolve().parent.parent / "data" / "
 DEFAULT_SOURCE_MANIFEST = Path(__file__).resolve().parent.parent / "docs" / "week6-sources.json"
 MAX_DOCUMENTS = 10
 MAX_CLAIMS_PER_SIDE = 5
+FrozenResearchTimeMode = Literal["observed", "historical_research"]
 
 
 class ResearchWorkflowError(ValueError):
@@ -69,12 +70,43 @@ class ResearchClaimPayload(BaseModel):
     claims: Annotated[list[ResearchClaim], Field(max_length=MAX_CLAIMS_PER_SIDE)]
 
 
+class FrozenResearchSource(BaseModel):
+    """Caller-supplied source snapshot for the V2 research adapter.
+
+    The adapter never fetches or re-reads a URL.  ``document`` is the exact
+    saved text that will be sent to the research provider and quote-checked.
+    ``published_at`` and ``observed_at`` retain the two time boundaries needed
+    to make an observed-time research decision reproducible.
+    """
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    source_id: Annotated[str, Field(min_length=1, max_length=128)]
+    source_type: Literal["official_filing", "uploaded_media"]
+    source_record_id: Annotated[str, Field(min_length=1, max_length=128)]
+    document: DocumentInput
+    published_at: datetime
+    observed_at: datetime
+    provenance: dict[str, Any] = Field(default_factory=dict)
+    coverage_incomplete: bool = False
+    events: dict[str, list[dict[str, Any]]] = Field(
+        default_factory=lambda: {"events": [], "excluded_events": []}
+    )
+
+
 @dataclass(frozen=True)
 class GroundedSource:
     document: DocumentInput
-    cache_key: str
+    cache_key: str | None
     events: dict[str, list[dict[str, Any]]]
     available_at: datetime
+    source_id: str
+    source_type: str = "week6_saved_manifest"
+    source_record_id: str | None = None
+    published_at: datetime | None = None
+    observed_at: datetime | None = None
+    provenance: dict[str, Any] | None = None
+    coverage_incomplete: bool = False
 
 
 def run_research(
@@ -179,6 +211,107 @@ def run_research(
         return run
 
 
+def run_frozen_research(
+    *,
+    symbol: str,
+    decision_at: datetime,
+    sources: Sequence[FrozenResearchSource],
+    db: Session,
+    provider_factory: Callable[[], EventProvider],
+    model: str = DEFAULT_DEEPSEEK_MODEL,
+    time_mode: FrozenResearchTimeMode = "observed",
+) -> ResearchRun:
+    """Research one caller-frozen V2 source set without any retrieval.
+
+    This is the adapter used by dynamic evidence selection.  It deliberately
+    accepts already-frozen text and provenance instead of a manifest path or a
+    network URL.  The supplied provider is only used for the supporting and
+    counter nodes after the source cutoff has been checked.
+    """
+
+    normalized_symbol = normalize_symbol(symbol)
+    if not is_valid_symbol(normalized_symbol):
+        raise ResearchWorkflowError("symbol must contain 1-5 ASCII letters")
+    decision_at = _require_aware_utc(decision_at)
+    _validate_frozen_source_set(sources)
+    if time_mode not in {"observed", "historical_research"}:
+        raise ResearchWorkflowError("frozen research time_mode must be observed or historical_research")
+    if not model.strip():
+        raise ResearchWorkflowError("model must not be empty")
+
+    run = ResearchRun(
+        symbol=normalized_symbol,
+        as_of_time=decision_at,
+        source_ids=[source.source_id for source in sources],
+        source_snapshot=[],
+        provider=PROVIDER_NAME,
+        request_model=model,
+        status="running",
+        current_stage="source_check",
+        node_trace=[_trace("source_check", "running")],
+        report=None,
+        error=None,
+    )
+    db.add(run)
+    db.commit()
+    db.refresh(run)
+
+    try:
+        grounded_sources = _load_frozen_grounded_sources(
+            sources=sources,
+            symbol=normalized_symbol,
+            decision_at=decision_at,
+            time_mode=time_mode,
+        )
+        run.source_snapshot = [_source_snapshot(source) for source in grounded_sources]
+        _finish_stage(db, run, "source_check", "succeeded", source_count=len(grounded_sources))
+
+        _start_stage(db, run, "supporting")
+        provider = provider_factory()
+        supporting = _run_claim_node(
+            provider=provider,
+            model=model,
+            stance="supporting",
+            symbol=normalized_symbol,
+            as_of_time=decision_at,
+            sources=grounded_sources,
+        )
+        _finish_stage(db, run, "supporting", "succeeded", claim_count=len(supporting))
+
+        _start_stage(db, run, "counter")
+        counter = _run_claim_node(
+            provider=provider,
+            model=model,
+            stance="counter",
+            symbol=normalized_symbol,
+            as_of_time=decision_at,
+            sources=grounded_sources,
+        )
+        _finish_stage(db, run, "counter", "succeeded", claim_count=len(counter))
+
+        _start_stage(db, run, "review")
+        report = _review_report(
+            symbol=normalized_symbol,
+            as_of_time=decision_at,
+            sources=grounded_sources,
+            supporting=supporting,
+            counter=counter,
+            data_mode=time_mode,
+        )
+        _finish_stage(db, run, "review", "succeeded", report_created=True)
+        run.status = "succeeded"
+        run.current_stage = "complete"
+        run.report = report
+        run.completed_at = datetime.now(UTC)
+        run.node_trace = [*run.node_trace, _trace("complete", "succeeded")]
+        db.commit()
+        db.refresh(run)
+        return run
+    except Exception as exc:
+        _record_failure(db, run, _safe_error(exc))
+        return run
+
+
 def _load_grounded_sources(
     *,
     document_ids: list[str],
@@ -239,11 +372,79 @@ def _load_grounded_sources(
                 cache_key=cache_key,
                 events=project_events_for_review(cached_result.batch),
                 available_at=available_at,
+                source_id=document.document_id,
             )
         )
     if not sources:
         raise ResearchWorkflowError("research requires at least one usable source")
     return sources
+
+
+def _validate_frozen_source_set(sources: Sequence[FrozenResearchSource]) -> None:
+    if not sources or len(sources) > MAX_DOCUMENTS:
+        raise ResearchWorkflowError(f"research requires 1 to {MAX_DOCUMENTS} frozen sources")
+    source_ids = [source.source_id for source in sources]
+    if len(set(source_ids)) != len(source_ids):
+        raise ResearchWorkflowError("frozen source_ids must not repeat")
+
+
+def _load_frozen_grounded_sources(
+    *,
+    sources: Sequence[FrozenResearchSource],
+    symbol: str,
+    decision_at: datetime,
+    time_mode: FrozenResearchTimeMode,
+) -> list[GroundedSource]:
+    grounded: list[GroundedSource] = []
+    for source in sources:
+        if source.document.ticker != symbol:
+            raise ResearchWorkflowError(f"{source.source_id}: ticker does not match requested symbol")
+        published_at = _require_aware_utc(source.published_at)
+        observed_at = _require_aware_utc(source.observed_at)
+        if published_at > decision_at:
+            raise ResearchWorkflowError(
+                f"{source.source_id}: source is unavailable at the requested decision_at"
+            )
+        if time_mode == "observed" and observed_at > decision_at:
+            raise ResearchWorkflowError(
+                f"{source.source_id}: source is unavailable at the requested decision_at"
+            )
+        events = _validate_frozen_events(source.events, source.document, source.source_id)
+        grounded.append(
+            GroundedSource(
+                document=source.document,
+                cache_key=None,
+                events=events,
+                available_at=max(published_at, observed_at),
+                source_id=source.source_id,
+                source_type=source.source_type,
+                source_record_id=source.source_record_id,
+                published_at=published_at,
+                observed_at=observed_at,
+                provenance=dict(source.provenance),
+                coverage_incomplete=source.coverage_incomplete,
+            )
+        )
+    return grounded
+
+
+def _validate_frozen_events(
+    value: dict[str, list[dict[str, Any]]], document: DocumentInput, source_id: str
+) -> dict[str, list[dict[str, Any]]]:
+    """Keep optional caller-provided event anchors inside their frozen text."""
+
+    events = value.get("events")
+    excluded_events = value.get("excluded_events")
+    if not isinstance(events, list) or not isinstance(excluded_events, list):
+        raise ResearchWorkflowError(f"{source_id}: frozen events must contain event and excluded_event lists")
+    required_fields = ("event_type", "event_date", "summary", "evidence_quote", "source_url", "company")
+    for event in events:
+        if not isinstance(event, dict) or any(field not in event for field in required_fields):
+            raise ResearchWorkflowError(f"{source_id}: frozen event metadata is incomplete")
+        quote = event["evidence_quote"]
+        if not isinstance(quote, str) or quote not in document.text:
+            raise ResearchWorkflowError(f"{source_id}: frozen event quote is not an exact source substring")
+    return {"events": events, "excluded_events": excluded_events}
 
 
 def _cache_must_exist() -> EventProvider:
@@ -273,7 +474,7 @@ def _validate_claim_response(result: ProviderResult, sources: list[GroundedSourc
         payload = ResearchClaimPayload.model_validate(parsed)
     except Exception as exc:
         raise ResearchWorkflowError("research model response does not match the claim JSON contract") from exc
-    by_id = {source.document.document_id: source for source in sources}
+    by_id = {source.source_id: source for source in sources}
     for claim in payload.claims:
         source = by_id.get(claim.source_id)
         if source is None:
@@ -290,6 +491,7 @@ def _review_report(
     sources: list[GroundedSource],
     supporting: list[ResearchClaim],
     counter: list[ResearchClaim],
+    data_mode: str = "historical_research",
 ) -> dict[str, Any]:
     if not supporting and not counter:
         raise ResearchWorkflowError("research produced no grounded supporting or counter evidence")
@@ -306,9 +508,9 @@ def _review_report(
         "symbol": symbol,
         "as_of_time": as_of_time.isoformat(),
         "time_scope": {
-            "source_availability_rule": "A source is eligible only from 00:00:00 UTC on the day after its published_date.",
-            "data_mode": "historical_research",
-            "limitation": "Publication date is a conservative proxy, not proof of the system's observed time or a live historical feed.",
+            "source_availability_rule": _source_availability_rule(data_mode),
+            "data_mode": data_mode,
+            "limitation": _time_scope_limitation(data_mode),
         },
         "sources": [_source_snapshot(source) for source in sources],
         "supporting_evidence": _report_claims(supporting),
@@ -356,7 +558,7 @@ def _claim_document_payload(symbol: str, as_of_time: datetime, sources: list[Gro
         "source_availability_rule": "published_date plus one day at 00:00:00 UTC",
         "sources": [
             {
-                "source_id": source.document.document_id,
+                "source_id": source.source_id,
                 "published_date": source.document.published_date.isoformat(),
                 "available_at": source.available_at.isoformat(),
                 "title": source.document.title,
@@ -380,17 +582,40 @@ def _research_event_context(events: dict[str, list[dict[str, Any]]]) -> dict[str
 
 def _source_snapshot(source: GroundedSource) -> dict[str, Any]:
     return {
-        "source_id": source.document.document_id,
+        "source_id": source.source_id,
+        "document_id": source.document.document_id,
+        "source_type": source.source_type,
+        "source_record_id": source.source_record_id,
         "company": source.document.company,
         "ticker": source.document.ticker,
         "source_url": source.document.source_url,
         "sha256": source.document.sha256,
         "published_date": source.document.published_date.isoformat(),
+        "published_at": source.published_at.isoformat() if source.published_at else None,
+        "observed_at": source.observed_at.isoformat() if source.observed_at else None,
         "available_at": source.available_at.isoformat(),
         "event_cache_key": source.cache_key,
         "projected_event_count": len(source.events["events"]),
         "excluded_event_count": len(source.events["excluded_events"]),
+        "coverage_incomplete": source.coverage_incomplete,
+        "provenance": source.provenance or {},
     }
+
+
+def _source_availability_rule(data_mode: str) -> str:
+    if data_mode == "observed":
+        return "A source is eligible only when both published_at and observed_at are no later than decision_at."
+    if data_mode == "historical_research":
+        return "Historical research requires published_at no later than decision_at; observed_at may be later and is retained as backfill evidence."
+    return "A source is eligible only from 00:00:00 UTC on the day after its published_date."
+
+
+def _time_scope_limitation(data_mode: str) -> str:
+    if data_mode == "observed":
+        return "The report is bounded to caller-frozen source text and recorded publication and observation times."
+    if data_mode == "historical_research":
+        return "This is a historical backfill: sources observed after decision_at were not available to the system at that historical decision and must not be counted as prospective evidence."
+    return "Publication date is a conservative proxy, not proof of the system's observed time or a live historical feed."
 
 
 def _publication_proxy_available_at(published_date: date) -> datetime:

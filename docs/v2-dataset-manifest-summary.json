@@ -1,0 +1,173 @@
+{
+  "discovery_incomplete": {
+    "AAPL": false,
+    "AMZN": false,
+    "GOOGL": false,
+    "MSFT": false,
+    "NVDA": false
+  },
+  "extraction_schema_version": "pending_P2",
+  "mode": "historical_research",
+  "partitions": {
+    "calibration": [
+      "2024-01-01",
+      "2024-12-31"
+    ],
+    "test": [
+      "2025-01-01",
+      "2026-08-31"
+    ],
+    "train": [
+      "2021-01-01",
+      "2023-12-31"
+    ]
+  },
+  "price_basis": "provider_quote_close_v1",
+  "price_snapshot_contract": {
+    "cash_dividend_reinvestment_included": false,
+    "close_field": "indicators.quote.close",
+    "end_date": "2026-08-31",
+    "mode": "historical_research",
+    "price_basis": "provider_quote_close_v1",
+    "schema_version": "v2-price-snapshot-v1",
+    "source": "yahoo-finance-chart",
+    "start_date": "2021-01-01",
+    "symbols": [
+      "AAPL",
+      "MSFT",
+      "GOOGL",
+      "AMZN",
+      "NVDA",
+      "SPY"
+    ]
+  },
+  "price_snapshot_files": [
+    {
+      "corporate_action_count": 23,
+      "coverage_complete": true,
+      "end_date": "2026-08-31",
+      "filename": "prices-AAPL-2021-01-01-2026-08-31.json",
+      "missing_session_count": 0,
+      "mode": "historical_research",
+      "observed_at": "2026-09-25T01:06:52.632226+00:00",
+      "price_basis": "provider_quote_close_v1",
+      "provider_behavior_verified": true,
+      "row_count": 1421,
+      "sha256": "445f8e056882d69f2e7030e1e648e29405cc9ebd42f58343503c7e7cf4d3d83d",
+      "source": "yahoo-finance-chart",
+      "start_date": "2021-01-01",
+      "symbol": "AAPL"
+    },
+    {
+      "corporate_action_count": 23,
+      "coverage_complete": true,
+      "end_date": "2026-08-31",
+      "filename": "prices-MSFT-2021-01-01-2026-08-31.json",
+      "missing_session_count": 0,
+      "mode": "historical_research",
+      "observed_at": "2026-09-25T01:07:03.066225+00:00",
+      "price_basis": "provider_quote_close_v1",
+      "provider_behavior_verified": true,
+      "row_count": 1421,
+      "sha256": "a1d403ff87d7ff29faf61e30b31ff711408994228d6c3977b190d7d7c0c4b668",
+      "source": "yahoo-finance-chart",
+      "start_date": "2021-01-01",
+      "symbol": "MSFT"
+    },
+    {
+      "corporate_action_count": 10,
+      "coverage_complete": true,
+      "end_date": "2026-08-31",
+      "filename": "prices-GOOGL-2021-01-01-2026-08-31.json",
+      "missing_session_count": 0,
+      "mode": "historical_research",
+      "observed_at": "2026-09-25T01:07:03.686898+00:00",
+      "price_basis": "provider_quote_close_v1",
+      "provider_behavior_verified": true,
+      "row_count": 1421,
+      "sha256": "20a0dfae8ffec6fab10318c4e3bf203470bc37711c424cb3107c93b41445e767",
+      "source": "yahoo-finance-chart",
+      "start_date": "2021-01-01",
+      "symbol": "GOOGL"
+    },
+    {
+      "corporate_action_count": 1,
+      "coverage_complete": true,
+      "end_date": "2026-08-31",
+      "filename": "prices-AMZN-2021-01-01-2026-08-31.json",
+      "missing_session_count": 0,
+      "mode": "historical_research",
+      "observed_at": "2026-09-25T01:07:04.275184+00:00",
+      "price_basis": "provider_quote_close_v1",
+      "provider_behavior_verified": true,
+      "row_count": 1421,
+      "sha256": "b5fc63974dc9e57bd98c8484f67b7252d7deb9d3e94ea5419c43bb55d10024f6",
+      "source": "yahoo-finance-chart",
+      "start_date": "2021-01-01",
+      "symbol": "AMZN"
+    },
+    {
+      "corporate_action_count": 24,
+      "coverage_complete": true,
+      "end_date": "2026-08-31",
+      "filename": "prices-NVDA-2021-01-01-2026-08-31.json",
+      "missing_session_count": 0,
+      "mode": "historical_research",
+      "observed_at": "2026-09-25T01:07:04.835396+00:00",
+      "price_basis": "provider_quote_close_v1",
+      "provider_behavior_verified": true,
+      "row_count": 1421,
+      "sha256": "e362275788595a53283be626bb59bf47af0dc2937631fd8b9d849c32fea801d3",
+      "source": "yahoo-finance-chart",
+      "start_date": "2021-01-01",
+      "symbol": "NVDA"
+    },
+    {
+      "corporate_action_count": 22,
+      "coverage_complete": true,
+      "end_date": "2026-08-31",
+      "filename": "prices-SPY-2021-01-01-2026-08-31.json",
+      "missing_session_count": 0,
+      "mode": "historical_research",
+      "observed_at": "2026-09-25T01:07:05.284461+00:00",
+      "price_basis": "provider_quote_close_v1",
+      "provider_behavior_verified": true,
+      "row_count": 1421,
+      "sha256": "51e668d036efcf567ce12d7a40ee5e20599b06156a6e41629c5ef06308f30a12",
+      "source": "yahoo-finance-chart",
+      "start_date": "2021-01-01",
+      "symbol": "SPY"
+    }
+  ],
+  "schema_version": "v2-corpus-manifest-v1",
+  "source_snapshot_files": [
+    {
+      "coverage_incomplete": true,
+      "filename": "AAPL-000032019326000020.json",
+      "observed_at": "2026-09-24T11:48:27.496816+00:00",
+      "published_at": "2026-07-31T10:01:02+00:00",
+      "sha256": "e53f7e39dc3581ebc320d5dc6ea517c94ac34c9fb2291548e31dcdd64f9859d2",
+      "source_id": "0000320193-26-000020"
+    },
+    {
+      "coverage_incomplete": false,
+      "filename": "GOOGL-000119312526342390.json",
+      "observed_at": "2026-09-24T11:48:29.225351+00:00",
+      "published_at": "2026-08-10T20:10:48+00:00",
+      "sha256": "e51f184a6fc986f11a529c9fd141b60af75552d3fba476d876a2e57dddc6d49d",
+      "source_id": "0001193125-26-342390"
+    }
+  ],
+  "symbols": [
+    "AAPL",
+    "MSFT",
+    "GOOGL",
+    "AMZN",
+    "NVDA"
+  ],
+  "target_spec_version": "absolute-close-v1",
+  "training_range": {
+    "end": "2026-08-31",
+    "start": "2021-01-01"
+  }
+}
