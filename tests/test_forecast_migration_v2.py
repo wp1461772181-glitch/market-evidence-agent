@@ -41,12 +41,22 @@ def test_v2_migration_check_is_read_only_and_apply_is_idempotent(client, capsys)
 
     assert main(["--check"]) == 0
     check_output = json.loads(capsys.readouterr().out)
-    assert check_output == {"action": "check", "missing": list(V2_TABLE_NAMES), "present": []}
+    assert check_output == {
+        "action": "check",
+        "missing": list(V2_TABLE_NAMES),
+        "missing_columns": [],
+        "present": [],
+    }
     assert schema_state(engine)["missing"] == list(V2_TABLE_NAMES)
 
     assert main(["--apply"]) == 0
     first_apply = json.loads(capsys.readouterr().out)
-    assert first_apply == {"action": "apply", "missing": [], "present": list(V2_TABLE_NAMES)}
+    assert first_apply == {
+        "action": "apply",
+        "missing": [],
+        "missing_columns": [],
+        "present": list(V2_TABLE_NAMES),
+    }
 
     assert main(["--apply"]) == 0
     second_apply = json.loads(capsys.readouterr().out)
@@ -102,3 +112,33 @@ def test_apply_removes_obsolete_result_pointer_uniqueness(client):
     }
     assert ("idempotency_key",) in unique_columns
     assert ("result_version_id",) not in unique_columns
+
+
+def test_apply_adds_monitor_evaluation_summary_to_an_old_table_without_losing_runs(client):
+    apply_schema(engine)
+    run_id = "d0f4ab42-3d26-4e81-a3c0-fc3d1180ee2d"
+    with engine.begin() as connection:
+        connection.execute(text("ALTER TABLE official_monitor_runs_v2 DROP COLUMN evaluation_summary"))
+        connection.execute(
+            text(
+                "INSERT INTO official_monitor_runs_v2 "
+                "(id, status, started_at, per_symbol_results) "
+                "VALUES (:id, 'succeeded', now(), CAST(:results AS jsonb))"
+            ),
+            {"id": run_id, "results": '{"AAPL": {"status": "succeeded"}}'},
+        )
+
+    assert schema_state(engine)["missing_columns"] == ["official_monitor_runs_v2.evaluation_summary"]
+    apply_schema(engine)
+    apply_schema(engine)
+
+    columns = {column["name"] for column in inspect(engine).get_columns("official_monitor_runs_v2")}
+    assert "evaluation_summary" in columns
+    with engine.connect() as connection:
+        stored = connection.execute(
+            text("SELECT status, per_symbol_results, evaluation_summary FROM official_monitor_runs_v2 WHERE id = :id"),
+            {"id": run_id},
+        ).mappings().one()
+    assert stored["status"] == "succeeded"
+    assert stored["per_symbol_results"] == {"AAPL": {"status": "succeeded"}}
+    assert stored["evaluation_summary"] is None

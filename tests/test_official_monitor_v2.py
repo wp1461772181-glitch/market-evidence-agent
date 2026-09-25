@@ -6,7 +6,7 @@ from uuid import uuid4
 
 from app.database import Base, SessionLocal, engine
 from app.forecast_contract import create_root_contract
-from app.forecast_v2_models import ForecastJobV2, ForecastVersionV2, OfficialMonitorRunV2
+from app.forecast_v2_models import ForecastEvaluationV2, ForecastJobV2, ForecastVersionV2, OfficialMonitorRunV2
 from app.models import SecFilingInventory
 from app.official_monitor_v2 import MONITOR_LOCK_KEY, run_once
 from sqlalchemy import text
@@ -383,3 +383,54 @@ def test_concurrent_monitor_lock_records_a_visible_non_scanning_run(disposable_d
 
     assert result.status == "failed" and result.symbols == ()
     assert stored is not None and stored.error_summary["monitor"] == "another V2 monitor invocation is running"
+
+
+def test_failed_sec_symbol_still_persists_independent_pending_evaluation(disposable_database):
+    Base.metadata.create_all(bind=engine)
+    _clear_monitor_runs()
+    check_at = NOW
+    with SessionLocal() as db:
+        root_job, root = _root(symbol="AAPL", created_at=check_at - timedelta(days=1))
+        db.add_all((root_job, root))
+        db.commit()
+        result = run_once(
+            db=db,
+            provider=_Provider(failing_symbols=("AAPL",)),
+            observed_at=check_at,
+            symbols=("AAPL",),
+            received_at_factory=lambda: check_at,
+        )
+        stored = db.get(OfficialMonitorRunV2, result.run_id)
+        evaluations = list(
+            db.query(ForecastEvaluationV2).filter(ForecastEvaluationV2.forecast_version_id == root.id)
+        )
+
+    assert result.status == "failed"
+    assert stored.evaluation_summary is not None
+    assert stored.evaluation_summary["status"] == "succeeded"
+    assert evaluations[-1].status == "pending"
+    assert evaluations[-1].brier_score is None
+
+
+def test_monitor_persists_evaluation_failure_without_erasing_sec_result(disposable_database, monkeypatch):
+    Base.metadata.create_all(bind=engine)
+    _clear_monitor_runs()
+    check_at = NOW
+
+    def fail_evaluation(*, db, evaluated_at):
+        raise RuntimeError("evaluation fixture failure")
+
+    monkeypatch.setattr("app.official_monitor_v2.run_evaluation_batch", fail_evaluation)
+    with SessionLocal() as db:
+        result = run_once(
+            db=db,
+            provider=_Provider(),
+            observed_at=check_at,
+            symbols=("AAPL",),
+            received_at_factory=lambda: check_at,
+        )
+        stored = db.get(OfficialMonitorRunV2, result.run_id)
+
+    assert result.status == "succeeded"
+    assert stored.status == "succeeded"
+    assert stored.evaluation_summary == {"status": "failed", "error": "evaluation fixture failure"}

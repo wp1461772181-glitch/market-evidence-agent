@@ -271,7 +271,7 @@ export type V2Version = {
   market_cutoff_at: string;
   baseline_probabilities: V2Probabilities | null;
   joint_probabilities: V2Probabilities | null;
-  model_status: "research_only" | "experimental_joint";
+  model_status: "research_only" | "baseline_only" | "experimental_joint";
   model_manifest: Record<string, unknown>;
   research_report: Record<string, unknown> | null;
   change_reason: string | null;
@@ -301,7 +301,7 @@ export type V2ForecastRoot = {
   id: string;
   decision_at: string;
   target_end_date: string;
-  model_status: "research_only" | "experimental_joint";
+  model_status: "research_only" | "baseline_only" | "experimental_joint";
   latest_version_id: string;
   latest_version_no: number;
   expired: boolean | null;
@@ -340,6 +340,60 @@ export type V2MonitorStatus = {
   stale_after_seconds: number;
   last_run: V2MonitorRun | null;
   last_success: { id: string; completed_at: string; last_success_watermark: Record<string, unknown> } | null;
+};
+
+export type V2Evaluation = {
+  id: string;
+  result_version: number;
+  status: "pending" | "succeeded" | "blocked_price" | "failed";
+  actual_target_close: number | null;
+  actual_label: "bearish" | "neutral" | "bullish" | null;
+  label_available_at: string | null;
+  brier_score: number | null;
+  log_loss: number | null;
+  direction_correct: boolean | null;
+  price_input_version: string | null;
+  created_at: string;
+};
+
+export type V2EvaluationVersion = {
+  id: string;
+  version_no: number;
+  decision_at: string;
+  trigger_type: string;
+  model_status: "research_only" | "baseline_only" | "experimental_joint";
+  time_mode: "observed" | "historical_research" | "unknown";
+  latest_evaluation: V2Evaluation | null;
+  evaluation_history: V2Evaluation[];
+};
+
+export type V2EvaluationRoot = {
+  root_id: string;
+  target_contract_hash: string;
+  target_end_date: string | null;
+  versions: V2EvaluationVersion[];
+};
+
+export type V2EvaluationCohort = {
+  time_mode: "observed" | "historical_research" | "unknown";
+  status: "pending" | "insufficient_samples" | "available";
+  sample: {
+    root_denominator: number;
+    labelled_root_count: number;
+    scored_root_count: number;
+    unscored_root_count: number;
+    version_count: number;
+    labelled_version_count: number;
+    scored_version_count: number;
+  };
+  roots: V2EvaluationRoot[];
+};
+
+export type V2EvaluationResponse = {
+  symbol: string;
+  status: "pending" | "insufficient_samples" | "available";
+  minimum_scored_roots: number;
+  cohorts: Record<"prospective" | "historical_research" | "unknown", V2EvaluationCohort>;
 };
 
 export type V2Workspace = {

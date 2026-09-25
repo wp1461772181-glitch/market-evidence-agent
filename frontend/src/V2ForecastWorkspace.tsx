@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ApiError, createV2ForecastJob, createV2ManualRevisionJob, getUploadedEvidence, getV2ForecastRoots, getV2ForecastVersion, getV2Job, getV2MonitorStatus, getV2Timeline, getV2Workspace } from "./api";
-import type { FilingInventory, UploadedEvidence, V2ForecastJob, V2ForecastRoot, V2ForecastRoots, V2MonitorStatus, V2SourceRef, V2Timeline, V2TimelineEntry, V2VersionDetail, V2Workspace } from "./types";
+import { ApiError, createV2ForecastJob, createV2ManualRevisionJob, getUploadedEvidence, getV2Evaluations, getV2ForecastRoots, getV2ForecastVersion, getV2Job, getV2MonitorStatus, getV2Timeline, getV2Workspace } from "./api";
+import type { FilingInventory, UploadedEvidence, V2EvaluationCohort, V2EvaluationResponse, V2EvaluationRoot, V2EvaluationVersion, V2ForecastJob, V2ForecastRoot, V2ForecastRoots, V2MonitorStatus, V2SourceRef, V2Timeline, V2TimelineEntry, V2VersionDetail, V2Workspace } from "./types";
 
 type ResourceState<T> =
   | { kind: "loading" }
@@ -44,6 +44,7 @@ function formatTime(value: string | null) {
 
 function modelStatusText(status: V2Workspace["joint_model_status"] | V2TimelineEntry["model_status"]) {
   if (status === "experimental_joint") return "实验性联合模型";
+  if (status === "baseline_only") return "纯行情基线";
   if (status === "research_only") return "仅研究模式";
   return "联合模型未验证";
 }
@@ -61,6 +62,7 @@ export function V2ForecastWorkspace({ symbol, filings }: { symbol: string; filin
   const [workspace, setWorkspace] = useState<ResourceState<V2Workspace>>({ kind: "loading" });
   const [roots, setRoots] = useState<ResourceState<V2ForecastRoots>>({ kind: "loading" });
   const [monitor, setMonitor] = useState<ResourceState<V2MonitorStatus>>({ kind: "loading" });
+  const [evaluations, setEvaluations] = useState<ResourceState<V2EvaluationResponse>>({ kind: "loading" });
   const [selectedRootId, setSelectedRootId] = useState("");
   const [timeline, setTimeline] = useState<ResourceState<V2Timeline> | null>(null);
   const [activeJob, setActiveJob] = useState<V2ForecastJob | null>(null);
@@ -95,6 +97,15 @@ export function V2ForecastWorkspace({ symbol, filings }: { symbol: string; filin
     }
   }, []);
 
+  const refreshEvaluations = useCallback(async (signal?: AbortSignal) => {
+    try {
+      const next = await getV2Evaluations(symbol, signal);
+      setEvaluations({ kind: "ready", data: next });
+    } catch (error) {
+      if (!signal?.aborted) setEvaluations({ kind: "error", message: errorMessage(error, "暂时无法读取 V2 到期评估。") });
+    }
+  }, [symbol]);
+
   useEffect(() => {
     const controller = new AbortController();
     setActiveJob(null);
@@ -106,9 +117,11 @@ export function V2ForecastWorkspace({ symbol, filings }: { symbol: string; filin
     setWorkspace({ kind: "loading" });
     setRoots({ kind: "loading" });
     setMonitor({ kind: "loading" });
+    setEvaluations({ kind: "loading" });
     setUploaded({ kind: "loading" });
     void refresh(controller.signal);
     void refreshMonitor(controller.signal);
+    void refreshEvaluations(controller.signal);
     const previousJobId = savedJob(symbol);
     if (previousJobId) {
       getV2Job(previousJobId, controller.signal)
@@ -123,7 +136,7 @@ export function V2ForecastWorkspace({ symbol, filings }: { symbol: string; filin
       .then((result) => { if (!controller.signal.aborted) setUploaded({ kind: "ready", data: result.items ?? [] }); })
       .catch((error: unknown) => { if (!controller.signal.aborted) setUploaded({ kind: "error", message: errorMessage(error, "暂时无法读取已上传材料。") }); });
     return () => controller.abort();
-  }, [symbol, refresh, refreshMonitor]);
+  }, [symbol, refresh, refreshMonitor, refreshEvaluations]);
 
   useEffect(() => {
     if (activeJob === null || !isActiveJob(activeJob)) return;
@@ -135,12 +148,13 @@ export function V2ForecastWorkspace({ symbol, filings }: { symbol: string; filin
           if (!isActiveJob(next)) {
             void refresh();
             void refreshMonitor();
+            void refreshEvaluations();
           }
         })
         .catch((error: unknown) => setActionError(errorMessage(error, "无法刷新 V2 任务状态。")));
     }, 3_000);
     return () => window.clearInterval(timer);
-  }, [activeJob, refresh, refreshMonitor, symbol]);
+  }, [activeJob, refresh, refreshMonitor, refreshEvaluations, symbol]);
 
   useEffect(() => {
     if (!selectedRootId) {
@@ -267,6 +281,8 @@ export function V2ForecastWorkspace({ symbol, filings }: { symbol: string; filin
       <RevisionComparison timeline={timeline} detail={versionDetails} />
     </div>
 
+    <EvaluationReadout evaluations={evaluations} selectedRootId={selectedRootId} selectedVersionId={selectedVersionId} />
+
     <section className="v2-revision-entry" aria-labelledby="v2-revision-title">
       <div>
         <p className="section-label">人工核验入口</p>
@@ -330,6 +346,66 @@ function MonitorDetail({ monitor }: { monitor: ResourceState<V2MonitorStatus> })
     <div className="v2-monitor-summary"><span>最近全成功</span><strong>{lastSuccess ? formatTime(lastSuccess.completed_at) : "从未记录"}</strong>{lastRun.retry_reason && <small>{lastRun.retry_reason}</small>}</div>
     <div className="v2-monitor-symbols">{symbols.length ? symbols.map(([ticker, result]) => <article key={ticker} className={`is-${result.status}`}><strong>{ticker}</strong><span>{monitorSymbolStatusText(result.status)}</span><small>{result.error ?? `发现 ${result.discovered_count ?? 0} · 新增 ${result.created_count ?? 0} · 入队 ${result.queued_count ?? 0}`}</small></article>) : <p>本次运行没有返回逐股结果。</p>}</div>
   </section>;
+}
+
+function EvaluationReadout({ evaluations, selectedRootId, selectedVersionId }: { evaluations: ResourceState<V2EvaluationResponse>; selectedRootId: string; selectedVersionId: string }) {
+  if (evaluations.kind === "loading") return <section className="v2-evaluation"><p>正在读取所选预测的到期评估…</p></section>;
+  if (evaluations.kind === "error") return <section className="v2-evaluation"><p className="v2-notice error" role="alert">{evaluations.message}</p></section>;
+  const match = evaluationRootFor(evaluations.data, selectedRootId);
+  if (!match) return <section className="v2-evaluation"><p className="section-label">到期评估</p><h3>所选预测尚无评估记录</h3><p>评估区只读已持久化结果；页面不会拉行情或触发计算。</p></section>;
+  const { cohort, root } = match;
+  const selectedVersion = root.versions.find((version) => version.id === selectedVersionId)
+    ?? [...root.versions].sort((left, right) => right.version_no - left.version_no)[0];
+  if (!selectedVersion) return null;
+  const evaluation = selectedVersion.latest_evaluation;
+  const state = evaluationStateText(evaluation?.status, root.target_end_date);
+  const scoreParts = evaluation?.status === "succeeded"
+    ? [
+      evaluation.brier_score !== null ? `Brier ${scoreText(evaluation.brier_score)}` : null,
+      evaluation.log_loss !== null ? `Log loss ${scoreText(evaluation.log_loss)}` : null,
+      evaluation.direction_correct !== null ? `方向${evaluation.direction_correct ? "正确" : "错误"}` : null,
+    ].filter((part): part is string => part !== null)
+    : [];
+  const numericScoring = (selectedVersion.model_status === "experimental_joint" || selectedVersion.model_status === "baseline_only") && scoreParts.length > 0;
+  return <section className="v2-evaluation" aria-label="所选 V2 预测的到期评估">
+    <div><p className="section-label">V2 到期评估 · 所选根</p><h3>{state}</h3><p>目标日 {root.target_end_date ?? "未记录"} · V{selectedVersion.version_no} · {selectedVersion.time_mode === "observed" ? "前向观察" : selectedVersion.time_mode === "historical_research" ? "历史研究" : "时间模式未知"}</p></div>
+    <div className="v2-evaluation-sample"><span>根样本</span><strong>标签 {cohort.sample.labelled_root_count} · 评分 {cohort.sample.scored_root_count} / {cohort.sample.root_denominator}</strong><small>{cohortStatusText(cohort.status)}；真实标签与可评分预测分开统计，修订版本不重复计入根样本。</small></div>
+    {evaluation?.status === "succeeded" && <div className="v2-evaluation-result"><span>真实标签</span><strong>{labelText(evaluation.actual_label)}</strong><small>{evaluation.actual_target_close === null ? "目标收盘价未记录" : `目标收盘 ${evaluation.actual_target_close}`}{evaluation.label_available_at ? ` · ${formatTime(evaluation.label_available_at)} 可用` : ""}</small>{numericScoring ? <p>{selectedVersion.model_status === "baseline_only" ? "纯行情基线评分：" : "实验性联合模型评分："}{scoreParts.join(" · ")}</p> : <p>{selectedVersion.model_status === "research_only" ? "已到期可记录真实标签，但此版本是仅研究模式：无可评分数值预测。" : "真实标签已记录，但当前没有可显示的数值评分。"}</p>}</div>}
+    {evaluation && evaluation.status !== "succeeded" && <p className="v2-evaluation-note">{evaluation.status === "blocked_price" ? "目标价格尚不可用，保持待评估。" : evaluation.status === "failed" ? "最近一次评估失败，未生成替代分数。" : "评估记录已创建，等待目标标签成熟。"}</p>}
+  </section>;
+}
+
+function evaluationRootFor(response: V2EvaluationResponse, rootId: string): { cohort: V2EvaluationCohort; root: V2EvaluationRoot } | null {
+  for (const cohort of Object.values(response.cohorts)) {
+    const root = cohort.roots.find((item) => item.root_id === rootId);
+    if (root) return { cohort, root };
+  }
+  return null;
+}
+
+function evaluationStateText(status: "pending" | "succeeded" | "blocked_price" | "failed" | undefined, targetEndDate: string | null) {
+  if (status === "succeeded") return "评估已记录";
+  if (status === "blocked_price") return "等待目标价格";
+  if (status === "failed") return "评估失败";
+  if (targetEndDate && targetEndDate > new Date().toISOString().slice(0, 10)) return "目标未到期 · 待评估";
+  return "待评估";
+}
+
+function cohortStatusText(status: V2EvaluationCohort["status"]) {
+  if (status === "available") return "样本达到最低门槛";
+  if (status === "insufficient_samples") return "样本不足";
+  return "尚无可评分根";
+}
+
+function labelText(label: "bearish" | "neutral" | "bullish" | null) {
+  if (label === "bearish") return "下跌";
+  if (label === "neutral") return "持平";
+  if (label === "bullish") return "上涨";
+  return "未记录";
+}
+
+function scoreText(value: number | null) {
+  return value === null ? "—" : value.toFixed(4);
 }
 
 function monitorHealthText(health: V2MonitorStatus["health"]) {

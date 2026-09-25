@@ -8,6 +8,7 @@ or publish a forecast version.
 from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
+import math
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
@@ -19,7 +20,7 @@ from sqlalchemy.orm import Session
 
 from .database import SessionLocal
 from .forecast_jobs import ForecastJobError, enqueue_job
-from .forecast_v2_models import ForecastJobV2, ForecastVersionV2, OfficialMonitorRunV2
+from .forecast_v2_models import ForecastEvaluationV2, ForecastJobV2, ForecastVersionV2, OfficialMonitorRunV2
 from .market_time import xnys_session_close_at
 from .models import SecFilingInventory, UploadedEvidence
 from .services import normalize_symbol
@@ -29,6 +30,9 @@ router = APIRouter(prefix="/v2", tags=["forecast-v2"])
 FORECAST_ROOT_LIST_LIMIT = 50
 MONITOR_INTERVAL_SECONDS = 60 * 60
 MONITOR_STALE_AFTER_SECONDS = MONITOR_INTERVAL_SECONDS * 2
+# Scores from revisions share a target with their root.  Keep the threshold
+# explicit so one mature root is never represented as a usable forward result.
+MINIMUM_SCORED_ROOTS = 5
 
 
 class SourceRefRequest(BaseModel):
@@ -193,6 +197,39 @@ def get_v2_monitor_status(db: Session = Depends(get_v2_db)) -> dict[str, Any]:
     """Expose persisted monitor state; process presence is never treated as health."""
     try:
         return _monitor_status_payload(db=db, now=datetime.now(UTC))
+    except SQLAlchemyError as exc:
+        raise HTTPException(status_code=503, detail="V2 job store is unavailable") from exc
+
+
+@router.get("/evaluations")
+def get_v2_evaluations(symbol: str, db: Session = Depends(get_v2_db)) -> dict[str, Any]:
+    """Read persisted V2 evaluation history without fetching prices or writing rows.
+
+    Forecast roots are the statistical unit. A root can have several revision
+    versions for one fixed target, so version-level scores are returned for
+    audit while each root appears only once in a cohort denominator.
+    """
+    try:
+        normalized = _supported_symbol(symbol)
+        versions = db.scalars(
+            select(ForecastVersionV2)
+            .where(ForecastVersionV2.symbol == normalized)
+            .order_by(ForecastVersionV2.root_id, ForecastVersionV2.version_no, ForecastVersionV2.created_at)
+        ).all()
+        evaluations = db.scalars(
+            select(ForecastEvaluationV2)
+            .join(ForecastVersionV2, ForecastEvaluationV2.forecast_version_id == ForecastVersionV2.id)
+            .where(ForecastVersionV2.symbol == normalized)
+            .order_by(
+                ForecastEvaluationV2.forecast_version_id,
+                ForecastEvaluationV2.result_version.desc(),
+                ForecastEvaluationV2.created_at.desc(),
+                ForecastEvaluationV2.id.desc(),
+            )
+        ).all()
+        return _evaluations_payload(symbol=normalized, versions=versions, evaluations=evaluations)
+    except V2RequestError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     except SQLAlchemyError as exc:
         raise HTTPException(status_code=503, detail="V2 job store is unavailable") from exc
 
@@ -422,6 +459,167 @@ def _workspace_version(version: ForecastVersionV2) -> dict[str, Any]:
     }
 
 
+def _evaluations_payload(
+    *,
+    symbol: str,
+    versions: list[ForecastVersionV2],
+    evaluations: list[ForecastEvaluationV2],
+) -> dict[str, Any]:
+    history_by_version: dict[UUID, list[ForecastEvaluationV2]] = {}
+    for evaluation in evaluations:
+        history_by_version.setdefault(evaluation.forecast_version_id, []).append(evaluation)
+
+    roots_by_cohort: dict[str, dict[UUID, dict[str, Any]]] = {
+        "prospective": {},
+        "historical_research": {},
+        "unknown": {},
+    }
+    for version in versions:
+        time_mode = _persisted_time_mode(version)
+        cohort = _evaluation_cohort(time_mode)
+        root = roots_by_cohort[cohort].setdefault(
+            version.root_id,
+            {
+                "root_id": str(version.root_id),
+                "target_contract_hash": version.target_contract_hash,
+                "target_end_date": _target_end_date_or_none(version),
+                "versions": [],
+            },
+        )
+        history = history_by_version.get(version.id, [])
+        root["versions"].append(
+            {
+                "id": str(version.id),
+                "version_no": version.version_no,
+                "decision_at": version.decision_at,
+                "trigger_type": version.trigger_type,
+                "model_status": version.model_status,
+                "time_mode": time_mode,
+                "latest_evaluation": _evaluation_payload(history[0]) if history else None,
+                "evaluation_history": [_evaluation_payload(item) for item in history],
+            }
+        )
+
+    cohorts = {
+        name: _evaluation_cohort_payload(name=name, roots=roots)
+        for name, roots in roots_by_cohort.items()
+    }
+    return {
+        "symbol": symbol,
+        # Only observed-time forecasts are candidates for prospective results.
+        # Historical and unknown rows remain separately inspectable.
+        "status": cohorts["prospective"]["status"],
+        "minimum_scored_roots": MINIMUM_SCORED_ROOTS,
+        "cohorts": cohorts,
+    }
+
+
+def _evaluation_cohort_payload(*, name: str, roots: dict[UUID, dict[str, Any]]) -> dict[str, Any]:
+    ordered_roots = sorted(
+        roots.values(),
+        key=lambda root: (
+            root["versions"][0]["decision_at"],
+            root["root_id"],
+        ),
+        reverse=True,
+    )
+    scored_roots = 0
+    labelled_roots = 0
+    version_count = 0
+    scored_version_count = 0
+    labelled_version_count = 0
+    for root in ordered_roots:
+        root_has_score = False
+        root_has_label = False
+        for version in root["versions"]:
+            version_count += 1
+            latest = version["latest_evaluation"]
+            if latest is not None and latest["status"] == "succeeded" and latest["actual_label"] is not None:
+                labelled_version_count += 1
+                root_has_label = True
+            if _has_numeric_scores(latest):
+                scored_version_count += 1
+                root_has_score = True
+        if root_has_label:
+            labelled_roots += 1
+        if root_has_score:
+            scored_roots += 1
+    if scored_roots == 0:
+        summary_status = "pending"
+    elif scored_roots < MINIMUM_SCORED_ROOTS:
+        summary_status = "insufficient_samples"
+    else:
+        summary_status = "available"
+    return {
+        "time_mode": {"prospective": "observed", "historical_research": "historical_research", "unknown": "unknown"}[name],
+        "status": summary_status,
+        "sample": {
+            "root_denominator": len(ordered_roots),
+            "labelled_root_count": labelled_roots,
+            "scored_root_count": scored_roots,
+            "unscored_root_count": len(ordered_roots) - scored_roots,
+            "version_count": version_count,
+            "labelled_version_count": labelled_version_count,
+            "scored_version_count": scored_version_count,
+        },
+        "roots": ordered_roots,
+    }
+
+
+def _has_numeric_scores(evaluation: dict[str, Any] | None) -> bool:
+    if evaluation is None or evaluation["status"] != "succeeded":
+        return False
+    values = (evaluation["brier_score"], evaluation["log_loss"])
+    return all(
+        isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value))
+        for value in values
+    )
+
+
+def _persisted_time_mode(version: ForecastVersionV2) -> str:
+    """Classify only an explicitly frozen time-mode declaration.
+
+    Older forecast rows often have no research report. Absence is deliberately
+    visible as ``unknown`` instead of being inferred from dates or row age.
+    """
+    for metadata in (version.research_report, version.model_manifest):
+        if isinstance(metadata, dict) and metadata.get("time_mode") in {"observed", "historical_research"}:
+            return str(metadata["time_mode"])
+    return "unknown"
+
+
+def _evaluation_cohort(time_mode: str) -> str:
+    if time_mode == "observed":
+        return "prospective"
+    if time_mode == "historical_research":
+        return "historical_research"
+    return "unknown"
+
+
+def _target_end_date_or_none(version: ForecastVersionV2) -> str | None:
+    raw = version.target_contract.get("target_end_date") if isinstance(version.target_contract, dict) else None
+    try:
+        return (raw if isinstance(raw, date) else date.fromisoformat(raw)).isoformat()
+    except (TypeError, ValueError):
+        return None
+
+
+def _evaluation_payload(evaluation: ForecastEvaluationV2) -> dict[str, Any]:
+    return {
+        "id": str(evaluation.id),
+        "result_version": evaluation.result_version,
+        "status": evaluation.status,
+        "actual_target_close": evaluation.actual_target_close,
+        "actual_label": evaluation.actual_label,
+        "label_available_at": evaluation.label_available_at,
+        "brier_score": evaluation.brier_score,
+        "log_loss": evaluation.log_loss,
+        "direction_correct": evaluation.direction_correct,
+        "price_input_version": evaluation.price_input_version,
+        "created_at": evaluation.created_at,
+    }
+
+
 def _root_list_entry(*, db: Session, root: ForecastVersionV2, now: datetime) -> dict[str, Any]:
     latest = db.scalar(
         select(ForecastVersionV2)
@@ -506,6 +704,7 @@ def _monitor_run_payload(run: OfficialMonitorRunV2) -> dict[str, Any]:
         "per_symbol_results": run.per_symbol_results,
         "error_summary": run.error_summary,
         "retry_reason": run.retry_reason,
+        "evaluation_summary": run.evaluation_summary,
     }
 
 

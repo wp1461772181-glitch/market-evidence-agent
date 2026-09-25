@@ -208,6 +208,10 @@ class OfficialMonitorRunV2(Base):
     retry_reason: Mapped[str | None] = mapped_column(String(1_000), nullable=True)
     last_success_watermark: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     next_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    # Filled by the independent P7 evaluation batch after a monitor cycle.
+    # It remains nullable so existing monitor rows retain their original audit
+    # meaning until a later cycle writes an explicit summary.
+    evaluation_summary: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
 
 class ForecastEvaluationV2(Base):

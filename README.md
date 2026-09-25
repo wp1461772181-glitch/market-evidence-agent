@@ -1,6 +1,6 @@
 # Market Evidence Agent
 
-The original Weeks 1–9 archive remains available. V2 development is now in progress: users can queue research-only forecasts, select a saved forecast date for a manual revision, and inspect immutable source and market inputs. A local worker consumes durable jobs, while an hourly SEC monitor records actual scans and can queue eligible official-source revisions. The [V2 progress log](docs/v2-progress.md) distinguishes implemented code, live checks, and open acceptance work; the [implementation plan](docs/evidence-driven-forecast-v2-plan.md) is the target design.
+The original Weeks 1–9 archive remains available. V2 development is now in progress: users can queue research-only forecasts, select a saved forecast date for a manual revision, inspect immutable source and market inputs, and read persisted outcome evaluations. A local worker consumes durable jobs, while an hourly SEC monitor records actual scans, can queue eligible official-source revisions, and runs a separate append-only evaluation step after each monitor pass. The [V2 progress log](docs/v2-progress.md) distinguishes implemented code, live checks, and open acceptance work; the [implementation plan](docs/evidence-driven-forecast-v2-plan.md) is the target design.
 
 A FastAPI, PostgreSQL, and local React dashboard foundation for a
 market-evidence system. It stores a deterministic Week 1 `mock-v1` forecast,
@@ -12,9 +12,9 @@ for an experimental Week 4 numeric forecast; it is not a live trading service.
 ## Current V2 entrypoints and limits
 
 - The browser's forecast workspace shows the V2 queue, saved forecast dates, fixed 20-session targets, frozen evidence, manual-revision entry, and actual monitor run status. The older numeric archive is displayed separately.
-- `POST /v2/forecast-jobs` accepts a new durable job; `GET /v2/jobs/{job_id}` reports processing; `GET /v2/monitor/status` reports persisted SEC scans. The local worker uses `python -m app.forecast_worker --once` for one job or `--poll-seconds 2` for continuous consumption.
+- `POST /v2/forecast-jobs` accepts a new durable job; `GET /v2/jobs/{job_id}` reports processing; `GET /v2/monitor/status` reports persisted SEC scans; `GET /v2/evaluations?symbol=AAPL` reads persisted outcome evaluations. The evaluation endpoint does not fetch prices or write records.
 - The currently installed macOS SEC LaunchAgent runs V2 every 3600 seconds, and a separate worker LaunchAgent is active. For another machine, preview and install them with `scripts/install_sec_monitor_launchagent.py --mode v2 --print` / `--mode v2` and `scripts/install_forecast_worker_launchagent.py --print` / no flag. The SEC installer defaults to legacy unless V2 is explicitly selected.
-- V2 versions are `research_only`: the baseline and joint probabilities are empty because the first V2 market-only model missed its evaluation gate and the evidence-aware numerical model is not validated. Real new-announcement auto-revision and prospective outcome evaluation still need evidence. A successful task or scan is not proof of numeric forecast quality.
+- V2 versions are `research_only`: the baseline and joint probabilities are empty because the first V2 market-only model missed its evaluation gate and the evidence-aware numerical model is not validated. A `research_only` version may retain an actual label after the target date, but it never contributes a numeric score. The P7 evaluation path has passed controlled fixtures; real AAPL targets ending on 2026-10-22 are still pending. Safe Yahoo refresh at maturity, split review, and real mature samples remain required. A successful task, scan, or stored label is not proof of numeric forecast quality.
 
 ## Implemented scope
 

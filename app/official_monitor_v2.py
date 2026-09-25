@@ -20,6 +20,7 @@ from uuid import UUID
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
+from .forecast_evaluation_v2 import run_evaluation_batch
 from .forecast_jobs import SUPPORTED_STOCKS, enqueue_job
 from .forecast_v2_models import ForecastJobV2, ForecastVersionV2, OfficialMonitorRunV2
 from .evidence_context import MAX_NEW_DOCUMENTS
@@ -230,6 +231,27 @@ def _run_locked(
     run.retry_reason = "retry incomplete or failed symbols from their retained watermark" if failures else None
     run.last_success_watermark = watermarks
     run.next_due_at = completed_at + MONITOR_INTERVAL
+
+    # Persist the SEC outcome before attempting the independent evaluator.
+    # If the evaluator raises and rolls back, this run must not be left as
+    # ``running`` or lose its per-symbol failure information.
+    db.commit()
+
+    # Evaluation is deliberately independent from SEC discovery.  A failed
+    # filing request for one symbol must not prevent an already mature version
+    # from being evaluated against the price rows that are already present.
+    # This cycle does not fetch Yahoo prices: target-period corporate actions
+    # and price-basis corrections still require a separate P7-safe ingestion.
+    try:
+        run.evaluation_summary = {"status": "succeeded", **run_evaluation_batch(
+            db=db, evaluated_at=completed_at
+        ).as_dict()}
+    except Exception as exc:  # Keep the SEC run auditable even if evaluation breaks.
+        db.rollback()
+        run = db.get(OfficialMonitorRunV2, run.id)
+        if run is None:  # pragma: no cover - the run was committed above.
+            raise RuntimeError("persisted monitor run disappeared before evaluation summary")
+        run.evaluation_summary = {"status": "failed", "error": str(exc)}
     db.commit()
     db.refresh(run)
     return OfficialMonitorV2Result(run.id, status, instant, tuple(results))

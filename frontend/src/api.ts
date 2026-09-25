@@ -1,4 +1,4 @@
-import type { DashboardResponse, EvidenceRevision, EvidenceRevisionInventory, EvidenceRevisionRequest, FilingContent, FilingInventory, FilingReview, FilingScanResult, ForecastRunResult, UploadedEvidence, UploadedEvidenceInventory, V2ForecastJob, V2ForecastRoots, V2MonitorStatus, V2SourceRef, V2Timeline, V2VersionDetail, V2Workspace } from "./types";
+import type { DashboardResponse, EvidenceRevision, EvidenceRevisionInventory, EvidenceRevisionRequest, FilingContent, FilingInventory, FilingReview, FilingScanResult, ForecastRunResult, UploadedEvidence, UploadedEvidenceInventory, V2EvaluationResponse, V2ForecastJob, V2ForecastRoots, V2MonitorStatus, V2SourceRef, V2Timeline, V2VersionDetail, V2Workspace } from "./types";
 
 export class ApiError extends Error {
   constructor(message: string, readonly status?: number) {
@@ -115,6 +115,10 @@ export async function getV2ForecastRoots(symbol: string, signal?: AbortSignal): 
 
 export async function getV2MonitorStatus(signal?: AbortSignal): Promise<V2MonitorStatus> {
   return requestJson<V2MonitorStatus>("/api/v2/monitor/status", { signal });
+}
+
+export async function getV2Evaluations(symbol: string, signal?: AbortSignal): Promise<V2EvaluationResponse> {
+  return requestJson<V2EvaluationResponse>(`/api/v2/evaluations?symbol=${encodeURIComponent(symbol)}`, { signal });
 }
 
 export async function getV2ForecastVersion(versionId: string, signal?: AbortSignal): Promise<V2VersionDetail> {

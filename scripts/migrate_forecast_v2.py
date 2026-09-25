@@ -25,9 +25,19 @@ SCHEMA_LOCK_KEY = 6_214_237_902
 def schema_state(db_engine: Engine) -> dict[str, list[str]]:
     """Return a read-only description of present and missing V2 tables."""
 
-    table_names = set(inspect(db_engine).get_table_names())
+    inspector = inspect(db_engine)
+    table_names = set(inspector.get_table_names())
     present = [name for name in V2_TABLE_NAMES if name in table_names]
-    return {"present": present, "missing": [name for name in V2_TABLE_NAMES if name not in table_names]}
+    missing_columns: list[str] = []
+    if "official_monitor_runs_v2" in table_names:
+        monitor_columns = {column["name"] for column in inspector.get_columns("official_monitor_runs_v2")}
+        if "evaluation_summary" not in monitor_columns:
+            missing_columns.append("official_monitor_runs_v2.evaluation_summary")
+    return {
+        "present": present,
+        "missing": [name for name in V2_TABLE_NAMES if name not in table_names],
+        "missing_columns": missing_columns,
+    }
 
 
 def apply_schema(db_engine: Engine) -> dict[str, list[str]]:
@@ -42,6 +52,7 @@ def apply_schema(db_engine: Engine) -> dict[str, list[str]]:
         V2_TABLES[0].metadata.create_all(bind=connection, tables=list(V2_TABLES), checkfirst=True)
         _upgrade_v2_review_snapshot_key(connection)
         _drop_obsolete_job_result_uniqueness(connection)
+        _upgrade_monitor_evaluation_summary(connection)
     return schema_state(db_engine)
 
 
@@ -104,6 +115,19 @@ def _drop_obsolete_job_result_uniqueness(connection) -> None:
     for name in names:
         quoted_name = name.replace('"', '""')
         connection.execute(text(f'ALTER TABLE forecast_jobs_v2 DROP CONSTRAINT "{quoted_name}"'))
+
+
+def _upgrade_monitor_evaluation_summary(connection) -> None:
+    """Add the nullable P7 summary to an already-created monitor table.
+
+    ``create_all`` only creates columns on a new table. This explicit additive
+    DDL keeps every historical monitor run unchanged while enabling a later
+    monitor/evaluator integration to attach its outcome summary to new runs.
+    """
+
+    connection.execute(
+        text("ALTER TABLE official_monitor_runs_v2 ADD COLUMN IF NOT EXISTS evaluation_summary JSONB")
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> int:

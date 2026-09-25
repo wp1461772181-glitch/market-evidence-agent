@@ -9,7 +9,7 @@ from sqlalchemy.exc import OperationalError
 import app.forecast_v2_api as api
 from app.database import Base, SessionLocal, engine
 from app.forecast_jobs import enqueue_job
-from app.forecast_v2_models import ForecastJobV2, ForecastVersionV2, OfficialMonitorRunV2
+from app.forecast_v2_models import ForecastEvaluationV2, ForecastJobV2, ForecastVersionV2, OfficialMonitorRunV2
 from app.models import SecFilingInventory, UploadedEvidence
 from app.main import app as main_app
 
@@ -17,6 +17,24 @@ from app.main import app as main_app
 @pytest.fixture(autouse=True)
 def v2_tables(disposable_database):
     Base.metadata.create_all(bind=engine)
+    yield
+    # This module creates durable V2 rows through HTTP admission. The shared
+    # disposable database is reused by later test modules, including evaluator
+    # batches that intentionally inspect every forecast version.
+    with SessionLocal() as db:
+        db.query(ForecastJobV2).update(
+            {
+                ForecastJobV2.root_version_id: None,
+                ForecastJobV2.parent_version_id: None,
+                ForecastJobV2.result_version_id: None,
+            },
+            synchronize_session=False,
+        )
+        db.query(ForecastEvaluationV2).delete(synchronize_session=False)
+        db.query(ForecastVersionV2).delete(synchronize_session=False)
+        db.query(ForecastJobV2).delete(synchronize_session=False)
+        db.query(OfficialMonitorRunV2).delete(synchronize_session=False)
+        db.commit()
 
 
 @pytest.fixture()
@@ -102,6 +120,19 @@ def _media_source(*, symbol="AAPL", published_at=None, observed_at=None):
 def _clear_monitor_runs():
     with SessionLocal() as db:
         db.query(OfficialMonitorRunV2).delete(synchronize_session=False)
+        db.commit()
+
+
+def _delete_owned_evaluation_fixture_versions(version_ids):
+    """Keep API fixtures out of later evaluator batches in the shared test DB."""
+    with SessionLocal() as db:
+        versions = db.query(ForecastVersionV2).filter(ForecastVersionV2.id.in_(version_ids)).all()
+        job_ids = [version.job_id for version in versions]
+        db.query(ForecastEvaluationV2).filter(ForecastEvaluationV2.forecast_version_id.in_(version_ids)).delete(
+            synchronize_session=False
+        )
+        db.query(ForecastVersionV2).filter(ForecastVersionV2.id.in_(version_ids)).delete(synchronize_session=False)
+        db.query(ForecastJobV2).filter(ForecastJobV2.id.in_(job_ids)).delete(synchronize_session=False)
         db.commit()
 
 
@@ -302,6 +333,7 @@ def test_monitor_status_is_derived_from_persisted_runs_and_never_invents_health(
                 next_due_at=now + timedelta(minutes=56),
                 per_symbol_results={"AAPL": {"status": "succeeded"}, "NVDA": {"status": "failed"}},
                 error_summary={"NVDA": "SEC unavailable"},
+                evaluation_summary={"examined": 3, "succeeded": 1, "pending": 2},
             )
             db.add_all([succeeded, partial])
             db.commit()
@@ -315,6 +347,7 @@ def test_monitor_status_is_derived_from_persisted_runs_and_never_invents_health(
         assert payload["last_run"]["id"] == str(partial.id)
         assert payload["last_run"]["status"] == "partial"
         assert payload["last_run"]["per_symbol_results"]["NVDA"]["status"] == "failed"
+        assert payload["last_run"]["evaluation_summary"] == {"examined": 3, "succeeded": 1, "pending": 2}
         assert payload["last_success"] == {
             "id": str(succeeded.id),
             "completed_at": succeeded.completed_at.isoformat().replace("+00:00", "Z"),
@@ -351,6 +384,130 @@ def test_monitor_status_reports_healthy_for_a_recent_complete_persisted_run(clie
         assert payload["last_success"]["completed_at"] == succeeded.completed_at.isoformat().replace("+00:00", "Z")
     finally:
         _clear_monitor_runs()
+
+
+def test_evaluations_are_read_only_grouped_by_root_and_separate_persisted_time_modes(client):
+    observed_root = _create_version(symbol="AAPL", target_end=date(2025, 1, 2))
+    historical_root = _create_version(symbol="AAPL", target_end=date(2025, 1, 2))
+    unknown_root = _create_version(symbol="AAPL", target_end=date(2025, 1, 2))
+    other_symbol = _create_version(symbol="MSFT", target_end=date(2025, 1, 2))
+    with SessionLocal() as db:
+        observed = db.get(ForecastVersionV2, observed_root)
+        historical = db.get(ForecastVersionV2, historical_root)
+        unknown = db.get(ForecastVersionV2, unknown_root)
+        other = db.get(ForecastVersionV2, other_symbol)
+        observed.research_report = {"time_mode": "observed"}
+        historical.research_report = {"time_mode": "historical_research"}
+        db.add_all(
+            [
+                ForecastEvaluationV2(
+                    forecast_version_id=observed.id,
+                    target_contract_hash=observed.target_contract_hash,
+                    actual_target_close=101.0,
+                    actual_label="bullish",
+                    label_available_at=datetime.now(UTC),
+                    brier_score=0.4,
+                    log_loss=0.8,
+                    direction_correct=True,
+                    status="succeeded",
+                    result_version=1,
+                    price_input_version={"revision": 1},
+                ),
+                ForecastEvaluationV2(
+                    forecast_version_id=observed.id,
+                    target_contract_hash=observed.target_contract_hash,
+                    actual_target_close=102.0,
+                    actual_label="bullish",
+                    label_available_at=datetime.now(UTC),
+                    brier_score=0.3,
+                    log_loss=0.7,
+                    direction_correct=True,
+                    status="succeeded",
+                    result_version=2,
+                    price_input_version={"revision": 2},
+                ),
+                ForecastEvaluationV2(
+                    forecast_version_id=historical.id,
+                    target_contract_hash=historical.target_contract_hash,
+                    actual_target_close=95.0,
+                    actual_label="bearish",
+                    label_available_at=datetime.now(UTC),
+                    # This research_only forecast has a mature real label but
+                    # no numeric probability vector. It must not inflate the
+                    # model-score denominator.
+                    status="succeeded",
+                    result_version=1,
+                ),
+                ForecastEvaluationV2(
+                    forecast_version_id=other.id,
+                    target_contract_hash=other.target_contract_hash,
+                    status="succeeded",
+                    result_version=1,
+                    actual_label="neutral",
+                ),
+            ]
+        )
+        db.commit()
+        before = (
+            db.query(ForecastVersionV2).count(),
+            db.query(ForecastEvaluationV2).count(),
+        )
+
+    response = client.get("/v2/evaluations?symbol=AAPL")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["symbol"] == "AAPL"
+    assert payload["status"] == "insufficient_samples"
+    assert payload["minimum_scored_roots"] == 5
+
+    prospective = payload["cohorts"]["prospective"]
+    assert prospective["time_mode"] == "observed"
+    assert prospective["status"] == "insufficient_samples"
+    assert prospective["sample"] == {
+        "root_denominator": 1,
+        "labelled_root_count": 1,
+        "scored_root_count": 1,
+        "unscored_root_count": 0,
+        "version_count": 1,
+        "labelled_version_count": 1,
+        "scored_version_count": 1,
+    }
+    observed_version = prospective["roots"][0]["versions"][0]
+    assert observed_version["id"] == str(observed_root)
+    assert observed_version["time_mode"] == "observed"
+    assert observed_version["latest_evaluation"]["result_version"] == 2
+    assert observed_version["latest_evaluation"]["actual_target_close"] == 102.0
+    assert [item["result_version"] for item in observed_version["evaluation_history"]] == [2, 1]
+
+    historical = payload["cohorts"]["historical_research"]
+    assert historical["status"] == "pending"
+    assert historical["roots"][0]["root_id"] == str(historical_root)
+    assert historical["sample"] == {
+        "root_denominator": 1,
+        "labelled_root_count": 1,
+        "scored_root_count": 0,
+        "unscored_root_count": 1,
+        "version_count": 1,
+        "labelled_version_count": 1,
+        "scored_version_count": 0,
+    }
+    historical_evaluation = historical["roots"][0]["versions"][0]["latest_evaluation"]
+    assert historical_evaluation["status"] == "succeeded"
+    assert historical_evaluation["actual_label"] == "bearish"
+    assert historical_evaluation["brier_score"] is None
+    assert historical_evaluation["log_loss"] is None
+
+    unknown = payload["cohorts"]["unknown"]
+    assert unknown["time_mode"] == "unknown"
+    assert unknown["roots"][0]["root_id"] == str(unknown_root)
+    assert unknown["roots"][0]["versions"][0]["latest_evaluation"] is None
+
+    with SessionLocal() as db:
+        assert (
+            db.query(ForecastVersionV2).count(),
+            db.query(ForecastEvaluationV2).count(),
+        ) == before
+    _delete_owned_evaluation_fixture_versions([observed_root, historical_root, unknown_root, other_symbol])
 
 
 def test_missing_database_returns_503_instead_of_accepting_a_job(client, monkeypatch):
