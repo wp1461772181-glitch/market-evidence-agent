@@ -1,5 +1,7 @@
 # Market Evidence Agent
 
+**Current development direction (2026-09-26):** [V3 Agent research workspace](docs/agent-research-v3-spec.md) uses reusable DeepSeek material analyses and research briefs, followed by Jev decisions through OpenRouter. [Luna's implementation plan](docs/agent-research-v3-luna-plan.md) and [V3 progress](docs/v3-progress.md) track delivery. This is an in-progress change; the V2 behavior described below remains the existing baseline until the new path is verified and enabled. Custom model training is now an optional experiment, not the product completion gate.
+
 The original Weeks 1–9 archive remains available. V2 development is now in progress: users can queue research-only forecasts, select a saved forecast date for a manual revision, inspect immutable source and market inputs, and read persisted outcome evaluations. A local worker consumes durable jobs, while an hourly SEC monitor records actual scans, can queue eligible official-source revisions, and runs a separate append-only evaluation step after each monitor pass. The [V2 progress log](docs/v2-progress.md) distinguishes implemented code, live checks, and open acceptance work; the [implementation plan](docs/evidence-driven-forecast-v2-plan.md) is the target design.
 
 A FastAPI, PostgreSQL, and local React dashboard foundation for a
