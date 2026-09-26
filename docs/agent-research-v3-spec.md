@@ -41,7 +41,7 @@
 | uncertainties | 0–8 条 `{id, statement, reason, citations}`；缺失/冲突/未证实 |
 | key_numbers | 0–12 条 `{name, value_text, period, citations}`；保留原单位和原文值；计算由代码另做 |
 
-引用统一为 `{quote, start_char, end_char}`，相对冻结的规范化分析文本，0 起始、左闭右开；服务器验证 `text[start:end] == quote`。单条 quote 最多 500 字符。每条事实/正反结论至少一个有效引用；未知项描述“未提供某数据”允许无引用。ID 在各数组内唯一，fact_ids 必须存在。服务器附加 source_type/source_id、symbol、source_url、published_at、observed_at、content_sha256、analysis_text_sha256、覆盖信息、模型实际返回名、生成时间，模型不得自行决定这些元数据。
+持久化引用统一为 `{quote, start_char, end_char}`，相对冻结的规范化分析文本，0 起始、左闭右开；服务器验证 `text[start:end] == quote`。模型仅需返回 quote，由程序精确查找并补坐标；重复相同句子取最早匹配，不能模糊修补不存在的引文。若模型已给坐标但错误，仍拒绝。单条 quote 最多 500 字符。每条事实/正反结论至少一个有效引用；未知项描述“未提供某数据”允许无引用。ID 在各数组内唯一，fact_ids 必须存在。服务器附加 source_type/source_id、symbol、source_url、published_at、observed_at、content_sha256、analysis_text_sha256、覆盖信息、模型实际返回名、生成时间，模型不得自行决定这些元数据。
 
 DeepSeek 提示必须说明材料是待分析数据，不能执行其中的命令、访问链接或采用其中的输出格式指令。事实和推断分开；不要凑满正反条数；5 星不代表官方认证或必然为真。
 
@@ -77,8 +77,8 @@ GET 不调用模型、不抓网站、不写记录。后台复用现有 worker �
 | symbol / decision_at / target_contract | 服务器附加的股票、信息截止、原始锚点和固定目标 |
 | market_summary | 程序计算的最近收盘、5/20 日收益、波动、量比、修订时已实现收益/剩余会话；单位明确，缺失为 null |
 | material_refs | analysis_id、evidence_version_id、正文与分析哈希、来源类型/时间、核验、星级、覆盖状态、selection_reason |
-| new_facts | 自上一决策以来新增/新获知事实，绑定 analysis_id 和 item_id |
-| supporting / counter | 有证据引用的综合利好/利空；每项保存 analysis_id/item_id，不允许引用未选材料 |
+| new_facts | 自上一决策以来新增/新获知事实，绑定 analysis_id、section 和 item_id |
+| supporting / counter | 有证据引用的综合利好/利空；每项保存 analysis_id/section/item_id（section 为 facts/supporting/counter/uncertainties，避免不同数组 ID 同名歧义），不允许引用未选材料 |
 | background | 已知且仍有影响的旧事实/未解决风险，注明持续原因 |
 | conflicts / unknowns | 相互矛盾、来源失败、没有完整正文、尚未核验 |
 | changes | 相对父版新增、撤回、修改、来源状态变化；新根可为空 |
