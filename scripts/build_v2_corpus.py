@@ -11,6 +11,7 @@ import hashlib
 import json
 from datetime import UTC, date, datetime
 from pathlib import Path
+from typing import Iterable
 
 from app.models import SecFilingInventory
 from app.sec_filings import SecEdgarProvider, SecFilingsError
@@ -20,6 +21,9 @@ SYMBOLS = ("AAPL", "MSFT", "GOOGL", "AMZN", "NVDA")
 DEFAULT_OUTPUT = Path(__file__).resolve().parent.parent / "data" / "v2"
 MANIFEST_NAME = "dataset-manifest.json"
 MAX_PILOT_DOCUMENTS = 30
+PARTITION_ORDER = ("train", "calibration", "test")
+TRAIN_END = date(2023, 12, 31)
+CALIBRATION_END = date(2024, 12, 31)
 
 
 def plan_corpus(
@@ -29,8 +33,12 @@ def plan_corpus(
     start_date: date = date(2021, 1, 1),
     end_date: date = date(2026, 8, 31),
     max_pages: int = 3,
+    max_new_documents: int = MAX_PILOT_DOCUMENTS,
+    excluded_source_ids: Iterable[str] = (),
 ) -> dict:
     """Discover source candidates without downloading bodies or writing files."""
+    if not 1 <= max_new_documents <= MAX_PILOT_DOCUMENTS:
+        raise ValueError(f"max_new_documents must be between 1 and {MAX_PILOT_DOCUMENTS}")
     candidates: dict[str, list] = {}
     incomplete: dict[str, bool] = {}
     for symbol in symbols:
@@ -39,12 +47,27 @@ def plan_corpus(
         )
         candidates[symbol] = list(coverage.filings)
         incomplete[symbol] = not coverage.complete
+    excluded = set(excluded_source_ids)
+    selected, selection_audit = _stratified_round_robin(
+        candidates,
+        start_date=start_date,
+        end_date=end_date,
+        excluded_source_ids=excluded,
+    )
     return {
         "symbols": list(symbols),
         "start_date": start_date.isoformat(),
         "end_date": end_date.isoformat(),
         "candidate_counts": {symbol: len(items) for symbol, items in candidates.items()},
+        "candidate_counts_after_resume": {
+            symbol: sum(item.accession_number not in excluded for item in items)
+            for symbol, items in candidates.items()
+        },
         "discovery_incomplete": incomplete,
+        "selection_preview": _selection_preview(
+            selected, limit=max_new_documents, start_date=start_date, end_date=end_date
+        ),
+        "selection_audit": selection_audit,
         "candidates": candidates,
     }
 
@@ -77,13 +100,23 @@ def build_corpus(
     }:
         raise ValueError("resume settings do not match the saved corpus manifest")
     _validate_existing_files(output_dir, manifest)
+    remaining_pilot_capacity = MAX_PILOT_DOCUMENTS - len(manifest["source_snapshot_files"])
+    if max_new_documents > remaining_pilot_capacity:
+        raise ValueError(
+            f"requested documents exceed remaining pilot capacity: {remaining_pilot_capacity}"
+        )
     saved_ids = {entry["source_id"] for entry in manifest["source_snapshot_files"]}
     discovery = plan_corpus(
         provider=provider, symbols=symbols, start_date=start_date, end_date=end_date,
-        max_pages=max_pages,
+        max_pages=max_pages, max_new_documents=max_new_documents, excluded_source_ids=saved_ids,
     )
     manifest["discovery_incomplete"] = discovery["discovery_incomplete"]
-    pending = _round_robin(discovery["candidates"])
+    pending, _ = _stratified_round_robin(
+        discovery["candidates"],
+        start_date=start_date,
+        end_date=end_date,
+        excluded_source_ids=saved_ids,
+    )
     created = 0
     skipped_ambiguous_time = 0
     errors: list[dict[str, str]] = []
@@ -177,7 +210,10 @@ def build_corpus(
         "created": created,
         "saved_total": len(manifest["source_snapshot_files"]),
         "candidate_counts": discovery["candidate_counts"],
+        "candidate_counts_after_resume": discovery["candidate_counts_after_resume"],
         "discovery_incomplete": discovery["discovery_incomplete"],
+        "selection_preview": discovery["selection_preview"],
+        "selection_audit": discovery["selection_audit"],
         "skipped_ambiguous_time": skipped_ambiguous_time,
         "errors": errors,
         "price_coverage": "pending_P3",
@@ -204,14 +240,96 @@ def _new_manifest(symbols: tuple[str, ...], start_date: date, end_date: date) ->
     }
 
 
-def _round_robin(candidates: dict[str, list]) -> list[tuple[str, object]]:
-    pending = {symbol: sorted(items, key=lambda item: item.filed_at, reverse=True) for symbol, items in candidates.items()}
-    selected = []
-    while any(pending.values()):
-        for symbol, items in pending.items():
-            if items:
-                selected.append((symbol, items.pop(0)))
-    return selected
+def _stratified_round_robin(
+    candidates: dict[str, list],
+    *,
+    start_date: date,
+    end_date: date,
+    excluded_source_ids: set[str],
+) -> tuple[list[tuple[str, object]], dict[str, int]]:
+    """Select bounded candidates across time partitions, then symbols.
+
+    The SEC response order is not a sampling policy.  This selector keeps the
+    fixed manifest range and cycles train, calibration, test; within each
+    partition it cycles symbols.  Ambiguous acceptance times are retained at
+    the end so the existing explicit skip accounting still reports them, while
+    valid dated material is never silently backdated.
+    """
+    buckets: dict[str, dict[str, list]] = {
+        partition: {symbol: [] for symbol in candidates} for partition in PARTITION_ORDER
+    }
+    ambiguous: list[tuple[str, object]] = []
+    audit = {"excluded_existing": 0, "duplicate_accession": 0, "ambiguous_time": 0, "out_of_range": 0}
+    seen_accessions: set[str] = set()
+    for symbol, items in candidates.items():
+        for filing in items:
+            accession = filing.accession_number
+            if accession in excluded_source_ids:
+                audit["excluded_existing"] += 1
+                continue
+            if accession in seen_accessions:
+                audit["duplicate_accession"] += 1
+                continue
+            seen_accessions.add(accession)
+            published_at = _published_at(filing.accepted_at)
+            if published_at is None:
+                ambiguous.append((symbol, filing))
+                audit["ambiguous_time"] += 1
+                continue
+            partition = _partition_for_date(published_at.date(), start_date=start_date, end_date=end_date)
+            if partition is None:
+                audit["out_of_range"] += 1
+                continue
+            buckets[partition][symbol].append(filing)
+
+    for partition in PARTITION_ORDER:
+        for symbol in candidates:
+            buckets[partition][symbol].sort(key=lambda item: item.accepted_at, reverse=True)
+    ambiguous.sort(key=lambda item: (item[0], item[1].filed_at), reverse=True)
+
+    selected: list[tuple[str, object]] = []
+    while any(buckets[partition][symbol] for partition in PARTITION_ORDER for symbol in candidates):
+        for partition in PARTITION_ORDER:
+            for symbol in candidates:
+                items = buckets[partition][symbol]
+                if items:
+                    selected.append((symbol, items.pop(0)))
+    return [*selected, *ambiguous], audit
+
+
+def _partition_for_date(value: date, *, start_date: date, end_date: date) -> str | None:
+    if not start_date <= value <= end_date:
+        return None
+    if value <= TRAIN_END:
+        return "train"
+    if value <= CALIBRATION_END:
+        return "calibration"
+    return "test"
+
+
+def _selection_preview(
+    pending: list[tuple[str, object]], *, limit: int, start_date: date, end_date: date
+) -> list[dict[str, str]]:
+    """Expose only planned stock/date/form metadata, never filing text or IDs."""
+    preview: list[dict[str, str]] = []
+    for symbol, filing in pending:
+        if len(preview) >= limit:
+            break
+        published_at = _published_at(filing.accepted_at)
+        if published_at is None:
+            continue
+        partition = _partition_for_date(published_at.date(), start_date=start_date, end_date=end_date)
+        if partition is None:
+            continue
+        preview.append(
+            {
+                "partition": partition,
+                "symbol": symbol,
+                "published_date": published_at.date().isoformat(),
+                "form": filing.form,
+            }
+        )
+    return preview
 
 
 def _published_at(raw: str | None) -> datetime | None:
@@ -260,7 +378,22 @@ def main() -> int:
     args = parser.parse_args()
     provider = SecEdgarProvider()
     if args.plan:
-        result = plan_corpus(provider=provider, max_pages=args.max_pages)
+        excluded_source_ids: set[str] = set()
+        manifest_path = args.output_dir / MANIFEST_NAME
+        if manifest_path.exists():
+            manifest = _read_manifest(manifest_path)
+            if manifest["symbols"] != list(SYMBOLS) or manifest["training_range"] != {
+                "start": date(2021, 1, 1).isoformat(), "end": date(2026, 8, 31).isoformat()
+            }:
+                raise ValueError("existing corpus manifest is incompatible with the fixed V2 plan")
+            _validate_existing_files(args.output_dir, manifest)
+            excluded_source_ids = {entry["source_id"] for entry in manifest["source_snapshot_files"]}
+        result = plan_corpus(
+            provider=provider,
+            max_pages=args.max_pages,
+            max_new_documents=args.max_new_documents,
+            excluded_source_ids=excluded_source_ids,
+        )
         result.pop("candidates")
     else:
         result = build_corpus(

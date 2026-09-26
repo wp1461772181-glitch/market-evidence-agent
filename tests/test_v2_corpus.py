@@ -61,6 +61,57 @@ class FixtureProvider:
         )
 
 
+class StratifiedFixtureProvider:
+    def __init__(self):
+        self.body_fetches = 0
+        self.exhibit_fetches = 0
+        self.filings = {
+            "AAPL": (
+                _filing("AAPL", "000001", "2023-10-30T20:00:00Z"),
+                _filing("AAPL", "000002", "2024-05-02T20:00:00Z"),
+                _filing("AAPL", "000003", "2025-05-01T20:00:00Z"),
+            ),
+            "MSFT": (
+                _filing("MSFT", "000004", "2023-10-31T20:00:00Z"),
+                _filing("MSFT", "000005", "2024-05-03T20:00:00Z"),
+                _filing("MSFT", "000006", "2025-05-02T20:00:00Z"),
+                # A provider duplicate must not become a second source snapshot.
+                _filing("MSFT", "000003", "2025-05-01T20:00:00Z"),
+            ),
+        }
+
+    def discover_between(self, symbol, **kwargs):
+        return SecDiscoveryCoverage(
+            filings=self.filings.get(symbol, ()), complete=True, pages_read=0, next_page=None,
+        )
+
+    def fetch_primary_document(self, filing):
+        self.body_fetches += 1
+        body = f"Official filing {filing.accession_number}."
+        return SecFilingContent(
+            excerpt=body,
+            excerpt_sha256=hashlib.sha256(body.encode()).hexdigest(),
+            truncated=False,
+        )
+
+    def fetch_exhibit_99_1(self, filing):
+        self.exhibit_fetches += 1
+        return None
+
+
+def _filing(symbol: str, suffix: str, accepted_at: str) -> DiscoveredSecFiling:
+    accession = f"0000000000-25-{suffix}"
+    return DiscoveredSecFiling(
+        cik="0000000000",
+        accession_number=accession,
+        form="10-Q",
+        filed_at=date.fromisoformat(accepted_at[:10]),
+        accepted_at=accepted_at,
+        primary_document=f"{symbol.lower()}-{suffix}.htm",
+        source_url=f"https://www.sec.gov/Archives/edgar/data/1/{accession.replace('-', '')}/{symbol.lower()}.htm",
+    )
+
+
 def test_plan_is_read_only_and_build_resumes_without_redownloading(tmp_path):
     output = tmp_path / "corpus"
     provider = FixtureProvider()
@@ -125,3 +176,63 @@ def test_8k_corpus_snapshot_uses_related_attachment_with_exact_provenance(tmp_pa
     assert snapshot["citation_locator"] == {
         "kind": "extracted_text_char_range", "start": 0, "end": len("Quarterly results exhibit.")
     }
+
+
+def test_plan_and_build_round_robin_partitions_then_symbols_without_duplicates_and_resume(tmp_path):
+    output = tmp_path / "corpus"
+    provider = StratifiedFixtureProvider()
+
+    plan = corpus.plan_corpus(
+        provider=provider,
+        symbols=("AAPL", "MSFT"),
+        max_new_documents=6,
+    )
+    assert [item["partition"] for item in plan["selection_preview"]] == [
+        "train", "train", "calibration", "calibration", "test", "test",
+    ]
+    assert [item["symbol"] for item in plan["selection_preview"]] == [
+        "AAPL", "MSFT", "AAPL", "MSFT", "AAPL", "MSFT",
+    ]
+    assert plan["selection_audit"]["duplicate_accession"] == 1
+    assert provider.body_fetches == 0
+
+    first = corpus.build_corpus(
+        provider=provider,
+        output_dir=output,
+        resume=False,
+        max_new_documents=6,
+        symbols=("AAPL", "MSFT"),
+    )
+    assert first["created"] == 6
+    assert first["selection_audit"]["duplicate_accession"] == 1
+    manifest = json.loads((output / corpus.MANIFEST_NAME).read_text())
+    assert len(manifest["source_snapshot_files"]) == 6
+    assert len({entry["source_id"] for entry in manifest["source_snapshot_files"]}) == 6
+    assert provider.body_fetches == 6
+
+    resumed = corpus.build_corpus(
+        provider=provider,
+        output_dir=output,
+        resume=True,
+        max_new_documents=6,
+        symbols=("AAPL", "MSFT"),
+    )
+    assert resumed["created"] == 0
+    assert provider.body_fetches == 6
+
+
+def test_resume_cannot_exceed_total_pilot_capacity(tmp_path):
+    output = tmp_path / "corpus"
+    provider = FixtureProvider()
+    corpus.build_corpus(
+        provider=provider, output_dir=output, resume=False, max_new_documents=1, symbols=("AAPL",)
+    )
+    manifest = json.loads((output / corpus.MANIFEST_NAME).read_text())
+    manifest["source_snapshot_files"] *= corpus.MAX_PILOT_DOCUMENTS
+    (output / corpus.MANIFEST_NAME).write_text(json.dumps(manifest))
+
+    with pytest.raises(ValueError, match="remaining pilot capacity: 0"):
+        corpus.build_corpus(
+            provider=provider, output_dir=output, resume=True, max_new_documents=1, symbols=("AAPL",)
+        )
+    assert provider.body_fetches == 1

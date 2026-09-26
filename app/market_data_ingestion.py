@@ -184,6 +184,7 @@ def ingest_market_data(
     source: str = YAHOO_SOURCE,
     fetcher: Callable[[str, date, date], list[DailyPrice]] = fetch_daily_prices,
     now_factory: Callable[[], datetime] = _utc_now,
+    record_observation: bool = False,
 ) -> IngestionSummary:
     if not symbols:
         raise ValueError("symbols must not be empty")
@@ -249,7 +250,11 @@ def ingest_market_data(
                     key = (row.trading_date, row.source)
                     content_hash = _content_hash(row)
                     latest_revision = latest_revision_by_date.get(row.trading_date)
-                    if latest_revision is not None and latest_revision.content_hash == content_hash:
+                    if (
+                        latest_revision is not None
+                        and latest_revision.content_hash == content_hash
+                        and not record_observation
+                    ):
                         skipped_count += 1
                         continue
 

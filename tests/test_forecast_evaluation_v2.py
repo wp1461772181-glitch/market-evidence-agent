@@ -11,6 +11,7 @@ from app.database import Base, SessionLocal, engine
 from app.forecast_contract import create_root_contract, xnys_session_close_at
 from app.forecast_evaluation_v2 import run_evaluation_batch
 from app.forecast_v2_models import ForecastEvaluationV2, ForecastJobV2, ForecastVersionV2
+from app.market_data import CorporateAction, DailyPrice, MarketDataError, MarketDataFetchResult, PriceBasisMetadata, YAHOO_SOURCE
 from app.models import MarketPrice, MarketPriceRevision
 
 NOW = datetime(2026, 9, 25, 22, tzinfo=UTC)
@@ -73,6 +74,80 @@ def _price(*, symbol: str, target_date: date, close: float, revision: int = 1, o
         content_hash=hashlib.sha256(f"{symbol}-{target_date}-{revision}-{close}".encode()).hexdigest(),
         available_at=datetime.combine(target_date, datetime.min.time(), UTC) + timedelta(hours=21),
         observed_at=observed_at, is_initial_backfill=False,
+    )
+
+
+def _yahoo_contract(*, anchor_date: date, target_date: date) -> dict:
+    contract = create_root_contract(
+        anchor_date=anchor_date,
+        anchor_close=100.0,
+        price_source=YAHOO_SOURCE,
+        price_version="fixture-yahoo-v1",
+        price_hash="b" * 64,
+        price_basis_metadata={
+            "basis": "provider_quote_close_v1",
+            "provider_behavior_verified": True,
+            "adjusted_close_present": True,
+            "corporate_actions": (),
+        },
+    ).as_dict()
+    assert contract["target_end_date"] == target_date.isoformat()
+    return contract
+
+
+class _YahooProvider:
+    def __init__(self, result: MarketDataFetchResult | Exception):
+        self.result = result
+        self.calls: list[tuple[str, date, date]] = []
+
+    def fetch_daily_prices_with_metadata(self, symbol: str, start_date: date, end_date: date):
+        self.calls.append((symbol, start_date, end_date))
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
+
+
+def _yahoo_result(
+    *,
+    symbol: str,
+    target_date: date,
+    close: float,
+    actions=(),
+    actions_available: bool = True,
+    include_anchor: bool = True,
+    anchor_close: float = 100.0,
+):
+    target_row = DailyPrice(
+        symbol=symbol,
+        trading_date=target_date,
+        open=close,
+        high=close,
+        low=close,
+        close=close,
+        volume=100,
+    )
+    anchor_date = date(2026, 8, 3)
+    anchor_rows = (
+        DailyPrice(
+            symbol=symbol,
+            trading_date=anchor_date,
+            open=anchor_close,
+            high=anchor_close,
+            low=anchor_close,
+            close=anchor_close,
+            volume=100,
+        ),
+    ) if include_anchor else ()
+    return MarketDataFetchResult(
+        prices=(*anchor_rows, target_row),
+        price_basis=PriceBasisMetadata(
+            adjusted_close_present=True,
+            provider_behavior_verified=True,
+            corporate_actions_available=actions_available,
+            corporate_actions_response_shape="events_object" if actions_available else "events_omitted",
+            corporate_actions=tuple(actions),
+            verification_notes=("fixture price-basis response",),
+        ),
     )
 
 
@@ -325,3 +400,232 @@ def test_revision_written_before_target_close_does_not_mature_target(evaluation_
     assert outcome.status == "pending"
     assert outcome.actual_target_close is None
     assert outcome.actual_label is None
+
+
+def test_due_yahoo_target_rechecks_interval_and_never_uses_old_unreviewed_row(evaluation_rows):
+    anchor = date(2026, 8, 3)
+    target = date(2026, 8, 31)
+    contract = _yahoo_contract(anchor_date=anchor, target_date=target)
+    job, version = _version(symbol="YSAFE", contract=contract)
+    # This old row is deliberately bearish. The fresh Yahoo response is
+    # bullish, proving the evaluator does not directly trust pre-P7 storage.
+    old = MarketPriceRevision(
+        symbol="YSAFE", trading_date=target, open=97.0, high=97.0, low=97.0, close=97.0,
+        volume=100, source=YAHOO_SOURCE, revision_number=1,
+        content_hash="f" * 64, available_at=xnys_session_close_at(target), observed_at=NOW,
+        is_initial_backfill=False,
+    )
+    _insert(versions=evaluation_rows, rows=[job, version, old])
+    provider = _YahooProvider(_yahoo_result(symbol="YSAFE", target_date=target, close=103.0))
+
+    with SessionLocal() as db:
+        summary = run_evaluation_batch(
+            db=db,
+            evaluated_at=NOW,
+            market_provider_factory=lambda: provider,
+            now_factory=lambda: NOW,
+        )
+    outcome = _outcomes(version.id)[0]
+    assert outcome.status == "succeeded"
+    assert outcome.actual_target_close == 103.0
+    assert outcome.actual_label == "bullish"
+    assert outcome.label_available_at <= summary.evaluated_at
+    assert outcome.price_input_version["kind"] == "safe_maturity_yahoo_refresh_v1"
+    quote = outcome.price_input_version["target_quote"]
+    assert quote["source"] == YAHOO_SOURCE
+    assert quote["content_hash"] != old.content_hash
+    with SessionLocal() as db:
+        stored = db.get(MarketPriceRevision, quote["id"])
+    assert stored is not None and (stored.close, stored.content_hash) == (103.0, quote["content_hash"])
+    assert provider.calls == [("YSAFE", anchor, target)]
+
+
+def test_historical_cutoff_rejects_a_yahoo_receipt_that_arrives_later(evaluation_rows):
+    anchor = date(2026, 8, 3)
+    target = date(2026, 8, 31)
+    job, version = _version(symbol="YLATE", contract=_yahoo_contract(anchor_date=anchor, target_date=target))
+    _insert(versions=evaluation_rows, rows=[job, version])
+    provider = _YahooProvider(_yahoo_result(symbol="YLATE", target_date=target, close=103.0))
+
+    with SessionLocal() as db:
+        summary = run_evaluation_batch(
+            db=db,
+            evaluated_at=NOW,
+            market_provider_factory=lambda: provider,
+            now_factory=lambda: NOW + timedelta(minutes=1),
+        )
+    outcome = _outcomes(version.id)[0]
+    assert summary.evaluated_at == NOW
+    assert outcome.status == "pending"
+    assert outcome.actual_target_close is None
+    assert "after the evaluation cutoff" in (outcome.error_message or "")
+    with SessionLocal() as db:
+        assert db.scalar(
+            select(MarketPriceRevision).where(
+                MarketPriceRevision.symbol == "YLATE",
+                MarketPriceRevision.trading_date == target,
+                MarketPriceRevision.source == YAHOO_SOURCE,
+            )
+        ) is None
+
+
+def test_due_yahoo_split_blocks_the_target_interval(evaluation_rows):
+    anchor = date(2026, 8, 3)
+    target = date(2026, 8, 31)
+    split_job, split_version = _version(symbol="YSPLT", contract=_yahoo_contract(anchor_date=anchor, target_date=target))
+    _insert(versions=evaluation_rows, rows=[split_job, split_version])
+    split_provider = _YahooProvider(
+        _yahoo_result(
+            symbol="YSPLT",
+            target_date=target,
+            close=103.0,
+            actions=(CorporateAction(kind="split", effective_date=date(2026, 8, 17), known=True),),
+        )
+    )
+    with SessionLocal() as db:
+        run_evaluation_batch(
+            db=db,
+            evaluated_at=NOW,
+            market_provider_factory=lambda: split_provider,
+            now_factory=lambda: NOW,
+        )
+    split_outcome = _outcomes(split_version.id)[0]
+    assert split_outcome.status == "blocked_price"
+    assert "corporate_action_unsupported" in (split_outcome.error_message or "")
+
+
+def test_due_yahoo_missing_action_metadata_blocks_the_target_interval(evaluation_rows):
+    anchor = date(2026, 8, 3)
+    target = date(2026, 8, 31)
+    job, version = _version(symbol="YNOMD", contract=_yahoo_contract(anchor_date=anchor, target_date=target))
+    _insert(versions=evaluation_rows, rows=[job, version])
+    provider = _YahooProvider(_yahoo_result(symbol="YNOMD", target_date=target, close=103.0, actions_available=False))
+
+    with SessionLocal() as db:
+        run_evaluation_batch(
+            db=db,
+            evaluated_at=NOW,
+            market_provider_factory=lambda: provider,
+            now_factory=lambda: NOW,
+        )
+    outcome = _outcomes(version.id)[0]
+    assert outcome.status == "blocked_price"
+    assert "corporate actions unavailable" in (outcome.error_message or "")
+
+
+@pytest.mark.parametrize(
+    ("include_anchor", "anchor_close", "message"),
+    [
+        (False, 100.0, "anchor-day quote is missing or ambiguous"),
+        (True, 99.99, "anchor-day close differs from the frozen contract"),
+    ],
+)
+def test_due_yahoo_anchor_quote_must_match_the_frozen_contract(
+    evaluation_rows, include_anchor, anchor_close, message
+):
+    anchor = date(2026, 8, 3)
+    target = date(2026, 8, 31)
+    job, version = _version(
+        symbol=f"YANCH{int(include_anchor)}{str(anchor_close).replace('.', '')}",
+        contract=_yahoo_contract(anchor_date=anchor, target_date=target),
+    )
+    _insert(versions=evaluation_rows, rows=[job, version])
+    provider = _YahooProvider(
+        _yahoo_result(
+            symbol=version.symbol,
+            target_date=target,
+            close=103.0,
+            include_anchor=include_anchor,
+            anchor_close=anchor_close,
+        )
+    )
+
+    with SessionLocal() as db:
+        run_evaluation_batch(
+            db=db,
+            evaluated_at=NOW,
+            market_provider_factory=lambda: provider,
+            now_factory=lambda: NOW,
+        )
+    outcome = _outcomes(version.id)[0]
+    assert outcome.status == "blocked_price"
+    assert message in (outcome.error_message or "")
+
+
+def test_due_yahoo_refresh_failure_stays_blocked_until_a_later_safe_retry(evaluation_rows):
+    anchor = date(2026, 8, 3)
+    target = date(2026, 8, 31)
+    job, version = _version(symbol="YRETRY", contract=_yahoo_contract(anchor_date=anchor, target_date=target))
+    _insert(versions=evaluation_rows, rows=[job, version])
+    provider = _YahooProvider(MarketDataError("fixture timeout"))
+
+    with SessionLocal() as db:
+        run_evaluation_batch(
+            db=db,
+            evaluated_at=NOW,
+            market_provider_factory=lambda: provider,
+            now_factory=lambda: NOW,
+        )
+    assert _outcomes(version.id)[0].status == "blocked_price"
+
+    provider.result = _yahoo_result(symbol="YRETRY", target_date=target, close=103.0)
+    with SessionLocal() as db:
+        run_evaluation_batch(
+            db=db,
+            evaluated_at=NOW,
+            market_provider_factory=lambda: provider,
+            now_factory=lambda: NOW,
+        )
+    assert [item.status for item in _outcomes(version.id)] == ["blocked_price", "succeeded"]
+
+
+def test_same_root_children_share_one_safe_yahoo_review_and_repeat_does_not_append(evaluation_rows):
+    anchor = date(2026, 8, 3)
+    target = date(2026, 8, 31)
+    contract = _yahoo_contract(anchor_date=anchor, target_date=target)
+    root_job, root = _version(symbol="YROOT", contract=contract)
+    child_job, child = _version(symbol="YROOT", contract=contract, root=root)
+    _insert(versions=evaluation_rows, rows=[root_job, root])
+    _insert(versions=evaluation_rows, rows=[child_job, child])
+    provider = _YahooProvider(_yahoo_result(symbol="YROOT", target_date=target, close=103.0))
+
+    with SessionLocal() as db:
+        first = run_evaluation_batch(
+            db=db,
+            evaluated_at=NOW,
+            market_provider_factory=lambda: provider,
+            now_factory=lambda: NOW,
+        )
+    outcomes = [_outcomes(item.id) for item in (root, child)]
+    assert first.inserted == 2
+    assert len(provider.calls) == 1
+    assert outcomes[0][0].price_input_version == outcomes[1][0].price_input_version
+
+    with SessionLocal() as db:
+        second = run_evaluation_batch(
+            db=db,
+            evaluated_at=NOW,
+            market_provider_factory=lambda: provider,
+            now_factory=lambda: NOW,
+        )
+    assert second.inserted == 0
+    assert all(len(_outcomes(item.id)) == 1 for item in (root, child))
+    assert len(provider.calls) == 2
+
+
+def test_unexpired_yahoo_target_never_requests_provider(evaluation_rows):
+    anchor = date(2026, 9, 1)
+    target = date(2026, 9, 30)
+    job, version = _version(symbol="YFUT", contract=_yahoo_contract(anchor_date=anchor, target_date=target))
+    _insert(versions=evaluation_rows, rows=[job, version])
+    provider = _YahooProvider(_yahoo_result(symbol="YFUT", target_date=target, close=103.0))
+
+    with SessionLocal() as db:
+        run_evaluation_batch(
+            db=db,
+            evaluated_at=datetime(2026, 9, 30, 19, tzinfo=UTC),
+            market_provider_factory=lambda: provider,
+            now_factory=lambda: NOW,
+        )
+    assert provider.calls == []
+    assert _outcomes(version.id)[0].status == "pending"

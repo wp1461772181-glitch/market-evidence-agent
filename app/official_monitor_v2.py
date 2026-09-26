@@ -240,11 +240,11 @@ def _run_locked(
     # Evaluation is deliberately independent from SEC discovery.  A failed
     # filing request for one symbol must not prevent an already mature version
     # from being evaluated against the price rows that are already present.
-    # This cycle does not fetch Yahoo prices: target-period corporate actions
-    # and price-basis corrections still require a separate P7-safe ingestion.
+    # The evaluator independently refreshes only mature Yahoo target days and
+    # reviews their frozen anchor-to-target action interval before a label.
     try:
         run.evaluation_summary = {"status": "succeeded", **run_evaluation_batch(
-            db=db, evaluated_at=completed_at
+            db=db, evaluated_at=None
         ).as_dict()}
     except Exception as exc:  # Keep the SEC run auditable even if evaluation breaks.
         db.rollback()
