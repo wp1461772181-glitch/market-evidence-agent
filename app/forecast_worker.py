@@ -17,6 +17,7 @@ from datetime import timedelta
 from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
+from sqlalchemy import inspect
 
 from .database import SessionLocal
 from .forecast_jobs import claim_next_job, finish_job, heartbeat_job
@@ -104,6 +105,35 @@ def run_once(
     with session_factory() as db:
         job = claim_next_job(db=db, worker_id=identity, job_id=job_id, lease_duration=LEASE_DURATION)
     if job is None:
+        # A caller targeting one forecast job must not fall through and consume
+        # an unrelated material task from the other queue.
+        if job_id is not None:
+            return {"status": "idle", "job_id": None, "result_version_id": None}
+        # Material jobs share this long-lived process, but their additive
+        # schema is deliberately opt-in. Existing workers remain healthy
+        # before that migration has been applied.
+        bind = getattr(session_factory, "kw", {}).get("bind") if hasattr(session_factory, "kw") else None
+        if bind is None:
+            try:
+                with session_factory() as db:
+                    bind = db.get_bind()
+            except Exception:
+                bind = None
+        if bind is not None:
+            try:
+                inspector = inspect(bind)
+                if inspector.has_table("material_analysis_jobs") and inspector.has_table("material_analysis_versions"):
+                    from .material_analysis import run_material_analysis_once
+
+                    result = run_material_analysis_once(
+                        session_factory=session_factory, worker_id=identity,
+                    )
+                    if result["status"] != "idle":
+                        return {"status": result["status"], "job_id": result["job_id"],
+                                "result_version_id": None, "analysis_id": result.get("analysis_id")}
+            except Exception:
+                # A new optional queue must not take down the existing worker.
+                pass
         return {"status": "idle", "job_id": None, "result_version_id": None}
 
     heart = _LeaseHeartbeat(

@@ -23,6 +23,7 @@ from .manual_evidence import (
     create_uploaded_evidence_table,
     uploaded_evidence_for_symbol,
 )
+from .material_analysis_api import router as material_analysis_router
 from .event_provider import EventProviderError, configured_deepseek_model, create_deepseek_provider_from_env
 from .forecast_refresh import ForecastRefreshError, get_forecast_refresh_report, run_forecast_refresh, target_window
 from .forecast_v2_api import router as forecast_v2_router
@@ -70,6 +71,7 @@ from .services import MODEL_VERSION, is_valid_symbol, mock_forecast, normalize_s
 
 app = FastAPI(title="Market Evidence Agent", version="0.1.0")
 app.include_router(forecast_v2_router)
+app.include_router(material_analysis_router)
 
 
 @app.on_event("startup")
@@ -78,7 +80,9 @@ def create_tables() -> None:
     # Keep the longstanding startup behavior for legacy tables alone.
     Base.metadata.create_all(
         bind=engine,
-        tables=[table for table in Base.metadata.tables.values() if not table.name.endswith("_v2")],
+        tables=[table for table in Base.metadata.tables.values()
+                if not table.name.endswith("_v2")
+                and table.name not in {"material_analysis_jobs", "material_analysis_versions"}],
     )
     create_sec_filing_inventory_table()
     create_uploaded_evidence_table()

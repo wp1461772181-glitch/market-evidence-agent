@@ -1,13 +1,16 @@
 import json
 import importlib.util
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
-from sqlalchemy import inspect, text
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
 from app.database import SessionLocal, engine
 from app.forecast_v2_models import ForecastJobV2, V2_TABLES
+from app.models import Forecast
 
 
 _MIGRATION_PATH = Path(__file__).parents[1] / "scripts" / "migrate_forecast_v2.py"
@@ -22,49 +25,59 @@ main = _MIGRATION.main
 schema_state = _MIGRATION.schema_state
 
 
-def test_v2_migration_check_is_read_only_and_apply_is_idempotent(client, capsys):
+def test_v2_migration_check_is_read_only_and_apply_is_idempotent(capsys, monkeypatch):
     """The V2 migration only creates new tables and can safely be re-run."""
+    disposable_name = f"test_forecast_migration_{uuid4().hex[:12]}"
+    admin_engine = create_engine(engine.url.set(database="postgres"), isolation_level="AUTOCOMMIT")
+    isolated_engine = create_engine(engine.url.set(database=disposable_name))
+    created = False
+    try:
+        with admin_engine.connect() as connection:
+            connection.execute(text(f'CREATE DATABASE "{disposable_name}"'))
+        created = True
+        Forecast.__table__.create(bind=isolated_engine)
+        with Session(isolated_engine) as db:
+            db.add(Forecast(symbol="AAPL", bullish_probability=0.4, neutral_probability=0.3,
+                            bearish_probability=0.3, model_version="migration-fixture"))
+            db.commit()
 
-    legacy_columns_before = [column["name"] for column in inspect(engine).get_columns("forecasts")]
-    legacy_count_before = engine.connect().execute(text("SELECT count(*) FROM forecasts")).scalar_one()
+        monkeypatch.setattr(_MIGRATION, "engine", isolated_engine)
+        import app.database as app_database
+        import app.main as app_main
+        import app.manual_evidence as manual_evidence
+        import app.sec_filings as sec_filings
 
-    # The FastAPI startup hook may have registered V2 metadata in this test
-    # process.  Remove only the disposable V2 tables to prove --check writes
-    # nothing and --apply creates only its own schema.
-    V2_TABLES[0].metadata.drop_all(bind=engine, tables=list(V2_TABLES), checkfirst=True)
-    assert schema_state(engine)["missing"] == list(V2_TABLE_NAMES)
+        monkeypatch.setattr(app_database, "engine", isolated_engine)
+        monkeypatch.setattr(app_main, "engine", isolated_engine)
+        monkeypatch.setattr(manual_evidence, "engine", isolated_engine)
+        monkeypatch.setattr(sec_filings, "engine", isolated_engine)
+        app_main.create_tables()
+        legacy_columns_before = [column["name"] for column in inspect(isolated_engine).get_columns("forecasts")]
+        legacy_count_before = isolated_engine.connect().execute(text("SELECT count(*) FROM forecasts")).scalar_one()
+        assert schema_state(isolated_engine)["missing"] == list(V2_TABLE_NAMES)
 
-    from app.main import create_tables
+        assert main(["--check"]) == 0
+        check_output = json.loads(capsys.readouterr().out)
+        assert check_output == {"action": "check", "missing": list(V2_TABLE_NAMES),
+                                "missing_columns": [], "present": []}
+        assert schema_state(isolated_engine)["missing"] == list(V2_TABLE_NAMES)
 
-    create_tables()
-    assert schema_state(engine)["missing"] == list(V2_TABLE_NAMES)
+        assert main(["--apply"]) == 0
+        first_apply = json.loads(capsys.readouterr().out)
+        assert first_apply == {"action": "apply", "missing": [], "missing_columns": [],
+                               "present": list(V2_TABLE_NAMES)}
 
-    assert main(["--check"]) == 0
-    check_output = json.loads(capsys.readouterr().out)
-    assert check_output == {
-        "action": "check",
-        "missing": list(V2_TABLE_NAMES),
-        "missing_columns": [],
-        "present": [],
-    }
-    assert schema_state(engine)["missing"] == list(V2_TABLE_NAMES)
-
-    assert main(["--apply"]) == 0
-    first_apply = json.loads(capsys.readouterr().out)
-    assert first_apply == {
-        "action": "apply",
-        "missing": [],
-        "missing_columns": [],
-        "present": list(V2_TABLE_NAMES),
-    }
-
-    assert main(["--apply"]) == 0
-    second_apply = json.loads(capsys.readouterr().out)
-    assert second_apply == first_apply
-    assert schema_state(engine)["missing"] == []
-
-    assert [column["name"] for column in inspect(engine).get_columns("forecasts")] == legacy_columns_before
-    assert engine.connect().execute(text("SELECT count(*) FROM forecasts")).scalar_one() == legacy_count_before
+        assert main(["--apply"]) == 0
+        assert json.loads(capsys.readouterr().out) == first_apply
+        assert schema_state(isolated_engine)["missing"] == []
+        assert [column["name"] for column in inspect(isolated_engine).get_columns("forecasts")] == legacy_columns_before
+        assert isolated_engine.connect().execute(text("SELECT count(*) FROM forecasts")).scalar_one() == legacy_count_before
+    finally:
+        isolated_engine.dispose()
+        if created:
+            with admin_engine.connect() as connection:
+                connection.execute(text(f'DROP DATABASE IF EXISTS "{disposable_name}" WITH (FORCE)'))
+        admin_engine.dispose()
 
 
 def test_v2_schema_has_job_guards_and_event_snapshot_uniqueness(client):
