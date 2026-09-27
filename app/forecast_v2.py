@@ -43,6 +43,8 @@ class ForecastDraft:
     research_report: dict[str, Any] | None = None
     change_reason: str | None = None
     trigger_type: str = "manual"
+    decision_probabilities: dict[str, float] | None = None
+    research_brief: dict[str, Any] | None = None
 
 
 def publish_forecast_version(
@@ -68,17 +70,53 @@ def publish_forecast_version(
         raise ForecastPublicationError("market cutoff cannot exceed decision cutoff")
     _validate_probability_vector(draft.baseline_probabilities, "baseline_probabilities")
     _validate_probability_vector(draft.joint_probabilities, "joint_probabilities")
-    if draft.model_status not in {"research_only", "experimental_joint"}:
+    _validate_probability_vector(draft.decision_probabilities, "decision_probabilities", tolerance=1e-6)
+    if draft.model_status not in {"research_only", "experimental_joint", "experimental_jev"}:
         raise ForecastPublicationError("unsupported model status")
     if draft.model_status == "research_only" and draft.joint_probabilities is not None:
         raise ForecastPublicationError("research_only cannot publish joint probabilities")
     if draft.model_status == "experimental_joint" and draft.joint_probabilities is None:
         raise ForecastPublicationError("experimental_joint requires joint probabilities")
+    if draft.model_status == "research_only" and draft.decision_probabilities is not None:
+        raise ForecastPublicationError("research_only cannot publish decision probabilities")
+    validated_brief = None
+    if draft.model_status == "experimental_jev":
+        if draft.decision_probabilities is None or draft.research_brief is None:
+            raise ForecastPublicationError("experimental_jev requires decision probabilities and a research brief")
+        if draft.joint_probabilities is not None or draft.baseline_probabilities is not None:
+            raise ForecastPublicationError("experimental_jev cannot populate legacy probability fields")
+        try:
+            from .research_brief import ResearchBriefError, validate_research_brief
+            validated_brief = validate_research_brief(draft.research_brief)
+        except ResearchBriefError as exc:
+            raise ForecastPublicationError("experimental_jev research brief is invalid", code=exc.code) from exc
+        if validated_brief.decision_at != decision_at:
+            raise ForecastPublicationError("research brief decision cutoff does not match the forecast")
+        market_as_of = validated_brief.market_summary.get("as_of")
+        try:
+            brief_market_cutoff = normalize_utc(
+                market_as_of if isinstance(market_as_of, datetime) else datetime.fromisoformat(str(market_as_of).replace("Z", "+00:00")),
+                name="research brief market cutoff",
+            )
+        except (TypeError, ValueError):
+            raise ForecastPublicationError("research brief is missing its market cutoff") from None
+        if brief_market_cutoff != market_cutoff:
+            raise ForecastPublicationError("research brief market cutoff does not match the forecast")
+        if validated_brief.input_quality.status == "insufficient":
+            raise ForecastPublicationError("experimental_jev cannot publish an insufficient research brief")
+    elif draft.decision_probabilities is not None:
+        raise ForecastPublicationError("decision probabilities are reserved for experimental_jev")
 
     try:
         canonical_contract = target_contract_from_dict(draft.target_contract).as_dict()
     except ForecastContractError as exc:
         raise ForecastPublicationError(str(exc), code=exc.code) from exc
+    if validated_brief is not None:
+        draft_job = db.get(ForecastJobV2, job_id)
+        if draft_job is None:
+            raise ForecastPublicationError("job not found", code="not_found")
+        if validated_brief.symbol != draft_job.symbol or validated_brief.target_contract != canonical_contract:
+            raise ForecastPublicationError("experimental_jev brief does not match its forecast")
     contract_hash = _digest(canonical_contract)
     input_fingerprint = _digest(
         {
@@ -87,6 +125,7 @@ def publish_forecast_version(
             "evidence": draft.evidence_version_manifest,
             "features": draft.feature_snapshot,
             "model": draft.model_manifest,
+            "research_brief": draft.research_brief,
         }
     )
     job = db.get(ForecastJobV2, job_id, with_for_update=True)
@@ -191,6 +230,8 @@ def publish_forecast_version(
         model_status=draft.model_status,
         model_manifest=draft.model_manifest,
         research_report=draft.research_report,
+        decision_probabilities=draft.decision_probabilities,
+        research_brief=draft.research_brief,
         change_reason=draft.change_reason,
         trigger_type=draft.trigger_type,
     )
@@ -217,15 +258,16 @@ def _target_end(contract: dict[str, Any]) -> date:
         raise ForecastPublicationError("target contract requires target_end_date") from exc
 
 
-def _validate_probability_vector(vector: dict[str, float] | None, name: str) -> None:
+def _validate_probability_vector(vector: dict[str, float] | None, name: str, *, tolerance: float = 1e-8) -> None:
     if vector is None:
         return
     if set(vector) != {"bearish", "neutral", "bullish"}:
         raise ForecastPublicationError(f"{name} must have bearish, neutral, bullish")
     values = list(vector.values())
-    if not all(isinstance(value, (int, float)) and math.isfinite(value) and 0 <= value <= 1 for value in values):
+    if not all(isinstance(value, (int, float)) and not isinstance(value, bool)
+               and math.isfinite(value) and 0 <= value <= 1 for value in values):
         raise ForecastPublicationError(f"{name} contains invalid probabilities")
-    if not math.isclose(sum(values), 1.0, rel_tol=0.0, abs_tol=1e-8):
+    if not math.isclose(sum(values), 1.0, rel_tol=0.0, abs_tol=tolerance):
         raise ForecastPublicationError(f"{name} probabilities must sum to one")
 
 

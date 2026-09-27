@@ -1,4 +1,5 @@
 from datetime import UTC, date, datetime, timedelta
+import hashlib
 from uuid import uuid4
 
 import pytest
@@ -8,8 +9,14 @@ from sqlalchemy.exc import OperationalError
 
 import app.forecast_v2_api as api
 from app.database import Base, SessionLocal, engine
+from app.evidence_context import freeze_evidence_context
 from app.forecast_jobs import enqueue_job
-from app.forecast_v2_models import ForecastEvaluationV2, ForecastJobV2, ForecastVersionV2, OfficialMonitorRunV2
+from app.forecast_v2_models import (
+    ForecastEvaluationV2,
+    ForecastJobV2,
+    ForecastVersionV2,
+    OfficialMonitorRunV2,
+)
 from app.models import SecFilingInventory, UploadedEvidence
 from app.main import app as main_app
 
@@ -91,7 +98,8 @@ def _official_source(*, symbol="AAPL", accepted_at=None, observed_at=None):
             form="10-Q", filed_at=instant.date(), accepted_at=accepted_at_text,
             primary_document="q.htm", source_url="https://www.sec.gov/Archives/example/q.htm", source="sec-edgar",
             review_status="accepted", human_review_note=None, reviewed_at=None, observed_at=observed_at,
-            content_status="fetched", content_observed_at=observed_at, content_excerpt="test", content_excerpt_sha256="a" * 64,
+            content_status="fetched", content_observed_at=observed_at, content_excerpt="test",
+            content_excerpt_sha256=hashlib.sha256(b"test").hexdigest(),
             content_truncated=False, content_error=None,
         )
         db.add(source)
@@ -162,7 +170,8 @@ def test_new_job_requires_header_and_rejects_reused_key_with_a_different_request
 
 
 def test_manual_revision_validates_parent_source_symbol_and_source_time(client):
-    root_id = _create_version()
+    root_time = datetime.now(UTC) - timedelta(hours=1)
+    root_id = _create_version(decision_at=root_time)
     current_source = _official_source()
     accepted = client.post(
         f"/v2/forecast-versions/{root_id}/revision-jobs",
@@ -182,13 +191,167 @@ def test_manual_revision_validates_parent_source_symbol_and_source_time(client):
     )
     assert cross_stock.status_code == 422
 
-    old_source = _official_source(accepted_at=datetime.now(UTC) - timedelta(days=2))
+    old_source = _official_source(
+        accepted_at=root_time - timedelta(days=2),
+        observed_at=root_time - timedelta(minutes=1),
+    )
     old = client.post(
         f"/v2/forecast-versions/{root_id}/revision-jobs",
         json={"source_refs": [{"source_type": "official_filing", "source_id": str(old_source)}]},
         headers={"Idempotency-Key": "old-source"},
     )
     assert old.status_code == 422
+
+
+def test_manual_revision_accepts_old_filing_newly_observed_after_parent_and_rejects_repeat(client):
+    root_time = datetime.now(UTC) - timedelta(hours=1)
+    root_id = _create_version(decision_at=root_time)
+    source_id = _official_source(
+        accepted_at=root_time - timedelta(days=2),
+        observed_at=root_time + timedelta(minutes=5),
+    )
+    body = {"source_refs": [{"source_type": "official_filing", "source_id": str(source_id)}]}
+
+    accepted = client.post(
+        f"/v2/forecast-versions/{root_id}/revision-jobs",
+        json=body,
+        headers={"Idempotency-Key": "newly-observed-old-filing"},
+    )
+    repeated = client.post(
+        f"/v2/forecast-versions/{root_id}/revision-jobs",
+        json=body,
+        headers={"Idempotency-Key": "newly-observed-old-filing-repeat"},
+    )
+
+    assert accepted.status_code == 202
+    assert repeated.status_code == 422
+    assert "unchanged" in repeated.json()["detail"]
+
+
+def test_manual_revision_accepts_changed_review_snapshot_of_parent_source(client):
+    parent_time = datetime.now(UTC) - timedelta(hours=1)
+    root_id = _create_version(decision_at=parent_time)
+    source_id = _official_source(
+        accepted_at=parent_time - timedelta(days=1),
+        observed_at=parent_time - timedelta(minutes=10),
+    )
+    source_ref = {"source_type": "official_filing", "source_id": str(source_id)}
+    with SessionLocal() as db:
+        root = db.get(ForecastVersionV2, root_id)
+        source = db.get(SecFilingInventory, source_id)
+        source.review_status = "pending_review"
+        source.reviewed_at = None
+        initial = freeze_evidence_context(
+            db=db,
+            symbol="AAPL",
+            decision_at=parent_time,
+            mode="observed",
+            source_refs=[source_ref],
+        )
+        root.evidence_version_manifest = initial.evidence_manifest()
+        source.review_status = "accepted"
+        source.reviewed_at = datetime.now(UTC) - timedelta(minutes=5)
+        db.commit()
+
+    response = client.post(
+        f"/v2/forecast-versions/{root_id}/revision-jobs",
+        json={"source_refs": [source_ref]},
+        headers={"Idempotency-Key": "review-state-revision"},
+    )
+
+    assert response.status_code == 202
+    with SessionLocal() as db:
+        root = db.get(ForecastVersionV2, root_id)
+        assert root.evidence_version_manifest == initial.evidence_manifest()
+
+
+def test_manual_revision_same_source_state_change_after_completed_job_is_admitted(client):
+    parent_time = datetime.now(UTC) - timedelta(hours=1)
+    root_id = _create_version(decision_at=parent_time)
+    source_id = _official_source(
+        accepted_at=parent_time - timedelta(days=1),
+        observed_at=parent_time - timedelta(minutes=10),
+    )
+    source_ref = {"source_type": "official_filing", "source_id": str(source_id)}
+    with SessionLocal() as db:
+        root = db.get(ForecastVersionV2, root_id)
+        source = db.get(SecFilingInventory, source_id)
+        source.review_status = "pending_review"
+        source.reviewed_at = None
+        initial = freeze_evidence_context(
+            db=db,
+            symbol="AAPL",
+            decision_at=parent_time,
+            mode="observed",
+            source_refs=[source_ref],
+        )
+        root.evidence_version_manifest = initial.evidence_manifest()
+        source.review_status = "accepted"
+        source.reviewed_at = datetime.now(UTC) - timedelta(minutes=5)
+        db.commit()
+
+    first = client.post(
+        f"/v2/forecast-versions/{root_id}/revision-jobs",
+        json={"source_refs": [source_ref]},
+        headers={"Idempotency-Key": "first-state-change"},
+    )
+    assert first.status_code == 202
+    first_job_id = first.json()["id"]
+
+    with SessionLocal() as db:
+        root = db.get(ForecastVersionV2, root_id)
+        frozen = freeze_evidence_context(
+            db=db,
+            symbol="AAPL",
+            decision_at=datetime.now(UTC),
+            mode="observed",
+            source_refs=[source_ref],
+            previous_event_ids=[item["event_version_id"] for item in root.evidence_version_manifest],
+            previous_decision_at=root.decision_at,
+        )
+        job = db.get(ForecastJobV2, first_job_id)
+        child = ForecastVersionV2(
+            id=uuid4(),
+            job_id=job.id,
+            root_id=root.id,
+            parent_version_id=root.id,
+            version_no=2,
+            symbol=root.symbol,
+            target_contract=root.target_contract,
+            target_contract_hash=root.target_contract_hash,
+            decision_at=datetime.now(UTC),
+            market_cutoff_at=root.market_cutoff_at,
+            price_input_manifest=root.price_input_manifest,
+            evidence_version_manifest=frozen.evidence_manifest(),
+            feature_snapshot={},
+            baseline_probabilities=root.baseline_probabilities,
+            joint_probabilities=None,
+            model_status="research_only",
+            model_manifest={},
+            trigger_type="manual",
+        )
+        db.add(child)
+        db.flush()
+        job.status = "succeeded"
+        job.result_version_id = child.id
+        source = db.get(SecFilingInventory, source_id)
+        source.human_review_note = "updated note after the previous completed revision"
+        db.commit()
+
+    changed = client.post(
+        f"/v2/forecast-versions/{root_id}/revision-jobs",
+        json={"source_refs": [source_ref]},
+        headers={"Idempotency-Key": "second-state-change"},
+    )
+    replay = client.post(
+        f"/v2/forecast-versions/{root_id}/revision-jobs",
+        json={"source_refs": [source_ref]},
+        headers={"Idempotency-Key": "second-state-change"},
+    )
+
+    assert changed.status_code == 202, changed.json()
+    assert replay.status_code == 202
+    assert replay.json()["id"] == changed.json()["id"]
 
 
 def test_revision_rejects_missing_version_and_expired_target(client):

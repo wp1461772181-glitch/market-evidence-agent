@@ -90,6 +90,75 @@ export type PriceHistory = {
   candles: PriceCandle[];
 };
 
+export type MaterialSourceType = "official_filing" | "uploaded_media";
+export type MaterialAnalysisStatus = "not_started" | "queued" | "running" | "succeeded" | "failed" | "blocked_data";
+export type MaterialItem = {
+  symbol: string;
+  source_type: MaterialSourceType;
+  source_id: string;
+  title: string;
+  published_at: string | null;
+  observed_at: string | null;
+  source_url: string;
+  latest_analysis_id: string | null;
+  latest_analysis_version_no?: number | null;
+  analysis_status: MaterialAnalysisStatus;
+  latest_job: MaterialAnalysisJob | null;
+  review_status: string;
+  coverage: string | null;
+  can_view_original: boolean;
+  can_download_original: boolean;
+};
+export type MaterialLibraryResponse = { items: MaterialItem[]; total: number; limit: number; offset: number };
+export type MaterialAnalysisJob = {
+  job_id: string;
+  status: MaterialAnalysisStatus;
+  analysis_id: string | null;
+  cache_hit: boolean;
+  safe_error_code?: string | null;
+  current_stage?: string;
+  attempts?: number;
+  created_at?: string;
+  completed_at?: string | null;
+};
+export type MaterialAnalysisVersion = {
+  analysis_id: string;
+  source_type: MaterialSourceType;
+  source_id: string;
+  evidence_version_id: string;
+  version_no: number;
+  previous_version_id: string | null;
+  actual_model: string;
+  payload: {
+    summary: string;
+    facts: Array<{ id: string; statement: string; citations: Array<{ quote: string; start_char: number; end_char: number }> }>;
+    supporting: Array<{ id: string; statement: string; rationale: string; fact_ids: string[]; citations: Array<{ quote: string; start_char: number; end_char: number }> }>;
+    counter: Array<{ id: string; statement: string; rationale: string; fact_ids: string[]; citations: Array<{ quote: string; start_char: number; end_char: number }> }>;
+    uncertainties: Array<{ id: string; statement: string; reason: string; citations: Array<{ quote: string; start_char: number; end_char: number }> }>;
+    key_numbers: Array<{ name: string; value_text: string; period: string | null; citations: Array<{ quote: string; start_char: number; end_char: number }> }>;
+  };
+  source_manifest: Record<string, unknown>;
+  created_at: string;
+  frozen_text?: string | null;
+  source_snapshot?: Record<string, unknown>;
+};
+export type MaterialAnalysisHistory = { source_type: MaterialSourceType; source_id: string; items: MaterialAnalysisVersion[] };
+export type MaterialOriginal = {
+  symbol: string;
+  source_type: MaterialSourceType;
+  source_id: string;
+  title: string;
+  source_url: string;
+  content_text: string | null;
+  content_status: string;
+  content_error: string | null;
+  coverage: string | null;
+  truncated: boolean;
+  can_download: boolean;
+  can_fetch: boolean;
+  document_name: string | null;
+};
+
 export type OfficialFiling = {
   /** Database identity used only when an accepted filing is selected for an evidence revision. */
   id?: string;
@@ -258,6 +327,47 @@ export type V2ForecastJob = {
 };
 
 export type V2Probabilities = Record<"bearish" | "neutral" | "bullish", number>;
+export type V2ModelStatus = "research_only" | "baseline_only" | "experimental_joint" | "experimental_jev";
+export type ResearchEvidencePointer = { analysis_id: string; section: "facts" | "supporting" | "counter" | "uncertainties"; item_id: string };
+export type ResearchMaterialReference = {
+  analysis_id: string;
+  evidence_version_id: string;
+  source_type: "official_filing" | "uploaded_media";
+  source_id: string;
+  symbol: string;
+  title: string | null;
+  source_url: string | null;
+  published_at: string;
+  observed_at: string;
+  content_sha256: string;
+  analysis_text_sha256: string;
+  review_status: string;
+  user_rating_stars: number | null;
+  user_rating_label: string | null;
+  truncated: boolean;
+  coverage_incomplete: boolean;
+  coverage: string | null;
+  selection_reason: string;
+  explicitly_selected: boolean;
+};
+export type ResearchEvidenceText = { statement: string; citations: ResearchEvidencePointer[] };
+export type ResearchBrief = {
+  schema_version: "research-brief-v1";
+  symbol: string;
+  decision_at: string;
+  target_contract: Record<string, unknown>;
+  market_summary: Record<string, unknown>;
+  material_refs: ResearchMaterialReference[];
+  new_facts: ResearchEvidenceText[];
+  supporting: ResearchEvidenceText[];
+  counter: ResearchEvidenceText[];
+  background: Array<ResearchEvidenceText & { continuing_reason: string }>;
+  conflicts: Array<{ description: string; citations: ResearchEvidencePointer[] }>;
+  unknowns: Array<{ question: string; reason: string; citations: ResearchEvidencePointer[] }>;
+  changes: Array<{ change_type: string; description: string; citations: ResearchEvidencePointer[] }>;
+  omitted: Array<{ source_type: string; source_id: string; analysis_id: string | null; reason: string }>;
+  input_quality: { status: "ready" | "limited" | "insufficient"; reasons: string[] };
+};
 
 export type V2Version = {
   id: string;
@@ -271,7 +381,9 @@ export type V2Version = {
   market_cutoff_at: string;
   baseline_probabilities: V2Probabilities | null;
   joint_probabilities: V2Probabilities | null;
-  model_status: "research_only" | "baseline_only" | "experimental_joint";
+  model_status: V2ModelStatus;
+  decision_probabilities?: V2Probabilities | null;
+  research_brief?: ResearchBrief | null;
   model_manifest: Record<string, unknown>;
   research_report: Record<string, unknown> | null;
   change_reason: string | null;
@@ -287,7 +399,7 @@ export type V2VersionDetail = V2Version & {
 
 export type V2TimelineEntry = Pick<V2Version,
   "id" | "parent_version_id" | "version_no" | "decision_at" | "market_cutoff_at" |
-  "baseline_probabilities" | "joint_probabilities" | "model_status" | "change_reason" | "trigger_type" | "created_at"
+  "baseline_probabilities" | "joint_probabilities" | "decision_probabilities" | "model_status" | "change_reason" | "trigger_type" | "created_at"
 >;
 
 export type V2Timeline = {
@@ -301,7 +413,7 @@ export type V2ForecastRoot = {
   id: string;
   decision_at: string;
   target_end_date: string;
-  model_status: "research_only" | "baseline_only" | "experimental_joint";
+  model_status: V2ModelStatus;
   latest_version_id: string;
   latest_version_no: number;
   expired: boolean | null;
@@ -361,7 +473,7 @@ export type V2EvaluationVersion = {
   version_no: number;
   decision_at: string;
   trigger_type: string;
-  model_status: "research_only" | "baseline_only" | "experimental_joint";
+  model_status: V2ModelStatus;
   time_mode: "observed" | "historical_research" | "unknown";
   latest_evaluation: V2Evaluation | null;
   evaluation_history: V2Evaluation[];
@@ -389,11 +501,31 @@ export type V2EvaluationCohort = {
   roots: V2EvaluationRoot[];
 };
 
+export type V2ModelEvaluationVersion = V2EvaluationVersion & {
+  provider: string;
+  actual_model: string;
+  question_version: string | null;
+};
+export type V2ModelEvaluationRoot = Omit<V2EvaluationRoot, "versions"> & { versions: V2ModelEvaluationVersion[] };
+export type V2ModelEvaluationCohort = {
+  time_mode: "observed" | "historical_research" | "unknown";
+  model_status: V2ModelStatus;
+  provider: string;
+  actual_model: string;
+  question_version: string | null;
+  log_loss_zero_probability_floor: number | null;
+  status: "pending" | "insufficient_samples" | "available";
+  sample: Pick<V2EvaluationCohort["sample"], "root_denominator" | "labelled_root_count" | "scored_root_count" | "unscored_root_count">;
+  roots: V2ModelEvaluationRoot[];
+};
+
 export type V2EvaluationResponse = {
   symbol: string;
   status: "pending" | "insufficient_samples" | "available";
   minimum_scored_roots: number;
   cohorts: Record<"prospective" | "historical_research" | "unknown", V2EvaluationCohort>;
+  model_cohorts?: V2ModelEvaluationCohort[];
+  model_cohort_selection_rule?: string;
 };
 
 export type V2Workspace = {
@@ -401,9 +533,9 @@ export type V2Workspace = {
   status: "empty" | "available";
   current_root: { id: string; target_contract: Record<string, unknown> } | null;
   current_version: Pick<V2Version,
-    "id" | "version_no" | "decision_at" | "market_cutoff_at" | "model_status" | "baseline_probabilities" | "joint_probabilities"
+    "id" | "version_no" | "decision_at" | "market_cutoff_at" | "model_status" | "baseline_probabilities" | "joint_probabilities" | "decision_probabilities" | "research_brief"
   > | null;
   pending_job_count: number;
-  joint_model_status: "unavailable" | "research_only" | "experimental_joint";
+  joint_model_status: "unavailable" | "research_only" | "experimental_joint" | "experimental_jev";
   monitor_status: "not_recorded";
 };

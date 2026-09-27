@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from urllib.parse import quote
+import re
+import unicodedata
+
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import inspect
 from sqlalchemy.orm import Session
@@ -14,7 +18,9 @@ from .material_analysis import (
     MaterialAnalysisError,
     analysis_history,
     get_job,
+    get_material_download,
     get_material_analysis,
+    get_material_original,
     list_materials,
     request_material_analysis,
 )
@@ -97,3 +103,27 @@ def material_analysis_detail(analysis_id: UUID, db: Session = Depends(_db)):
     if result is None:
         raise HTTPException(status_code=404, detail="material analysis not found")
     return result
+
+
+@router.get("/v3/materials/{source_type}/{source_id}/original")
+def material_original(source_type: str, source_id: UUID, db: Session = Depends(_db)):
+    try:
+        return get_material_original(db=db, source_type=source_type, source_id=source_id)
+    except MaterialAnalysisError as exc:
+        raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc
+
+
+@router.get("/v3/materials/{source_type}/{source_id}/download")
+def material_download(source_type: str, source_id: UUID, db: Session = Depends(_db)):
+    try:
+        content, media_type, filename = get_material_download(db=db, source_type=source_type, source_id=source_id)
+    except MaterialAnalysisError as exc:
+        raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc
+    safe_filename = "".join("_" if unicodedata.category(char) == "Cc" or char in "\\/" else char for char in filename)
+    safe_filename = safe_filename.replace('"', "_").strip() or "material"
+    safe_ascii_name = re.sub(r'[^A-Za-z0-9._ -]', "_", safe_filename).replace('"', "_") or "material"
+    disposition = f'attachment; filename="{safe_ascii_name}"; filename*=UTF-8\'\'{quote(safe_filename, safe="")}'
+    return Response(content=content, media_type=media_type, headers={
+        "Content-Disposition": disposition,
+        "X-Content-Type-Options": "nosniff",
+    })

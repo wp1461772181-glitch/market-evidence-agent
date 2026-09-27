@@ -39,13 +39,13 @@ def material_tables(disposable_database):
 _CREATED_SOURCES = []
 
 
-def _upload(symbol="AAPL", title="API material"):
-    content = f"Material for {title}".encode()
+def _upload(symbol="AAPL", title="API material", filename="source.txt", raw_content=None):
+    content = f"Material for {title}".encode() if raw_content is None else raw_content
     with SessionLocal() as db:
         row = UploadedEvidence(
             symbol=symbol, title=title, source_url="https://example.test/material",
             published_at=datetime(2026, 9, 10, tzinfo=UTC), observed_at=datetime(2026, 9, 10, 1, tzinfo=UTC),
-            credibility_stars=3, credibility_reason="fixture", impact_severity="low", filename="source.txt",
+            credibility_stars=3, credibility_reason="fixture", impact_severity="low", filename=filename,
             content_sha256=hashlib.sha256(content).hexdigest(), raw_content=content,
             content_text=content.decode(), status="unconfirmed",
         )
@@ -114,6 +114,69 @@ def test_api_returns_actionable_blocked_status_for_sec_listing_without_text(clie
     assert response.json()["analysis_id"] is None
     status_response = client.get(f"/v3/material-analysis-jobs/{response.json()['job_id']}")
     assert status_response.json()["safe_error_code"] == "no_content"
+
+
+def test_original_and_download_use_saved_material_id_and_never_require_a_path(client):
+    source_id = _upload(title="Résumé original")
+    original = client.get(f"/v3/materials/uploaded_media/{source_id}/original")
+    assert original.status_code == 200
+    body = original.json()
+    assert body["content_text"] == "Material for Résumé original"
+    assert body["can_download"] is True
+    assert body["document_name"] == "source.txt"
+
+    downloaded = client.get(f"/v3/materials/uploaded_media/{source_id}/download")
+    assert downloaded.status_code == 200
+    assert downloaded.content == b"Material for R\xc3\xa9sum\xc3\xa9 original"
+    assert downloaded.headers["content-type"].startswith("text/plain")
+    assert "filename*=UTF-8''source.txt" in downloaded.headers["content-disposition"]
+
+    unknown = client.get(f"/v3/materials/uploaded_media/{uuid4()}/download")
+    assert unknown.status_code == 404
+    unsupported = client.get(f"/v3/materials/official_filing/{source_id}/download")
+    assert unsupported.status_code == 404
+
+
+def test_download_sanitizes_untrusted_filename_and_blocks_sniffing(client):
+    source_id = _upload(title="Control filename", filename='bad\r\nX-Injected: yes\\folder".txt')
+    response = client.get(f"/v3/materials/uploaded_media/{source_id}/download")
+    assert response.status_code == 200
+    assert "\r" not in response.headers["content-disposition"]
+    assert "\n" not in response.headers["content-disposition"]
+    assert "X-Injected" not in response.headers
+    assert "filename*=UTF-8''" in response.headers["content-disposition"]
+    assert "%0D%0A" not in response.headers["content-disposition"]
+    assert response.headers["x-content-type-options"] == "nosniff"
+
+
+def test_download_without_retained_bytes_returns_actionable_404(client):
+    source_id = _upload(title="Text only", filename="old.txt", raw_content=b"")
+    response = client.get(f"/v3/materials/uploaded_media/{source_id}/download")
+    assert response.status_code == 404
+    assert response.json()["detail"]["code"] == "original_unavailable"
+
+
+def test_sec_original_get_explains_directory_only_without_fetching(client):
+    with SessionLocal() as db:
+        filing = SecFilingInventory(
+            symbol="AAPL", cik="0000320193", accession_number=f"0000320193-26-{uuid4().int % 1_000_000:06d}",
+            form="10-Q", filed_at=datetime(2026, 9, 10, tzinfo=UTC).date(), accepted_at="2026-09-10T12:00:00Z",
+            primary_document="q.htm", source_url="https://www.sec.gov/example/no-text.htm", source="sec-edgar",
+            review_status="pending_review", human_review_note=None, reviewed_at=None,
+            observed_at=datetime(2026, 9, 10, tzinfo=UTC), content_status="not_fetched", content_observed_at=None,
+            content_excerpt=None, content_excerpt_sha256=None, content_truncated=False, content_error=None,
+        )
+        db.add(filing)
+        db.commit()
+        _CREATED_SOURCES.append(("official_filing", filing.id))
+        filing_id = filing.id
+    response = client.get(f"/v3/materials/official_filing/{filing_id}/original")
+    assert response.status_code == 200
+    assert response.json()["content_text"] is None
+    assert response.json()["can_fetch"] is True
+    with SessionLocal() as db:
+        saved = db.get(SecFilingInventory, filing_id)
+        assert saved.content_status == "not_fetched"
 
 
 def test_material_routes_report_required_migration_without_mutating_startup(client):

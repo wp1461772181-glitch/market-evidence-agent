@@ -31,6 +31,12 @@ from .market_data_ingestion import _content_hash, ingest_market_data
 from .models import MarketPrice, MarketPriceRevision
 
 _CLASSES = ("bearish", "neutral", "bullish")
+# Proper log loss is unbounded when the realized class receives probability 0.
+# Jev's contract permits zero, so apply the standard explicit lower floor only
+# for log-loss calculation; Brier and the archived forecast probabilities stay
+# untouched. This is small enough not to affect ordinary finite probabilities.
+JEV_LOG_LOSS_EPSILON = 1e-15
+JEV_PROBABILITY_SUM_TOLERANCE = 1e-6
 
 
 @dataclass(frozen=True)
@@ -90,6 +96,7 @@ class _MarketProvider(Protocol):
 def run_evaluation_batch(
     *,
     db: Session,
+    symbol: str | None = None,
     evaluated_at: datetime | None = None,
     market_provider_factory: Callable[[], _MarketProvider] = YahooFinanceProvider,
     market_ingester: Callable[..., object] = ingest_market_data,
@@ -108,7 +115,13 @@ def run_evaluation_batch(
     # actual receipt time of each safe target refresh.
     strict_cutoff = evaluated_at is not None
     instant = _utc(evaluated_at, name="evaluated_at") if strict_cutoff else _utc(received_clock(), name="evaluated_at")
-    versions = list(db.scalars(select(ForecastVersionV2).order_by(ForecastVersionV2.created_at, ForecastVersionV2.id)))
+    versions_query = select(ForecastVersionV2)
+    if symbol is not None:
+        normalized_symbol = symbol.strip().upper()
+        if not normalized_symbol:
+            raise ValueError("symbol filter must not be empty")
+        versions_query = versions_query.where(ForecastVersionV2.symbol == normalized_symbol)
+    versions = list(db.scalars(versions_query.order_by(ForecastVersionV2.created_at, ForecastVersionV2.id)))
     counts = {"inserted": 0, "unchanged": 0, "pending": 0, "succeeded": 0, "blocked_price": 0, "failed": 0}
     refreshed = _refresh_mature_yahoo_targets(
         db=db,
@@ -576,10 +589,13 @@ def _scores_for(
     """Return scores only when this version has a scoreable probability vector."""
 
     probabilities: dict[str, Any] | None
+    is_jev = version.model_status == "experimental_jev"
     if version.model_status == "experimental_joint":
         probabilities = version.joint_probabilities
     elif version.model_status == "baseline_only":
         probabilities = version.baseline_probabilities
+    elif is_jev:
+        probabilities = version.decision_probabilities
     else:
         # ``research_only`` is intentionally a conclusion/evidence artifact,
         # not a calibrated numerical forecast.  Persist the outcome, but never
@@ -588,24 +604,59 @@ def _scores_for(
 
     if probabilities is None:
         raise ValueError("scoreable model status has no probability vector")
-    values = _validated_probabilities(probabilities)
+    if is_jev:
+        _validate_jev_cohort_metadata(version)
+        values = _validated_probabilities(
+            probabilities,
+            allow_zero=True,
+            sum_tolerance=JEV_PROBABILITY_SUM_TOLERANCE,
+        )
+    else:
+        values = _validated_probabilities(probabilities)
     actual_index = _CLASSES.index(actual_label)
     brier = sum((value - (1.0 if index == actual_index else 0.0)) ** 2 for index, value in enumerate(values))
     probability_of_actual = values[actual_index]
-    log_loss = -math.log(probability_of_actual)
+    if is_jev:
+        log_loss = -math.log(max(probability_of_actual, JEV_LOG_LOSS_EPSILON))
+    else:
+        log_loss = -math.log(probability_of_actual)
     predicted = _CLASSES[max(range(len(values)), key=lambda index: values[index])]
     return brier, log_loss, predicted == actual_label
 
 
-def _validated_probabilities(value: dict[str, Any]) -> tuple[float, float, float]:
-    if set(value) != set(_CLASSES):
+def _validated_probabilities(
+    value: dict[str, Any], *, allow_zero: bool = False, sum_tolerance: float = 1e-9
+) -> tuple[float, float, float]:
+    if not isinstance(value, dict) or set(value) != set(_CLASSES):
         raise ValueError("probability vector must contain bearish, neutral, and bullish")
-    values = tuple(float(value[label]) for label in _CLASSES)
-    if any(not math.isfinite(item) or item <= 0.0 or item > 1.0 for item in values):
-        raise ValueError("probability vector must contain finite values in (0, 1]")
-    if not math.isclose(sum(values), 1.0, rel_tol=0.0, abs_tol=1e-9):
+    raw_values = tuple(value[label] for label in _CLASSES)
+    if any(isinstance(item, bool) or not isinstance(item, (int, float)) for item in raw_values):
+        raise ValueError("probability vector values must be numeric, not booleans or strings")
+    values = tuple(float(item) for item in raw_values)
+    lower_bound_ok = (lambda item: item >= 0.0) if allow_zero else (lambda item: item > 0.0)
+    if any(not math.isfinite(item) or not lower_bound_ok(item) or item > 1.0 for item in values):
+        interval = "[0, 1]" if allow_zero else "(0, 1]"
+        raise ValueError(f"probability vector must contain finite values in {interval}")
+    if not math.isclose(sum(values), 1.0, rel_tol=0.0, abs_tol=sum_tolerance):
         raise ValueError("probability vector must sum to 1")
     return values  # type: ignore[return-value]
+
+
+def _validate_jev_cohort_metadata(version: ForecastVersionV2) -> None:
+    """Require frozen labels that keep Jev results in separate cohorts."""
+    manifest = version.model_manifest
+    provider = manifest.get("decision_provider") if isinstance(manifest, dict) else None
+    time_mode = manifest.get("time_mode") if isinstance(manifest, dict) else None
+    if time_mode not in {"observed", "historical_research"}:
+        raise ValueError("experimental_jev is missing a valid time_mode cohort label")
+    if not isinstance(provider, dict):
+        raise ValueError("experimental_jev is missing decision_provider cohort metadata")
+    if provider.get("provider") != "openrouter":
+        raise ValueError("experimental_jev has an invalid decision provider")
+    if not isinstance(provider.get("actual_model"), str) or not provider["actual_model"].strip():
+        raise ValueError("experimental_jev is missing its actual model cohort label")
+    if not isinstance(provider.get("question_version"), str) or not provider["question_version"].strip():
+        raise ValueError("experimental_jev is missing its question version cohort label")
 
 
 def _append_if_changed(

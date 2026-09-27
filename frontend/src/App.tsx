@@ -2,6 +2,8 @@ import { FormEvent, useEffect, useMemo, useRef, useState, type ReactNode } from 
 import { ApiError, createEvidenceRevision, createForecastRun, fetchFilingContent, getDashboard, getEvidenceRevisions, getFilingInventory, getUploadedEvidence, reviewFiling, scanOfficialFilings, uploadEvidence } from "./api";
 import type { Claim, DashboardResponse, EvidenceRevision, FilingContent, FilingInventory, FilingReview, OfficialFiling, PriceCandle, PriceHistory, RefreshReport, Snapshot, UploadedEvidence } from "./types";
 import { V2ForecastWorkspace } from "./V2ForecastWorkspace";
+import { MaterialLibrary } from "./MaterialLibrary";
+import { CandlestickChart, type TargetWindow } from "./CandlestickChart";
 
 type LoadState =
   | { kind: "loading" }
@@ -19,9 +21,9 @@ type FilingFormFilter = "all" | "10-K" | "10-Q" | "8-K";
 type FilingReviewFilter = "all" | "pending" | "accepted" | "rejected";
 type UploadActionState = ActionState;
 type RevisionActionState = ActionState & { revision?: EvidenceRevision };
-type WorkspaceSection = "overview" | "forecast" | "evidence" | "revisions" | "evaluation";
+type WorkspaceSection = "overview" | "forecast" | "evidence" | "materials" | "revisions" | "evaluation";
 const WORKSPACE_SECTION_TITLE: Record<WorkspaceSection, string> = {
-  overview: "研究总览", forecast: "预测工作台", evidence: "证据中心", revisions: "预测修订", evaluation: "离线评估",
+  overview: "研究总览", forecast: "预测工作台", evidence: "证据中心", materials: "材料库", revisions: "预测修订", evaluation: "离线评估",
 };
 
 const INITIAL_FILING_COUNT = 5;
@@ -169,7 +171,8 @@ export function App() {
   }
 
   const shellProps = { input, setInput, submit, activeSection, navigate, symbol: requestedSymbol };
-  if (state.kind === "loading") return <Shell {...shellProps}><Loading symbol={requestedSymbol} /></Shell>;
+  if (activeSection === "materials") return <Shell {...shellProps}><MaterialLibrary key={requestedSymbol} symbol={requestedSymbol} onScan={async () => { await startFilingScan(); setRetryKey((value) => value + 1); }} /></Shell>;
+  if (state.kind === "loading" || ((state.kind === "ready" || state.kind === "empty") && state.data.symbol !== requestedSymbol) || (state.kind === "error" && state.symbol !== requestedSymbol)) return <Shell {...shellProps}><Loading symbol={requestedSymbol} /></Shell>;
   if (state.kind === "error") return <Shell {...shellProps}><ErrorState message={state.message} retry={() => setRetryKey((value) => value + 1)} /></Shell>;
   if (state.kind === "empty") {
     const supported = isSupportedSymbol(requestedSymbol);
@@ -249,14 +252,19 @@ export function App() {
       />}
 
       {activeSection === "forecast" && <section className="workspace-stack">
-        <V2ForecastWorkspace symbol={requestedSymbol} filings={filings.kind === "ready" ? filings.data : null} />
-        <WorkspaceIntro eyebrow="旧档案" title="生成、检查与回放历史预测" description="这是旧版实验性离线模型档案。它和上方 V2 任务流分开保留，不代表联合模型结果。" action={<button className="primary-action" disabled={!supported || forecastAction.kind === "running"} onClick={startForecast}>{forecastAction.kind === "running" ? "正在生成…" : "生成旧版预测"}</button>} />
-        <ActionNotice state={forecastAction} />
-        {!supported && <WorkspaceRestriction />}
-        {recordVersionPicker}
-        <section className="analysis-grid"><ProbabilityPanel snapshot={selected} report={selectedReport} /><MetadataPanel snapshot={selected} report={selectedReport} /></section>
-        <PriceComparisonPanel key={selected.id} history={data.price_history} selected={selected} report={selectedChainReport} />
-        <Timeline snapshots={presentedSnapshots} reports={data.refresh_reports} manualRevisions={manualRevisions} selectedId={selected.id} onSelect={(id) => { setEvidenceOnly(false); setSelectedId(id); }} />
+        <V2ForecastWorkspace symbol={requestedSymbol} filings={filings.kind === "ready" ? filings.data : null} priceHistory={data.price_history} />
+        <details className="legacy-forecast-records">
+          <summary>旧版离线档案 · {data.snapshots.length} 条记录</summary>
+          <div className="workspace-stack">
+            <WorkspaceIntro eyebrow="旧版离线档案" title="生成、检查与回放旧版预测" description="此处只保留旧版实验性离线预测，与上方 V3 固定目标任务分开。旧版概率不代表 V3 结果。" action={<button className="primary-action" disabled={!supported || forecastAction.kind === "running"} onClick={startForecast}>{forecastAction.kind === "running" ? "正在生成…" : "生成旧版预测"}</button>} />
+            <ActionNotice state={forecastAction} />
+            {!supported && <WorkspaceRestriction />}
+            {recordVersionPicker}
+            <section className="analysis-grid"><ProbabilityPanel snapshot={selected} report={selectedReport} /><MetadataPanel snapshot={selected} report={selectedReport} /></section>
+            <PriceComparisonPanel key={selected.id} history={data.price_history} selected={selected} report={selectedChainReport} />
+            <Timeline snapshots={presentedSnapshots} reports={data.refresh_reports} manualRevisions={manualRevisions} selectedId={selected.id} onSelect={(id) => { setEvidenceOnly(false); setSelectedId(id); }} />
+          </div>
+        </details>
       </section>}
 
       {activeSection === "evidence" && <section className="workspace-stack">
@@ -270,7 +278,7 @@ export function App() {
       </section>}
 
       {activeSection === "revisions" && <section className="workspace-stack">
-        <WorkspaceIntro eyebrow="预测修订" title="把新材料关联到历史预测" description="选择已读取的 SEC 文件或已保存媒体材料，再定位到一个主动生成的预测版本。修订会保留原预测，且不会擅自改变模型概率。" />
+        <WorkspaceIntro eyebrow="旧版材料关联" title="把新材料关联到旧版历史预测" description="此页面只处理旧版离线预测的材料关联，不修改新版 Jev 判断。新版 Jev 手动修订请在预测工作台选择 V3 版本与材料。" action={<button className="secondary-action" type="button" onClick={() => navigate("forecast")}>打开新版预测工作台 ↗</button>} />
         <RevisionAutomationNote />
         <EvidenceWorkflowPanel mode="revision" symbol={requestedSymbol} supported={supported} snapshots={data.snapshots} filings={filings} revisions={evidenceRevisions} onRevisionCreated={onRevisionCreated} />
         <section className="revision-review-grid">
@@ -287,7 +295,7 @@ export function App() {
 function WorkspacePageHeader({ symbol, section, snapshotCount, supported }: { symbol: string; section: WorkspaceSection; snapshotCount: number; supported: boolean }) {
   return <header className="workspace-heading">
     <div><p className="eyebrow">{symbol} / {WORKSPACE_SECTION_TITLE[section]}</p><h1 id="workspace-title">{WORKSPACE_SECTION_TITLE[section]}</h1></div>
-    <div className="workspace-context"><span className={`live-dot ${supported ? "" : "muted"}`} aria-hidden="true" /><span>{supported ? "支持主动研究" : "仅可查看存档"}</span><span className="workspace-record-count">{snapshotCount} 个保存版本</span></div>
+    <div className="workspace-context"><span className={`live-dot ${supported ? "" : "muted"}`} aria-hidden="true" /><span>{supported ? "支持主动研究" : "仅可查看存档"}</span><span className="workspace-record-count">{section === "forecast" ? `旧版记录 ${snapshotCount}` : `${snapshotCount} 个保存版本`}</span></div>
   </header>;
 }
 
@@ -303,7 +311,7 @@ function WorkspaceRestriction() {
 }
 
 function RevisionAutomationNote() {
-  return <aside className="revision-automation-note" aria-labelledby="revision-trigger-title"><span className="section-label">修订触发规则</span><div><h2 id="revision-trigger-title">何时建立待核验修订？</h2><p><strong>手动：</strong>选择一份主动生成的历史预测，并绑定预测后公开的已读取 SEC 文件或已保存媒体材料。</p><p><strong>自动：</strong>本机定时任务每小时检查 SEC；发现预测后发布的新官方文件，且距上次预测不超过 72 小时，才会建立待人工核验修订。媒体材料不会自动触发。</p><p className="fine-print">所有修订保留原模型概率，方向结论待人工审核。自动检查需要本机已配置并持续运行定时任务。</p></div></aside>;
+  return <aside className="revision-automation-note" aria-labelledby="revision-trigger-title"><span className="section-label">旧版修订触发规则</span><div><h2 id="revision-trigger-title">何时建立旧版待核验关联？</h2><p><strong>手动：</strong>选择一份旧版主动生成的历史预测，并绑定预测后公开的已读取 SEC 文件或已保存媒体材料。</p><p><strong>自动：</strong>本机定时任务每小时检查 SEC；发现旧版预测后发布的新官方文件，且距上次预测不超过 72 小时，才会建立待人工核验关联。媒体材料不会自动触发。</p><p className="fine-print">此旧版流程保留旧版概率，方向结论待人工审核。新版 Jev 修订请使用预测工作台。</p></div></aside>;
 }
 
 function EmptyWorkspace({ data, section, supported, forecastAction, onForecast, scanAction, onScan, filings, revisions, onNavigate, onOpenStock, onFilingChanged }: {
@@ -321,10 +329,10 @@ function EmptyWorkspace({ data, section, supported, forecastAction, onForecast, 
   onFilingChanged: (filing: OfficialFiling) => void;
 }) {
   if (section === "overview") return <OverviewWorkspace current={data} symbol={data.symbol} revisions={revisions.kind === "ready" ? revisions.items : []} filings={filings} onNavigate={onNavigate} onOpenStock={onOpenStock} onSelectSnapshot={() => undefined} />;
-  if (section === "forecast") return <section className="workspace-stack"><V2ForecastWorkspace symbol={data.symbol} filings={filings.kind === "ready" ? filings.data : null} /><WorkspaceIntro eyebrow="旧档案" title="尚无可回放的旧版预测" description="旧版实验性离线模型档案为空。上方的 V2 任务不会用它的概率作为联合结果。" action={<button className="primary-action" disabled={!supported || forecastAction.kind === "running"} onClick={onForecast}>{forecastAction.kind === "running" ? "正在生成…" : "生成旧版预测"}</button>} /><ActionNotice state={forecastAction} /><EmptyState data={data} /></section>;
+  if (section === "forecast") return <section className="workspace-stack"><V2ForecastWorkspace symbol={data.symbol} filings={filings.kind === "ready" ? filings.data : null} priceHistory={data.price_history} /><details className="legacy-forecast-records"><summary>旧版离线档案 · 0 条记录</summary><div className="workspace-stack"><WorkspaceIntro eyebrow="旧版离线档案" title="尚无可回放的旧版预测" description="此处只报告旧版离线预测档案。上方 V3 任务单独保存，不受这个计数影响。" action={<button className="primary-action" disabled={!supported || forecastAction.kind === "running"} onClick={onForecast}>{forecastAction.kind === "running" ? "正在生成…" : "生成旧版预测"}</button>} /><ActionNotice state={forecastAction} /><LegacyPriceOnlyPanel history={data.price_history} symbol={data.symbol} /></div></details></section>;
   if (section === "evidence") return <section className="workspace-stack"><WorkspaceIntro eyebrow="官方来源" title="SEC 证据中心" description="即使还没有预测版本，也可以先保存媒体材料并建立官方资料目录，为后续研究准备可核验来源。" action={<button className="primary-action" disabled={!supported || scanAction.kind === "running"} onClick={onScan}>{scanAction.kind === "running" ? "正在扫描…" : "扫描官方申报"}</button>} /><ActionNotice state={scanAction} /><section className="evidence-layout"><EvidenceWorkflowPanel mode="upload" symbol={data.symbol} supported={supported} snapshots={[]} filings={filings} revisions={revisions} onRevisionCreated={() => undefined} /><FilingInventoryPanel symbol={data.symbol} state={filings} onInventoryChanged={onFilingChanged} /></section></section>;
   if (section === "evaluation") return <section className="workspace-stack"><WorkspaceIntro eyebrow="模型验证" title="尚无可展示的离线评估" description="此股票目前没有固定的历史评测摘要。评估区不会把缺失预测替换成行情或其他模块内容。" /><EvaluationEmptyState /></section>;
-  return <section className="workspace-stack"><WorkspaceIntro eyebrow="预测修订" title="尚无可修订预测" description="手动修订需要先存在一份主动生成的预测版本。已保存材料会在预测可用后保留为候选来源。" /><RevisionAutomationNote /></section>;
+  return <section className="workspace-stack"><WorkspaceIntro eyebrow="旧版材料关联" title="尚无可修订的旧版预测" description="此页只显示旧版离线预测的材料关联。新版 Jev 手动修订请前往预测工作台；当前没有旧版主动预测可供关联。" action={<button className="secondary-action" type="button" onClick={() => onNavigate("forecast")}>打开新版预测工作台 ↗</button>} /><RevisionAutomationNote /></section>;
 }
 
 type UniverseItem = { dashboard?: DashboardResponse; filingCount?: number; pendingCount?: number; error?: string; loading?: boolean };
@@ -429,7 +437,7 @@ function EvidenceWorkflowPanel({ mode, symbol, supported, snapshots, filings, re
       <div><span className="section-label">{isUpload ? "媒体材料" : "手动修订"}</span><h3 id="evidence-workbench-title">{isUpload ? "保存未获官方证实的来源" : "让新信息关联到具体预测"}</h3></div>
       <span className="tag">{isUpload ? "evidence intake" : "human initiated"}</span>
     </div>
-    <p className="workbench-intro">{isUpload ? "上传媒体消息、行业资料或未获官网确认的信息。星级和影响程度记录你的初步判断，不是官方验证。" : "选择一份具体历史预测与一条新来源，建立待人工核验的修订关联。系统保留原预测；模型概率不会因为这一步被人为改写。"}</p>
+    <p className="workbench-intro">{isUpload ? "上传媒体消息、行业资料或未获官网确认的信息。星级和影响程度记录你的初步判断，不是官方验证。" : "旧版关联流程：选择一份旧版主动预测与新来源建立待人工核验的记录。这一步不会改写旧版概率；新版 Jev 修订请使用预测工作台。"}</p>
     <div className="workbench-grid">
       {isUpload
         ? <UploadEvidencePanel symbol={symbol} supported={supported} uploaded={uploaded} onUpload={handleUpload} />
@@ -766,6 +774,7 @@ function Shell({ input, setInput, submit, activeSection, navigate, symbol, child
     { id: "overview", label: "总览", hint: "研究队列", icon: "◌" },
     { id: "forecast", label: "预测", hint: "版本与价格", icon: "⌁" },
     { id: "evidence", label: "证据", hint: "SEC 与核验", icon: "◇" },
+    { id: "materials", label: "材料库", hint: "AI 分析与原文", icon: "▤" },
     { id: "revisions", label: "预测修订", hint: "材料关联", icon: "↗" },
     { id: "evaluation", label: "评估", hint: "离线表现", icon: "≋" },
   ];
@@ -797,9 +806,12 @@ function Loading({ symbol }: { symbol: string }) {
   return <main className="state-card" aria-live="polite" aria-busy="true"><span className="loading-mark" aria-hidden="true" /><p className="kicker">RETRIEVING ARCHIVE</p><h1>正在读取 {symbol} 的已保存记录</h1><p>只请求本地已存档的版本与评测，不会调用模型或产生费用。</p></main>;
 }
 
-function EmptyState({ data }: { data: DashboardResponse }) {
-  const hasPrices = Boolean(data.price_history?.candles.length);
-  return <main className="state-card"><p className="kicker">NO ARCHIVED FORECAST</p><h1>{data.symbol} 暂无预测存档。</h1><p>{hasPrices ? "没有保存的离线预测、证据或版本链；下面仅展示本地已存的历史行情。" : "输入的代码有效，但目前没有保存的快照或行情；可尝试 AAPL 查看现有示例。"}</p>{hasPrices && <PriceOnlyPanel history={data.price_history!} symbol={data.symbol} />}</main>;
+function LegacyPriceOnlyPanel({ history, symbol }: { history?: PriceHistory | null; symbol: string }) {
+  return <section className="legacy-empty-archive" aria-label="旧版离线预测记录">
+    <p className="section-label">旧版离线预测 · 0 条</p><h3>没有可回放的旧版预测记录</h3>
+    <p>此状态只表示旧版离线档案为空；V3 预测任务与固定目标请看上方预测工作台。</p>
+    {history?.candles.length ? <PriceOnlyPanel history={history} symbol={symbol} /> : <p>本地也没有可展示的历史行情。</p>}
+  </section>;
 }
 
 function ErrorState({ message, retry }: { message: string; retry: () => void }) {
@@ -903,76 +915,12 @@ function PriceOnlyPanel({ history, symbol }: { history: PriceHistory; symbol: st
   const active = candles.find((candle) => candle.trading_date === activeDate) ?? candles.at(-1)!;
   return <section className="price-panel price-only-panel" aria-labelledby="price-title">
     <div className="price-panel-heading"><div><span className="section-label">已存行情</span><h2 id="price-title">{symbol} 的历史蜡烛图</h2></div><span className="tag">{history.source}</span></div>
-    <p className="price-intro">当前没有预测存档，因此没有版本截止线、目标窗口或预测对比。可悬停或聚焦蜡烛查看当天 OHLC。</p>
+    <p className="price-intro">这是旧版档案下的历史行情视图，不含新版 V3 预测判断，也不提供旧版记录截止线或目标对比。可悬停或聚焦蜡烛查看当天 OHLC。</p>
     <CandlestickChart candles={candles} activeDate={active.trading_date} onInspect={setActiveDate} />
     <div className="candle-detail" aria-live="polite"><strong>{active.trading_date}</strong><span>开 {formatPrice(active.open)} · 高 {formatPrice(active.high)} · 低 {formatPrice(active.low)} · 收 {formatPrice(active.close)}</span>{active.benchmark_close !== null && active.benchmark_close !== undefined && <span>SPY 收 {formatPrice(active.benchmark_close)}</span>}</div>
     <div className="price-summary price-only-summary"><div><span>行情截至</span><strong>{history.latest_trading_date ?? candles.at(-1)!.trading_date}</strong></div><div><span>最新收盘</span><strong>{formatPrice(candles.at(-1)!.close)}</strong><small>{symbol}</small></div><div><span>同期 SPY 收盘</span><strong>{candles.at(-1)!.benchmark_close === null || candles.at(-1)!.benchmark_close === undefined ? "—" : formatPrice(candles.at(-1)!.benchmark_close!)}</strong><small>基准</small></div></div>
   </section>;
 }
-
-function CandlestickChart({ candles, selected, report, target, activeDate, onInspect }: { candles: PriceCandle[]; selected?: Snapshot; report?: RefreshReport; target?: TargetWindow; activeDate: string; onInspect: (date: string) => void }) {
-  const width = 1000;
-  const height = 320;
-  const margin = { top: 22, right: 58, bottom: 34, left: 8 };
-  const plotWidth = width - margin.left - margin.right;
-  const plotHeight = height - margin.top - margin.bottom;
-  const low = Math.min(...candles.map((candle) => candle.low));
-  const high = Math.max(...candles.map((candle) => candle.high));
-  const padding = Math.max((high - low) * 0.08, 0.5);
-  const min = low - padding;
-  const max = high + padding;
-  const originalDate = report?.original_snapshot.feature_trading_date;
-  const revisedDate = report?.revised_snapshot.feature_trading_date;
-  const markerIndex = (date: string | undefined) => date ? candles.findIndex((candle) => candle.trading_date === date) : -1;
-  const targetStart = markerIndex(target?.start);
-  const targetEnd = markerIndex(target?.end);
-  const futureTargetSlots = target && targetStart < 0 && target.start > candles.at(-1)!.trading_date ? 20 : 0;
-  const slotCount = candles.length + futureTargetSlots;
-  const x = (index: number) => margin.left + ((index + 0.5) / slotCount) * plotWidth;
-  const y = (value: number) => margin.top + ((max - value) / (max - min)) * plotHeight;
-  const bodyWidth = Math.max(2, Math.min(10, (plotWidth / slotCount) * 0.58));
-  const originalIndex = markerIndex(originalDate);
-  const revisedIndex = report ? markerIndex(revisedDate) : -1;
-  const cutoffIndex = report ? -1 : markerIndex(selected?.feature_trading_date);
-  const actualStart = targetEnd >= 0 ? targetEnd + 1 : -1;
-  const ticks = [max, (max + min) / 2, min];
-  const dateTicks = [0, Math.floor((candles.length - 1) / 2), candles.length - 1];
-
-  return <figure className="candlestick-figure">
-    <svg className="candlestick-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-labelledby="candle-chart-title candle-chart-description">
-      <title id="candle-chart-title">{selected?.symbol ?? "股票"} 历史日线蜡烛图</title>
-      <desc id="candle-chart-description">使用鼠标停留或键盘聚焦蜡烛图中的日线，读取当天开盘、最高、最低和收盘价格。{target ? "阴影区域是保存的 20 个交易日滚动目标窗口。" : "当前版本没有保存的滚动目标窗口。"}</desc>
-      {ticks.map((tick) => <g key={tick}><line x1={margin.left} x2={width - margin.right} y1={y(tick)} y2={y(tick)} className="chart-grid" /><text x={width - margin.right + 9} y={y(tick) + 4} className="chart-price-label">{formatPrice(tick)}</text></g>)}
-      {targetStart >= 0 && targetEnd >= targetStart && <g className="target-window"><rect x={x(targetStart) - bodyWidth} y={margin.top} width={x(targetEnd) - x(targetStart) + bodyWidth * 2} height={plotHeight} /><text x={x(targetStart) + 5} y={margin.top + 14}>20-session target</text></g>}
-      {futureTargetSlots > 0 && <g className="target-window target-window-future"><rect x={x(candles.length - 1) + bodyWidth} y={margin.top} width={width - margin.right - (x(candles.length - 1) + bodyWidth)} height={plotHeight} /><text x={x(candles.length - 1) + bodyWidth + 5} y={margin.top + 14}>20-session target / awaiting results</text></g>}
-      {actualStart >= 0 && actualStart < candles.length && <g className="actual-region"><line x1={x(actualStart) - bodyWidth} x2={x(actualStart) - bodyWidth} y1={margin.top} y2={margin.top + plotHeight} /><text x={x(actualStart) + 5} y={height - margin.bottom - 8}>目标后实际行情</text></g>}
-      {candles.map((candle, index) => {
-        const up = candle.close >= candle.open;
-        const bodyY = y(Math.max(candle.open, candle.close));
-        const bodyHeight = Math.max(1.5, Math.abs(y(candle.open) - y(candle.close)));
-        const afterTarget = actualStart >= 0 && index >= actualStart;
-        return <g
-          key={candle.trading_date}
-          className={`candle ${up ? "is-up" : "is-down"} ${afterTarget ? "is-actual" : ""} ${activeDate === candle.trading_date ? "is-active" : ""}`}
-          tabIndex={0}
-          role="img"
-          aria-label={candleLabel(candle)}
-          onFocus={() => onInspect(candle.trading_date)}
-          onMouseEnter={() => onInspect(candle.trading_date)}
-        >
-          <title>{candleLabel(candle)}</title><line x1={x(index)} x2={x(index)} y1={y(candle.high)} y2={y(candle.low)} /><rect x={x(index) - bodyWidth / 2} y={bodyY} width={bodyWidth} height={bodyHeight} />
-        </g>;
-      })}
-      {originalIndex >= 0 && <Marker x={x(originalIndex)} label="原始截止" />}
-      {revisedIndex >= 0 && revisedIndex !== originalIndex && <Marker x={x(revisedIndex)} label="修订截止" tone="revised" />}
-      {cutoffIndex >= 0 && <Marker x={x(cutoffIndex)} label="版本截止" />}
-      {dateTicks.map((index) => <text key={index} x={x(index)} y={height - 10} textAnchor="middle" className="chart-date-label">{shortDate(candles[index]!.trading_date)}</text>)}
-    </svg>
-    <figcaption><span><i className="legend-up" />收高于开</span><span><i className="legend-down" />收低于开</span>{target && <span><i className="legend-window" />保存的目标窗口</span>}</figcaption>
-  </figure>;
-}
-
-function Marker({ x, label, tone }: { x: number; label: string; tone?: "revised" }) { return <g className={`snapshot-marker ${tone ?? ""}`}><line x1={x} x2={x} y1={19} y2={287} /><text x={x + 5} y={18}>{label}</text></g>; }
 
 function EvidencePanel({ report, manualRevision, selected }: { report?: RefreshReport; manualRevision?: EvidenceRevision; selected: Snapshot }) {
   if (manualRevision) {
@@ -1055,7 +1003,7 @@ function SafeLink({ href, children }: { href: string; children: ReactNode }) { r
 function isSupportedSymbol(symbol: string): symbol is SupportedSymbol { return (SUPPORTED_SYMBOLS as readonly string[]).includes(symbol); }
 function sectionFromHash(): WorkspaceSection {
   const value = window.location.hash.replace(/^#/, "");
-  return (["overview", "forecast", "evidence", "revisions", "evaluation"] as const).includes(value as WorkspaceSection)
+  return (["overview", "forecast", "evidence", "materials", "revisions", "evaluation"] as const).includes(value as WorkspaceSection)
     ? value as WorkspaceSection
     : "overview";
 }
@@ -1112,7 +1060,6 @@ function isUsableCandle(value: PriceCandle) {
   return Boolean(value.trading_date) && [value.open, value.high, value.low, value.close].every((number) => Number.isFinite(number) && number > 0)
     && value.high >= Math.max(value.open, value.close) && value.low <= Math.min(value.open, value.close);
 }
-type TargetWindow = { start: string; end: string };
 function targetWindowForSnapshot(report: RefreshReport | undefined, selected: Snapshot): TargetWindow | undefined {
   if (!report) return selected.target_window ?? undefined;
   return report.original_snapshot.id === selected.id ? report.target_windows.original : report.target_windows.revised;

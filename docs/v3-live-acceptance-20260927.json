@@ -1,0 +1,133 @@
+{
+  "date": "2026-09-27",
+  "scope": "One existing public MSFT filing; real material analysis in developer DB; real brief and Jev forecast in disposable acceptance DB.",
+  "source_url": "https://www.sec.gov/Archives/edgar/data/789019/000119312525311196/d34077d8k.htm",
+  "material_analysis": {
+    "analysis_id": "79dd20d9-25c3-4083-a2fe-fb7e32825a66",
+    "source_id": "4eba892c-bac1-41e9-9800-b6433e9379e9",
+    "actual_model": "deepseek-flash",
+    "usage": {
+      "total_tokens": 5850,
+      "prompt_tokens": 2667,
+      "completion_tokens": 3183,
+      "prompt_tokens_details": {
+        "audio_tokens": null,
+        "cached_tokens": 2432
+      },
+      "prompt_cache_hit_tokens": 2432,
+      "prompt_cache_miss_tokens": 235,
+      "completion_tokens_details": null
+    },
+    "exact_quotes": 40,
+    "cache_hit": true,
+    "version_no": 1
+  },
+  "material_first_attempt": {
+    "status": "failed",
+    "safe_error_code": "invalid_model_output",
+    "raw_response_retained": false
+  },
+  "chain_calls": {
+    "deepseek_brief": 1,
+    "jev": 1,
+    "new_material_analysis": 0
+  },
+  "brief_provider": {
+    "actual_model": "deepseek-flash",
+    "usage": {
+      "completion_tokens": 2370,
+      "prompt_tokens": 5508,
+      "total_tokens": 7878,
+      "completion_tokens_details": null,
+      "prompt_tokens_details": {
+        "audio_tokens": null,
+        "cached_tokens": 0
+      },
+      "prompt_cache_hit_tokens": 0,
+      "prompt_cache_miss_tokens": 5508
+    },
+    "elapsed_seconds": 7.28
+  },
+  "forecast": {
+    "id": "36251736-e7be-44f6-a414-835bbdbc1184",
+    "symbol": "MSFT",
+    "model_status": "experimental_jev",
+    "decision_at": "2026-09-27 06:06:43.296216+00:00",
+    "market_cutoff_at": "2026-09-27 06:06:43.261862+00:00",
+    "target_contract": {
+      "threshold": 0.02,
+      "price_hash": "325938319a9d38b6853ce465720f9aa560922063cccb92c0744d2352e0b82628",
+      "anchor_date": "2026-09-25",
+      "price_basis": "provider_quote_close_v1",
+      "anchor_close": 516.1699829101562,
+      "price_source": "yahoo-finance-chart",
+      "calendar_name": "XNYS",
+      "price_version": "observed-yahoo-ingestion-v1",
+      "target_end_date": "2026-10-23",
+      "calendar_version": "exchange-calendars-xnys-v1",
+      "horizon_sessions": 20,
+      "price_basis_check": {
+        "warnings": [],
+        "price_basis": "provider_quote_close_v1",
+        "verification_notes": [
+          "daily_price_close=indicators.quote.close",
+          "indicators.adjclose was inspected but not used as DailyPrice.close",
+          "adjusted-close values differed from quote close for this response",
+          "corporate-action response included an events object"
+        ],
+        "adjusted_close_present": true,
+        "provider_behavior_verified": true
+      },
+      "target_spec_version": "absolute-close-v1"
+    },
+    "decision_probabilities": {
+      "bearish": 0.01,
+      "bullish": 0.38,
+      "neutral": 0.61
+    },
+    "baseline_probabilities": null,
+    "joint_probabilities": null,
+    "model_manifest": {
+      "time_mode": "observed",
+      "model_status": "experimental_jev",
+      "decision_mode": "jev",
+      "decision_provider": {
+        "usage": {
+          "cost": 0.000194586,
+          "input_tokens": 4633,
+          "output_tokens": 41
+        },
+        "choice": "neutral",
+        "provider": "openrouter",
+        "confidence": 0.42,
+        "latency_ms": 711,
+        "request_id": "gen-dec-1790489210-5q6xD0xIM3cc8pNtTx0B",
+        "actual_model": "typesafe/jev-1.13-20260917",
+        "input_sha256": "98f77468dd324b80a1d994466576e3f612b91b63f755b385f4de366d33bd4347",
+        "requested_model": "typesafe/jev-1.13",
+        "question_version": "jev-direction-v1"
+      },
+      "processor_version": "agent-forecast-processor-v1",
+      "material_analysis_ids": [
+        "79dd20d9-25c3-4083-a2fe-fb7e32825a66"
+      ],
+      "research_brief_sha256": "98f77468dd324b80a1d994466576e3f612b91b63f755b385f4de366d33bd4347",
+      "research_brief_schema_version": "research-brief-v1"
+    }
+  },
+  "input_quality": {
+    "status": "limited",
+    "reasons": [
+      "At least one selected material has limited text coverage."
+    ]
+  },
+  "worker_status": "succeeded",
+  "persisted_verified": true,
+  "limitations": [
+    "No real media material included in this trial.",
+    "Automatic revisions exercised with injected providers, not a newly arrived live SEC announcement.",
+    "No mature Jev outcome or stock-probability calibration established.",
+    "Exact quote validation does not establish semantic correctness of AI claims; source review remains pending.",
+    "Isolated forecast ID is an acceptance artifact and is not a developer-DB forecast."
+  ]
+}

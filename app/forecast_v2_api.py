@@ -19,6 +19,8 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from .database import SessionLocal
+from .evidence_context import EvidenceContextError, freeze_evidence_context
+from .forecast_evaluation_v2 import JEV_LOG_LOSS_EPSILON
 from .forecast_jobs import ForecastJobError, enqueue_job
 from .forecast_v2_models import ForecastEvaluationV2, ForecastJobV2, ForecastVersionV2, OfficialMonitorRunV2
 from .market_time import xnys_session_close_at
@@ -122,8 +124,15 @@ def create_v2_manual_revision_job(
             refs=refs,
             symbol=parent.symbol,
             decision_at=now,
-            newer_than=parent.decision_at,
         )
+        if refs:
+            _validate_manual_revision_sources(
+                db=db,
+                parent=parent,
+                refs=refs,
+                decision_at=now,
+                idempotency_key=idempotency_key,
+            )
         job = enqueue_job(
             db=db,
             symbol=parent.symbol,
@@ -331,7 +340,6 @@ def _validate_source_refs(
     refs: list[dict[str, str]],
     symbol: str,
     decision_at: datetime,
-    newer_than: datetime | None = None,
 ) -> None:
     if len({(item["source_type"], item["source_id"]) for item in refs}) != len(refs):
         raise V2RequestError("source_refs must not repeat a source")
@@ -354,8 +362,95 @@ def _validate_source_refs(
             raise V2RequestError("source does not belong to the forecast symbol")
         if public_at > decision_at or observed_at > decision_at:
             raise V2RequestError("source is not available at this decision time")
-        if newer_than is not None and public_at <= _utc(newer_than):
-            raise V2RequestError("manual revision source must be published after the selected forecast")
+
+
+def _validate_manual_revision_sources(
+    *,
+    parent: ForecastVersionV2,
+    refs: list[dict[str, str]],
+    decision_at: datetime,
+    idempotency_key: str,
+    db: Session,
+) -> None:
+    """Freeze selected sources against the parent and reject unchanged repeats.
+
+    Publication time alone cannot tell whether an older document was newly
+    observed or whether its review/rating state changed after the parent. Reuse
+    the same point-in-time evidence freezer as the worker, then admit only
+    states it identifies as new; old documents absent from the parent must also
+    have become public or observed since that decision.
+    """
+    prior_jobs = list(db.scalars(
+        select(ForecastJobV2).where(
+            ForecastJobV2.kind == "manual_revision",
+            ForecastJobV2.root_version_id == parent.root_id,
+            ForecastJobV2.parent_version_id == parent.id,
+        )
+    ))
+    matching_refs = [job for job in prior_jobs if job.source_refs == refs]
+    # An in-flight request owns this exact source selection until it resolves.
+    # Completed requests are checked below against their published frozen state.
+    if any(job.idempotency_key != idempotency_key and job.status in {"queued", "running"} for job in matching_refs):
+        raise V2RequestError("manual revision with this unchanged source snapshot is already queued; wait for it to finish")
+    manifest = parent.evidence_version_manifest if isinstance(parent.evidence_version_manifest, list) else []
+    previous_ids: list[UUID] = []
+    previous_sources: set[tuple[str, str]] = set()
+    for item in manifest:
+        if not isinstance(item, dict):
+            continue
+        source_type = item.get("source_type")
+        source_id = item.get("source_id")
+        if isinstance(source_type, str) and isinstance(source_id, str):
+            previous_sources.add((source_type, source_id))
+        event_id = item.get("event_version_id") or item.get("id")
+        try:
+            previous_ids.append(UUID(str(event_id)))
+        except (TypeError, ValueError):
+            continue
+    try:
+        context = freeze_evidence_context(
+            db=db,
+            symbol=parent.symbol,
+            decision_at=decision_at,
+            mode="observed",
+            source_refs=refs,
+            previous_event_ids=previous_ids,
+            previous_decision_at=parent.decision_at,
+        )
+    except EvidenceContextError as exc:
+        raise V2RequestError(f"revision source snapshot is invalid: {exc}") from exc
+    events = {(event.source_type, str(event.source_id)): event for event in context.events}
+    parent_cutoff = _utc(parent.decision_at)
+    for ref in refs:
+        key = (ref["source_type"], ref["source_id"])
+        event = events.get(key)
+        if event is None or not event.is_new:
+            raise V2RequestError("manual revision source is unchanged from the selected forecast")
+        if key not in previous_sources and event.published_at <= parent_cutoff and event.observed_at <= parent_cutoff:
+            raise V2RequestError("manual revision source was not newly available after the selected forecast")
+
+    current_event_ids = {key: str(event.id) for key, event in events.items()}
+    for existing in matching_refs:
+        # Let enqueue_job preserve ordinary same-key replay/conflict behavior.
+        if existing.idempotency_key == idempotency_key or existing.status not in {"succeeded", "succeeded_no_change"}:
+            continue
+        if existing.result_version_id is None:
+            continue
+        result_version = db.get(ForecastVersionV2, existing.result_version_id)
+        if result_version is None or not isinstance(result_version.evidence_version_manifest, list):
+            continue
+        frozen_event_ids = {}
+        for item in result_version.evidence_version_manifest:
+            if not isinstance(item, dict):
+                continue
+            source_type, source_id = item.get("source_type"), item.get("source_id")
+            event_id = item.get("event_version_id") or item.get("id")
+            if isinstance(source_type, str) and isinstance(source_id, str) and event_id is not None:
+                frozen_event_ids[(source_type, source_id)] = str(event_id)
+        if all(frozen_event_ids.get((ref["source_type"], ref["source_id"])) == current_event_ids.get(
+            (ref["source_type"], ref["source_id"])
+        ) for ref in refs):
+            raise V2RequestError("manual revision source snapshot is unchanged from the previous result")
 
 
 def _filing_public_at(source: SecFilingInventory) -> datetime:
@@ -422,6 +517,8 @@ def _version_payload(version: ForecastVersionV2) -> dict[str, Any]:
         "feature_snapshot": version.feature_snapshot,
         "baseline_probabilities": version.baseline_probabilities,
         "joint_probabilities": version.joint_probabilities,
+        "decision_probabilities": version.decision_probabilities,
+        "research_brief": version.research_brief,
         "model_status": version.model_status,
         "model_manifest": version.model_manifest,
         "research_report": version.research_report,
@@ -440,6 +537,7 @@ def _timeline_entry(version: ForecastVersionV2) -> dict[str, Any]:
         "market_cutoff_at": version.market_cutoff_at,
         "baseline_probabilities": version.baseline_probabilities,
         "joint_probabilities": version.joint_probabilities,
+        "decision_probabilities": version.decision_probabilities,
         "model_status": version.model_status,
         "change_reason": version.change_reason,
         "trigger_type": version.trigger_type,
@@ -456,6 +554,7 @@ def _workspace_version(version: ForecastVersionV2) -> dict[str, Any]:
         "model_status": version.model_status,
         "baseline_probabilities": version.baseline_probabilities,
         "joint_probabilities": version.joint_probabilities,
+        "decision_probabilities": version.decision_probabilities,
     }
 
 
@@ -504,6 +603,10 @@ def _evaluations_payload(
         name: _evaluation_cohort_payload(name=name, roots=roots)
         for name, roots in roots_by_cohort.items()
     }
+    model_cohorts = _model_evaluation_cohorts(
+        versions=versions,
+        history_by_version=history_by_version,
+    )
     return {
         "symbol": symbol,
         # Only observed-time forecasts are candidates for prospective results.
@@ -511,7 +614,116 @@ def _evaluations_payload(
         "status": cohorts["prospective"]["status"],
         "minimum_scored_roots": MINIMUM_SCORED_ROOTS,
         "cohorts": cohorts,
+        "model_cohorts": model_cohorts,
+        "model_cohort_selection_rule": (
+            "Within each provider/model/question/time-mode cohort, each root contributes at most one sample: "
+            "its highest version_no (then decision_at and id) in that cohort. A pending newest version remains "
+            "pending; an older scored revision is not substituted."
+        ),
     }
+
+
+def _model_evaluation_cohorts(
+    *,
+    versions: list[ForecastVersionV2],
+    history_by_version: dict[UUID, list[ForecastEvaluationV2]],
+) -> list[dict[str, Any]]:
+    """Partition scores by frozen model identity and time mode.
+
+    The legacy ``cohorts`` field remains time-mode-only for existing clients.
+    This additive view prevents joint, baseline, and Jev scores (including
+    different Jev model or question versions) from sharing a denominator.
+    """
+    groups: dict[tuple[str, str, str, str, str], dict[UUID, list[ForecastVersionV2]]] = {}
+    for version in versions:
+        identity = _model_evaluation_identity(version)
+        groups.setdefault(identity, {}).setdefault(version.root_id, []).append(version)
+
+    payloads: list[dict[str, Any]] = []
+    for identity, root_versions in groups.items():
+        time_mode, model_status, provider_name, actual_model, question_version = identity
+        roots: list[dict[str, Any]] = []
+        labelled_roots = 0
+        scored_roots = 0
+        for root_id, candidates in root_versions.items():
+            selected = max(
+                candidates,
+                key=lambda item: (item.version_no, item.decision_at, str(item.id)),
+            )
+            history = history_by_version.get(selected.id, [])
+            root = {
+                "root_id": str(root_id),
+                "target_contract_hash": selected.target_contract_hash,
+                "target_end_date": _target_end_date_or_none(selected),
+                "versions": [
+                    {
+                        "id": str(selected.id),
+                        "version_no": selected.version_no,
+                        "decision_at": selected.decision_at,
+                        "trigger_type": selected.trigger_type,
+                        "model_status": selected.model_status,
+                        "time_mode": time_mode,
+                        "provider": provider_name,
+                        "actual_model": actual_model,
+                        "question_version": question_version or None,
+                        "latest_evaluation": _evaluation_payload(history[0]) if history else None,
+                        "evaluation_history": [_evaluation_payload(item) for item in history],
+                    }
+                ],
+            }
+            roots.append(root)
+            latest = root["versions"][0]["latest_evaluation"]
+            if latest is not None and latest["status"] == "succeeded" and latest["actual_label"] is not None:
+                labelled_roots += 1
+            if _has_numeric_scores(latest):
+                scored_roots += 1
+
+        roots.sort(key=lambda root: (root["versions"][0]["decision_at"], root["root_id"]), reverse=True)
+        status = (
+            "pending" if scored_roots == 0 else
+            "insufficient_samples" if scored_roots < MINIMUM_SCORED_ROOTS else
+            "available"
+        )
+        payloads.append({
+            "time_mode": time_mode,
+            "model_status": model_status,
+            "provider": provider_name,
+            "actual_model": actual_model,
+            "question_version": question_version or None,
+            "log_loss_zero_probability_floor": (
+                JEV_LOG_LOSS_EPSILON if model_status == "experimental_jev" else None
+            ),
+            "status": status,
+            "sample": {
+                "root_denominator": len(root_versions),
+                "labelled_root_count": labelled_roots,
+                "scored_root_count": scored_roots,
+                "unscored_root_count": len(root_versions) - scored_roots,
+            },
+            "roots": roots,
+        })
+    return sorted(
+        payloads,
+        key=lambda item: (
+            item["time_mode"], item["model_status"], item["provider"],
+            item["actual_model"], item["question_version"] or "",
+        ),
+    )
+
+
+def _model_evaluation_identity(version: ForecastVersionV2) -> tuple[str, str, str, str, str]:
+    time_mode = _persisted_time_mode(version)
+    manifest = version.model_manifest if isinstance(version.model_manifest, dict) else {}
+    provider_metadata = manifest.get("decision_provider")
+    if isinstance(provider_metadata, dict):
+        provider = str(provider_metadata.get("provider") or version.model_status)
+        actual_model = str(provider_metadata.get("actual_model") or "unknown")
+        question_version = str(provider_metadata.get("question_version") or "unknown")
+    else:
+        provider = version.model_status
+        actual_model = str(manifest.get("actual_model") or manifest.get("model_version") or version.model_status)
+        question_version = ""
+    return time_mode, version.model_status, provider, actual_model, question_version
 
 
 def _evaluation_cohort_payload(*, name: str, roots: dict[UUID, dict[str, Any]]) -> dict[str, Any]:

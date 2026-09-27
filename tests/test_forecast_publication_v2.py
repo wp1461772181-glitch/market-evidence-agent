@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from uuid import uuid4
 
@@ -53,6 +54,79 @@ def _claim(db, *, kind, symbol="AAPL", root=None, parent=None):
     claimed = claim_next_job(db=db, worker_id="test-worker", job_id=job.id)
     assert claimed is not None
     return claimed
+
+
+def _jev_brief(*, target, decision_at, market_cutoff_at):
+    return {
+        "schema_version": "research-brief-v1", "symbol": "MSFT", "decision_at": decision_at.isoformat(),
+        "target_contract": target,
+        "market_summary": {"symbol": "MSFT", "as_of": market_cutoff_at.isoformat(), "latest_close": 100.0},
+        "material_refs": [{
+            "analysis_id": "analysis-1", "evidence_version_id": "evidence-1", "source_type": "uploaded_media",
+            "source_id": "source-1", "symbol": "MSFT", "title": "Results", "source_url": None,
+            "published_at": (decision_at - timedelta(days=2)).isoformat(),
+            "observed_at": (decision_at - timedelta(hours=1)).isoformat(),
+            "content_sha256": "c" * 64, "analysis_text_sha256": "d" * 64, "review_status": "accepted",
+            "user_rating_stars": None, "user_rating_label": None, "truncated": False,
+            "coverage_incomplete": False, "coverage": "complete", "selection_reason": "new_publication",
+            "explicitly_selected": False,
+        }],
+        "new_facts": [{"statement": "Revenue grew.", "citations": [
+            {"analysis_id": "analysis-1", "section": "facts", "item_id": "f1"},
+        ]}],
+        "supporting": [], "counter": [], "background": [], "conflicts": [], "unknowns": [], "changes": [],
+        "omitted": [], "input_quality": {"status": "ready", "reasons": []},
+    }
+
+
+def test_experimental_jev_publishes_only_decision_probabilities_with_brief_and_matching_cutoffs():
+    instant = datetime.now(UTC)
+    base = _draft(now=instant)
+    draft = replace(
+        base, baseline_probabilities=None, joint_probabilities=None, model_status="experimental_jev",
+        decision_probabilities={"bearish": 0.0, "neutral": 0.3, "bullish": 0.7000005},
+        research_brief=_jev_brief(target=base.target_contract, decision_at=base.decision_at,
+                                  market_cutoff_at=base.market_cutoff_at),
+        model_manifest={"time_mode": "observed", "decision_mode": "jev",
+                        "decision_provider": {"actual_model": "typesafe/jev-1.13", "question_version": "jev-direction-v1"}},
+    )
+    with SessionLocal() as db:
+        job = _claim(db, kind="new", symbol="MSFT")
+        version, created = publish_forecast_version(
+            db=db, job_id=job.id, worker_id="test-worker", lease_epoch=job.lease_epoch, draft=draft,
+        )
+
+    assert created
+    assert version.model_status == "experimental_jev"
+    assert version.decision_probabilities == draft.decision_probabilities
+    assert version.baseline_probabilities is None
+    assert version.joint_probabilities is None
+    assert version.research_brief == draft.research_brief
+
+
+def test_experimental_jev_rejects_bad_sum_mismatched_cutoffs_and_unknown_citations():
+    instant = datetime.now(UTC)
+    base = _draft(now=instant)
+    probabilities = {"bearish": 0.2, "neutral": 0.3, "bullish": 0.500002}
+    brief = _jev_brief(target=base.target_contract, decision_at=base.decision_at,
+                       market_cutoff_at=base.market_cutoff_at)
+    drafts = [
+        replace(base, baseline_probabilities=None, joint_probabilities=None, model_status="experimental_jev", decision_probabilities=probabilities, research_brief=brief),
+        replace(base, baseline_probabilities=None, joint_probabilities=None, model_status="experimental_jev", decision_probabilities={"bearish": 0.2, "neutral": 0.3, "bullish": 0.5},
+                research_brief={**brief, "decision_at": (base.decision_at - timedelta(seconds=1)).isoformat()}),
+        replace(base, baseline_probabilities=None, joint_probabilities=None, model_status="experimental_jev", decision_probabilities={"bearish": 0.2, "neutral": 0.3, "bullish": 0.5},
+                research_brief={**brief, "new_facts": [{"statement": "Unknown.", "citations": [
+                    {"analysis_id": "missing", "section": "facts", "item_id": "f1"},
+                ]}]}),
+    ]
+    for index, draft in enumerate(drafts):
+        with SessionLocal() as db:
+            job = _claim(db, kind="new", symbol="MSFT")
+            with pytest.raises(ForecastPublicationError):
+                publish_forecast_version(
+                    db=db, job_id=job.id, worker_id="test-worker", lease_epoch=job.lease_epoch, draft=draft,
+                )
+        assert index < 3
 
 
 def test_root_and_branch_publish_atomically_without_changing_parent():

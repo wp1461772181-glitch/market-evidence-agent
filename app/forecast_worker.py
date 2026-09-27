@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import inspect
 
 from .database import SessionLocal
+from .agent_forecast_processor import AgentForecastProcessor
 from .forecast_jobs import claim_next_job, finish_job, heartbeat_job
 from .forecast_v2 import ForecastDraft, ForecastPublicationError, publish_forecast_version
 from .forecast_v2_models import ForecastJobV2
@@ -146,7 +147,7 @@ def run_once(
     heart.start()
     try:
         if processor is None:
-            processor = ResearchOnlyForecastProcessor(session_factory=session_factory)
+            processor = AgentForecastProcessor(session_factory=session_factory)
         draft = processor(job)
         if heart.lost_lease:
             return {"status": "lease_lost", "job_id": str(job.id), "result_version_id": None}

@@ -28,7 +28,7 @@ def test_worker_default_processor_records_visible_blocked_state_when_inputs_are_
 
         return process
 
-    monkeypatch.setattr("app.forecast_worker.ResearchOnlyForecastProcessor", unavailable_processor)
+    monkeypatch.setattr("app.forecast_worker.AgentForecastProcessor", unavailable_processor)
     result = run_once(job_id=job_id, worker_id="blocked-test")
 
     assert result == {"status": "blocked_data", "job_id": str(job_id), "result_version_id": None}

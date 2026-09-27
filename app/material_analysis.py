@@ -318,6 +318,50 @@ def list_materials(*, db: Session, symbol: str | None = None, source_type: str |
     return {"items": items[offset:offset + limit], "total": total, "limit": limit, "offset": offset}
 
 
+def get_material_original(*, db: Session, source_type: str, source_id: UUID) -> dict[str, Any]:
+    """Return the saved source text only; never fetch from the source URL here."""
+    if source_type not in {"official_filing", "uploaded_media"}:
+        raise MaterialAnalysisError("source_type must be official_filing or uploaded_media")
+    row = _load_source(db, source_type, source_id)
+    if source_type == "official_filing":
+        available = bool(row.content_status == "fetched" and row.content_excerpt)
+        return {
+            **_material_base(source_type, row),
+            "content_text": row.content_excerpt if available else None,
+            "content_status": row.content_status,
+            "content_error": row.content_error,
+            "coverage": _coverage(source_type, row),
+            "truncated": bool(row.content_truncated),
+            "can_download": False,
+            "can_fetch": not available,
+            "document_name": row.content_document_name or row.primary_document,
+        }
+    return {
+        **_material_base(source_type, row),
+        "content_text": row.content_text,
+        "content_status": "fetched" if row.content_text else "unavailable",
+        "content_error": None,
+        "coverage": "uploaded_text",
+        "truncated": False,
+        "can_download": bool(row.raw_content),
+        "can_fetch": False,
+        "document_name": row.filename,
+    }
+
+
+def get_material_download(*, db: Session, source_type: str, source_id: UUID) -> tuple[bytes, str, str]:
+    """Resolve an upload by its database identity, never by a caller path."""
+    if source_type != "uploaded_media":
+        raise MaterialAnalysisError("only uploaded materials have downloadable originals", code="original_unavailable", status_code=404)
+    row = _load_source(db, source_type, source_id)
+    if not row.raw_content:
+        raise MaterialAnalysisError("the original file bytes were not retained; only extracted text is available", code="original_unavailable", status_code=404)
+    import mimetypes
+
+    media_type = mimetypes.guess_type(row.filename)[0] or "application/octet-stream"
+    return bytes(row.raw_content), media_type, row.filename
+
+
 def _claim_job(db: Session, *, worker_id: str, job_id: UUID | None) -> MaterialAnalysisJob | None:
     now = datetime.now(UTC)
     running = aliased(MaterialAnalysisJob)

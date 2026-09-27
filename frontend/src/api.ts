@@ -1,4 +1,4 @@
-import type { DashboardResponse, EvidenceRevision, EvidenceRevisionInventory, EvidenceRevisionRequest, FilingContent, FilingInventory, FilingReview, FilingScanResult, ForecastRunResult, UploadedEvidence, UploadedEvidenceInventory, V2EvaluationResponse, V2ForecastJob, V2ForecastRoots, V2MonitorStatus, V2SourceRef, V2Timeline, V2VersionDetail, V2Workspace } from "./types";
+import type { DashboardResponse, EvidenceRevision, EvidenceRevisionInventory, EvidenceRevisionRequest, FilingContent, FilingInventory, FilingReview, FilingScanResult, ForecastRunResult, MaterialAnalysisHistory, MaterialAnalysisJob, MaterialAnalysisVersion, MaterialItem, MaterialLibraryResponse, MaterialOriginal, MaterialSourceType, UploadedEvidence, UploadedEvidenceInventory, V2EvaluationResponse, V2ForecastJob, V2ForecastRoots, V2MonitorStatus, V2SourceRef, V2Timeline, V2VersionDetail, V2Workspace } from "./types";
 
 export class ApiError extends Error {
   constructor(message: string, readonly status?: number) {
@@ -101,6 +101,53 @@ export async function getV2Workspace(symbol: string, signal?: AbortSignal): Prom
   return requestJson<V2Workspace>(`/api/v2/stocks/${encodeURIComponent(symbol)}/workspace`, { signal });
 }
 
+export async function getMaterialLibrary(
+  symbol: string,
+  options: { sourceType?: MaterialSourceType | "all"; analysisStatus?: string; offset?: number; signal?: AbortSignal } = {},
+): Promise<MaterialLibraryResponse> {
+  const params = new URLSearchParams({ symbol, limit: "10", offset: String(options.offset ?? 0) });
+  if (options.sourceType && options.sourceType !== "all") params.set("source_type", options.sourceType);
+  if (options.analysisStatus && options.analysisStatus !== "all") params.set("analysis_status", options.analysisStatus);
+  return requestJson<MaterialLibraryResponse>(`/api/v3/materials?${params}`, { signal: options.signal });
+}
+
+export async function createMaterialAnalysisJob(
+  sourceType: MaterialSourceType,
+  sourceId: string,
+  force = false,
+): Promise<MaterialAnalysisJob> {
+  const idempotencyKey = newIdempotencyKey();
+  return requestJson<MaterialAnalysisJob>(`/api/v3/materials/${sourceType}/${encodeURIComponent(sourceId)}/analysis-jobs`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
+    body: JSON.stringify({ idempotency_key: idempotencyKey, force }),
+  });
+}
+
+export async function getMaterialAnalysisJob(jobId: string, signal?: AbortSignal): Promise<MaterialAnalysisJob> {
+  return requestJson<MaterialAnalysisJob>(`/api/v3/material-analysis-jobs/${encodeURIComponent(jobId)}`, { signal });
+}
+
+export async function getMaterialAnalysisHistory(
+  sourceType: MaterialSourceType,
+  sourceId: string,
+  signal?: AbortSignal,
+): Promise<MaterialAnalysisHistory> {
+  return requestJson<MaterialAnalysisHistory>(`/api/v3/materials/${sourceType}/${encodeURIComponent(sourceId)}/analyses`, { signal });
+}
+
+export async function getMaterialAnalysis(analysisId: string, signal?: AbortSignal): Promise<MaterialAnalysisVersion> {
+  return requestJson<MaterialAnalysisVersion>(`/api/v3/material-analyses/${encodeURIComponent(analysisId)}`, { signal });
+}
+
+export async function getMaterialOriginal(
+  sourceType: MaterialSourceType,
+  sourceId: string,
+  signal?: AbortSignal,
+): Promise<MaterialOriginal> {
+  return requestJson<MaterialOriginal>(`/api/v3/materials/${sourceType}/${encodeURIComponent(sourceId)}/original`, { signal });
+}
+
 export async function getV2Job(jobId: string, signal?: AbortSignal): Promise<V2ForecastJob> {
   return requestJson<V2ForecastJob>(`/api/v2/jobs/${encodeURIComponent(jobId)}`, { signal });
 }
@@ -160,9 +207,12 @@ async function requestJson<T>(url: string, init: RequestInit = {}): Promise<T> {
 }
 
 function apiErrorFromPayload(payload: unknown, status: number): ApiError {
-  const detail = typeof payload === "object" && payload !== null && "detail" in payload
-    ? String((payload as { detail: unknown }).detail)
-    : `请求失败（${status}）`;
+  const rawDetail = typeof payload === "object" && payload !== null && "detail" in payload
+    ? (payload as { detail: unknown }).detail
+    : null;
+  const detail = typeof rawDetail === "object" && rawDetail !== null && "message" in rawDetail
+    ? String((rawDetail as { message: unknown }).message)
+    : typeof rawDetail === "string" ? rawDetail : `请求失败（${status}）`;
   return new ApiError(detail, status);
 }
 

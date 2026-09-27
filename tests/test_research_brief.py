@@ -121,6 +121,9 @@ def test_build_attaches_server_fields_and_validates_analysis_item_pointers():
     sent = json.loads(provider.calls[0]["document_payload"])
     assert sent["target_contract"] == CONTRACT
     assert "Never" not in provider.calls[0]["system_prompt"]
+    assert "change_type" in provider.calls[0]["system_prompt"]
+    assert '"maxItems"' in provider.calls[0]["system_prompt"]
+    assert '"maxLength"' in provider.calls[0]["system_prompt"]
 
 
 def test_server_metadata_cannot_be_overwritten_by_model_output():
@@ -150,7 +153,7 @@ def test_explicitly_selected_future_material_is_blocked_and_unselected_future_is
     brief = build([future], FakeProvider())
     assert brief.material_refs == []
     assert brief.omitted[0].reason == "future_not_observable"
-    assert brief.input_quality.status == "limited"
+    assert brief.input_quality.status == "insufficient"
 
 
 def test_groups_publication_late_discovery_and_background_against_parent_cutoff():
@@ -205,7 +208,7 @@ def test_parent_sources_all_rejected_are_not_restored_into_empty_revision():
     assert brief.material_refs == []
     assert brief.background == []
     assert {item.reason for item in brief.omitted} == {"source_rejected"}
-    assert brief.input_quality.status == "limited"
+    assert brief.input_quality.status == "insufficient"
 
 
 def test_parent_carries_only_still_valid_sources_when_another_is_rejected():
@@ -216,15 +219,42 @@ def test_parent_carries_only_still_valid_sources_when_another_is_rejected():
     parent = build(rows, FakeProvider(synthesis_for(*rows)))
     currently_valid = material(analysis_id="analysis-1", source_id="source-1")
     rejected = material(analysis_id="analysis-2", source_id="source-2", review_status="rejected")
-    provider = FakeProvider()
+    provider = FakeProvider(synthesis_for({**currently_valid, "selection_reason": "background"}))
 
     brief = build([currently_valid, rejected], provider, parent_brief=parent, decision_at=CUTOFF + timedelta(days=1))
 
-    assert provider.calls == []
+    assert len(provider.calls) == 1
     assert [ref.analysis_id for ref in brief.material_refs] == ["analysis-1"]
     cited_ids = {cite.analysis_id for item in brief.background for cite in item.citations}
     assert cited_ids == {"analysis-1"}
     assert [item.reason for item in brief.omitted] == ["source_rejected"]
+    assert any(item.change_type == "source_status_changed" for item in brief.changes)
+
+
+def test_parent_resynthesizes_same_content_reanalysis_and_review_changes():
+    original = material(analysis_id="analysis-v1", source_id="source-1", stars=2)
+    parent = build([original], FakeProvider(synthesis_for(original)))
+
+    reanalysis = material(analysis_id="analysis-v2", source_id="source-1", stars=2)
+    reanalysis_provider = FakeProvider(synthesis_for({**reanalysis, "selection_reason": "background"}))
+    reanalysis_brief = build(
+        [reanalysis], reanalysis_provider, parent_brief=parent,
+        decision_at=CUTOFF + timedelta(days=1),
+    )
+    assert len(reanalysis_provider.calls) == 1
+    assert reanalysis_brief.material_refs[0].selection_reason == "background"
+    assert reanalysis_brief.material_refs[0].analysis_id == "analysis-v2"
+    assert any(change.change_type == "modified" for change in reanalysis_brief.changes)
+
+    reviewed = material(analysis_id="analysis-v1", source_id="source-1", stars=5)
+    review_provider = FakeProvider(synthesis_for({**reviewed, "selection_reason": "background"}))
+    review_brief = build(
+        [reviewed], review_provider, parent_brief=parent,
+        decision_at=CUTOFF + timedelta(days=1),
+    )
+    assert len(review_provider.calls) == 1
+    assert review_brief.material_refs[0].user_rating_stars == 5
+    assert any(change.change_type == "source_status_changed" for change in review_brief.changes)
 
 
 def test_parent_sources_missing_from_current_inputs_are_unknown_and_not_carried():
@@ -236,7 +266,7 @@ def test_parent_sources_missing_from_current_inputs_are_unknown_and_not_carried(
     assert brief.material_refs == []
     assert brief.background == []
     assert [(item.analysis_id, item.reason) for item in brief.omitted] == [("analysis-1", "analysis_unavailable")]
-    assert brief.input_quality.status == "limited"
+    assert brief.input_quality.status == "insufficient"
 
 
 def test_model_must_not_invent_or_reweight_user_rating_as_probability():
