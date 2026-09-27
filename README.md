@@ -11,7 +11,9 @@
 - Manual and hourly official-source revisions retain the original target. The automatic eligibility window is measured from the root decision, not renewed by revisions. Outcome reports separate provider/model/question/time-mode cohorts and count independent roots.
 - A real public MSFT filing passed material analysis and a real DeepSeek→Jev→persisted-forecast trial. This verifies integration, not stock forecasting accuracy; mature Jev outcomes and a live new-announcement revision remain unverified. [Public trial metadata](docs/v3-live-acceptance-20260927.json)
 
-The original Weeks 1–9 archive remains available. Historical V2 persistence workflows are part of the V3 foundation, and their research-only records remain readable. The [V2 progress log](docs/v2-progress.md) is a historical stage record; the [implementation plan](docs/evidence-driven-forecast-v2-plan.md) remains a design reference.
+The main interface now uses one current research workflow across overview, forecasts, evidence, materials, revisions and maturity evaluation. Legacy offline forecast creation, archive panels and fixed Week 4 metrics have been removed from navigation. V2's durable storage remains the foundation for V3; the [V2 progress log](docs/v2-progress.md) and [implementation plan](docs/evidence-driven-forecast-v2-plan.md) are historical references.
+
+Legacy data retirement is separate from the UI change: the [cleanup plan](docs/legacy-retirement-plan.md) and [counts-only inventory](docs/legacy-cleanup-inventory.json) describe the proposed rows. A private full backup has passed restore and isolated cleanup verification; deletion from the development database is awaiting the user's confirmation. Shared materials, material analyses, prices and monitoring records are retained.
 
 A FastAPI, PostgreSQL, and local React dashboard foundation for a
 market-evidence system. It stores a deterministic Week 1 `mock-v1` forecast,

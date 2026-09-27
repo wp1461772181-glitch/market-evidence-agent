@@ -19,12 +19,14 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from .database import SessionLocal
+from .dashboard import dashboard_price_history
 from .evidence_context import EvidenceContextError, freeze_evidence_context
 from .forecast_evaluation_v2 import JEV_LOG_LOSS_EPSILON
 from .forecast_jobs import ForecastJobError, enqueue_job
 from .forecast_v2_models import ForecastEvaluationV2, ForecastJobV2, ForecastVersionV2, OfficialMonitorRunV2
 from .market_time import xnys_session_close_at
 from .models import SecFilingInventory, UploadedEvidence
+from .schemas import DashboardPriceHistory
 from .services import normalize_symbol
 
 
@@ -56,6 +58,11 @@ class ManualRevisionJobRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     source_refs: list[SourceRefRequest] = Field(min_length=1, max_length=10)
+
+
+class V2StockPricesResponse(BaseModel):
+    symbol: str
+    price_history: DashboardPriceHistory
 
 
 class V2RequestError(ValueError):
@@ -321,6 +328,21 @@ def get_v2_stock_workspace(symbol: str, db: Session = Depends(get_v2_db)) -> dic
         raise
     except SQLAlchemyError as exc:
         raise HTTPException(status_code=503, detail="V2 job store is unavailable") from exc
+
+
+@router.get("/stocks/{symbol}/prices", response_model=V2StockPricesResponse)
+def get_v2_stock_prices(symbol: str, db: Session = Depends(get_v2_db)) -> dict[str, Any]:
+    """Return the dashboard's bounded, currently visible price history read-only."""
+    try:
+        normalized = _supported_symbol(symbol)
+        return {
+            "symbol": normalized,
+            "price_history": dashboard_price_history(normalized, db),
+        }
+    except V2RequestError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    except SQLAlchemyError as exc:
+        raise HTTPException(status_code=503, detail="V2 price history is unavailable") from exc
 
 
 def _supported_symbol(value: str) -> str:

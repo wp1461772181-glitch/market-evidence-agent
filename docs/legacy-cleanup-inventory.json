@@ -1,0 +1,538 @@
+{
+  "as_of_utc": "2026-09-27T07:02:41.282802+00:00",
+  "database": "market_evidence",
+  "dry_run_candidate_counts": {
+    "event_extractions": 36,
+    "evidence_revisions": 0,
+    "forecast_evaluations_v2": 3,
+    "forecast_jobs_v2": 3,
+    "forecast_revision_evidence": 1,
+    "forecast_revisions": 2,
+    "forecast_snapshots": 8,
+    "forecast_versions_v2": 3,
+    "forecasts": 52,
+    "research_runs": 10
+  },
+  "manifest_fingerprint": "e70c3575e03abf3fda40cd5cf8c3092a42e67c05bd9c7e0c5c967f688440699e",
+  "model_states": {
+    "event_extractions.provider": {
+      "deepseek": 36
+    },
+    "evidence_event_versions_v2.review_status": {
+      "accepted": 2,
+      "pending_review": 7
+    },
+    "forecast_jobs_v2.status": {
+      "succeeded": 3
+    },
+    "forecast_versions_v2.model_status": {
+      "research_only": 3
+    },
+    "forecasts.model_version": {
+      "mock-v1": 52
+    },
+    "material_analysis_jobs.status": {
+      "failed": 1,
+      "succeeded": 3
+    },
+    "material_analysis_versions.actual_model": {
+      "deepseek-flash": 2
+    },
+    "research_runs.status": {
+      "failed": 2,
+      "succeeded": 8
+    }
+  },
+  "reference_summary": {
+    "event_versions_matching_extraction_cache_rows": 0,
+    "event_versions_with_extraction_cache_key": 9,
+    "legacy_run_ids_referenced_by_forecast_revision_evidence": 1,
+    "v2_forecast_versions_with_v3_research_brief": 0,
+    "v3_material_analysis_versions": 2
+  },
+  "scope": "counts/time ranges/FK metadata/model states only; no source content or identifiers",
+  "tables": {
+    "event_extractions": {
+      "foreign_keys": [],
+      "rows": 36,
+      "time_ranges": {
+        "created_at": [
+          "2026-09-12T01:09:19.608690+00:00",
+          "2026-09-26T02:41:46.650166+00:00"
+        ]
+      }
+    },
+    "evidence_event_versions_v2": {
+      "foreign_keys": [
+        {
+          "columns": [
+            "previous_version_id"
+          ],
+          "on_delete": "RESTRICT",
+          "references_columns": [
+            "id"
+          ],
+          "references_table": "evidence_event_versions_v2"
+        }
+      ],
+      "rows": 9,
+      "time_ranges": {
+        "created_at": [
+          "2026-09-24T11:57:49.949319+00:00",
+          "2026-09-27T05:45:44.551260+00:00"
+        ],
+        "observed_at": [
+          "2026-09-23T08:19:03.659799+00:00",
+          "2026-09-26T02:30:08.674741+00:00"
+        ],
+        "published_at": [
+          "2024-10-30T20:07:17+00:00",
+          "2026-09-02T20:30:24+00:00"
+        ]
+      }
+    },
+    "evidence_revisions": {
+      "foreign_keys": [
+        {
+          "columns": [
+            "parent_snapshot_id"
+          ],
+          "on_delete": "RESTRICT",
+          "references_columns": [
+            "id"
+          ],
+          "references_table": "forecast_snapshots"
+        },
+        {
+          "columns": [
+            "revised_snapshot_id"
+          ],
+          "on_delete": "RESTRICT",
+          "references_columns": [
+            "id"
+          ],
+          "references_table": "forecast_snapshots"
+        }
+      ],
+      "rows": 0,
+      "time_ranges": {
+        "created_at": [
+          null,
+          null
+        ]
+      }
+    },
+    "forecast_evaluations_v2": {
+      "foreign_keys": [
+        {
+          "columns": [
+            "forecast_version_id"
+          ],
+          "on_delete": "RESTRICT",
+          "references_columns": [
+            "id"
+          ],
+          "references_table": "forecast_versions_v2"
+        }
+      ],
+      "rows": 3,
+      "time_ranges": {
+        "created_at": [
+          "2026-09-25T13:54:16.899906+00:00",
+          "2026-09-25T13:54:16.899906+00:00"
+        ]
+      }
+    },
+    "forecast_jobs_v2": {
+      "foreign_keys": [
+        {
+          "columns": [
+            "parent_version_id"
+          ],
+          "on_delete": "RESTRICT",
+          "references_columns": [
+            "id"
+          ],
+          "references_table": "forecast_versions_v2"
+        },
+        {
+          "columns": [
+            "result_version_id"
+          ],
+          "on_delete": "RESTRICT",
+          "references_columns": [
+            "id"
+          ],
+          "references_table": "forecast_versions_v2"
+        },
+        {
+          "columns": [
+            "root_version_id"
+          ],
+          "on_delete": "RESTRICT",
+          "references_columns": [
+            "id"
+          ],
+          "references_table": "forecast_versions_v2"
+        }
+      ],
+      "rows": 3,
+      "time_ranges": {
+        "completed_at": [
+          "2026-09-25T08:26:37.212153+00:00",
+          "2026-09-25T08:50:10.146583+00:00"
+        ],
+        "created_at": [
+          "2026-09-25T08:26:15.857269+00:00",
+          "2026-09-25T08:50:02.039356+00:00"
+        ],
+        "started_at": [
+          "2026-09-25T08:26:29.002092+00:00",
+          "2026-09-25T08:50:02.329278+00:00"
+        ]
+      }
+    },
+    "forecast_revision_evidence": {
+      "foreign_keys": [
+        {
+          "columns": [
+            "parent_snapshot_id"
+          ],
+          "on_delete": "RESTRICT",
+          "references_columns": [
+            "id"
+          ],
+          "references_table": "forecast_snapshots"
+        },
+        {
+          "columns": [
+            "research_run_id"
+          ],
+          "on_delete": "RESTRICT",
+          "references_columns": [
+            "id"
+          ],
+          "references_table": "research_runs"
+        },
+        {
+          "columns": [
+            "snapshot_id"
+          ],
+          "on_delete": "RESTRICT",
+          "references_columns": [
+            "id"
+          ],
+          "references_table": "forecast_snapshots"
+        }
+      ],
+      "rows": 1,
+      "time_ranges": {
+        "created_at": [
+          "2026-09-15T08:17:21.789853+00:00",
+          "2026-09-15T08:17:21.789853+00:00"
+        ]
+      }
+    },
+    "forecast_revisions": {
+      "foreign_keys": [
+        {
+          "columns": [
+            "parent_snapshot_id"
+          ],
+          "on_delete": "RESTRICT",
+          "references_columns": [
+            "id"
+          ],
+          "references_table": "forecast_snapshots"
+        },
+        {
+          "columns": [
+            "root_snapshot_id"
+          ],
+          "on_delete": "RESTRICT",
+          "references_columns": [
+            "id"
+          ],
+          "references_table": "forecast_snapshots"
+        },
+        {
+          "columns": [
+            "snapshot_id"
+          ],
+          "on_delete": "RESTRICT",
+          "references_columns": [
+            "id"
+          ],
+          "references_table": "forecast_snapshots"
+        }
+      ],
+      "rows": 2,
+      "time_ranges": {
+        "created_at": [
+          "2026-09-10T04:17:47.726289+00:00",
+          "2026-09-15T08:17:21.789853+00:00"
+        ]
+      }
+    },
+    "forecast_snapshots": {
+      "foreign_keys": [],
+      "rows": 8,
+      "time_ranges": {
+        "created_at": [
+          "2026-09-10T03:05:37.682578+00:00",
+          "2026-09-24T01:42:06.457180+00:00"
+        ]
+      }
+    },
+    "forecast_versions_v2": {
+      "foreign_keys": [
+        {
+          "columns": [
+            "job_id"
+          ],
+          "on_delete": "RESTRICT",
+          "references_columns": [
+            "id"
+          ],
+          "references_table": "forecast_jobs_v2"
+        },
+        {
+          "columns": [
+            "parent_version_id"
+          ],
+          "on_delete": "RESTRICT",
+          "references_columns": [
+            "id"
+          ],
+          "references_table": "forecast_versions_v2"
+        },
+        {
+          "columns": [
+            "root_id"
+          ],
+          "on_delete": "RESTRICT",
+          "references_columns": [
+            "id"
+          ],
+          "references_table": "forecast_versions_v2"
+        }
+      ],
+      "rows": 3,
+      "time_ranges": {
+        "created_at": [
+          "2026-09-25T08:26:37.215025+00:00",
+          "2026-09-25T08:50:10.151042+00:00"
+        ]
+      }
+    },
+    "forecasts": {
+      "foreign_keys": [],
+      "rows": 52,
+      "time_ranges": {
+        "created_at": [
+          "2026-08-29T16:31:51.749787+00:00",
+          "2026-09-06T09:45:19.763810+00:00"
+        ]
+      }
+    },
+    "ingestion_runs": {
+      "foreign_keys": [],
+      "rows": 19,
+      "time_ranges": {
+        "as_of_time": [
+          "2026-09-06T06:28:27.869129+00:00",
+          "2026-09-25T08:50:02.349650+00:00"
+        ],
+        "completed_at": [
+          "2026-09-06T06:22:52.455009+00:00",
+          "2026-09-25T08:50:03.810239+00:00"
+        ],
+        "started_at": [
+          "2026-09-06T06:22:51.379104+00:00",
+          "2026-09-25T08:50:03.791272+00:00"
+        ]
+      }
+    },
+    "market_price_revisions": {
+      "foreign_keys": [
+        {
+          "columns": [
+            "ingestion_run_id"
+          ],
+          "on_delete": "RESTRICT",
+          "references_columns": [
+            "id"
+          ],
+          "references_table": "ingestion_runs"
+        },
+        {
+          "columns": [
+            "market_price_id"
+          ],
+          "on_delete": "RESTRICT",
+          "references_columns": [
+            "id"
+          ],
+          "references_table": "market_prices"
+        }
+      ],
+      "rows": 4597,
+      "time_ranges": {
+        "observed_at": [
+          "2026-09-09T04:19:07.063455+00:00",
+          "2026-09-25T08:26:30.011801+00:00"
+        ],
+        "trading_date": [
+          "2023-08-31",
+          "2026-09-24"
+        ]
+      }
+    },
+    "market_prices": {
+      "foreign_keys": [],
+      "rows": 4594,
+      "time_ranges": {
+        "trading_date": [
+          "2023-08-31",
+          "2026-09-24"
+        ]
+      }
+    },
+    "material_analysis_jobs": {
+      "foreign_keys": [
+        {
+          "columns": [
+            "result_analysis_id"
+          ],
+          "on_delete": "RESTRICT",
+          "references_columns": [
+            "id"
+          ],
+          "references_table": "material_analysis_versions"
+        },
+        {
+          "columns": [
+            "evidence_version_id"
+          ],
+          "on_delete": "RESTRICT",
+          "references_columns": [
+            "id"
+          ],
+          "references_table": "evidence_event_versions_v2"
+        }
+      ],
+      "rows": 4,
+      "time_ranges": {
+        "completed_at": [
+          "2026-09-27T05:52:14.000517+00:00",
+          "2026-09-27T06:35:44.791143+00:00"
+        ],
+        "created_at": [
+          "2026-09-27T05:45:44.586508+00:00",
+          "2026-09-27T06:35:31.480129+00:00"
+        ],
+        "started_at": [
+          "2026-09-27T05:52:00.349356+00:00",
+          "2026-09-27T06:35:32.659059+00:00"
+        ]
+      }
+    },
+    "material_analysis_versions": {
+      "foreign_keys": [
+        {
+          "columns": [
+            "evidence_version_id"
+          ],
+          "on_delete": "RESTRICT",
+          "references_columns": [
+            "id"
+          ],
+          "references_table": "evidence_event_versions_v2"
+        },
+        {
+          "columns": [
+            "job_id"
+          ],
+          "on_delete": "RESTRICT",
+          "references_columns": [
+            "id"
+          ],
+          "references_table": "material_analysis_jobs"
+        },
+        {
+          "columns": [
+            "previous_version_id"
+          ],
+          "on_delete": "RESTRICT",
+          "references_columns": [
+            "id"
+          ],
+          "references_table": "material_analysis_versions"
+        }
+      ],
+      "rows": 2,
+      "time_ranges": {
+        "created_at": [
+          "2026-09-27T05:54:05.052364+00:00",
+          "2026-09-27T06:35:44.770442+00:00"
+        ]
+      }
+    },
+    "official_monitor_runs_v2": {
+      "foreign_keys": [],
+      "rows": 16,
+      "time_ranges": {
+        "completed_at": [
+          "2026-09-25T08:47:38.612651+00:00",
+          "2026-09-27T06:42:22.735872+00:00"
+        ],
+        "started_at": [
+          "2026-09-25T08:47:36.263299+00:00",
+          "2026-09-27T06:42:19.220551+00:00"
+        ]
+      }
+    },
+    "research_runs": {
+      "foreign_keys": [],
+      "rows": 10,
+      "time_ranges": {
+        "as_of_time": [
+          "2024-10-30T00:00:00+00:00",
+          "2026-09-26T02:31:08.674741+00:00"
+        ],
+        "completed_at": [
+          "2026-09-15T03:06:25.188076+00:00",
+          "2026-09-26T02:30:11.521663+00:00"
+        ],
+        "created_at": [
+          "2026-09-15T03:06:19.988318+00:00",
+          "2026-09-26T02:30:09.685558+00:00"
+        ]
+      }
+    },
+    "sec_filing_inventory": {
+      "foreign_keys": [],
+      "rows": 200,
+      "time_ranges": {
+        "observed_at": [
+          "2026-09-23T08:18:49.263973+00:00",
+          "2026-09-23T14:15:05.369267+00:00"
+        ]
+      }
+    },
+    "uploaded_evidence": {
+      "foreign_keys": [],
+      "rows": 2,
+      "time_ranges": {
+        "observed_at": [
+          "2026-09-26T02:30:08.674741+00:00",
+          "2026-09-26T02:31:30.497135+00:00"
+        ],
+        "published_at": [
+          "2026-02-10T00:00:00+00:00",
+          "2026-02-10T00:00:00+00:00"
+        ]
+      }
+    }
+  }
+}

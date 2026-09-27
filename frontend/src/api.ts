@@ -1,4 +1,4 @@
-import type { DashboardResponse, EvidenceRevision, EvidenceRevisionInventory, EvidenceRevisionRequest, FilingContent, FilingInventory, FilingReview, FilingScanResult, ForecastRunResult, MaterialAnalysisHistory, MaterialAnalysisJob, MaterialAnalysisVersion, MaterialItem, MaterialLibraryResponse, MaterialOriginal, MaterialSourceType, UploadedEvidence, UploadedEvidenceInventory, V2EvaluationResponse, V2ForecastJob, V2ForecastRoots, V2MonitorStatus, V2SourceRef, V2Timeline, V2VersionDetail, V2Workspace } from "./types";
+import type { DashboardResponse, EvidenceRevision, EvidenceRevisionInventory, EvidenceRevisionRequest, FilingContent, FilingInventory, FilingReview, FilingScanResult, ForecastRunResult, MaterialAnalysisHistory, MaterialAnalysisJob, MaterialAnalysisVersion, MaterialItem, MaterialLibraryResponse, MaterialOriginal, MaterialSourceType, PriceHistory, UploadedEvidence, UploadedEvidenceInventory, V2EvaluationResponse, V2ForecastJob, V2ForecastRoots, V2MonitorStatus, V2SourceRef, V2Timeline, V2VersionDetail, V2Workspace } from "./types";
 
 export class ApiError extends Error {
   constructor(message: string, readonly status?: number) {
@@ -101,13 +101,18 @@ export async function getV2Workspace(symbol: string, signal?: AbortSignal): Prom
   return requestJson<V2Workspace>(`/api/v2/stocks/${encodeURIComponent(symbol)}/workspace`, { signal });
 }
 
+export async function getV2Prices(symbol: string, signal?: AbortSignal): Promise<{ symbol: string; price_history: PriceHistory }> {
+  return requestJson<{ symbol: string; price_history: PriceHistory }>(`/api/v2/stocks/${encodeURIComponent(symbol)}/prices`, { signal });
+}
+
 export async function getMaterialLibrary(
   symbol: string,
-  options: { sourceType?: MaterialSourceType | "all"; analysisStatus?: string; offset?: number; signal?: AbortSignal } = {},
+  options: { sourceType?: MaterialSourceType | "all"; analysisStatus?: string; reviewStatus?: string; offset?: number; limit?: number; signal?: AbortSignal } = {},
 ): Promise<MaterialLibraryResponse> {
-  const params = new URLSearchParams({ symbol, limit: "10", offset: String(options.offset ?? 0) });
+  const params = new URLSearchParams({ symbol, limit: String(options.limit ?? 10), offset: String(options.offset ?? 0) });
   if (options.sourceType && options.sourceType !== "all") params.set("source_type", options.sourceType);
   if (options.analysisStatus && options.analysisStatus !== "all") params.set("analysis_status", options.analysisStatus);
+  if (options.reviewStatus && options.reviewStatus !== "all") params.set("review_status", options.reviewStatus);
   return requestJson<MaterialLibraryResponse>(`/api/v3/materials?${params}`, { signal: options.signal });
 }
 

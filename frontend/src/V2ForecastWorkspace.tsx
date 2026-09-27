@@ -46,17 +46,17 @@ function formatTime(value: string | null) {
 }
 
 function modelStatusText(status: V2Workspace["joint_model_status"] | V2TimelineEntry["model_status"]) {
-  if (status === "experimental_jev") return "实验性 Jev 判断（未校准）";
-  if (status === "experimental_joint") return "实验性联合模型";
-  if (status === "baseline_only") return "纯行情基线";
-  if (status === "research_only") return "仅研究模式";
-  return "联合模型未验证";
+  if (status === "experimental_jev") return "Jev 实验判断（尚未校准）";
+  if (status === "experimental_joint") return "联合研究模型";
+  if (status === "baseline_only") return "行情基线模型";
+  if (status === "research_only") return "研究结果（未输出概率）";
+  return "当前模型尚未验证";
 }
 
 function jobStatusText(job: V2ForecastJob) {
-  if (job.status === "queued") return "已排队，尚未被 worker 领取";
-  if (job.status === "running") return "worker 正在处理";
-  if (job.status === "succeeded") return "已发布不可变版本";
+  if (job.status === "queued") return "已排队，等待处理";
+  if (job.status === "running") return "正在处理";
+  if (job.status === "succeeded") return "已生成预测版本";
   if (job.status === "succeeded_no_change") return "已完成，但输入没有产生新版本";
   if (job.status === "blocked_data") return "已阻塞：缺少已验证处理条件";
   return "处理失败";
@@ -80,10 +80,10 @@ export function V2ForecastWorkspace({ symbol, filings, priceHistory }: { symbol:
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
     try {
-      const [next, rootList] = await Promise.all([getV2Workspace(symbol, signal), getV2ForecastRoots(symbol, signal)]);
+      const [next, predictionList] = await Promise.all([getV2Workspace(symbol, signal), getV2ForecastRoots(symbol, signal)]);
       setWorkspace({ kind: "ready", data: next });
-      setRoots({ kind: "ready", data: rootList });
-      setSelectedRootId((previous) => rootList.roots.some((root) => root.id === previous) ? previous : rootList.roots[0]?.id ?? "");
+      setRoots({ kind: "ready", data: predictionList });
+      setSelectedRootId((previous) => predictionList.roots.some((root) => root.id === previous) ? previous : predictionList.roots[0]?.id ?? "");
     } catch (error) {
       if (signal?.aborted) return;
       setWorkspace({ kind: "error", message: errorMessage(error, "暂时无法读取预测工作台。") });
@@ -257,7 +257,7 @@ export function V2ForecastWorkspace({ symbol, filings, priceHistory }: { symbol:
     <header className="v2-desk-heading">
       <div>
         <p className="eyebrow">预测与修订任务</p>
-        <h2 id="v2-desk-title">主动预测与修订队列</h2>
+        <h2 id="v2-desk-title">预测工作台</h2>
         <p>创建新预测，或选择已有预测和新材料发起修订。历史版本会保留。</p>
       </div>
       <button className="primary-action" type="button" onClick={createForecast} disabled={isActiveJob(activeJob) || workspace.kind === "loading"}>
@@ -268,7 +268,7 @@ export function V2ForecastWorkspace({ symbol, filings, priceHistory }: { symbol:
     <RootPicker roots={roots} selectedRootId={selectedRootId} onSelect={setSelectedRootId} />
 
     <div className="v2-status-grid">
-      <article><span>{modelStatus === "experimental_jev" ? "Jev 概率判断" : "联合数值模型"}</span><strong>{modelStatusText(modelStatus)}</strong><small>{modelStatus === "experimental_jev" ? "实验性股票判断任务，尚未校准" : modelStatus === "experimental_joint" ? "仅可作为实验性输出阅读" : "当前不会给出已验证的联合概率"}</small></article>
+      <article><span>预测判断</span><strong>{selectedRoot ? modelStatusText(modelStatus) : "尚无预测结果"}</strong><small>{selectedRoot ? modelStatus === "experimental_jev" ? "Jev 股票判断尚未校准" : modelStatus === "research_only" ? "当前只提供材料研究简报，没有数值概率" : "请将模型结果视为研究信息" : "创建一项研究后，这里会显示对应结果。"}</small></article>
       <MonitorCard monitor={monitor} />
       <article><span>待处理任务</span><strong>{workspace.kind === "ready" ? workspace.data.pending_job_count : "—"}</strong><small>排队只表示服务已接收，不表示预测已生成。</small></article>
     </div>
@@ -284,7 +284,7 @@ export function V2ForecastWorkspace({ symbol, filings, priceHistory }: { symbol:
       <RevisionComparison timeline={timeline} detail={versionDetails} />
     </div>
 
-    <V3PriceContextChart symbol={symbol} history={priceHistory} detail={versionDetails} />
+    <ForecastPriceContextChart symbol={symbol} history={priceHistory} detail={versionDetails} showHistoricalOnly={roots.kind === "ready" && !selectedRoot} />
 
     {versionDetails?.kind === "ready" && versionDetails.data.current.research_brief && <ResearchBriefView
       brief={versionDetails.data.current.research_brief}
@@ -317,7 +317,7 @@ export function V2ForecastWorkspace({ symbol, filings, priceHistory }: { symbol:
       <label>修订哪一个预测版本
         <select value={parentVersionId} onChange={(event) => setParentVersionId(event.target.value)}>
           <option value="">默认最新版本</option>
-          {versions.map((version) => <option value={version.id} key={version.id}>V{version.version_no} · {formatTime(version.decision_at)}</option>)}
+          {versions.map((version) => <option value={version.id} key={version.id}>第 {version.version_no} 版 · {formatTime(version.decision_at)}</option>)}
         </select>
       </label>
       <label>新增材料
@@ -336,7 +336,7 @@ export function V2ForecastWorkspace({ symbol, filings, priceHistory }: { symbol:
   </section>;
 }
 
-function V3PriceContextChart({ symbol, history, detail }: { symbol: string; history?: PriceHistory | null; detail: ResourceState<{ current: V2VersionDetail; parent: V2VersionDetail | null }> | null }) {
+function ForecastPriceContextChart({ symbol, history, detail, showHistoricalOnly }: { symbol: string; history?: PriceHistory | null; detail: ResourceState<{ current: V2VersionDetail; parent: V2VersionDetail | null }> | null; showHistoricalOnly: boolean }) {
   const current = detail?.kind === "ready" ? detail.data.current : null;
   const cutoffDate = current?.market_cutoff_at.slice(0, 10);
   const fixedTargetDate = current ? targetDate(current) : null;
@@ -350,11 +350,21 @@ function V3PriceContextChart({ symbol, history, detail }: { symbol: string; hist
   }, [history, cutoffDate, fixedTargetDate]);
   const [activeDate, setActiveDate] = useState<string | null>(candles.at(-1)?.trading_date ?? null);
   useEffect(() => setActiveDate(candles.at(-1)?.trading_date ?? null), [symbol, candles]);
-  if (!current) return null;
-  if (!candles.length) return <section className="price-panel price-panel-empty" aria-label="V3预测行情定位"><div><span className="section-label">V3 固定目标行情</span><h2>暂时没有已保存的 K 线</h2></div><p>预测版本的决策时点与目标日已保存，但本地没有可绘制的 OHLC 行情。</p><p>行情截止 {formatTime(current.market_cutoff_at)} · 固定目标日 {targetDate(current) ?? "未记录"}</p></section>;
+  if (!current && !showHistoricalOnly) return null;
+  if (!current && !candles.length) return <section className="price-panel price-panel-empty"><div><span className="section-label">历史行情</span><h2>暂时没有可展示的历史行情</h2></div><p>本地没有可绘制的 K 线。</p></section>;
+  if (!current) {
+    const active = candles.find((candle) => candle.trading_date === activeDate) ?? candles.at(-1)!;
+    return <section className="price-panel" aria-label={`${symbol} 历史行情`}>
+      <div className="price-panel-heading"><div><span className="section-label">历史行情</span><h2>{symbol} · 已保存日线</h2></div><span className="tag">{history?.source ?? "本地行情"}</span></div>
+      <p className="price-intro">此处仅展示本地保存的历史行情，不包含预测概率、目标日或版本时间标记。</p>
+      <CandlestickChart candles={candles} symbol={symbol} activeDate={active.trading_date} onInspect={setActiveDate} />
+      <div className="candle-detail" aria-live="polite"><strong>{active.trading_date}</strong><span>开 {formatPrice(active.open)} · 高 {formatPrice(active.high)} · 低 {formatPrice(active.low)} · 收 {formatPrice(active.close)}</span>{active.benchmark_close !== null && active.benchmark_close !== undefined && <span>SPY 收 {formatPrice(active.benchmark_close)}</span>}</div>
+    </section>;
+  }
+  if (!candles.length) return <section className="price-panel price-panel-empty" aria-label="预测行情定位"><div><span className="section-label">固定目标行情</span><h2>暂时没有已保存的 K 线</h2></div><p>预测版本的决策时点与目标日已保存，但本地没有可绘制的 OHLC 行情。</p><p>行情截止 {formatTime(current.market_cutoff_at)} · 固定目标日 {targetDate(current) ?? "未记录"}</p></section>;
   const active = candles.find((candle) => candle.trading_date === activeDate) ?? candles.at(-1)!;
-  return <section className="price-panel v3-price-context" aria-label="所选V3版本的固定目标和行情时间边界">
-    <div className="price-panel-heading"><div><span className="section-label">所选 V3 版本行情</span><h2>{symbol} · 固定目标与决策行情截止</h2></div><span className="tag">{history?.source ?? "已存行情"}</span></div>
+  return <section className="price-panel v3-price-context" aria-label="所选预测的固定目标和行情时间边界">
+    <div className="price-panel-heading"><div><span className="section-label">所选预测行情</span><h2>{symbol} · 固定目标与决策行情截止</h2></div><span className="tag">{history?.source ?? "已存行情"}</span></div>
     <p className="price-intro">图表只显示本地保存的 K 线。橙线标记该版本固定目标日，实线标记行情截止日；不会把新版判断伪装成历史概率或蜡烛。</p>
     <CandlestickChart candles={candles} symbol={symbol} cutoffDate={cutoffDate} targetEndDate={fixedTargetDate ?? undefined} activeDate={active.trading_date} onInspect={setActiveDate} />
     <div className="candle-detail" aria-live="polite"><strong>{active.trading_date}</strong><span>开 {formatPrice(active.open)} · 高 {formatPrice(active.high)} · 低 {formatPrice(active.low)} · 收 {formatPrice(active.close)}</span>{active.benchmark_close !== null && active.benchmark_close !== undefined && <span>SPY 收 {formatPrice(active.benchmark_close)}</span>}</div>
@@ -373,6 +383,26 @@ function isUsablePriceCandle(candle: PriceCandle) {
 }
 
 function formatPrice(value: number) { return `$${value.toFixed(2)}`; }
+
+function triggerTypeText(value: unknown) {
+  if (value === "manual_revision") return "人工发起修订";
+  if (value === "automatic_monitor") return "监控发现材料";
+  if (value === "new_forecast") return "新建预测";
+  return "预测更新";
+}
+
+function sourceTypeText(value: unknown) {
+  if (value === "official_filing") return "官方申报";
+  if (value === "uploaded_media") return "上传材料";
+  return "研究来源";
+}
+
+function discoveryKindText(value: unknown) {
+  if (value === "official_scan") return "官方资料扫描发现";
+  if (value === "manual_selection") return "人工选择";
+  if (value === "uploaded") return "上传材料";
+  return "来源记录";
+}
 
 function JobStatus({ job }: { job: V2ForecastJob }) {
   const error = job.error?.type;
@@ -407,7 +437,7 @@ function EvaluationReadout({ evaluations, selectedRootId, selectedVersionId, sel
   if (evaluations.kind === "error") return <section className="v2-evaluation"><p className="v2-notice error" role="alert">{evaluations.message}</p></section>;
   if (selectedVersionDetail?.model_status === "experimental_jev") {
     const jevCohort = jevEvaluationCohort(evaluations.data, selectedVersionDetail);
-    if (!jevCohort) return <section className="v2-evaluation"><p className="section-label">Jev 到期评估</p><h3>{evaluations.data.model_cohorts ? "尚无匹配的模型分组" : "模型分组评估尚不可用"}</h3><p>{evaluations.data.model_cohorts ? "当前评估数据没有与此版本的时间模式、Jev provider、实际模型和问题版本完全匹配的 cohort；不会使用混合旧分组代替。" : "API 尚未提供按模型隔离的评估分组；为避免混淆样本分母，不使用旧的混合分组代替。"}</p></section>;
+    if (!jevCohort) return <section className="v2-evaluation"><p className="section-label">Jev 到期评估</p><h3>{evaluations.data.model_cohorts ? "尚无匹配的模型分组" : "模型分组评估尚不可用"}</h3><p>{evaluations.data.model_cohorts ? "当前评估数据没有与此版本的时间模式、Jev 服务方、实际模型和问题版本完全匹配的 cohort；不会使用混合旧分组代替。" : "API 尚未提供按模型隔离的评估分组；为避免混淆样本分母，不使用旧的混合分组代替。"}</p></section>;
     const root = jevCohort.roots.find((item) => item.root_id === selectedRootId);
     const representative = root?.versions[0];
     const representsSelected = representative?.id === selectedVersionId;
@@ -419,11 +449,11 @@ function EvaluationReadout({ evaluations, selectedRootId, selectedVersionId, sel
       evaluation.direction_correct !== null ? `方向${evaluation.direction_correct ? "正确" : "错误"}` : null,
     ].filter((part): part is string => part !== null) : [];
     return <section className="v2-evaluation" aria-label="所选 Jev 预测的分组到期评估">
-      <div><p className="section-label">Jev 到期评估 · 同一模型组</p><h3>{representsSelected ? state : "显示该根的最新代表版本"}</h3><p>模型 {jevCohort.actual_model} · 问题 {jevCohort.question_version ?? "未记录"} · {root?.target_end_date ?? "目标日未记录"}</p></div>
-      <div className="v2-evaluation-sample"><span>独立根样本</span><strong>标签 {jevCohort.sample.labelled_root_count} · 评分 {jevCohort.sample.scored_root_count} / {jevCohort.sample.root_denominator}</strong><small>{cohortStatusText(jevCohort.status)}；按 provider、模型、问题版本和时间模式分组，每根只计一个代表版本。</small></div>
+      <div><p className="section-label">Jev 到期评估 · 同一模型组</p><h3>{representsSelected ? state : "显示该独立预测的最新代表版本"}</h3><p>模型 {jevCohort.actual_model} · 问题 {jevCohort.question_version ?? "未记录"} · {root?.target_end_date ?? "目标日未记录"}</p></div>
+      <div className="v2-evaluation-sample"><span>独立预测样本</span><strong>标签 {jevCohort.sample.labelled_root_count} · 评分 {jevCohort.sample.scored_root_count} / {jevCohort.sample.root_denominator}</strong><small>{cohortStatusText(jevCohort.status)}；按服务方、模型、问题版本和时间模式分组，每项独立预测只计一个代表版本。</small></div>
       {evaluation?.status === "succeeded" && <div className="v2-evaluation-result"><span>真实标签</span><strong>{labelText(evaluation.actual_label)}</strong><small>{evaluation.actual_target_close === null ? "目标收盘价未记录" : `目标收盘 ${evaluation.actual_target_close}`}{evaluation.label_available_at ? ` · ${formatTime(evaluation.label_available_at)} 可用` : ""}</small><p>Jev 实验性判断评分（模型未校准）：{scoreParts.length ? scoreParts.join(" · ") : "无可用数值评分"}</p></div>}
-      {!representsSelected && <p className="v2-evaluation-note">同一预测根的 cohort 仅选最高版本号作为代表；当前选中的旧版本没有单独计入这组分数。</p>}
-      {representative && <p className="v2-evaluation-note">根代表版本 V{representative.version_no} · 分组 {jevCohort.provider} / {jevCohort.actual_model} / {jevCohort.question_version ?? "—"} · 选择规则：{evaluations.data.model_cohort_selection_rule ?? "每根按最高 version_no 选一个代表版本"}</p>}
+      {!representsSelected && <p className="v2-evaluation-note">每项独立预测只按最高版本号统计；当前选中的旧版本没有单独计入这组分数。</p>}
+      {representative && <p className="v2-evaluation-note">代表版本：第 {representative.version_no} 版 · 分组 {jevCohort.provider} / {jevCohort.actual_model} / {jevCohort.question_version ?? "—"} · 选择规则：{evaluations.data.model_cohort_selection_rule ?? "每项独立预测按最高版本号选一个代表版本"}</p>}
     </section>;
   }
   const match = evaluationRootFor(evaluations.data, selectedRootId);
@@ -443,9 +473,9 @@ function EvaluationReadout({ evaluations, selectedRootId, selectedVersionId, sel
     : [];
   const numericScoring = (selectedVersion.model_status === "experimental_joint" || selectedVersion.model_status === "baseline_only") && scoreParts.length > 0;
   return <section className="v2-evaluation" aria-label="所选预测的到期评估">
-    <div><p className="section-label">到期评估 · 所选预测</p><h3>{state}</h3><p>目标日 {root.target_end_date ?? "未记录"} · V{selectedVersion.version_no} · {selectedVersion.time_mode === "observed" ? "前向观察" : selectedVersion.time_mode === "historical_research" ? "历史研究" : "时间模式未知"}</p></div>
-    <div className="v2-evaluation-sample"><span>根样本</span><strong>标签 {cohort.sample.labelled_root_count} · 评分 {cohort.sample.scored_root_count} / {cohort.sample.root_denominator}</strong><small>{cohortStatusText(cohort.status)}；真实标签与可评分预测分开统计，修订版本不重复计入根样本。</small></div>
-    {evaluation?.status === "succeeded" && <div className="v2-evaluation-result"><span>真实标签</span><strong>{labelText(evaluation.actual_label)}</strong><small>{evaluation.actual_target_close === null ? "目标收盘价未记录" : `目标收盘 ${evaluation.actual_target_close}`}{evaluation.label_available_at ? ` · ${formatTime(evaluation.label_available_at)} 可用` : ""}</small>{numericScoring ? <p>{selectedVersion.model_status === "baseline_only" ? "纯行情基线评分：" : "实验性联合模型评分："}{scoreParts.join(" · ")}</p> : <p>{selectedVersion.model_status === "research_only" ? "已到期可记录真实标签，但此版本是仅研究模式：无可评分数值预测。" : "真实标签已记录，但当前没有可显示的数值评分。"}</p>}</div>}
+    <div><p className="section-label">到期评估 · 所选预测</p><h3>{state}</h3><p>目标日 {root.target_end_date ?? "未记录"} · 第 {selectedVersion.version_no} 版 · {selectedVersion.time_mode === "observed" ? "前向观察" : selectedVersion.time_mode === "historical_research" ? "历史研究" : "时间模式未知"}</p></div>
+    <div className="v2-evaluation-sample"><span>预测样本</span><strong>标签 {cohort.sample.labelled_root_count} · 评分 {cohort.sample.scored_root_count} / {cohort.sample.root_denominator}</strong><small>{cohortStatusText(cohort.status)}；真实标签与可评分预测分开统计，修订版本不重复计入预测样本。</small></div>
+    {evaluation?.status === "succeeded" && <div className="v2-evaluation-result"><span>真实标签</span><strong>{labelText(evaluation.actual_label)}</strong><small>{evaluation.actual_target_close === null ? "目标收盘价未记录" : `目标收盘 ${evaluation.actual_target_close}`}{evaluation.label_available_at ? ` · ${formatTime(evaluation.label_available_at)} 可用` : ""}</small>{numericScoring ? <p>{selectedVersion.model_status === "baseline_only" ? "行情基线模型评分：" : "联合研究模型评分："}{scoreParts.join(" · ")}</p> : <p>{selectedVersion.model_status === "research_only" ? "已到期并记录真实标签，但该版本没有数值概率可评分。" : "真实标签已记录，但当前没有可显示的数值评分。"}</p>}</div>}
     {evaluation && evaluation.status !== "succeeded" && <p className="v2-evaluation-note">{evaluation.status === "blocked_price" ? "目标价格尚不可用，保持待评估。" : evaluation.status === "failed" ? "最近一次评估失败，未生成替代分数。" : "评估记录已创建，等待目标标签成熟。"}</p>}
   </section>;
 }
@@ -496,7 +526,7 @@ function evaluationStateText(status: "pending" | "succeeded" | "blocked_price" |
 function cohortStatusText(status: V2EvaluationCohort["status"]) {
   if (status === "available") return "样本达到最低门槛";
   if (status === "insufficient_samples") return "样本不足";
-  return "尚无可评分根";
+  return "尚无可评分预测";
 }
 
 function labelText(label: "bearish" | "neutral" | "bullish" | null) {
@@ -533,12 +563,12 @@ function monitorSymbolStatusText(status: "succeeded" | "incomplete" | "failed") 
 }
 
 function RootPicker({ roots, selectedRootId, onSelect }: { roots: ResourceState<V2ForecastRoots>; selectedRootId: string; onSelect: (id: string) => void }) {
-  if (roots.kind === "loading") return <p className="v2-root-loading">正在读取可修订的预测日期…</p>;
+  if (roots.kind === "loading") return <p className="v2-root-loading">正在读取可修订的预测记录…</p>;
   if (roots.kind === "error") return <p className="v2-notice error" role="alert">{roots.message}</p>;
   if (!roots.data.roots.length) return <p className="v2-root-loading">尚无预测记录。任务成功发布后会出现在这里。</p>;
-  return <label className="v2-root-picker">选择预测日期 / 根
+  return <label className="v2-root-picker">选择独立预测
     <select value={selectedRootId} onChange={(event) => onSelect(event.target.value)}>
-      {roots.data.roots.map((root) => <option value={root.id} key={root.id}>{formatTime(root.decision_at)} · 目标 {root.target_end_date} · V{root.latest_version_no}{root.expired === true ? " · 已到期" : root.expired === null ? " · 合同无效" : ""}</option>)}
+      {roots.data.roots.map((root) => <option value={root.id} key={root.id}>{formatTime(root.decision_at)} · 目标 {root.target_end_date} · 第 {root.latest_version_no} 版{root.expired === true ? " · 已到期" : root.expired === null ? " · 目标日期无效" : ""}</option>)}
     </select>
   </label>;
 }
@@ -546,18 +576,18 @@ function RootPicker({ roots, selectedRootId, onSelect }: { roots: ResourceState<
 function ForecastSummary({ root, roots, detail }: { root: V2ForecastRoot | null; roots: ResourceState<V2ForecastRoots>; detail: ResourceState<{ current: V2VersionDetail; parent: V2VersionDetail | null }> | null }) {
   if (roots.kind === "loading" || detail?.kind === "loading") return <section className="v2-card"><p>正在读取所选预测状态…</p></section>;
   if (roots.kind === "error") return null;
-  if (!root) return <section className="v2-card"><p className="section-label">所选预测</p><h3>尚无预测版本</h3><p>可以创建任务；只有任务成功处理并发布后才会出现版本。</p></section>;
+  if (!root) return <section className="v2-card"><p className="section-label">所选预测</p><h3>尚无预测版本</h3><p>可以创建一项新研究；预测成功生成后会出现在这里。</p></section>;
   const current = detail?.kind === "ready" ? detail.data.current : null;
-  if (!current) return <section className="v2-card"><p className="section-label">所选预测</p><h3>无法读取所选根的当前版本</h3><p>可重新选择预测日期或刷新页面；不会用其他根的版本代替它。</p></section>;
+  if (!current) return <section className="v2-card"><p className="section-label">所选预测</p><h3>无法读取所选预测的当前版本</h3><p>可重新选择预测日期或刷新页面；不会用其他预测的版本代替它。</p></section>;
   const joint = current.model_status === "experimental_joint" ? current.joint_probabilities : null;
   const jev = current.model_status === "experimental_jev" ? current.decision_probabilities : null;
   return <section className="v2-card">
-    <p className="section-label">所选预测 · V{current.version_no}</p>
+    <p className="section-label">所选预测 · 第 {current.version_no} 版</p>
     <h3>{modelStatusText(current.model_status)}</h3>
     <dl><div><dt>固定目标日</dt><dd>{root.target_end_date}</dd></div><div><dt>决策时点</dt><dd>{formatTime(current.decision_at)}</dd></div><div><dt>行情截止</dt><dd>{formatTime(current.market_cutoff_at)}</dd></div></dl>
     {jev ? <><ProbabilityStrip probabilities={jev} label="Jev 实验性三分类概率 · 未校准" /><p className="v2-limit">由 Jev 根据下方同一份 DeepSeek 研究简报输出，属于未校准的股票判断任务。</p></>
       : joint ? <ProbabilityStrip probabilities={joint} label="实验性联合概率" />
-      : <p className="v2-limit">{current.model_status === "research_only" ? "仅研究模式：无数值预测。DeepSeek 简报用于材料研究，不会回填旧版概率。" : "当前版本没有可显示的数值判断。"}</p>}
+      : <p className="v2-limit">{current.model_status === "research_only" ? "研究结果（未输出概率）：无数值预测。DeepSeek 简报用于材料研究，不会回填旧版概率。" : "当前版本没有可显示的数值判断。"}</p>}
   </section>;
 }
 
@@ -568,9 +598,9 @@ function RevisionComparison({ timeline, detail }: { timeline: ResourceState<V2Ti
   const marketChanged = detail?.kind === "ready" && detail.data.parent
     ? marketSummary(detail.data.current.price_input_manifest) !== marketSummary(detail.data.parent.price_input_manifest)
     : false;
-  return <section className="v2-card"><p className="section-label">修订对比</p><h3>{versions.length ? `${versions.length} 个不可变版本` : "尚无版本链"}</h3>
+  return <section className="v2-card"><p className="section-label">修订对比</p><h3>{versions.length ? `${versions.length} 个历史版本` : "尚无版本链"}</h3>
     {versions.length > 1 ? <p>每个子版本保留固定目标合同；版本差异见下方事件记录。</p> : <p>出现新的合规材料后，可以从这里选择版本发起人工修订。</p>}
-    {versions.length > 0 && <dl><div><dt>固定目标</dt><dd>{String(timeline?.kind === "ready" ? timeline.data.target_contract.target_end_date ?? "已记录" : "—")}</dd></div><div><dt>当前版本</dt><dd>V{versions.at(-1)?.version_no}</dd></div></dl>}
+    {versions.length > 0 && <dl><div><dt>固定目标</dt><dd>{String(timeline?.kind === "ready" ? timeline.data.target_contract.target_end_date ?? "已记录" : "—")}</dd></div><div><dt>当前版本</dt><dd>第 {versions.at(-1)?.version_no} 版</dd></div></dl>}
     {detail?.kind === "ready" && detail.data.parent && <p className="v2-limit">市场输入：{marketChanged ? "已更新（见下方截止时间）" : "与父版清单一致"}。本系统尚未验证各输入对市场结果的定量归因。</p>}
   </section>;
 }
@@ -585,7 +615,7 @@ function EvidenceEvents({ timeline, detail, selectedVersionId, onSelect }: {
   return <section className="v2-events" aria-labelledby="v2-events-title"><div className="section-heading"><div><p className="eyebrow">版本与来源</p><h2 id="v2-events-title">预测版本记录</h2></div><span>同一固定目标</span></div><ol>
     {timeline.data.versions.map((version) => <li key={version.id} className={version.id === selectedVersionId ? "is-selected" : ""}>
       <span className="v2-event-dot" aria-hidden="true" />
-      <button type="button" className="v2-event-select" onClick={() => onSelect(version.id)}><strong>V{version.version_no} · {version.parent_version_id ? "修订版本" : "根版本"}</strong><p>{formatTime(version.decision_at)} · {modelStatusText(version.model_status)} · {version.trigger_type}</p>{version.change_reason && <small>{version.change_reason}</small>}</button>
+      <button type="button" className="v2-event-select" onClick={() => onSelect(version.id)}><strong>第 {version.version_no} 版 · {version.parent_version_id ? "修订版本" : "初始版本"}</strong><p>{formatTime(version.decision_at)} · {modelStatusText(version.model_status)} · {triggerTypeText(version.trigger_type)}</p>{version.change_reason && <small>{version.change_reason}</small>}</button>
       {version.model_status === "experimental_jev" && version.decision_probabilities && <ProbabilityStrip probabilities={version.decision_probabilities} label="Jev 实验性概率 · 未校准" compact />}
       {version.model_status === "experimental_joint" && version.joint_probabilities && <ProbabilityStrip probabilities={version.joint_probabilities} label="实验性联合概率" compact />}
     </li>)}
@@ -593,7 +623,7 @@ function EvidenceEvents({ timeline, detail, selectedVersionId, onSelect }: {
 }
 
 function EvidenceDetail({ detail }: { detail: ResourceState<{ current: V2VersionDetail; parent: V2VersionDetail | null }> | null }) {
-  if (detail?.kind === "loading") return <p className="v2-detail-loading">正在读取所选版本的冻结来源和市场输入…</p>;
+  if (detail?.kind === "loading") return <p className="v2-detail-loading">正在读取所选版本的保存来源和市场输入…</p>;
   if (detail?.kind === "error") return <p className="v2-notice error" role="alert">{detail.message}</p>;
   if (detail?.kind !== "ready") return null;
   const { current, parent } = detail.data;
@@ -610,14 +640,14 @@ function EvidenceDetail({ detail }: { detail: ResourceState<{ current: V2Version
   const inherited = currentSources.length - added.length - replaced.length;
   const market = current.price_input_manifest;
   const researchStatus = researchStatusText(current.research_report?.research_conclusions_status ?? current.research_report?.status);
-  return <section className="v2-detail" aria-label="所选版本的冻结输入">
-    <div><p className="section-label">所选 V{current.version_no} 的来源差异</p><h3>{parent ? `新增 ${added.length} · 状态替换 ${replaced.length} · 移除 ${removed.length} · 继承 ${inherited}` : `冻结 ${currentSources.length} 条来源`}</h3><p>{parent ? "按原始来源键区分新增、状态替换与移除；这些输入变化尚未证明对价格或模型输出的影响。" : "根版本没有父版本可比较。"}</p></div>
+  return <section className="v2-detail" aria-label="所选版本的保存的输入">
+    <div><p className="section-label">所选第 {current.version_no} 版的来来源差异</p><h3>{parent ? `新增 ${added.length} · 状态替换 ${replaced.length} · 移除 ${removed.length} · 继承 ${inherited}` : `冻结 ${currentSources.length} 条来源`}</h3><p>{parent ? "按原始来源键区分新增、状态替换与移除；这些输入变化尚未证明对价格或模型输出的影响。" : "初始版本没有父版本可比较。"}</p></div>
     <dl><div><dt>行情数据截止</dt><dd>{formatTime(String(market.market_cutoff_at ?? current.market_cutoff_at))}</dd></div><div><dt>最近完整交易日</dt><dd>{String(market.latest_completed_session ?? "未记录")}</dd></div><div><dt>价格输入哈希</dt><dd>{shortHash(market.price_input_sha256)}</dd></div><div><dt>研究报告</dt><dd>{researchStatus}</dd></div></dl>
     <div className="v2-source-list">{currentSources.length ? currentSources.map((item, index) => {
       const sourceUrl = typeof item.source_url === "string" ? item.source_url : null;
       const publishedAt = item.published_at ?? item.public_at;
-      return <article key={`${eventIdentity(item)}-${index}`}><strong>{String(item.source_type ?? "source")}</strong>{sourceUrl ? <a href={sourceUrl} target="_blank" rel="noopener noreferrer">打开原始来源</a> : <span>原始来源链接未记录</span>}<p>{formatTime(typeof publishedAt === "string" ? publishedAt : null)} · {coverageText(item.coverage_incomplete)}</p><small>{item.is_new ? "本版本新增/状态变更" : "从父版继承"} · {String(item.discovery_kind ?? "未知来源方式")}</small></article>;
-    }) : <p>这个版本没有冻结到合规证据来源。</p>}</div>
+      return <article key={`${eventIdentity(item)}-${index}`}><strong>{sourceTypeText(item.source_type)}</strong>{sourceUrl ? <a href={sourceUrl} target="_blank" rel="noopener noreferrer">打开原始来源</a> : <span>原始来源链接未记录</span>}<p>{formatTime(typeof publishedAt === "string" ? publishedAt : null)} · {coverageText(item.coverage_incomplete)}</p><small>{item.is_new ? "本版本新增/状态变更" : "从父版继承"} · {discoveryKindText(item.discovery_kind)}</small></article>;
+    }) : <p>这个版本没有保存合规证据来源。</p>}</div>
   </section>;
 }
 
@@ -663,7 +693,7 @@ function researchStatusText(value: unknown) {
     case "failed":
     case "failed_before_run": return "研究失败";
     case "not_run": return "未运行研究";
-    case "no_eligible_frozen_sources": return "没有合规冻结来源";
+    case "no_eligible_frozen_sources": return "没有合规保存来源";
     default: return "研究状态未记录";
   }
 }
