@@ -22,9 +22,12 @@ from .database import SessionLocal
 from .dashboard import dashboard_price_history
 from .evidence_context import EvidenceContextError, freeze_evidence_context
 from .forecast_evaluation_v2 import JEV_LOG_LOSS_EPSILON
+from .forecast_contract import future_xnys_sessions, latest_completed_xnys_session
 from .forecast_jobs import ForecastJobError, enqueue_job
+from .jev_learning import jev_learning_status
 from .forecast_v2_models import ForecastEvaluationV2, ForecastJobV2, ForecastVersionV2, OfficialMonitorRunV2
 from .market_time import xnys_session_close_at
+from .material_analysis_models import MaterialAnalysisVersion
 from .models import SecFilingInventory, UploadedEvidence
 from .schemas import DashboardPriceHistory
 from .services import normalize_symbol
@@ -51,6 +54,14 @@ class NewForecastJobRequest(BaseModel):
 
     symbol: str = Field(min_length=1, max_length=10)
     kind: Literal["new"] = "new"
+    source_refs: list[SourceRefRequest] = Field(default_factory=list, max_length=10)
+
+
+class HistoricalReplayRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    symbol: str = Field(min_length=1, max_length=10)
+    decision_date: date
     source_refs: list[SourceRefRequest] = Field(default_factory=list, max_length=10)
 
 
@@ -103,6 +114,53 @@ def create_v2_forecast_job(
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     except ForecastJobError as exc:
         code = status.HTTP_409_CONFLICT if exc.code == "conflict" else status.HTTP_422_UNPROCESSABLE_ENTITY
+        raise HTTPException(status_code=code, detail=str(exc)) from exc
+    except SQLAlchemyError as exc:
+        raise HTTPException(status_code=503, detail="V2 job store is unavailable") from exc
+
+
+@router.post("/historical-replays", status_code=status.HTTP_202_ACCEPTED)
+def create_v2_historical_replay(
+    payload: HistoricalReplayRequest,
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
+    db: Session = Depends(get_v2_db),
+) -> dict[str, Any]:
+    """Queue an explicitly retrospective replay for a matured 20-session target."""
+    now = datetime.now(UTC)
+    try:
+        symbol = _supported_symbol(payload.symbol)
+        try:
+            decision_at = xnys_session_close_at(payload.decision_date)
+            target_end = future_xnys_sessions(payload.decision_date, 20)[-1]
+            latest_completed = latest_completed_xnys_session(now)
+        except ValueError as exc:
+            raise V2RequestError(str(exc)) from exc
+        if decision_at >= now:
+            raise V2RequestError("historical replay decision date must be in the past")
+        if target_end > latest_completed:
+            raise V2RequestError("choose an earlier date so its 20-session target has already matured")
+        refs = _source_ref_payload(payload.source_refs)
+        _validate_source_refs(
+            db,
+            refs=refs,
+            symbol=symbol,
+            decision_at=decision_at,
+            time_mode="historical_research",
+        )
+        job = enqueue_job(
+            db=db,
+            symbol=symbol,
+            kind="new",
+            idempotency_key=idempotency_key,
+            source_refs=refs,
+            time_mode="historical_research",
+            requested_decision_at=decision_at,
+        )
+        return _job_payload(job)
+    except V2RequestError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    except ForecastJobError as exc:
+        code = status.HTTP_409_CONFLICT if exc.code == "conflict" else status.HTTP_422_UNPROCESSABLE_CONTENT
         raise HTTPException(status_code=code, detail=str(exc)) from exc
     except SQLAlchemyError as exc:
         raise HTTPException(status_code=503, detail="V2 job store is unavailable") from exc
@@ -250,6 +308,18 @@ def get_v2_evaluations(symbol: str, db: Session = Depends(get_v2_db)) -> dict[st
         raise HTTPException(status_code=503, detail="V2 job store is unavailable") from exc
 
 
+@router.get("/jev-learning/status")
+def get_jev_learning_status(symbol: str | None = None, db: Session = Depends(get_v2_db)) -> dict[str, Any]:
+    """Expose live-calibrator readiness, active versions, and strict cohort gates."""
+    try:
+        normalized = _supported_symbol(symbol) if symbol else None
+        return jev_learning_status(db=db, symbol=normalized)
+    except V2RequestError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    except SQLAlchemyError as exc:
+        raise HTTPException(status_code=503, detail="Jev 学习状态暂不可用，请确认数据库迁移已完成。") from exc
+
+
 @router.get("/stocks/{symbol}/forecast-roots")
 def list_v2_forecast_roots(symbol: str, db: Session = Depends(get_v2_db)) -> dict[str, Any]:
     """List compact root choices for selecting a manual-revision parent.
@@ -265,8 +335,8 @@ def list_v2_forecast_roots(symbol: str, db: Session = Depends(get_v2_db)) -> dic
             select(ForecastVersionV2)
             .where(ForecastVersionV2.symbol == normalized, ForecastVersionV2.root_id == ForecastVersionV2.id)
             .order_by(ForecastVersionV2.decision_at.desc(), ForecastVersionV2.created_at.desc(), ForecastVersionV2.id.desc())
-            .limit(FORECAST_ROOT_LIST_LIMIT)
         ).all()
+        roots = [root for root in roots if _persisted_time_mode(root) != "historical_research"][:FORECAST_ROOT_LIST_LIMIT]
         return {
             "symbol": normalized,
             "roots": [_root_list_entry(db=db, root=root, now=now) for root in roots],
@@ -284,12 +354,12 @@ def get_v2_stock_workspace(symbol: str, db: Session = Depends(get_v2_db)) -> dic
     now = datetime.now(UTC)
     try:
         normalized = _supported_symbol(symbol)
-        root = db.scalar(
+        root_candidates = db.scalars(
             select(ForecastVersionV2)
             .where(ForecastVersionV2.symbol == normalized, ForecastVersionV2.root_id == ForecastVersionV2.id)
             .order_by(ForecastVersionV2.created_at.desc(), ForecastVersionV2.id.desc())
-            .limit(1)
-        )
+        ).all()
+        root = next((candidate for candidate in root_candidates if _persisted_time_mode(candidate) != "historical_research"), None)
         pending_jobs = db.scalar(
             select(func.count())
             .select_from(ForecastJobV2)
@@ -347,7 +417,7 @@ def get_v2_stock_prices(symbol: str, db: Session = Depends(get_v2_db)) -> dict[s
 
 def _supported_symbol(value: str) -> str:
     normalized = normalize_symbol(value)
-    if normalized not in {"AAPL", "MSFT", "GOOGL", "AMZN", "NVDA"}:
+    if normalized not in {"AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"}:
         raise V2RequestError("symbol is not supported for V2 forecasting")
     return normalized
 
@@ -362,6 +432,7 @@ def _validate_source_refs(
     refs: list[dict[str, str]],
     symbol: str,
     decision_at: datetime,
+    time_mode: str = "observed",
 ) -> None:
     if len({(item["source_type"], item["source_id"]) for item in refs}) != len(refs):
         raise V2RequestError("source_refs must not repeat a source")
@@ -382,7 +453,7 @@ def _validate_source_refs(
             observed_at = source.observed_at
         if source.symbol != symbol:
             raise V2RequestError("source does not belong to the forecast symbol")
-        if public_at > decision_at or observed_at > decision_at:
+        if public_at > decision_at or (time_mode == "observed" and observed_at > decision_at):
             raise V2RequestError("source is not available at this decision time")
 
 
@@ -438,16 +509,27 @@ def _validate_manual_revision_sources(
             source_refs=refs,
             previous_event_ids=previous_ids,
             previous_decision_at=parent.decision_at,
+            include_automatic_new_sources=False,
         )
     except EvidenceContextError as exc:
         raise V2RequestError(f"revision source snapshot is invalid: {exc}") from exc
     events = {(event.source_type, str(event.source_id)): event for event in context.events}
     parent_cutoff = _utc(parent.decision_at)
+    current_analysis_ids: dict[tuple[str, str], str | None] = {}
     for ref in refs:
         key = (ref["source_type"], ref["source_id"])
         event = events.get(key)
-        if event is None or not event.is_new:
+        if event is None:
             raise V2RequestError("manual revision source is unchanged from the selected forecast")
+        latest_analysis = _latest_analysis_for_event(db, event)
+        current_analysis_ids[key] = str(latest_analysis.id) if latest_analysis else None
+        newly_analyzed_after_parent = (
+            key in previous_sources
+            and latest_analysis is not None
+            and _utc(latest_analysis.created_at) > parent_cutoff
+        )
+        if not event.is_new and not newly_analyzed_after_parent:
+            raise V2RequestError("manual revision source is unchanged from the selected forecast and has no new successful analysis")
         if key not in previous_sources and event.published_at <= parent_cutoff and event.observed_at <= parent_cutoff:
             raise V2RequestError("manual revision source was not newly available after the selected forecast")
 
@@ -462,6 +544,7 @@ def _validate_manual_revision_sources(
         if result_version is None or not isinstance(result_version.evidence_version_manifest, list):
             continue
         frozen_event_ids = {}
+        frozen_analysis_ids = {}
         for item in result_version.evidence_version_manifest:
             if not isinstance(item, dict):
                 continue
@@ -469,10 +552,50 @@ def _validate_manual_revision_sources(
             event_id = item.get("event_version_id") or item.get("id")
             if isinstance(source_type, str) and isinstance(source_id, str) and event_id is not None:
                 frozen_event_ids[(source_type, source_id)] = str(event_id)
-        if all(frozen_event_ids.get((ref["source_type"], ref["source_id"])) == current_event_ids.get(
-            (ref["source_type"], ref["source_id"])
-        ) for ref in refs):
-            raise V2RequestError("manual revision source snapshot is unchanged from the previous result")
+        brief = result_version.research_brief if isinstance(result_version.research_brief, dict) else {}
+        for item in brief.get("material_refs", []):
+            if not isinstance(item, dict):
+                continue
+            source_type, source_id, analysis_id = item.get("source_type"), item.get("source_id"), item.get("analysis_id")
+            if isinstance(source_type, str) and isinstance(source_id, str) and isinstance(analysis_id, str):
+                frozen_analysis_ids[(source_type, source_id)] = analysis_id
+        source_snapshots_unchanged = all(
+            frozen_event_ids.get((ref["source_type"], ref["source_id"]))
+            == current_event_ids.get((ref["source_type"], ref["source_id"]))
+            for ref in refs
+        )
+        analyses_unchanged = all(
+            frozen_analysis_ids.get((ref["source_type"], ref["source_id"]))
+            == current_analysis_ids.get((ref["source_type"], ref["source_id"]))
+            for ref in refs
+        )
+        if source_snapshots_unchanged and analyses_unchanged:
+            raise V2RequestError("manual revision source snapshot and analysis are unchanged from the previous result")
+
+
+def _latest_analysis_for_event(db: Session, event: Any) -> MaterialAnalysisVersion | None:
+    """Return the newest successful analysis for this source's exact content.
+
+    Review-state changes can append an immutable evidence event while leaving
+    the bytes supplied to analysis unchanged.  The analysis remains valid for
+    a revision only when its recorded content hash matches the newly frozen
+    event; requiring the event UUID as well would incorrectly reject that
+    byte-identical, successfully re-analyzed source.
+    """
+    rows = db.scalars(
+        select(MaterialAnalysisVersion)
+        .where(
+            MaterialAnalysisVersion.source_type == event.source_type,
+            MaterialAnalysisVersion.source_id == event.source_id,
+        )
+        .order_by(MaterialAnalysisVersion.created_at.desc(), MaterialAnalysisVersion.version_no.desc())
+    ).all()
+    for row in rows:
+        source_manifest = row.source_manifest if isinstance(row.source_manifest, dict) else {}
+        content_hash = source_manifest.get("content_sha256")
+        if content_hash == event.content_sha256:
+            return row
+    return None
 
 
 def _filing_public_at(source: SecFilingInventory) -> datetime:
@@ -509,6 +632,8 @@ def _job_payload(job: ForecastJobV2) -> dict[str, Any]:
         "root_version_id": _uuid_or_none(job.root_version_id),
         "parent_version_id": _uuid_or_none(job.parent_version_id),
         "source_refs": job.source_refs,
+        "time_mode": job.time_mode,
+        "requested_decision_at": job.requested_decision_at,
         "status": job.status,
         "current_stage": job.current_stage,
         "attempts": job.attempts,
@@ -551,6 +676,12 @@ def _version_payload(version: ForecastVersionV2) -> dict[str, Any]:
 
 
 def _timeline_entry(version: ForecastVersionV2) -> dict[str, Any]:
+    manifest = version.model_manifest if isinstance(version.model_manifest, dict) else {}
+    provider = manifest.get("decision_provider") if isinstance(manifest.get("decision_provider"), dict) else {}
+    calibration = manifest.get("local_calibration") if isinstance(manifest.get("local_calibration"), dict) else {}
+    raw_probabilities = provider.get("raw_probabilities")
+    if raw_probabilities is None and calibration.get("status") != "active":
+        raw_probabilities = version.decision_probabilities
     return {
         "id": str(version.id),
         "parent_version_id": _uuid_or_none(version.parent_version_id),
@@ -560,6 +691,8 @@ def _timeline_entry(version: ForecastVersionV2) -> dict[str, Any]:
         "baseline_probabilities": version.baseline_probabilities,
         "joint_probabilities": version.joint_probabilities,
         "decision_probabilities": version.decision_probabilities,
+        "local_calibration_status": calibration.get("status"),
+        "raw_decision_probabilities": raw_probabilities,
         "model_status": version.model_status,
         "change_reason": version.change_reason,
         "trigger_type": version.trigger_type,

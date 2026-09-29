@@ -122,8 +122,61 @@ def test_build_attaches_server_fields_and_validates_analysis_item_pointers():
     assert sent["target_contract"] == CONTRACT
     assert "Never" not in provider.calls[0]["system_prompt"]
     assert "change_type" in provider.calls[0]["system_prompt"]
+    assert "reserved only for analyses whose source_metadata.selection_reason is exactly background" in provider.calls[0]["system_prompt"]
+    assert "never cite a new_publication or newly_observed analysis in background" in provider.calls[0]["system_prompt"]
     assert '"maxItems"' in provider.calls[0]["system_prompt"]
     assert '"maxLength"' in provider.calls[0]["system_prompt"]
+
+
+def test_local_mode_reuses_saved_analysis_without_calling_a_brief_provider():
+    quote = "Revenue rose 12 percent."
+    row = material(payload={
+        "schema_version": "material-analysis-v1",
+        "prompt_version": "material-analysis-prompt-v1",
+        "summary": "Revenue grew and margins improved.",
+        "facts": [{"id": "f1", "statement": "Revenue rose 12 percent.",
+                   "citations": [{"quote": quote, "start_char": 0, "end_char": len(quote)}]}],
+        "supporting": [{"id": "s1", "statement": "Growth supports demand.",
+                        "rationale": "Revenue increased year over year.", "fact_ids": ["f1"],
+                        "citations": [{"quote": quote, "start_char": 0, "end_char": len(quote)}]}],
+        "counter": [],
+        "uncertainties": [{"id": "u1", "statement": "Can growth continue?", "reason": "One quarter is not enough.",
+                           "citations": [{"quote": quote, "start_char": 0, "end_char": len(quote)}]}],
+        "key_numbers": [{"name": "Revenue growth", "value_text": "12%", "period": "quarterly",
+                         "citations": [{"quote": quote, "start_char": 0, "end_char": len(quote)}]}],
+    })
+    provider = FakeProvider()
+
+    brief = build([row], provider, synthesis_mode="local_analysis")
+
+    assert provider.calls == []
+    assert brief.new_facts[0].statement == "Revenue rose 12 percent."
+    assert brief.new_facts[0].citations[0].model_dump() == pointer()
+    assert "Growth supports demand." in brief.supporting[0].statement
+    assert "Revenue increased year over year." in brief.supporting[0].statement
+    assert brief.unknowns[0].question == "Can growth continue?"
+    assert brief.material_refs[0].analysis_summary == "Revenue grew and margins improved."
+    number = brief.material_refs[0].key_numbers[0]
+    assert (number.name, number.value_text, number.period) == ("Revenue growth", "12%", "quarterly")
+    assert number.citations[0].quote == quote
+
+
+def test_background_cannot_cite_a_newly_selected_analysis():
+    row = material()
+    provider = FakeProvider({
+        "new_facts": [], "supporting": [], "counter": [],
+        "background": [{
+            "statement": "A new filing provides context.",
+            "citations": [pointer("analysis-1")],
+            "continuing_reason": "It remains relevant.",
+        }],
+        "conflicts": [], "unknowns": [], "changes": [],
+    })
+
+    with pytest.raises(ResearchBriefError) as error:
+        build([row], provider)
+
+    assert error.value.code == "invalid_background_reference"
 
 
 def test_server_metadata_cannot_be_overwritten_by_model_output():
@@ -191,6 +244,30 @@ def test_no_new_material_carries_parent_risks_and_refreshes_market_without_model
     assert brief.background[0].statement == parent.new_facts[0].statement
     assert brief.background[0].continuing_reason
     assert brief.material_refs[0].selection_reason == "background"
+
+
+def test_explicit_new_analysis_for_frozen_candidate_refreshes_parent_brief():
+    parent_row = material(analysis_id="parent-analysis", source_id="already-used")
+    parent = build([parent_row], FakeProvider(synthesis_for(parent_row)))
+    candidate = material(analysis_id="recovered-analysis", source_id="frozen-but-omitted", explicit=True)
+    provider = FakeProvider({
+        "new_facts": [],
+        "supporting": [{"statement": "The recovered analysis adds relevant context.", "citations": [pointer("recovered-analysis")]}],
+        "counter": [], "background": [], "conflicts": [], "unknowns": [], "changes": [],
+    })
+
+    revised = build(
+        [parent_row, candidate],
+        provider,
+        parent_brief=parent,
+        decision_at=CUTOFF + timedelta(days=1),
+        explicit_source_refs=[{"source_type": "uploaded_media", "source_id": "frozen-but-omitted"}],
+    )
+
+    assert len(provider.calls) == 1
+    assert {ref.analysis_id for ref in revised.material_refs} == {"parent-analysis", "recovered-analysis"}
+    assert revised.material_refs[1].selection_reason == "background"
+    assert revised.supporting[0].citations[0].analysis_id == "recovered-analysis"
 
 
 def test_parent_sources_all_rejected_are_not_restored_into_empty_revision():

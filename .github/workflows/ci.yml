@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: market_evidence
+          POSTGRES_PASSWORD: market_evidence_dev
+          POSTGRES_DB: test_market_evidence
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U market_evidence -d test_market_evidence"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PUBLIC_API_MODE: "false"
+      TEST_DATABASE_URL: postgresql+psycopg://market_evidence:market_evidence_dev@localhost:5432/test_market_evidence
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install backend dependencies
+        run: python -m pip install -e '.[test]'
+
+      - name: Run backend suite
+        run: python -m pytest -q
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build

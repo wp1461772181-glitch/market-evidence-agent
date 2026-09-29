@@ -57,7 +57,7 @@ def test_prices_returns_empty_dashboard_shape_for_supported_symbol(client):
 
 
 def test_prices_rejects_unsupported_symbol(client):
-    response = client.get("/v2/stocks/TSLA/prices")
+    response = client.get("/v2/stocks/ZZZ/prices")
 
     assert response.status_code == 422
     assert "symbol is not supported" in response.json()["detail"]

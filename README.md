@@ -1,6 +1,14 @@
 # Market Evidence Agent
 
-**Current delivery (2026-09-27):** [V3 Agent research workspace](docs/agent-research-v3-spec.md) connects reusable DeepSeek material analyses and research briefs to Jev decisions through OpenRouter. The material library supports analysis, frozen originals, history and quote navigation; forecasts retain a fixed target and exact analysis references. Custom model training is an optional experiment. See [Luna's implementation plan](docs/agent-research-v3-luna-plan.md), [progress](docs/v3-progress.md) and [acceptance evidence](docs/v3-acceptance.md).
+**Current delivery (2026-09-28):** [V3 Agent research workspace](docs/agent-research-v3-spec.md) connects reusable DeepSeek material analyses and research briefs to Jev decisions through OpenRouter. The material library supports analysis, frozen originals, history and quote navigation; forecasts retain a fixed target and exact analysis references. A local Jev probability-learning loop now preserves raw outputs, scores matured forward outcomes, and only activates a calibration model after chronological holdout validation; see [learning design and limits](docs/jev-local-learning.md). See also [Luna's implementation plan](docs/agent-research-v3-luna-plan.md), [progress](docs/v3-progress.md) and [acceptance evidence](docs/v3-acceptance.md).
+
+## Public demo deployment
+
+The prepared demo hosts the React frontend on GitHub Pages and keeps FastAPI,
+PostgreSQL, model-provider credentials, and the forecast worker on the owner's
+Mac. See the [deployment guide](docs/github-pages-local-backend.md) for the
+access-key setup, local-only database binding, Tailscale Funnel, and manual
+GitHub Pages release steps. The deployment workflow is intentionally manual.
 
 ## V3 setup and behavior
 
@@ -111,7 +119,7 @@ docker run --name market-evidence-postgres \
   -e POSTGRES_USER=market_evidence \
   -e POSTGRES_PASSWORD=market_evidence_dev \
   -e POSTGRES_DB=market_evidence \
-  -p 55432:5432 -d postgres:16
+  -p 127.0.0.1:55432:5432 -d postgres:16
 until docker exec market-evidence-postgres pg_isready -U market_evidence -d market_evidence; do sleep 1; done
 ~~~
 

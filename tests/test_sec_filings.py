@@ -415,9 +415,9 @@ def test_rejects_unknown_symbols_and_unconfigured_provider(monkeypatch):
 
     opener, _ = _responses()
     try:
-        _provider(opener).discover("TSLA")
+        _provider(opener).discover("ZZZ")
     except SecFilingsError as exc:
-        assert "currently supports" in str(exc)
+        assert "currently supports the Magnificent Seven" in str(exc)
     else:
         raise AssertionError("unsupported ticker must fail before external access")
 

@@ -18,7 +18,12 @@ from typing import Any, Protocol
 
 from sqlalchemy.orm import Session
 
-from .evidence_context import EvidenceContext, EvidenceContextError, freeze_evidence_context
+from .evidence_context import (
+    EvidenceContext,
+    EvidenceContextError,
+    freeze_evidence_context,
+    select_sec_filings_to_fetch,
+)
 from .event_provider import EventProviderError, configured_deepseek_model, create_deepseek_provider_from_env
 from .features import BENCHMARK_SYMBOL, FeatureRow, build_features
 from .forecast_contract import (
@@ -35,6 +40,7 @@ from .market_data_ingestion import ingest_market_data
 from .market_data_snapshots import get_market_data
 from .market_time import normalize_utc
 from .research_workflow import ResearchRun
+from .sec_filings import SecEdgarProvider, fetch_inventory_content
 from .v2_research_bridge import V2ResearchBridgeError, run_context_research
 
 
@@ -45,8 +51,8 @@ PROCESSOR_VERSION = "v2-research-only-worker-v1"
 class ForecastInputError(RuntimeError):
     """A readable failure when an immutable V2 input cannot be prepared."""
 
-    def __init__(self, reason: str, *, retryable: bool = False) -> None:
-        super().__init__(reason)
+    def __init__(self, reason: str, *, retryable: bool = False, message: str | None = None) -> None:
+        super().__init__(message or reason)
         self.reason = reason
         self.retryable = retryable
 
@@ -72,6 +78,7 @@ class ResearchOnlyForecastProcessor:
         *,
         session_factory: Callable[[], Session],
         market_provider_factory: Callable[[], _MarketProvider] = YahooFinanceProvider,
+        sec_provider_factory: Callable[[], Any] = SecEdgarProvider,
         now_factory: Callable[[], datetime] | None = None,
         market_ingester: Callable[..., object] = ingest_market_data,
         market_loader: Callable[..., list[object]] = get_market_data,
@@ -80,6 +87,7 @@ class ResearchOnlyForecastProcessor:
     ) -> None:
         self._session_factory = session_factory
         self._market_provider_factory = market_provider_factory
+        self._sec_provider_factory = sec_provider_factory
         self._now_factory = now_factory or (lambda: datetime.now(UTC))
         self._market_ingester = market_ingester
         self._market_loader = market_loader
@@ -88,24 +96,39 @@ class ResearchOnlyForecastProcessor:
 
     def __call__(self, job: ForecastJobV2) -> ForecastDraft:
         requested_at = _utc(job.created_at, "job created_at")
+        time_mode = getattr(job, "time_mode", "observed")
         fetch_started_at = _utc(self._now_factory(), "market refresh time")
         try:
-            latest_session = latest_completed_xnys_session(fetch_started_at)
+            if time_mode == "historical_research":
+                requested_decision_at = getattr(job, "requested_decision_at", None)
+                if requested_decision_at is None:
+                    raise ForecastInputError("historical_replay_cutoff_missing")
+                decision_at = _utc(requested_decision_at, "historical replay decision_at")
+                if decision_at >= fetch_started_at:
+                    raise ForecastInputError("historical_replay_cutoff_not_in_past")
+                latest_session = latest_completed_xnys_session(decision_at)
+                evidence_selection_at = decision_at
+            else:
+                latest_session = latest_completed_xnys_session(fetch_started_at)
+                evidence_selection_at = _utc(self._now_factory(), "evidence material selection time")
         except (ForecastContractError, ValueError) as exc:
             raise ForecastInputError("no_completed_market_session") from exc
 
         fetched = self._refresh_prices(job.symbol, latest_session, fetch_started_at)
-        # The cutoff is taken only after the market responses were persisted.
-        # Inputs discovered later than it will wait for the next job.
-        decision_at = _utc(self._now_factory(), "decision_at")
-        if decision_at < fetch_started_at:
-            raise ForecastInputError("worker_clock_moved_backwards")
+        self._prepare_evidence_sources(job=job, selection_at=evidence_selection_at)
+        if time_mode == "observed":
+            # The cutoff is taken only after market responses and selected SEC
+            # documents were persisted. Later observations wait for another job.
+            decision_at = _utc(self._now_factory(), "decision_at")
+            if decision_at < fetch_started_at:
+                raise ForecastInputError("worker_clock_moved_backwards")
 
         stock_rows, benchmark_rows, feature, price_manifest = self._market_snapshot(
             symbol=job.symbol,
             latest_session=latest_session,
             decision_at=decision_at,
             fetched=fetched,
+            time_mode=time_mode,
         )
         with self._session_factory() as db:
             parent = self._load_parent(db, job)
@@ -117,14 +140,21 @@ class ResearchOnlyForecastProcessor:
                 anchor_date=latest_session,
                 anchor_close=float(stock_rows[-1].close),
                 price_source=YAHOO_SOURCE,
-                price_version="observed-yahoo-ingestion-v1",
+                price_version=(
+                    "historical-yahoo-backfill-v1" if time_mode == "historical_research"
+                    else "observed-yahoo-ingestion-v1"
+                ),
                 price_hash=price_manifest["price_input_sha256"],
                 price_basis_metadata=asdict(fetched[job.symbol].price_basis),
             ).as_dict()
             remaining_sessions = 20
             realized_return = 0.0
-            trigger_type = "manual"
-            change_reason = "new forecast with frozen observed market and evidence inputs"
+            trigger_type = "historical_replay" if time_mode == "historical_research" else "manual"
+            change_reason = (
+                "retrospective historical replay using explicitly marked backfill market and evidence inputs"
+                if time_mode == "historical_research"
+                else "new forecast with frozen observed market and evidence inputs"
+            )
         else:
             try:
                 contract_object = target_contract_from_dict(parent.target_contract)
@@ -140,21 +170,24 @@ class ResearchOnlyForecastProcessor:
             remaining_sessions = state.remaining_sessions
             realized_return = state.realized_return_from_anchor
             trigger_type = "manual_revision" if job.kind == "manual_revision" else "automatic_revision"
+            changed_event_count = sum(event.is_new for event in context.events)
             change_reason = (
-                f"{job.kind}: inherited frozen evidence plus {sum(event.is_new for event in context.events)} "
-                "new or changed observed event(s)"
+                f"manual_revision: {len(job.source_refs or [])} explicitly selected source(s); "
+                f"{changed_event_count} new or changed source snapshot(s)"
+                if job.kind == "manual_revision"
+                else f"automatic_revision: inherited frozen evidence plus {changed_event_count} new or changed observed event(s)"
             )
 
         feature_snapshot = {
             **_json_safe(feature.to_dict()),
-            "market_feature_mode": "observed",
+            "market_feature_mode": time_mode,
             "market_cutoff_at": decision_at.isoformat(),
             "remaining_sessions": remaining_sessions,
             "realized_return_from_anchor": realized_return,
         }
         research_report = {
             **research_report,
-            "time_mode": "observed",
+            "time_mode": time_mode,
             "decision_at": decision_at.isoformat(),
             "requested_at": requested_at.isoformat(),
             "evidence_event_count": len(context.events),
@@ -162,8 +195,12 @@ class ResearchOnlyForecastProcessor:
             "coverage_incomplete": context.coverage_incomplete,
             "omitted_source_refs": list(context.omitted_source_refs),
             "automatic_selection": {
-                "enabled": True,
-                "policy": "initial_latest_10k_10q_plus_90d_or_parent_inheritance",
+                "enabled": job.kind != "manual_revision",
+                "policy": (
+                    "manual_sources_plus_parent_state_changes"
+                    if job.kind == "manual_revision"
+                    else "initial_latest_10k_10q_plus_90d_or_parent_inheritance"
+                ),
                 "explicit_source_refs": list(job.source_refs or []),
                 "backfill_events": sum(event.discovery_kind == "backfill_discovered" for event in context.events),
             },
@@ -181,6 +218,7 @@ class ResearchOnlyForecastProcessor:
             model_manifest={
                 "processor_version": PROCESSOR_VERSION,
                 "model_status": "research_only",
+                "time_mode": time_mode,
                 "baseline_model_status": "unpublished_below_validation_gate",
                 "joint_model_status": "unavailable",
                 "numeric_prediction_status": "not_generated",
@@ -189,6 +227,56 @@ class ResearchOnlyForecastProcessor:
             change_reason=change_reason,
             trigger_type=trigger_type,
         )
+
+    def _prepare_evidence_sources(self, *, job: ForecastJobV2, selection_at: datetime) -> None:
+        """Fetch selected SEC text before the immutable decision cutoff."""
+        previous_sources: list[dict[str, str]] = []
+        with self._session_factory() as db:
+            parent = self._load_parent(db, job)
+            if parent is not None:
+                for item in parent.evidence_version_manifest:
+                    if not isinstance(item, dict):
+                        continue
+                    source_type = item.get("source_type")
+                    source_id = item.get("source_id")
+                    if isinstance(source_type, str) and isinstance(source_id, str):
+                        previous_sources.append({"source_type": source_type, "source_id": source_id})
+            try:
+                targets = select_sec_filings_to_fetch(
+                    db=db,
+                    symbol=job.symbol,
+                    decision_at=selection_at,
+                    time_mode=getattr(job, "time_mode", "observed"),
+                    source_refs=job.source_refs or [],
+                    previous_sources=previous_sources,
+                    include_automatic_new_sources=job.kind != "manual_revision",
+                )
+            except EvidenceContextError as exc:
+                raise ForecastInputError(exc.code) from exc
+
+        for accession_number, force_refresh in targets:
+            try:
+                with self._session_factory() as db:
+                    filing, _cache_hit = fetch_inventory_content(
+                        symbol=job.symbol,
+                        accession_number=accession_number,
+                        db=db,
+                        provider=self._sec_provider_factory(),
+                        observed_at=_utc(self._now_factory(), "SEC content observation time"),
+                        content_observed_at_factory=lambda: _utc(
+                            self._now_factory(), "SEC content observation time"
+                        ),
+                        force_refresh=force_refresh,
+                    )
+                    if filing.content_status != "fetched" or not filing.content_excerpt:
+                        raise _sec_fetch_failure(accession_number)
+            except ForecastInputError:
+                raise
+            except Exception as exc:
+                # fetch_inventory_content records transient provider errors on
+                # the inventory row; the worker's bounded retry then retries
+                # that same selected accession instead of omitting it.
+                raise _sec_fetch_failure(accession_number) from exc
 
     def _refresh_prices(
         self, symbol: str, latest_session: date, requested_cutoff: datetime
@@ -226,10 +314,11 @@ class ResearchOnlyForecastProcessor:
         latest_session: date,
         decision_at: datetime,
         fetched: dict[str, MarketDataFetchResult],
+        time_mode: str = "observed",
     ) -> tuple[list[object], list[object], FeatureRow, dict[str, Any]]:
-        stock_visible = self._market_loader(symbol, as_of_time=decision_at, source=YAHOO_SOURCE, mode="observed")
+        stock_visible = self._market_loader(symbol, as_of_time=decision_at, source=YAHOO_SOURCE, mode=time_mode)
         benchmark_visible = self._market_loader(
-            BENCHMARK_SYMBOL, as_of_time=decision_at, source=YAHOO_SOURCE, mode="observed"
+            BENCHMARK_SYMBOL, as_of_time=decision_at, source=YAHOO_SOURCE, mode=time_mode
         )
         stock_rows, benchmark_rows = _aligned_recent_rows(stock_visible, benchmark_visible, latest_session)
         try:
@@ -243,8 +332,11 @@ class ResearchOnlyForecastProcessor:
             raise ForecastInputError("insufficient_observed_market_history")
         rows = {symbol: stock_rows, BENCHMARK_SYMBOL: benchmark_rows}
         manifest = {
-            "schema_version": "v2-observed-market-input-v1",
+            "schema_version": (
+                "v2-historical-market-input-v1" if time_mode == "historical_research" else "v2-observed-market-input-v1"
+            ),
             "source": YAHOO_SOURCE,
+            "time_mode": time_mode,
             "market_cutoff_at": decision_at.isoformat(),
             "latest_completed_session": latest_session.isoformat(),
             "rows": {ticker: [_price_row_manifest(row) for row in ticker_rows] for ticker, ticker_rows in rows.items()},
@@ -285,10 +377,12 @@ class ResearchOnlyForecastProcessor:
                 db=db,
                 symbol=job.symbol,
                 decision_at=decision_at,
-                mode="observed",
+                mode=getattr(job, "time_mode", "observed"),
                 previous_event_ids=previous_ids,
                 previous_decision_at=previous_decision_at,
                 source_refs=job.source_refs or [],
+                include_automatic_new_sources=job.kind != "manual_revision",
+                ignore_unfetched_automatic=True,
             )
         except EvidenceContextError as exc:
             raise ForecastInputError(exc.code) from exc
@@ -370,6 +464,14 @@ def _utc(value: datetime, name: str) -> datetime:
         return normalize_utc(value, name=name)
     except ValueError as exc:
         raise ForecastInputError("invalid_stored_time") from exc
+
+
+def _sec_fetch_failure(accession_number: str) -> ForecastInputError:
+    return ForecastInputError(
+        f"sec_content_unavailable:{accession_number}",
+        retryable=True,
+        message=f"SEC 正文读取失败，受影响材料 accession：{accession_number}。系统会自动重试。",
+    )
 
 
 def _digest(value: Any) -> str:

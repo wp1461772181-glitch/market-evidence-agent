@@ -1,10 +1,17 @@
+import os
+import secrets
 from datetime import UTC, datetime
+from pathlib import Path
+from typing import Annotated
 from uuid import UUID
 
-from typing import Annotated
-
+from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Response, UploadFile, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
+
+load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
 
 from .database import Base, SessionLocal, engine
 from .dashboard import dashboard_evaluation, dashboard_price_history, dashboard_snapshot_entries
@@ -24,6 +31,7 @@ from .manual_evidence import (
     uploaded_evidence_for_symbol,
 )
 from .material_analysis_api import router as material_analysis_router
+from .localization_api import router as localization_router
 from .event_provider import EventProviderError, configured_deepseek_model, create_deepseek_provider_from_env
 from .forecast_refresh import ForecastRefreshError, get_forecast_refresh_report, run_forecast_refresh, target_window
 from .forecast_v2_api import router as forecast_v2_router
@@ -69,20 +77,64 @@ from .schemas import (
 from .services import MODEL_VERSION, is_valid_symbol, mock_forecast, normalize_symbol
 
 
+PUBLIC_API_MODE = os.getenv("PUBLIC_API_MODE", "false").strip().lower() in {"1", "true", "yes"}
+APP_API_ACCESS_KEY = os.getenv("APP_API_ACCESS_KEY", "")
+
 app = FastAPI(title="Market Evidence Agent", version="0.1.0")
+allowed_origins = [
+    origin.strip().rstrip("/")
+    for origin in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",")
+    if origin.strip()
+]
+if allowed_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=allowed_origins,
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["Accept", "Content-Type", "Idempotency-Key", "Authorization", "X-App-Access-Key"],
+    )
 app.include_router(forecast_v2_router)
 app.include_router(material_analysis_router)
+app.include_router(localization_router)
+
+
+@app.middleware("http")
+async def protect_public_api(request, call_next):
+    if not PUBLIC_API_MODE or request.url.path == "/health" or request.method == "OPTIONS":
+        return await call_next(request)
+    if not APP_API_ACCESS_KEY:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "服务端尚未配置访问口令 / API access key is not configured"},
+            headers={"Cache-Control": "no-store"},
+        )
+    supplied_key = request.headers.get("X-App-Access-Key", "")
+    if not secrets.compare_digest(supplied_key.encode("utf-8"), APP_API_ACCESS_KEY.encode("utf-8")):
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "访问口令无效，请重试 / Invalid API access key"},
+            headers={"Cache-Control": "no-store"},
+        )
+    response = await call_next(request)
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.on_event("startup")
 def create_tables() -> None:
+    if PUBLIC_API_MODE:
+        if len(APP_API_ACCESS_KEY) < 32:
+            raise RuntimeError("PUBLIC_API_MODE requires an APP_API_ACCESS_KEY of at least 32 characters")
+        if not allowed_origins or "*" in allowed_origins:
+            raise RuntimeError("PUBLIC_API_MODE requires exact CORS_ALLOWED_ORIGINS; wildcard origins are not allowed")
     # V2 schema changes are applied only by its explicit, locked migration.
     # Keep the longstanding startup behavior for legacy tables alone.
     Base.metadata.create_all(
         bind=engine,
         tables=[table for table in Base.metadata.tables.values()
                 if not table.name.endswith("_v2")
-                and table.name not in {"material_analysis_jobs", "material_analysis_versions"}],
+                and table.name not in {"material_analysis_jobs", "material_analysis_versions", "ai_content_translations"}],
     )
     create_sec_filing_inventory_table()
     create_uploaded_evidence_table()
@@ -241,14 +293,20 @@ def get_filing_inventory(symbol: str, db: Session = Depends(get_db)) -> dict:
     "/filing-inventories/{symbol}/{accession_number}/fetch",
     response_model=SecFilingContentResponse,
 )
-def fetch_filing_content(symbol: str, accession_number: str, db: Session = Depends(get_db)) -> dict:
-    """Fetch a bounded text excerpt from one already-inventoried SEC URL."""
+def fetch_filing_content(
+    symbol: str,
+    accession_number: str,
+    refresh: bool = False,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Fetch or refresh a bounded text excerpt from an inventoried SEC filing."""
     try:
         filing, cache_hit = fetch_inventory_content(
             symbol=symbol,
             accession_number=accession_number,
             db=db,
             observed_at=datetime.now(UTC),
+            force_refresh=refresh,
         )
     except SecFilingsError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

@@ -92,11 +92,17 @@ def test_experimental_jev_publishes_only_decision_probabilities_with_brief_and_m
     )
     with SessionLocal() as db:
         job = _claim(db, kind="new", symbol="MSFT")
+        job.error_type = "research_brief_provider_error"
+        job.error_message = "Previous retry failed before this successful publication."
+        db.commit()
         version, created = publish_forecast_version(
             db=db, job_id=job.id, worker_id="test-worker", lease_epoch=job.lease_epoch, draft=draft,
         )
+        published_job = db.get(ForecastJobV2, job.id)
 
     assert created
+    assert published_job.error_type is None
+    assert published_job.error_message is None
     assert version.model_status == "experimental_jev"
     assert version.decision_probabilities == draft.decision_probabilities
     assert version.baseline_probabilities is None
@@ -174,12 +180,18 @@ def test_same_root_and_same_effective_input_returns_existing_version():
             draft=_draft(evidence=[{"id": "event-3"}]),
         )
         repeated_job = _claim(db, kind="manual_revision", symbol="MSFT", root=root.id, parent=root.id)
+        repeated_job.error_type = "research_brief_provider_error"
+        repeated_job.error_message = "Stale error from an earlier attempt."
+        db.commit()
         repeated, created = publish_forecast_version(
             db=db, job_id=repeated_job.id, worker_id="test-worker", lease_epoch=repeated_job.lease_epoch,
             draft=_draft(evidence=[{"id": "event-3"}]),
         )
         assert not created and repeated.id == first.id
-        assert db.get(ForecastJobV2, repeated_job.id).status == "succeeded_no_change"
+        published_job = db.get(ForecastJobV2, repeated_job.id)
+        assert published_job.status == "succeeded_no_change"
+        assert published_job.error_type is None
+        assert published_job.error_message is None
 
 
 def test_automatic_revision_window_is_measured_from_root_decision_time():

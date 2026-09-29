@@ -6,7 +6,12 @@ import pytest
 from sqlalchemy import select
 
 from app.database import Base, SessionLocal, engine
-from app.evidence_context import CONTEXT_SCHEMA_VERSION, EvidenceContextError, freeze_evidence_context
+from app.evidence_context import (
+    CONTEXT_SCHEMA_VERSION,
+    EvidenceContextError,
+    freeze_evidence_context,
+    select_sec_filings_to_fetch,
+)
 from app.forecast_v2_models import EvidenceEventVersionV2
 from app.models import SecFilingInventory, UploadedEvidence
 
@@ -62,7 +67,9 @@ def test_observed_context_freezes_two_source_types_and_reuses_same_content_revie
         ]
         first = freeze_evidence_context(db=db, symbol="AAPL", decision_at=cutoff, source_refs=refs)
         second = freeze_evidence_context(db=db, symbol="AAPL", decision_at=cutoff, source_refs=refs)
-        rows = list(db.scalars(select(EvidenceEventVersionV2).where(EvidenceEventVersionV2.symbol == "AAPL")))
+        rows = list(db.scalars(select(EvidenceEventVersionV2).where(
+            EvidenceEventVersionV2.source_id.in_([filing_id, media_id])
+        )))
 
     assert {event.source_id for event in first.events} == {filing_id, media_id}
     assert [event.id for event in second.events] == [event.id for event in first.events]
@@ -364,6 +371,69 @@ def test_initial_automatic_context_prioritizes_latest_reports_and_recent_candida
     selected_ids = {event.source_id for event in context.events}
     assert {latest_annual, latest_quarterly, recent_media} <= selected_ids
     assert old_8k not in selected_ids
+
+
+def test_sec_prefetch_selection_matches_the_five_new_material_limit():
+    symbol = "NVDA"
+    cutoff = datetime(2026, 9, 27, tzinfo=UTC)
+    accepted_at = datetime(2026, 9, 10, tzinfo=UTC)
+    with SessionLocal() as db:
+        filing = SecFilingInventory(
+            symbol=symbol, cik="0001045810", accession_number=f"0001045810-26-{uuid4().int % 1_000_000:06d}",
+            form="8-K", filed_at=accepted_at.date(), accepted_at=accepted_at.isoformat(), primary_document="k.htm",
+            source_url="https://www.sec.gov/Archives/example/nvda-k.htm", source="sec-edgar",
+            review_status="pending_review", human_review_note=None, reviewed_at=None, observed_at=accepted_at,
+            content_status="not_fetched", content_observed_at=None, content_excerpt=None,
+            content_excerpt_sha256=None, content_truncated=False, content_error=None,
+        )
+        db.add(filing)
+        db.commit()
+        db.refresh(filing)
+        accession = filing.accession_number
+
+        for day in range(11, 15):
+            _media(
+                symbol=symbol,
+                published_at=datetime(2026, 9, day, tzinfo=UTC),
+                observed_at=datetime(2026, 9, day, 0, 5, tzinfo=UTC),
+                content=f"media {day}".encode(),
+            )
+        first_selection = select_sec_filings_to_fetch(db=db, symbol=symbol, decision_at=cutoff)
+        _media(
+            symbol=symbol,
+            published_at=datetime(2026, 9, 16, tzinfo=UTC),
+            observed_at=datetime(2026, 9, 16, 0, 5, tzinfo=UTC),
+            content=b"fifth newer media",
+        )
+        second_selection = select_sec_filings_to_fetch(db=db, symbol=symbol, decision_at=cutoff)
+
+    assert first_selection == [(accession, False)]
+    assert second_selection == []
+
+
+def test_historical_replay_can_prefetch_public_sec_content_observed_after_cutoff():
+    cutoff = datetime(2016, 11, 30, 21, tzinfo=UTC)
+    observed_now = datetime(2026, 9, 28, 10, tzinfo=UTC)
+    accession = f"0000320193-16-{uuid4().int % 1_000_000:06d}"
+    with SessionLocal() as db:
+        filing = SecFilingInventory(
+            symbol="AAPL", cik="0000320193", accession_number=accession,
+            form="10-Q", filed_at=cutoff.date(), accepted_at=datetime(2016, 11, 1, 18, tzinfo=UTC).isoformat(),
+            primary_document="q.htm", source_url="https://www.sec.gov/Archives/example/q.htm", source="sec-edgar",
+            review_status="pending_review", human_review_note=None, reviewed_at=None, observed_at=observed_now,
+            content_status="not_fetched", content_observed_at=None, content_excerpt=None,
+            content_excerpt_sha256=None, content_truncated=False, content_error=None,
+        )
+        db.add(filing)
+        db.commit()
+
+        live_selection = select_sec_filings_to_fetch(db=db, symbol="AAPL", decision_at=cutoff)
+        replay_selection = select_sec_filings_to_fetch(
+            db=db, symbol="AAPL", decision_at=cutoff, time_mode="historical_research"
+        )
+
+    assert live_selection == []
+    assert replay_selection == [(accession, False)]
 
 
 def test_automatic_invalid_inventory_is_omitted_without_blocking_valid_sources_but_explicit_ref_fails():

@@ -22,7 +22,7 @@ from urllib.request import Request, urlopen
 from xml.etree import ElementTree
 
 
-SUPPORTED_SYMBOLS = ("AAPL", "MSFT", "GOOGL", "AMZN", "NVDA")
+SUPPORTED_SYMBOLS = ("AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA")
 GDELT_DOC_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
 GDELT_ABOUT_URL = "https://gdeltproject.org/about.html"
 TECHCRUNCH_RSS_TERMS_URL = "https://techcrunch.com/rss-terms-of-use/"
@@ -36,13 +36,15 @@ _SYMBOL_QUERIES = {
     "GOOGL": ("Google OR Alphabet", ("google", "alphabet", "youtube", "android", "waymo")),
     "AMZN": ("Amazon", ("amazon", "aws", "amazon.com", "prime video")),
     "NVDA": ("NVIDIA", ("nvidia", "geforce", "cuda", "jensen huang")),
+    "META": ("Meta Platforms", ("meta platforms", "facebook", "instagram", "threads", "whatsapp")),
+    "TSLA": ("Tesla", ("tesla", "electric vehicle", "ev", "elon musk")),
 }
 _TRACKING_QUERY_PARAMETERS = frozenset({"fbclid", "gclid", "mc_cid", "mc_eid"})
 _OBVIOUS_FALSE_POSITIVES = {
     "AMZN": ("rainforest", "rain forest", "amazon river"),
     "AAPL": ("apple pie", "apple tree", "apple orchard"),
 }
-_TECHCRUNCH_TAGS = {"AAPL": "apple", "MSFT": "microsoft", "GOOGL": "google", "AMZN": "amazon", "NVDA": "nvidia"}
+_TECHCRUNCH_TAGS = {"AAPL": "apple", "MSFT": "microsoft", "GOOGL": "google", "AMZN": "amazon", "NVDA": "nvidia", "META": "meta", "TSLA": "tesla"}
 
 AttemptStatus = Literal["success", "empty", "error", "unsupported"]
 HttpGet = Callable[[str, float], bytes]

@@ -43,13 +43,19 @@ class MaterialAnalysisError(ValueError):
 
 
 def request_material_analysis(
-    *, db: Session, source_type: str, source_id: UUID, idempotency_key: str, force: bool = False
+    *, db: Session, source_type: str, source_id: UUID, idempotency_key: str, force: bool = False,
+    model_override: str | None = None,
 ) -> dict[str, Any]:
     if source_type not in {"official_filing", "uploaded_media"}:
         raise MaterialAnalysisError("source_type must be official_filing or uploaded_media")
     if not idempotency_key or len(idempotency_key) > 128 or idempotency_key.strip() != idempotency_key:
         raise MaterialAnalysisError("idempotency_key must be a trimmed non-empty string up to 128 characters")
-    request_fingerprint = _digest({"source_type": source_type, "source_id": str(source_id), "force": bool(force)})
+    if model_override is not None and (not model_override.strip() or len(model_override) > 160):
+        raise MaterialAnalysisError("model_override must be a non-empty model name up to 160 characters")
+    request_fingerprint = _digest({
+        "source_type": source_type, "source_id": str(source_id), "force": bool(force),
+        "model_override": model_override.strip() if model_override else None,
+    })
     existing = db.scalar(select(MaterialAnalysisJob).where(MaterialAnalysisJob.idempotency_key == idempotency_key))
     if existing is not None:
         if existing.request_fingerprint != request_fingerprint:
@@ -57,7 +63,7 @@ def request_material_analysis(
         return _job_result(existing, cache_hit=False)
 
     source = _load_source(db, source_type, source_id)
-    requested_model = configured_deepseek_model()
+    requested_model = model_override.strip() if model_override else configured_deepseek_model()
     requested_model = requested_model.strip()
     if not _has_analyzable_text(source_type, source):
         fingerprint = _digest({"source_type": source_type, "source_id": str(source_id), "reason": "no_content"})
@@ -110,6 +116,23 @@ def request_material_analysis(
         .order_by(MaterialAnalysisVersion.version_no.desc())
         .limit(1)
     )
+    if not force and cache is None:
+        prior_invalid = db.scalar(
+            select(MaterialAnalysisJob)
+            .where(
+                MaterialAnalysisJob.source_type == source_type,
+                MaterialAnalysisJob.source_id == source_id,
+                MaterialAnalysisJob.input_fingerprint == input_fingerprint,
+                MaterialAnalysisJob.status == "failed",
+                MaterialAnalysisJob.safe_error_code == "invalid_model_output",
+            )
+            .order_by(MaterialAnalysisJob.created_at.desc())
+            .limit(1)
+        )
+        if prior_invalid is not None:
+            # Deterministic schema/citation failures are cached per exact input
+            # and model. A user can still explicitly request a forced retry.
+            return {**_job_result(prior_invalid, cache_hit=False), "failure_cached": True}
     job = MaterialAnalysisJob(
         source_type=source_type, source_id=source_id, evidence_version_id=frozen.id,
         status="succeeded" if cache else "queued", current_stage="cached" if cache else "queued",
@@ -303,6 +326,8 @@ def list_materials(*, db: Session, symbol: str | None = None, source_type: str |
         item.update({
             "latest_analysis_id": str(latest.id) if latest else None,
             "latest_analysis_version_no": latest.version_no if latest else None,
+            "latest_analysis_created_at": _iso(latest.created_at) if latest else None,
+            "latest_analysis_evidence_version_id": str(latest.evidence_version_id) if latest else None,
             "analysis_status": latest_job.status if latest_job and latest_job.status in {"queued", "running", "failed", "blocked_data"} else ("succeeded" if latest else "not_started"),
             "latest_job": _job_view(latest_job) if latest_job else None,
             "review_status": row.review_status if kind == "official_filing" else "pending_review",
@@ -478,7 +503,7 @@ def _version_dict(row: MaterialAnalysisVersion, *, include_source_text: bool) ->
 def _job_result(job: MaterialAnalysisJob, *, cache_hit: bool) -> dict[str, Any]:
     return {"job_id": str(job.id), "status": job.status,
             "analysis_id": str(job.result_analysis_id) if job.result_analysis_id else None,
-            "cache_hit": bool(job.cache_hit)}
+            "cache_hit": bool(job.cache_hit), "safe_error_code": job.safe_error_code}
 
 
 def _job_view(job: MaterialAnalysisJob) -> dict[str, Any]:

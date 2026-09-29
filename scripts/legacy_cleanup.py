@@ -67,6 +67,41 @@ def is_legacy_v2_chain(rows: list[dict[str, Any]]) -> bool:
     )
 
 
+def _candidate_v2_job_ids(
+    versions: list[dict[str, Any]], jobs: list[dict[str, Any]]
+) -> list[str]:
+    """Select legacy-linked jobs and known orphaned research-brief failures.
+
+    A forecast job without a materialized version is not part of a version
+    chain. Keep such jobs by default; only the already-diagnosed, terminal
+    ``research_brief_failed`` records with no version pointers are cleanup
+    candidates. Any retained job pointing into a candidate chain blocks cleanup.
+    """
+    version_job_ids = [row["job_id"] for row in versions]
+    if len(version_job_ids) != len(set(version_job_ids)):
+        raise CleanupError("a legacy V2 version chain has duplicate job links")
+    job_by_id = {row["id"]: row for row in jobs}
+    if any(job_id not in job_by_id for job_id in version_job_ids):
+        raise CleanupError("a legacy V2 version points to a missing job")
+
+    version_ids = {row["id"] for row in versions}
+    candidate_job_ids = set(version_job_ids)
+    pointer_columns = ("root_version_id", "parent_version_id", "result_version_id")
+    for row in jobs:
+        if row["id"] in candidate_job_ids:
+            continue
+        pointers = [row.get(column) for column in pointer_columns]
+        if (
+            row["status"] == "blocked_data"
+            and row["error_type"] == "research_brief_failed"
+            and all(value is None for value in pointers)
+        ):
+            candidate_job_ids.add(row["id"])
+        elif any(value in version_ids for value in pointers if value is not None):
+            raise CleanupError("a retained V2 job points into a legacy forecast chain")
+    return sorted(candidate_job_ids)
+
+
 def _assert_no_kept_json_reference(
     conn: Connection, candidate_ids: set[str], candidate_tables: set[str], label: str
 ) -> None:
@@ -101,7 +136,9 @@ def build_plan(conn: Connection, *, expected_db: str = DB_NAME) -> dict[str, Any
     versions = _rows(conn, """SELECT id::text, root_id::text, job_id::text, model_status,
         research_brief IS NOT NULL AS has_brief, model_manifest->>'processor_version' AS processor_version
         FROM forecast_versions_v2 ORDER BY root_id, version_no""")
-    jobs = _rows(conn, "SELECT id::text, root_version_id::text, parent_version_id::text, result_version_id::text FROM forecast_jobs_v2")
+    jobs = _rows(conn, """SELECT id::text, kind, status, error_type,
+        root_version_id::text, parent_version_id::text, result_version_id::text
+        FROM forecast_jobs_v2""")
     evaluations = _rows(conn, "SELECT id::text, forecast_version_id::text FROM forecast_evaluations_v2")
 
     versions_by_root: dict[str, list[dict[str, Any]]] = {}
@@ -114,13 +151,11 @@ def build_plan(conn: Connection, *, expected_db: str = DB_NAME) -> dict[str, Any
             raise CleanupError("a V2 chain does not match the exact legacy processor allowlist")
 
     version_ids = [row["id"] for row in versions]
-    job_ids = [row["id"] for row in jobs]
+    job_ids = _candidate_v2_job_ids(versions, jobs)
     version_set = set(version_ids)
     job_set = set(job_ids)
-    if len(versions) != len(jobs) or any(row["job_id"] not in job_set for row in versions):
+    if any(row["job_id"] not in job_set for row in versions):
         raise CleanupError("V2 version/job closure is incomplete")
-    if any(row[column] not in (None, *version_set) for row in jobs for column in ("root_version_id", "parent_version_id", "result_version_id")):
-        raise CleanupError("a V2 job points outside the candidate version set")
     if any(row["forecast_version_id"] not in version_set for row in evaluations):
         raise CleanupError("a V2 evaluation points outside the candidate version set")
 
@@ -175,7 +210,17 @@ def build_plan(conn: Connection, *, expected_db: str = DB_NAME) -> dict[str, Any
         "event_extractions": cache_keys,
     }
     counts = {table: len(ids) for table, ids in candidate.items()}
-    payload = {"database": DB_NAME, "candidate_ids": candidate, "counts": counts, "policy": "legacy-cleanup-v1"}
+    table_fingerprints = table_digests(conn)
+    database_fingerprint = hashlib.sha256(
+        json.dumps(table_fingerprints, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    payload = {
+        "database": DB_NAME,
+        "candidate_ids": candidate,
+        "counts": counts,
+        "database_fingerprint": database_fingerprint,
+        "policy": "legacy-cleanup-v1",
+    }
     fingerprint = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     return {**payload, "manifest_fingerprint": fingerprint}
 

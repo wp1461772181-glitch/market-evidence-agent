@@ -243,15 +243,29 @@ def _run_locked(
     # The evaluator independently refreshes only mature Yahoo target days and
     # reviews their frozen anchor-to-target action interval before a label.
     try:
-        run.evaluation_summary = {"status": "succeeded", **run_evaluation_batch(
-            db=db, evaluated_at=None
-        ).as_dict()}
+        evaluation_summary = run_evaluation_batch(db=db, evaluated_at=None).as_dict()
     except Exception as exc:  # Keep the SEC run auditable even if evaluation breaks.
         db.rollback()
         run = db.get(OfficialMonitorRunV2, run.id)
         if run is None:  # pragma: no cover - the run was committed above.
             raise RuntimeError("persisted monitor run disappeared before evaluation summary")
         run.evaluation_summary = {"status": "failed", "error": str(exc)}
+    else:
+        try:
+            from .jev_learning import run_jev_learning_cycle
+
+            learning_summary = run_jev_learning_cycle(db=db)
+        except Exception:
+            # An unavailable learner must not roll back the independently
+            # committed SEC scan or its valid point-in-time evaluation.
+            db.rollback()
+            run = db.get(OfficialMonitorRunV2, run.id)
+            learning_summary = {"status": "failed", "reason": "jev_learning_cycle_failed"}
+        run.evaluation_summary = {
+            "status": "succeeded",
+            **evaluation_summary,
+            "jev_learning": learning_summary,
+        }
     db.commit()
     db.refresh(run)
     return OfficialMonitorV2Result(run.id, status, instant, tuple(results))

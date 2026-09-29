@@ -1,7 +1,7 @@
 """Create and inspect the additive V2 persistence schema.
 
 The default ``--check`` is read-only.  ``--apply`` takes a PostgreSQL
-transaction-scoped advisory lock and creates only the five V2 tables.  It
+transaction-scoped advisory lock and creates only the additive V2 tables. It
 never drops, truncates, or alters legacy forecast records.
 """
 
@@ -33,6 +33,13 @@ def schema_state(db_engine: Engine) -> dict[str, list[str]]:
         monitor_columns = {column["name"] for column in inspector.get_columns("official_monitor_runs_v2")}
         if "evaluation_summary" not in monitor_columns:
             missing_columns.append("official_monitor_runs_v2.evaluation_summary")
+    if "forecast_jobs_v2" in table_names:
+        job_columns = {column["name"] for column in inspector.get_columns("forecast_jobs_v2")}
+        missing_columns.extend(
+            f"forecast_jobs_v2.{name}"
+            for name in ("time_mode", "requested_decision_at")
+            if name not in job_columns
+        )
     return {
         "present": present,
         "missing": [name for name in V2_TABLE_NAMES if name not in table_names],
@@ -53,6 +60,7 @@ def apply_schema(db_engine: Engine) -> dict[str, list[str]]:
         _upgrade_v2_review_snapshot_key(connection)
         _drop_obsolete_job_result_uniqueness(connection)
         _upgrade_monitor_evaluation_summary(connection)
+        _upgrade_forecast_job_time_mode(connection)
     return schema_state(db_engine)
 
 
@@ -128,6 +136,26 @@ def _upgrade_monitor_evaluation_summary(connection) -> None:
     connection.execute(
         text("ALTER TABLE official_monitor_runs_v2 ADD COLUMN IF NOT EXISTS evaluation_summary JSONB")
     )
+
+
+def _upgrade_forecast_job_time_mode(connection) -> None:
+    """Add explicit historical replay metadata without rewriting existing jobs."""
+    connection.execute(
+        text("ALTER TABLE forecast_jobs_v2 ADD COLUMN IF NOT EXISTS time_mode VARCHAR(32) NOT NULL DEFAULT 'observed'")
+    )
+    connection.execute(
+        text("ALTER TABLE forecast_jobs_v2 ADD COLUMN IF NOT EXISTS requested_decision_at TIMESTAMPTZ")
+    )
+    exists = connection.execute(
+        text("SELECT 1 FROM pg_constraint WHERE conname = 'ck_forecast_jobs_v2_time_mode'")
+    ).scalar_one_or_none()
+    if exists is None:
+        connection.execute(
+            text(
+                "ALTER TABLE forecast_jobs_v2 ADD CONSTRAINT ck_forecast_jobs_v2_time_mode "
+                "CHECK (time_mode IN ('observed', 'historical_research'))"
+            )
+        )
 
 
 def main(argv: Sequence[str] | None = None) -> int:

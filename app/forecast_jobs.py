@@ -21,7 +21,7 @@ from .forecast_v2_models import ForecastJobV2
 from .services import normalize_symbol
 
 
-SUPPORTED_STOCKS = frozenset({"AAPL", "MSFT", "GOOGL", "AMZN", "NVDA"})
+SUPPORTED_STOCKS = frozenset({"AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"})
 JOB_KINDS = frozenset({"new", "manual_revision", "automatic_revision"})
 RETRY_DELAYS = (timedelta(minutes=1), timedelta(minutes=5), timedelta(minutes=15))
 
@@ -40,6 +40,8 @@ def request_digest(
     source_refs: list[dict[str, Any]],
     root_version_id: UUID | None,
     parent_version_id: UUID | None,
+    time_mode: str = "observed",
+    requested_decision_at: datetime | None = None,
 ) -> str:
     payload = {
         "kind": kind,
@@ -48,6 +50,9 @@ def request_digest(
         "source_refs": source_refs,
         "symbol": symbol,
     }
+    if time_mode != "observed" or requested_decision_at is not None:
+        payload["time_mode"] = time_mode
+        payload["requested_decision_at"] = requested_decision_at.isoformat() if requested_decision_at else None
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
@@ -62,6 +67,8 @@ def enqueue_job(
     source_refs: list[dict[str, Any]] | None = None,
     root_version_id: UUID | None = None,
     parent_version_id: UUID | None = None,
+    time_mode: str = "observed",
+    requested_decision_at: datetime | None = None,
 ) -> ForecastJobV2:
     """Admit one request; identical retries return the already durable job."""
     normalized = normalize_symbol(symbol)
@@ -77,12 +84,22 @@ def enqueue_job(
         raise ForecastJobError("a new forecast cannot name a parent or root")
     if kind != "new" and (root_version_id is None or parent_version_id is None):
         raise ForecastJobError("revision job requires a root and a parent")
+    if time_mode not in {"observed", "historical_research"}:
+        raise ForecastJobError("unsupported forecast time mode")
+    if (time_mode == "historical_research") != (requested_decision_at is not None):
+        raise ForecastJobError("historical research requires a decision cutoff; observed jobs must not provide one")
+    if requested_decision_at is not None:
+        if requested_decision_at.tzinfo is None or requested_decision_at.utcoffset() is None:
+            raise ForecastJobError("requested decision cutoff must include a timezone")
+        requested_decision_at = requested_decision_at.astimezone(UTC)
     digest = request_digest(
         symbol=normalized,
         kind=kind,
         source_refs=refs,
         root_version_id=root_version_id,
         parent_version_id=parent_version_id,
+        time_mode=time_mode,
+        requested_decision_at=requested_decision_at,
     )
     existing = db.scalar(select(ForecastJobV2).where(ForecastJobV2.idempotency_key == key))
     if existing is not None:
@@ -96,6 +113,8 @@ def enqueue_job(
         root_version_id=root_version_id,
         parent_version_id=parent_version_id,
         source_refs=refs,
+        time_mode=time_mode,
+        requested_decision_at=requested_decision_at,
         status="queued",
         current_stage="queued",
         attempts=[],

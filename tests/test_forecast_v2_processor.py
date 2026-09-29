@@ -6,17 +6,19 @@ from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 from uuid import uuid4
 
+import pytest
 from sqlalchemy import select
 
 from app.database import Base, SessionLocal, engine
 from app.forecast_contract import future_xnys_sessions
 from app.forecast_jobs import enqueue_job
 from app.forecast_v2_models import EvidenceEventVersionV2, ForecastJobV2, ForecastVersionV2
-from app.forecast_v2_processor import ResearchOnlyForecastProcessor
+from app.forecast_v2_processor import ForecastInputError, ResearchOnlyForecastProcessor
 from app.forecast_worker import run_once
 from app.market_data import CorporateAction, DailyPrice, MarketDataFetchResult, PriceBasisMetadata
 from app.forecast_v2_processor import _json_safe
 from app.models import SecFilingInventory
+from app.sec_filings import SecFilingContent, SecFilingsError
 
 
 @dataclass(frozen=True)
@@ -104,7 +106,7 @@ def _filing(*, symbol: str, accepted_at: datetime, observed_at: datetime, text: 
         return row.id
 
 
-def _processor(*, now: datetime, rows_by_symbol):
+def _processor(*, now: datetime, rows_by_symbol, sec_provider_factory=None):
     def fake_research(**kwargs):
         context = kwargs["context"]
         return SimpleNamespace(
@@ -119,6 +121,9 @@ def _processor(*, now: datetime, rows_by_symbol):
             },
         )
 
+    extra_inputs = {}
+    if sec_provider_factory is not None:
+        extra_inputs["sec_provider_factory"] = sec_provider_factory
     return ResearchOnlyForecastProcessor(
         session_factory=SessionLocal,
         market_provider_factory=lambda: _Provider(
@@ -143,6 +148,7 @@ def _processor(*, now: datetime, rows_by_symbol):
         market_loader=lambda ticker, **_kwargs: rows_by_symbol[ticker],
         research_runner=fake_research,
         research_model_factory=lambda: "fixture-model",
+        **extra_inputs,
     )
 
 
@@ -232,6 +238,12 @@ def test_manual_revision_inherits_parent_and_appends_new_observed_source(disposa
     initial = _filing(
         symbol="MSFT", accepted_at=root_time - timedelta(hours=2), observed_at=root_time - timedelta(hours=1), text="Revenue grew."
     )
+    pre_parent_backfill = _filing(
+        symbol="MSFT",
+        accepted_at=root_time - timedelta(days=120),
+        observed_at=root_time - timedelta(hours=2),
+        text="An older filing observed before the parent forecast.",
+    )
     root_rows = {
         "MSFT": _rows(anchor=date(2025, 1, 31), symbol="MSFT", observed_at=root_time),
         "SPY": _rows(anchor=date(2025, 1, 31), symbol="SPY", observed_at=root_time),
@@ -278,11 +290,14 @@ def test_manual_revision_inherits_parent_and_appends_new_observed_source(disposa
             assert child.target_contract == root.target_contract
             assert root.evidence_version_manifest == parent_manifest
             assert {item["source_id"] for item in child.evidence_version_manifest} == {str(initial), str(new_source)}
+            assert str(pre_parent_backfill) not in {item["source_id"] for item in child.evidence_version_manifest}
             assert child.feature_snapshot["remaining_sessions"] == 19
             assert child.research_report["automatic_selection"]["backfill_events"] == 0
+            assert child.research_report["automatic_selection"]["enabled"] is False
+            assert child.research_report["automatic_selection"]["policy"] == "manual_sources_plus_parent_state_changes"
     finally:
         _clean_owned_rows(
-            source_ids=[initial, *([new_source] if new_source is not None else [])],
+            source_ids=[initial, pre_parent_backfill, *([new_source] if new_source is not None else [])],
             job_ids=[root_job_id, *([revision_job_id] if revision_job_id is not None else [])],
         )
 
@@ -294,3 +309,125 @@ def test_price_basis_metadata_with_corporate_action_dates_is_json_safe():
     )
     rendered = _json_safe(asdict(metadata))
     assert rendered["corporate_actions"][0]["effective_date"] == "2025-03-07"
+
+
+def _unfetched_filing(*, symbol: str, accepted_at: datetime) -> str:
+    with SessionLocal() as db:
+        row = SecFilingInventory(
+            symbol=symbol,
+            cik="0000320193",
+            accession_number=f"0000320193-{accepted_at.year % 100:02d}-{uuid4().int % 1_000_000:06d}",
+            form="8-K",
+            filed_at=accepted_at.date(),
+            accepted_at=accepted_at.isoformat(),
+            primary_document="release.htm",
+            source_url="https://www.sec.gov/Archives/example/release.htm",
+            source="sec-edgar",
+            review_status="pending_review",
+            human_review_note=None,
+            reviewed_at=None,
+            observed_at=accepted_at,
+            content_status="not_fetched",
+            content_observed_at=None,
+            content_excerpt=None,
+            content_excerpt_sha256=None,
+            content_truncated=False,
+            content_error=None,
+        )
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        return row.accession_number
+
+
+def test_prediction_prefetches_selected_sec_text_before_freezing(disposable_database):
+    now = datetime(2026, 9, 27, 10, tzinfo=UTC)
+    accession = _unfetched_filing(symbol="AAPL", accepted_at=now - timedelta(days=1))
+
+    class SecProvider:
+        def fetch_primary_document(self, _filing):
+            text = "Selected SEC filing text."
+            return SecFilingContent(
+                excerpt=text,
+                excerpt_sha256=hashlib.sha256(text.encode()).hexdigest(),
+                truncated=False,
+            )
+
+    processor = ResearchOnlyForecastProcessor(
+        session_factory=SessionLocal,
+        sec_provider_factory=SecProvider,
+        now_factory=lambda: now,
+    )
+    job = SimpleNamespace(kind="new", parent_version_id=None, symbol="AAPL", source_refs=[])
+    processor._prepare_evidence_sources(job=job, selection_at=now)
+
+    with SessionLocal() as db:
+        filing = db.query(SecFilingInventory).filter_by(accession_number=accession).one()
+        assert filing.content_status == "fetched"
+        assert filing.content_excerpt == "Selected SEC filing text."
+        assert filing.content_observed_at == now
+
+
+def test_prediction_reports_and_retries_the_exact_sec_fetch_failure(disposable_database):
+    now = datetime(2026, 9, 27, 10, tzinfo=UTC)
+    accession = _unfetched_filing(symbol="AAPL", accepted_at=now - timedelta(days=1))
+
+    class FailingSecProvider:
+        def fetch_primary_document(self, _filing):
+            raise SecFilingsError("temporary SEC response failure")
+
+    processor = ResearchOnlyForecastProcessor(
+        session_factory=SessionLocal,
+        sec_provider_factory=FailingSecProvider,
+        now_factory=lambda: now,
+    )
+    job = SimpleNamespace(kind="new", parent_version_id=None, symbol="AAPL", source_refs=[])
+
+    with pytest.raises(ForecastInputError) as failure:
+        processor._prepare_evidence_sources(job=job, selection_at=now)
+
+    assert failure.value.reason == f"sec_content_unavailable:{accession}"
+    assert failure.value.retryable is True
+    assert accession in str(failure.value)
+    with SessionLocal() as db:
+        filing = db.query(SecFilingInventory).filter_by(accession_number=accession).one()
+        assert filing.content_status == "unavailable"
+
+
+def test_prediction_freezes_five_selected_sec_documents_and_leaves_the_sixth_unfetched(disposable_database):
+    Base.metadata.create_all(bind=engine)
+    now = datetime(2025, 3, 4, 22, tzinfo=UTC)
+    accessions = [
+        _unfetched_filing(symbol="AAPL", accepted_at=now - timedelta(minutes=minutes))
+        for minutes in (6, 5, 4, 3, 2, 1)
+    ]
+
+    class SecProvider:
+        def fetch_exhibit_99_1(self, _filing):
+            return None
+
+        def fetch_primary_document(self, filing):
+            text = f"Filing {filing.accession_number} contains current company information."
+            return SecFilingContent(
+                excerpt=text,
+                excerpt_sha256=hashlib.sha256(text.encode()).hexdigest(),
+                truncated=False,
+            )
+
+    rows_by_symbol = {
+        "AAPL": _rows(anchor=date(2025, 1, 31), symbol="AAPL", observed_at=now),
+        "SPY": _rows(anchor=date(2025, 1, 31), symbol="SPY", observed_at=now),
+    }
+    processor = _processor(now=now, rows_by_symbol=rows_by_symbol, sec_provider_factory=SecProvider)
+    with SessionLocal() as db:
+        job = enqueue_job(db=db, symbol="AAPL", kind="new", idempotency_key=f"sec-prefetch-{uuid4()}")
+        draft = processor(job)
+
+    assert len(draft.evidence_version_manifest) == 5
+    selected_accessions = {item["source_id"] for item in draft.evidence_version_manifest}
+    with SessionLocal() as db:
+        rows = db.query(SecFilingInventory).filter(SecFilingInventory.accession_number.in_(accessions)).all()
+    fetched_accessions = {row.accession_number for row in rows if row.content_status == "fetched"}
+    assert len(fetched_accessions) == 5
+    assert len(set(accessions) - fetched_accessions) == 1
+    assert {row.accession_number for row in rows if str(row.id) in selected_accessions} == fetched_accessions

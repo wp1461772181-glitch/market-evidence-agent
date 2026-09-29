@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:i18n": "node --test scripts/i18n.test.mjs"
   },
   "dependencies": {
     "react": "19.3.0",

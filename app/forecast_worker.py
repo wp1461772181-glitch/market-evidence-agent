@@ -162,11 +162,23 @@ def run_once(
                 lease_epoch=job.lease_epoch,
                 draft=draft,
             )
-        return {
+        result = {
             "status": "succeeded" if created else "succeeded_no_change",
             "job_id": str(job.id),
             "result_version_id": str(version.id),
         }
+        if created and getattr(job, "time_mode", "observed") == "historical_research":
+            try:
+                from .forecast_evaluation_v2 import run_evaluation_batch
+
+                with session_factory() as db:
+                    run_evaluation_batch(db=db, symbol=job.symbol)
+                    result["evaluation_status"] = "succeeded"
+            except Exception:
+                # The immutable replay remains published; evaluation can be
+                # retried independently without changing its frozen inputs.
+                result["evaluation_status"] = "pending"
+        return result
     except ForecastDataBlocked as exc:
         heart.stop()
         return _record_failure(

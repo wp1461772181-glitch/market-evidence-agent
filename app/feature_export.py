@@ -12,7 +12,7 @@ from typing import TextIO
 from .features import build_features_from_snapshot, metadata
 
 
-DEFAULT_SYMBOLS = ("AAPL", "MSFT", "GOOGL", "AMZN", "NVDA")
+DEFAULT_SYMBOLS = ("AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA")
 
 
 def main() -> None:

@@ -18,7 +18,7 @@ class FakeSecProvider:
         self.fetches: list[str] = []
 
     def discover(self, symbol):
-        return list(self.filings_by_symbol[symbol])
+        return list(self.filings_by_symbol.get(symbol, ()))
 
     def fetch_primary_document(self, filing):
         self.fetches.append(filing.accession_number)

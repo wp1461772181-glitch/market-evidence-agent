@@ -165,6 +165,8 @@ def freeze_evidence_context(
     previous_event_ids: Sequence[UUID | str] = (),
     previous_decision_at: datetime | None = None,
     source_refs: Sequence[Mapping[str, object]] = (),
+    include_automatic_new_sources: bool = True,
+    ignore_unfetched_automatic: bool = False,
     max_new_documents: int = MAX_NEW_DOCUMENTS,
 ) -> EvidenceContext:
     """Create/reuse immutable V2 source rows and select one point-in-time set.
@@ -190,6 +192,7 @@ def freeze_evidence_context(
             decision_at=cutoff,
             mode=mode,
             source_refs=source_refs,
+            ignore_unfetched_automatic=ignore_unfetched_automatic,
         )
         candidates = _deduplicate_candidates(raw_candidates)
         candidate_by_key = {candidate.event_key: candidate for candidate in candidates}
@@ -223,8 +226,8 @@ def freeze_evidence_context(
                 f"at most {max_new_documents} newly selected source_refs are supported",
                 code="explicit_source_limit",
             )
-        automatic_new = [candidate for candidate in new_candidates if not candidate.explicit]
-        if not prior:
+        automatic_new = [candidate for candidate in new_candidates if not candidate.explicit] if include_automatic_new_sources else []
+        if not prior and include_automatic_new_sources:
             automatic_new = _initial_candidates(automatic_new, decision_at=cutoff)
         explicit_new.sort(key=_candidate_sort_key, reverse=True)
         automatic_new.sort(key=_candidate_sort_key, reverse=True)
@@ -291,6 +294,7 @@ def _resolve_candidates(
     decision_at: datetime,
     mode: ContextMode,
     source_refs: Sequence[Mapping[str, object]],
+    ignore_unfetched_automatic: bool = False,
 ) -> tuple[list[_Candidate], list[dict[str, str]]]:
     refs = _normalise_refs(source_refs)
     filings = db.scalars(
@@ -314,6 +318,12 @@ def _resolve_candidates(
                 candidates.append(builder(row, decision_at=decision_at))
             except EvidenceContextError as exc:
                 if exc.code in {"missing_official_content", "content_hash_mismatch", "ambiguous_official_time"}:
+                    if exc.code == "missing_official_content" and ignore_unfetched_automatic:
+                        # Forecast workers prefetch every SEC item selected by
+                        # the active material policy before freezing. Remaining
+                        # inventory rows are outside that policy and should
+                        # not inflate the run's incomplete-coverage count.
+                        continue
                     omissions.append({"source_type": source_type, "source_id": str(row.id)})
                     continue
                 raise
@@ -632,6 +642,145 @@ def _initial_candidates(candidates: Sequence[_Candidate], *, decision_at: dateti
     return sorted(selected.values(), key=_candidate_sort_key, reverse=True)
 
 
+def select_sec_filings_to_fetch(
+    *,
+    db: Session,
+    symbol: str,
+    decision_at: datetime,
+    time_mode: ContextMode = "observed",
+    source_refs: Sequence[Mapping[str, object]] = (),
+    previous_sources: Sequence[Mapping[str, object]] = (),
+    include_automatic_new_sources: bool = True,
+    max_new_documents: int = MAX_NEW_DOCUMENTS,
+    max_analyzed_new_materials: int = 5,
+) -> list[tuple[str, bool]]:
+    """Return missing SEC accession numbers that the forecast will actually use.
+
+    Explicit SEC references are always honored (and later validated by the
+    normal freezer). Automatic initial forecasts use the same latest 10-K,
+    latest 10-Q, and 90-day selection as ``freeze_evidence_context``; revisions
+    consider only sources absent from the selected parent version. In either
+    case the forecast's new-material cap is applied before network fetches.
+
+    The boolean in each tuple requests a refresh when a selected cached excerpt
+    failed its content hash check. Historical research can fetch a public SEC
+    filing now even when the system first observed it after the historical
+    cutoff; the frozen manifest retains that actual observation time.
+    """
+    normalized = _supported_symbol(symbol)
+    cutoff = _aware_utc(decision_at, "decision_at")
+    if time_mode not in {"observed", "historical_research"}:
+        raise EvidenceContextError("time_mode must be observed or historical_research")
+    refs = _normalise_refs(source_refs)
+    filings = db.scalars(select(SecFilingInventory).where(SecFilingInventory.symbol == normalized)).all()
+    by_id = {row.id: row for row in filings}
+
+    def needs_fetch(row: SecFilingInventory) -> tuple[bool, bool]:
+        try:
+            _candidate_from_filing(row, decision_at=cutoff)
+        except EvidenceContextError as exc:
+            if exc.code not in {"missing_official_content", "content_hash_mismatch"}:
+                return False, False
+            refresh_cached_content = row.content_status == "fetched" and (
+                exc.code == "content_hash_mismatch" or not row.content_excerpt or not row.content_excerpt_sha256
+            )
+            return True, refresh_cached_content
+        return False, False
+
+    if refs:
+        targets: list[tuple[str, bool]] = []
+        seen_accessions: set[str] = set()
+        for ref in refs:
+            if ref["source_type"] != "official_filing":
+                continue
+            row = by_id.get(ref["source_id"])
+            if row is None or row.accession_number in seen_accessions:
+                continue
+            try:
+                published_at = _exact_sec_acceptance(row)
+                observed_at = _aware_utc(row.content_observed_at or row.observed_at, "official filing observed_at")
+            except EvidenceContextError:
+                continue
+            if published_at > cutoff or (time_mode == "observed" and observed_at > cutoff):
+                continue
+            missing, force_refresh = needs_fetch(row)
+            if missing:
+                targets.append((row.accession_number, force_refresh))
+                seen_accessions.add(row.accession_number)
+        return targets
+
+    if not include_automatic_new_sources:
+        return []
+
+    previous_keys = {
+        (str(item.get("source_type")), str(item.get("source_id")))
+        for item in previous_sources
+        if isinstance(item, Mapping)
+    }
+    candidates: list[_Candidate] = []
+    for row in filings:
+        try:
+            candidate = _candidate_from_filing(row, decision_at=cutoff)
+        except EvidenceContextError as exc:
+            if exc.code not in {"missing_official_content", "content_hash_mismatch"}:
+                continue
+            try:
+                published_at = _exact_sec_acceptance(row)
+                observed_at = _aware_utc(row.content_observed_at or row.observed_at, "official filing observed_at")
+            except EvidenceContextError:
+                continue
+            candidate = _Candidate(
+                source_type="official_filing",
+                source_id=row.id,
+                symbol=row.symbol,
+                event_key=f"{row.symbol}:official_filing:{row.accession_number}",
+                # This placeholder is unique to the inventory row and is used
+                # only to reproduce the existing candidate ordering.
+                content_sha256=f"unfetched:{row.id}",
+                source_snapshot={"form": row.form},
+                published_at=published_at,
+                observed_at=observed_at,
+                review_status=row.review_status,
+                review_snapshot={},
+                user_rating_stars=None,
+            )
+        if candidate.review_status == "rejected":
+            continue
+        if candidate.published_at > cutoff or (time_mode == "observed" and candidate.observed_at > cutoff):
+            continue
+        if (candidate.source_type, str(candidate.source_id)) not in previous_keys:
+            candidates.append(candidate)
+
+    uploads = db.scalars(select(UploadedEvidence).where(UploadedEvidence.symbol == normalized)).all()
+    for row in uploads:
+        try:
+            candidate = _candidate_from_upload(row, decision_at=cutoff)
+        except EvidenceContextError:
+            continue
+        if candidate.published_at <= cutoff and (time_mode == "historical_research" or candidate.observed_at <= cutoff):
+            if (candidate.source_type, str(candidate.source_id)) not in previous_keys:
+                candidates.append(candidate)
+
+    candidates = _deduplicate_candidates(candidates)
+    if not previous_sources:
+        candidates = _initial_candidates(candidates, decision_at=cutoff)
+    else:
+        candidates.sort(key=_candidate_sort_key, reverse=True)
+    candidates = candidates[:max_new_documents][:max_analyzed_new_materials]
+
+    targets = []
+    for candidate in candidates:
+        if candidate.source_type != "official_filing":
+            continue
+        row = by_id.get(candidate.source_id)
+        if row is None:
+            continue
+        missing, force_refresh = needs_fetch(row)
+        if missing:
+            targets.append((row.accession_number, force_refresh))
+    return targets
+
+
 def _same_event_state(old: EvidenceEventVersionV2, current: EvidenceEventVersionV2) -> bool:
     return (
         old.source_type == current.source_type
@@ -725,7 +874,7 @@ def _exact_sec_acceptance(row: SecFilingInventory) -> datetime:
 
 def _supported_symbol(value: str) -> str:
     normalized = normalize_symbol(value)
-    if normalized not in {"AAPL", "MSFT", "GOOGL", "AMZN", "NVDA"}:
+    if normalized not in {"AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"}:
         raise EvidenceContextError("symbol is not supported for V2 forecasting")
     return normalized
 

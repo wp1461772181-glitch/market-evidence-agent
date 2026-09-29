@@ -36,13 +36,14 @@ SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 SEC_SUBMISSIONS_URL = "https://data.sec.gov/submissions"
 SEC_ARCHIVES_URL = "https://www.sec.gov/Archives/edgar/data"
 SEC_SOURCE = "sec-edgar"
-SUPPORTED_SEC_TICKERS = frozenset({"AAPL", "MSFT", "GOOGL", "AMZN", "NVDA"})
+SUPPORTED_SEC_TICKERS = frozenset({"AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"})
 SUPPORTED_FORMS = frozenset({"10-K", "10-Q", "8-K"})
 DEFAULT_TIMEOUT_SECONDS = 20
 # SEC's published upper limit is 10 requests/second.  This client waits at
 # least 0.2 seconds between its own requests, staying below five/second.
 MIN_REQUEST_INTERVAL_SECONDS = 0.2
 MAX_FILING_BYTES = 5_000_000
+MAX_PRIMARY_DOCUMENT_BYTES = 50_000_000
 MAX_EXCERPT_CHARACTERS = 80_000
 MAX_DISCOVERED_FILINGS = 40
 PRIMARY_DOCUMENT_CONTENT_TYPES = frozenset({"text/html", "text/plain", "application/xhtml+xml"})
@@ -108,7 +109,14 @@ class SecFilingContent:
 
 
 class _TextCollector(HTMLParser):
-    """Drop markup, scripts, and styles while retaining only visible text."""
+    """Drop markup while keeping paragraph, list, and table boundaries readable."""
+
+    _PARAGRAPH_TAGS = frozenset({"address", "article", "blockquote", "h1", "h2", "h3", "h4", "h5", "h6", "p", "section"})
+    _BLOCK_TAGS = frozenset({
+        "dd", "div", "dl", "dt", "fieldset", "figcaption", "figure", "footer", "header",
+        "li", "main", "ol", "table", "tbody", "tfoot", "thead", "tr", "ul",
+    })
+    _IGNORED_TAGS = frozenset({"script", "style", "noscript"})
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -116,19 +124,44 @@ class _TextCollector(HTMLParser):
         self._ignored_depth = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag.casefold() in {"script", "style", "noscript"}:
+        normalized_tag = tag.casefold()
+        if normalized_tag in self._IGNORED_TAGS:
             self._ignored_depth += 1
+            return
+        if self._ignored_depth:
+            return
+        if normalized_tag == "br":
+            self._parts.append("\n")
+        elif normalized_tag in self._PARAGRAPH_TAGS:
+            self._parts.append("\n\n")
+        elif normalized_tag in self._BLOCK_TAGS:
+            self._parts.append("\n")
+        elif normalized_tag in {"td", "th"}:
+            self._parts.append("\t")
 
     def handle_endtag(self, tag: str) -> None:
-        if tag.casefold() in {"script", "style", "noscript"} and self._ignored_depth:
+        normalized_tag = tag.casefold()
+        if normalized_tag in self._IGNORED_TAGS and self._ignored_depth:
             self._ignored_depth -= 1
+            return
+        if self._ignored_depth:
+            return
+        if normalized_tag in self._PARAGRAPH_TAGS:
+            self._parts.append("\n\n")
+        elif normalized_tag in self._BLOCK_TAGS:
+            self._parts.append("\n")
+        elif normalized_tag in {"td", "th"}:
+            self._parts.append("\t")
 
     def handle_data(self, data: str) -> None:
         if not self._ignored_depth and data:
             self._parts.append(data)
 
     def text(self) -> str:
-        return " ".join(" ".join(self._parts).split())
+        joined = "".join(self._parts).replace("\xa0", " ")
+        lines = [re.sub(r"[\t\f\v ]+", " ", line).strip() for line in joined.splitlines()]
+        normalized = "\n".join(lines)
+        return re.sub(r"\n{3,}", "\n\n", normalized).strip()
 
 
 class SecEdgarProvider:
@@ -141,14 +174,18 @@ class SecEdgarProvider:
         opener: Callable = DEFAULT_SEC_OPENER,
         sleeper: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
+        max_primary_document_bytes: int = MAX_FILING_BYTES,
     ) -> None:
         user_agent = user_agent if user_agent is not None else configured_sec_user_agent()
         if not user_agent.strip() or "@" not in user_agent:
             raise SecFilingsError("SEC user agent must identify a contact email address")
+        if not 1 <= max_primary_document_bytes <= MAX_PRIMARY_DOCUMENT_BYTES:
+            raise SecFilingsError("SEC primary document size limit is invalid")
         self._user_agent = user_agent.strip()
         self._opener = opener
         self._sleeper = sleeper
         self._clock = clock
+        self._max_primary_document_bytes = max_primary_document_bytes
 
     def discover(self, symbol: str) -> list[DiscoveredSecFiling]:
         normalized_symbol = _supported_symbol(symbol)
@@ -268,6 +305,7 @@ class SecEdgarProvider:
             raise SecFilingsError("saved SEC filing URL does not match its official filing identity")
         raw = self._get_bytes(
             canonical_url,
+            max_bytes=self._max_primary_document_bytes,
             allowed_content_types=PRIMARY_DOCUMENT_CONTENT_TYPES,
             reject_nul_bytes=True,
         )
@@ -413,6 +451,7 @@ def fetch_inventory_content(
     provider: SecEdgarProvider | None = None,
     observed_at: datetime | None = None,
     content_observed_at_factory: Callable[[], datetime] | None = None,
+    force_refresh: bool = False,
 ) -> tuple[SecFilingInventory, bool]:
     """Fetch one inventoried SEC document and preserve 8-K attachment provenance.
 
@@ -435,7 +474,8 @@ def fetch_inventory_content(
         raise SecFilingNotFoundError("SEC filing is not in this symbol's inventory; scan it first")
     attachment_checked = filing.related_attachment_status in {"fetched", "not_found", "unavailable"}
     if (
-        filing.content_status == "fetched"
+        not force_refresh
+        and filing.content_status == "fetched"
         and filing.content_excerpt is not None
         and (filing.form != "8-K" or attachment_checked)
     ):
@@ -476,6 +516,8 @@ def fetch_inventory_content(
         if content is None:
             content = active_provider.fetch_primary_document(filing)
     except SecFilingsError as exc:
+        if force_refresh and filing.content_status == "fetched" and filing.content_excerpt:
+            raise
         filing.content_status = "unavailable"
         filing.content_error = str(exc)
         filing.content_observed_at = _require_aware_utc(completed_at())
@@ -611,7 +653,7 @@ def _supported_symbol(symbol: str) -> str:
     if not is_valid_symbol(normalized_symbol):
         raise SecFilingsError("symbol must contain 1-5 ASCII letters")
     if normalized_symbol not in SUPPORTED_SEC_TICKERS:
-        raise SecFilingsError("SEC filing discovery currently supports AAPL, MSFT, GOOGL, AMZN, and NVDA")
+        raise SecFilingsError("SEC filing discovery currently supports the Magnificent Seven stocks")
     return normalized_symbol
 
 

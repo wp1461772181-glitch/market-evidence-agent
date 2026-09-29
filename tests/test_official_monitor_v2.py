@@ -8,7 +8,7 @@ from app.database import Base, SessionLocal, engine
 from app.forecast_contract import create_root_contract
 from app.forecast_v2_models import ForecastEvaluationV2, ForecastJobV2, ForecastVersionV2, OfficialMonitorRunV2
 from app.models import SecFilingInventory
-from app.official_monitor_v2 import MONITOR_LOCK_KEY, run_once
+from app.official_monitor_v2 import INITIAL_LOOKBACK, MONITOR_LOCK_KEY, run_once
 from sqlalchemy import text
 from app.sec_filings import DiscoveredSecFiling, SecDiscoveryCoverage, SecFilingContent, SecFilingsError
 
@@ -174,7 +174,7 @@ def test_persisted_monitor_queues_exact_72_hour_fetched_source_once(disposable_d
     assert jobs[0].source_refs == [{"source_type": "official_filing", "source_id": str(jobs[0].source_refs[0]["source_id"])}]
     assert len(runs) == 2
     assert all(run.completed_at is not None and run.next_due_at is not None for run in runs)
-    assert provider.calls[5][1] == NOW.date() - timedelta(days=1)
+    assert provider.calls[5][1] == NOW.date() - INITIAL_LOOKBACK
 
 
 def test_failed_symbol_retains_its_watermark_while_other_symbols_advance(disposable_database):
@@ -330,7 +330,7 @@ def test_new_text_uses_its_actual_receive_time_not_the_scan_start(disposable_dat
             db=db,
             provider=provider,
             observed_at=check_at,
-            received_at_factory=lambda: next(clock_values),
+            received_at_factory=lambda: next(clock_values, received_at + timedelta(seconds=1)),
         )
         source = db.query(SecFilingInventory).filter_by(accession_number=filing.accession_number).one()
         jobs = list(

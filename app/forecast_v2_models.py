@@ -12,7 +12,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, String, UniqueConstraint, Uuid, func
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String, UniqueConstraint, Uuid, func, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -42,6 +42,7 @@ class ForecastJobV2(Base):
             name="ck_forecast_jobs_v2_status",
         ),
         CheckConstraint("lease_epoch >= 0", name="ck_forecast_jobs_v2_lease_epoch"),
+        CheckConstraint("time_mode IN ('observed', 'historical_research')", name="ck_forecast_jobs_v2_time_mode"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -60,6 +61,8 @@ class ForecastJobV2(Base):
         index=True,
     )
     source_refs: Mapped[list[dict]] = mapped_column(JSONB, nullable=False, default=list)
+    time_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="observed", server_default="observed")
+    requested_decision_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued", index=True)
     current_stage: Mapped[str] = mapped_column(String(64), nullable=False, default="queued")
     attempts: Mapped[list[dict]] = mapped_column(JSONB, nullable=False, default=list)
@@ -249,10 +252,47 @@ class ForecastEvaluationV2(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
+class JevCalibrationModelV2(Base):
+    """Versioned local probability calibrator trained only from matured Jev roots.
+
+    Coefficients and their validation manifest are immutable after insertion;
+    only the lifecycle status may advance from rejected to active/retired.
+    """
+
+    __tablename__ = "jev_calibration_models_v2"
+    __table_args__ = (
+        UniqueConstraint("cohort_key", "dataset_sha256", name="uq_jev_calibration_models_v2_dataset"),
+        Index(
+            "uq_jev_calibration_models_v2_single_active",
+            "cohort_key",
+            unique=True,
+            postgresql_where=text("status = 'active'"),
+            sqlite_where=text("status = 'active'"),
+        ),
+        CheckConstraint(
+            "status IN ('active', 'rejected', 'retired')",
+            name="ck_jev_calibration_models_v2_status",
+        ),
+        CheckConstraint("sample_count >= 0", name="ck_jev_calibration_models_v2_sample_count"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    cohort_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    dataset_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    sample_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    training_manifest: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    model_parameters: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    parameters_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 V2_TABLES = (
     ForecastJobV2.__table__,
     EvidenceEventVersionV2.__table__,
     ForecastVersionV2.__table__,
     OfficialMonitorRunV2.__table__,
     ForecastEvaluationV2.__table__,
+    JevCalibrationModelV2.__table__,
 )

@@ -102,6 +102,8 @@ export type MaterialItem = {
   source_url: string;
   latest_analysis_id: string | null;
   latest_analysis_version_no?: number | null;
+  latest_analysis_created_at?: string | null;
+  latest_analysis_evidence_version_id?: string | null;
   analysis_status: MaterialAnalysisStatus;
   latest_job: MaterialAnalysisJob | null;
   review_status: string;
@@ -141,6 +143,15 @@ export type MaterialAnalysisVersion = {
   created_at: string;
   frozen_text?: string | null;
   source_snapshot?: Record<string, unknown>;
+};
+export type LocalizationResult = {
+  content_kind: "material_analysis" | "forecast_brief";
+  content_id: string;
+  locale: "en-US";
+  source_sha256: string;
+  prompt_version: string;
+  cache_hit: boolean;
+  fields: Record<string, string>;
 };
 export type MaterialAnalysisHistory = { source_type: MaterialSourceType; source_id: string; items: MaterialAnalysisVersion[] };
 export type MaterialOriginal = {
@@ -316,6 +327,8 @@ export type V2ForecastJob = {
   root_version_id: string | null;
   parent_version_id: string | null;
   source_refs: V2SourceRef[];
+  time_mode: "observed" | "historical_research";
+  requested_decision_at: string | null;
   status: "queued" | "running" | "succeeded" | "succeeded_no_change" | "blocked_data" | "failed";
   current_stage: string;
   attempts: number;
@@ -329,6 +342,12 @@ export type V2ForecastJob = {
 export type V2Probabilities = Record<"bearish" | "neutral" | "bullish", number>;
 export type V2ModelStatus = "research_only" | "baseline_only" | "experimental_joint" | "experimental_jev";
 export type ResearchEvidencePointer = { analysis_id: string; section: "facts" | "supporting" | "counter" | "uncertainties"; item_id: string };
+export type ResearchMaterialKeyNumber = {
+  name: string;
+  value_text: string;
+  period: string | null;
+  citations: Array<{ quote: string; start_char: number; end_char: number }>;
+};
 export type ResearchMaterialReference = {
   analysis_id: string;
   evidence_version_id: string;
@@ -349,12 +368,15 @@ export type ResearchMaterialReference = {
   coverage: string | null;
   selection_reason: string;
   explicitly_selected: boolean;
+  analysis_summary?: string | null;
+  key_numbers?: ResearchMaterialKeyNumber[];
 };
 export type ResearchEvidenceText = { statement: string; citations: ResearchEvidencePointer[] };
 export type ResearchBrief = {
   schema_version: "research-brief-v1";
   symbol: string;
   decision_at: string;
+  time_mode: "observed" | "historical_research";
   target_contract: Record<string, unknown>;
   market_summary: Record<string, unknown>;
   material_refs: ResearchMaterialReference[];
@@ -400,7 +422,10 @@ export type V2VersionDetail = V2Version & {
 export type V2TimelineEntry = Pick<V2Version,
   "id" | "parent_version_id" | "version_no" | "decision_at" | "market_cutoff_at" |
   "baseline_probabilities" | "joint_probabilities" | "decision_probabilities" | "model_status" | "change_reason" | "trigger_type" | "created_at"
->;
+> & {
+  local_calibration_status?: "active" | "not_applied" | null;
+  raw_decision_probabilities?: V2Probabilities | null;
+};
 
 export type V2Timeline = {
   root_id: string;
@@ -526,6 +551,51 @@ export type V2EvaluationResponse = {
   cohorts: Record<"prospective" | "historical_research" | "unknown", V2EvaluationCohort>;
   model_cohorts?: V2ModelEvaluationCohort[];
   model_cohort_selection_rule?: string;
+};
+
+export type JevLearningStatus = {
+  status: "collecting" | "ready";
+  symbol: string | null;
+  required_mature_roots: number;
+  validation_fraction: number;
+  minimum_validation_months: number;
+  observed_mature_roots: number;
+  observed_forecast_roots: number;
+  observed_pending_roots: number;
+  historical_replay_mature_roots_excluded: number;
+  observed_roots_missing_raw_probabilities: number;
+  cohorts: Array<{
+    cohort_key: string;
+    provider: string;
+    actual_model: string;
+    question_version: string;
+    target_spec_version: string | null;
+    forecast_roots: number;
+    pending_roots: number;
+    symbol_forecast_counts: Record<string, number>;
+    matured_roots: number;
+    training: {
+      ready: boolean;
+      matured_roots: number;
+      required_roots: number;
+      training_roots: number;
+      validation_roots: number;
+      training_months: number;
+      validation_months: number;
+      training_class_counts: Record<string, number>;
+      validation_class_counts: Record<string, number>;
+      reasons: string[];
+    };
+    active_model: null | {
+      id: string;
+      activated_at: string | null;
+      sample_count: number;
+      parameters_sha256: string;
+      test_metrics: Record<string, unknown> | null;
+      acceptance: Record<string, unknown> | null;
+    };
+  }>;
+  policy: string;
 };
 
 export type V2Workspace = {

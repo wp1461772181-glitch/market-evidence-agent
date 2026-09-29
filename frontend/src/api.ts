@@ -1,4 +1,62 @@
-import type { DashboardResponse, EvidenceRevision, EvidenceRevisionInventory, EvidenceRevisionRequest, FilingContent, FilingInventory, FilingReview, FilingScanResult, ForecastRunResult, MaterialAnalysisHistory, MaterialAnalysisJob, MaterialAnalysisVersion, MaterialItem, MaterialLibraryResponse, MaterialOriginal, MaterialSourceType, PriceHistory, UploadedEvidence, UploadedEvidenceInventory, V2EvaluationResponse, V2ForecastJob, V2ForecastRoots, V2MonitorStatus, V2SourceRef, V2Timeline, V2VersionDetail, V2Workspace } from "./types";
+import type { DashboardResponse, EvidenceRevision, EvidenceRevisionInventory, EvidenceRevisionRequest, FilingContent, FilingInventory, FilingReview, FilingScanResult, ForecastRunResult, JevLearningStatus, LocalizationResult, MaterialAnalysisHistory, MaterialAnalysisJob, MaterialAnalysisVersion, MaterialItem, MaterialLibraryResponse, MaterialOriginal, MaterialSourceType, PriceHistory, UploadedEvidence, UploadedEvidenceInventory, V2EvaluationResponse, V2ForecastJob, V2ForecastRoots, V2MonitorStatus, V2SourceRef, V2Timeline, V2VersionDetail, V2Workspace } from "./types";
+
+const configuredApiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/+$/, "");
+const accessKeyStorageKey = "market-evidence-agent-api-access-key";
+let pendingAccessKeyRequest: { promise: Promise<string | null>; resolve: (value: string | null) => void } | null = null;
+
+function apiUrl(path: string): string {
+  if (!configuredApiBaseUrl) return path;
+  const backendPath = path.startsWith("/api/") ? path.slice("/api".length) : path;
+  return `${configuredApiBaseUrl}${backendPath}`;
+}
+
+async function fetchApi(path: string, init: RequestInit = {}): Promise<Response> {
+  const storedKey = typeof window === "undefined" ? null : window.sessionStorage.getItem(accessKeyStorageKey);
+  const send = (key: string | null, retryAfterAccessPrompt = false) => {
+    const headers = new Headers(init.headers);
+    headers.set("Accept", "application/json");
+    if (key) headers.set("X-App-Access-Key", key);
+    else headers.delete("X-App-Access-Key");
+    return fetch(apiUrl(path), {
+      ...init,
+      ...(retryAfterAccessPrompt ? { signal: AbortSignal.timeout(30_000) } : {}),
+      headers,
+    });
+  };
+
+  let response = await send(storedKey);
+  if (response.status !== 401 || typeof window === "undefined") return response;
+
+  if (storedKey) {
+    window.sessionStorage.removeItem(accessKeyStorageKey);
+  }
+  const accessKey = await requestAccessKey(storedKey !== null);
+  if (!accessKey) return response;
+
+  response = await send(accessKey, true);
+  if (response.status === 401) {
+    window.sessionStorage.removeItem(accessKeyStorageKey);
+    window.dispatchEvent(new Event("market-evidence-api-access-invalid"));
+  }
+  return response;
+}
+
+export function submitApiAccessKey(value: string | null): void {
+  const accessKey = value?.trim() || null;
+  if (accessKey) window.sessionStorage.setItem(accessKeyStorageKey, accessKey);
+  const pending = pendingAccessKeyRequest;
+  pendingAccessKeyRequest = null;
+  pending?.resolve(accessKey);
+}
+
+function requestAccessKey(invalidPreviousKey = false): Promise<string | null> {
+  if (pendingAccessKeyRequest) return pendingAccessKeyRequest.promise;
+  let resolve!: (value: string | null) => void;
+  const promise = new Promise<string | null>((finish) => { resolve = finish; });
+  pendingAccessKeyRequest = { promise, resolve };
+  window.dispatchEvent(new CustomEvent("market-evidence-api-access-required", { detail: invalidPreviousKey }));
+  return promise;
+}
 
 export class ApiError extends Error {
   constructor(message: string, readonly status?: number) {
@@ -11,7 +69,7 @@ export async function getDashboard(symbol: string, signal: AbortSignal): Promise
   const timeout = AbortSignal.timeout(12_000);
   let response: Response;
   try {
-    response = await fetch(`/api/dashboard/${encodeURIComponent(symbol)}`, {
+    response = await fetchApi(`/api/dashboard/${encodeURIComponent(symbol)}`, {
       headers: { Accept: "application/json" },
       signal: AbortSignal.any([signal, timeout]),
     });
@@ -38,8 +96,9 @@ export async function scanOfficialFilings(symbol: string): Promise<FilingScanRes
   return requestJson<FilingScanResult>(`/api/filing-inventories/${encodeURIComponent(symbol)}/scan`, { method: "POST" });
 }
 
-export async function fetchFilingContent(symbol: string, accessionNumber: string): Promise<FilingContent> {
-  return requestJson<FilingContent>(`/api/filing-inventories/${encodeURIComponent(symbol)}/${encodeURIComponent(accessionNumber)}/fetch`, { method: "POST" });
+export async function fetchFilingContent(symbol: string, accessionNumber: string, refresh = false): Promise<FilingContent> {
+  const query = refresh ? "?refresh=true" : "";
+  return requestJson<FilingContent>(`/api/filing-inventories/${encodeURIComponent(symbol)}/${encodeURIComponent(accessionNumber)}/fetch${query}`, { method: "POST" });
 }
 
 export async function reviewFiling(symbol: string, accessionNumber: string, decision: "accepted" | "rejected", note: string): Promise<FilingReview> {
@@ -145,6 +204,14 @@ export async function getMaterialAnalysis(analysisId: string, signal?: AbortSign
   return requestJson<MaterialAnalysisVersion>(`/api/v3/material-analyses/${encodeURIComponent(analysisId)}`, { signal });
 }
 
+export async function localizeMaterialAnalysis(analysisId: string, signal?: AbortSignal): Promise<LocalizationResult> {
+  return requestJson<LocalizationResult>(`/api/v3/material-analyses/${encodeURIComponent(analysisId)}/localization`, { method: "POST", signal });
+}
+
+export async function localizeForecastBrief(versionId: string, signal?: AbortSignal): Promise<LocalizationResult> {
+  return requestJson<LocalizationResult>(`/api/v2/forecast-versions/${encodeURIComponent(versionId)}/brief-localization`, { method: "POST", signal });
+}
+
 export async function getMaterialOriginal(
   sourceType: MaterialSourceType,
   sourceId: string,
@@ -173,6 +240,10 @@ export async function getV2Evaluations(symbol: string, signal?: AbortSignal): Pr
   return requestJson<V2EvaluationResponse>(`/api/v2/evaluations?symbol=${encodeURIComponent(symbol)}`, { signal });
 }
 
+export async function getJevLearningStatus(symbol: string, signal?: AbortSignal): Promise<JevLearningStatus> {
+  return requestJson<JevLearningStatus>(`/api/v2/jev-learning/status?symbol=${encodeURIComponent(symbol)}`, { signal });
+}
+
 export async function getV2ForecastVersion(versionId: string, signal?: AbortSignal): Promise<V2VersionDetail> {
   return requestJson<V2VersionDetail>(`/api/v2/forecast-versions/${encodeURIComponent(versionId)}`, { signal });
 }
@@ -182,6 +253,14 @@ export async function createV2ForecastJob(symbol: string, sourceRefs: V2SourceRe
     method: "POST",
     headers: { "Content-Type": "application/json", "Idempotency-Key": newIdempotencyKey() },
     body: JSON.stringify({ symbol, kind: "new", source_refs: sourceRefs }),
+  });
+}
+
+export async function createV2HistoricalReplayJob(symbol: string, decisionDate: string): Promise<V2ForecastJob> {
+  return requestJson<V2ForecastJob>("/api/v2/historical-replays", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Idempotency-Key": newIdempotencyKey() },
+    body: JSON.stringify({ symbol, decision_date: decisionDate }),
   });
 }
 
@@ -202,7 +281,7 @@ function newIdempotencyKey(): string {
 async function requestJson<T>(url: string, init: RequestInit = {}): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(url, { headers: { Accept: "application/json", ...init.headers }, ...init });
+    response = await fetchApi(url, init);
   } catch (error) {
     throw error;
   }

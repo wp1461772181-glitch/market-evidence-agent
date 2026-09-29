@@ -21,7 +21,7 @@ from .material_analysis import (
     request_material_analysis,
     run_material_analysis_once,
 )
-from .research_brief import ResearchBrief, build_research_brief
+from .research_brief import ResearchBrief, ResearchBriefError, build_research_brief
 
 
 PROCESSOR_VERSION = "agent-forecast-processor-v1"
@@ -54,7 +54,9 @@ class AgentForecastProcessor(ResearchOnlyForecastProcessor):
         super().__init__(session_factory=session_factory, **market_inputs)
         self._decision_mode = _decision_mode(decision_mode)
         self._material_provider_factory = material_provider_factory or _deepseek_provider_factory
-        self._brief_provider_factory = brief_provider_factory or _deepseek_provider_factory
+        # Kept in the constructor for backwards-compatible test/application
+        # wiring. Live forecasts no longer make a second DeepSeek call to
+        # synthesize the brief; they assemble it from saved material analyses.
         self._jev_provider_factory = jev_provider_factory or create_jev_provider_from_env
         self._analysis_requester = analysis_requester
         self._analysis_runner = analysis_runner
@@ -74,6 +76,7 @@ class AgentForecastProcessor(ResearchOnlyForecastProcessor):
 
     def __call__(self, job: ForecastJobV2) -> ForecastDraft:
         base = super().__call__(job)
+        time_mode = getattr(job, "time_mode", "observed")
         parent = self._load_parent_for_brief(job)
         selected_events, explicit_refs, excluded_refs = _select_manifest_events(
             base.evidence_version_manifest, job.source_refs or []
@@ -114,7 +117,10 @@ class AgentForecastProcessor(ResearchOnlyForecastProcessor):
             _parse_aware(row.get("source_manifest", {}).get("observed_at"))
             for row in analyses
         ]
-        decision_at = max([base.decision_at, _utc(self._now_factory()), *[t for t in observed_times if t]])
+        decision_at = (
+            base.decision_at if time_mode == "historical_research"
+            else max([base.decision_at, _utc(self._now_factory()), *[t for t in observed_times if t]])
+        )
         market_summary = _market_summary(base, job.symbol)
         try:
             brief = self._brief_builder(
@@ -123,7 +129,9 @@ class AgentForecastProcessor(ResearchOnlyForecastProcessor):
                 target_contract=base.target_contract,
                 decision_at=decision_at,
                 parent_brief=parent.research_brief if parent and parent.research_brief else None,
-                provider=self._brief_provider_factory() if analyses else None,
+                provider=None,
+                synthesis_mode="local_analysis",
+                time_mode=time_mode,
                 explicit_source_refs=explicit_refs,
                 unavailable_source_refs=unavailable,
                 excluded_source_refs=excluded_refs,
@@ -132,6 +140,8 @@ class AgentForecastProcessor(ResearchOnlyForecastProcessor):
         except Exception as exc:
             if isinstance(exc, ForecastInputError):
                 raise
+            if isinstance(exc, ResearchBriefError):
+                raise _forecast_brief_error(exc) from None
             raise ForecastInputError("research_brief_failed") from None
 
         brief_data = brief.model_dump(mode="json") if isinstance(brief, ResearchBrief) else brief
@@ -139,7 +149,7 @@ class AgentForecastProcessor(ResearchOnlyForecastProcessor):
             "processor_version": PROCESSOR_VERSION,
             "model_status": "research_only",
             "decision_mode": self._decision_mode,
-            "time_mode": "observed",
+            "time_mode": time_mode,
             "research_brief_schema_version": brief_data.get("schema_version"),
             "research_brief_sha256": _digest(brief_data),
             "material_analysis_ids": [item.get("analysis_id") for item in brief_data.get("material_refs", [])],
@@ -155,6 +165,7 @@ class AgentForecastProcessor(ResearchOnlyForecastProcessor):
                 raise ForecastInputError("jev_provider_error", retryable=True) from None
             decision_probabilities = dict(jev_result.probabilities)
             model_status = "experimental_jev"
+            raw_probabilities = dict(jev_result.probabilities)
             model_manifest.update({
                 "model_status": model_status,
                 "decision_provider": {
@@ -168,14 +179,54 @@ class AgentForecastProcessor(ResearchOnlyForecastProcessor):
                     "input_sha256": jev_result.input_sha256,
                     "choice": jev_result.choice,
                     "confidence": jev_result.confidence,
+                    "raw_probabilities": raw_probabilities,
                 },
             })
+            if time_mode == "observed":
+                try:
+                    from .jev_learning import active_jev_calibrator, apply_jev_calibrator
+                    with self._session_factory() as db:
+                        calibrator = active_jev_calibrator(
+                            db=db,
+                            actual_model=jev_result.actual_model,
+                            question_version=jev_result.question_version,
+                            target_contract=base.target_contract,
+                        )
+                        if calibrator is not None:
+                            decision_probabilities = apply_jev_calibrator(calibrator, raw_probabilities)
+                            model_manifest["local_calibration"] = {
+                                "status": "active",
+                                "model_id": str(calibrator.id),
+                                "parameters_sha256": calibrator.parameters_sha256,
+                                "training_manifest_sha256": hashlib.sha256(
+                                    json.dumps(calibrator.training_manifest, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+                                ).hexdigest(),
+                            }
+                        else:
+                            model_manifest["local_calibration"] = {
+                                "status": "not_applied",
+                                "reason": "no_validated_cohort_model",
+                            }
+                except Exception:
+                    # Calibration integrity/provider mismatches fail closed to
+                    # the immutable Jev probabilities; they never block a valid
+                    # forecast or silently label raw values as corrected.
+                    decision_probabilities = raw_probabilities
+                    model_manifest["local_calibration"] = {
+                        "status": "not_applied",
+                        "reason": "local_calibration_unavailable",
+                    }
+            else:
+                model_manifest["local_calibration"] = {
+                    "status": "not_applied",
+                    "reason": "historical_replay_is_not_live_calibrated",
+                }
 
         feature_snapshot = dict(base.feature_snapshot)
         feature_snapshot["research_brief_input_quality"] = brief_data.get("input_quality", {}).get("status")
         prior_report = dict(base.research_report or {})
         prior_report.update({
-            "time_mode": "observed",
+            "time_mode": time_mode,
             "decision_mode": self._decision_mode,
             "research_conclusions_status": "ready" if brief_data.get("input_quality", {}).get("status") != "insufficient" else "insufficient",
         })
@@ -217,26 +268,33 @@ class AgentForecastProcessor(ResearchOnlyForecastProcessor):
                 db=db, source_type=source_type, source_id=source_uuid,
                 idempotency_key=idempotency_key, force=False,
             )
+        requested = self._finish_analysis_request(
+            requested=requested, source_type=source_type, source_id=source_uuid,
+            idempotency_key=idempotency_key, job=job,
+        )
+        if requested.get("status") == "failed" and requested.get("safe_error_code") == "invalid_model_output":
+            # DeepSeek Flash occasionally returns a JSON object that cannot be
+            # mapped to the validated material schema. Retry that bounded
+            # failure once with a stronger model; a failed retry still leaves
+            # the forecast explicitly without this analysis.
+            fallback_model = os.getenv("DEEPSEEK_ANALYSIS_RETRY_MODEL", "deepseek-v4-pro").strip()
+            retry_key = f"{idempotency_key}:quality-retry-v1"
+            try:
+                with self._session_factory() as db:
+                    retry = self._analysis_requester(
+                        db=db, source_type=source_type, source_id=source_uuid,
+                        idempotency_key=retry_key, force=False, model_override=fallback_model,
+                    )
+            except TypeError:
+                # Keep custom/offline requester implementations compatible.
+                retry = {"status": "failed"}
+            requested = self._finish_analysis_request(
+                requested=retry, source_type=source_type, source_id=source_uuid,
+                idempotency_key=retry_key, job=job,
+            )
+
         status = requested.get("status")
         analysis_id = requested.get("analysis_id")
-        if status in {"queued", "running"}:
-            try:
-                material_provider = self._material_provider_factory()
-                self._analysis_runner(
-                    session_factory=self._session_factory,
-                    provider=material_provider,
-                    job_id=UUID(str(requested["job_id"])),
-                    worker_id=f"forecast-{job.id}",
-                )
-            except Exception:
-                return None
-            with self._session_factory() as db:
-                refreshed = self._analysis_requester(
-                    db=db, source_type=source_type, source_id=source_uuid,
-                    idempotency_key=idempotency_key, force=False,
-                )
-            status = refreshed.get("status")
-            analysis_id = refreshed.get("analysis_id")
         if status != "succeeded" or not analysis_id:
             return None
         try:
@@ -244,6 +302,30 @@ class AgentForecastProcessor(ResearchOnlyForecastProcessor):
                 return self._analysis_getter(db=db, analysis_id=UUID(str(analysis_id)))
         except Exception:
             return None
+
+    def _finish_analysis_request(
+        self, *, requested: dict[str, Any], source_type: str, source_id: UUID,
+        idempotency_key: str, job: ForecastJobV2,
+    ) -> dict[str, Any]:
+        if requested.get("status") not in {"queued", "running"}:
+            return requested
+        try:
+            self._analysis_runner(
+                session_factory=self._session_factory,
+                provider=self._material_provider_factory(),
+                job_id=UUID(str(requested["job_id"])),
+                worker_id=f"forecast-{job.id}",
+            )
+        except Exception:
+            return {"status": "failed"}
+        with self._session_factory() as db:
+            return self._analysis_requester(
+                db=db, source_type=source_type, source_id=source_id,
+                idempotency_key=idempotency_key,
+                force=False,
+                **({"model_override": os.getenv("DEEPSEEK_ANALYSIS_RETRY_MODEL", "deepseek-v4-pro").strip()}
+                   if idempotency_key.endswith(":quality-retry-v1") else {}),
+            )
 
 
 def _decision_mode(value: str | None) -> str:
@@ -253,6 +335,14 @@ def _decision_mode(value: str | None) -> str:
     if not isinstance(value, str) or value.strip().lower() not in {"research_only", "jev"}:
         raise ForecastInputError("invalid_forecast_decision_mode")
     return value.strip().lower()
+
+
+def _forecast_brief_error(exc: ResearchBriefError) -> ForecastInputError:
+    """Keep safe brief failure codes so the UI can explain blocked jobs."""
+    return ForecastInputError(
+        f"research_brief_{exc.code}",
+        retryable=exc.code in {"provider_error", "invalid_model_output"},
+    )
 
 
 def _deepseek_provider_factory():

@@ -8,7 +8,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts import legacy_cleanup
-from scripts.legacy_cleanup import CleanupError, _delete_candidates, is_legacy_v2_chain
+from scripts.legacy_cleanup import CleanupError, _candidate_v2_job_ids, _delete_candidates, is_legacy_v2_chain
 
 
 def test_only_exact_old_research_worker_versions_are_cleanup_candidates() -> None:
@@ -23,6 +23,33 @@ def test_only_exact_old_research_worker_versions_are_cleanup_candidates() -> Non
     assert not is_legacy_v2_chain([{**row, "processor_version": "agent-forecast-processor-v1"}])
     assert not is_legacy_v2_chain([{**row, "model_status": "experimental_jev"}])
     assert not is_legacy_v2_chain([row, {**row, "processor_version": "agent-forecast-processor-v1"}])
+
+
+def test_candidate_jobs_include_known_orphaned_failures_but_keep_other_jobs() -> None:
+    versions = [{"id": "v1", "job_id": "j1"}]
+    jobs = [
+        {"id": "j1", "status": "succeeded", "error_type": None,
+         "root_version_id": "v1", "parent_version_id": None, "result_version_id": "v1"},
+        {"id": "j2", "status": "blocked_data", "error_type": "research_brief_failed",
+         "root_version_id": None, "parent_version_id": None, "result_version_id": None},
+        {"id": "j3", "status": "queued", "error_type": None,
+         "root_version_id": None, "parent_version_id": None, "result_version_id": None},
+    ]
+
+    assert _candidate_v2_job_ids(versions, jobs) == ["j1", "j2"]
+
+
+def test_candidate_jobs_refuse_retained_job_pointer_into_legacy_chain() -> None:
+    versions = [{"id": "v1", "job_id": "j1"}]
+    jobs = [
+        {"id": "j1", "status": "succeeded", "error_type": None,
+         "root_version_id": "v1", "parent_version_id": None, "result_version_id": "v1"},
+        {"id": "j2", "status": "queued", "error_type": None,
+         "root_version_id": "v1", "parent_version_id": None, "result_version_id": None},
+    ]
+
+    with pytest.raises(CleanupError, match="retained V2 job points into"):
+        _candidate_v2_job_ids(versions, jobs)
 
 
 class RecordingConnection:

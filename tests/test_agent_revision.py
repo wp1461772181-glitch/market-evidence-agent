@@ -214,7 +214,9 @@ def _agent_processor(*, now: datetime, rows_by_symbol, jev, analyses, briefs):
         analysis_getter=lambda *, analysis_id, **_kwargs: next(
             row for row in analyses.values() if row["analysis_id"] == str(analysis_id)
         ),
-        brief_provider_factory=_BriefProvider,
+        brief_provider_factory=lambda: (_ for _ in ()).throw(
+            AssertionError("forecast brief must not make a second DeepSeek call")
+        ),
         brief_builder=brief_builder,
         jev_provider_factory=lambda: jev,
     )
@@ -347,6 +349,10 @@ def test_jev_agent_revision_keeps_the_root_target_and_preserves_manual_branch(di
             assert db.query(ForecastVersionV2).filter_by(root_id=root.id).count() == 3
 
         assert jev.calls and len(jev.calls) == 3
+        assert all(
+            any(ref["analysis_summary"] == "Frozen source summary." for ref in brief["material_refs"])
+            for brief in jev.calls
+        )
         assert briefs[0] is None
         assert briefs[1] == root.research_brief
         assert briefs[2] == root.research_brief

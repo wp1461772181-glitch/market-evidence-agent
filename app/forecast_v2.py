@@ -148,8 +148,30 @@ def publish_forecast_version(
         db.rollback()
         raise ForecastPublicationError("worker lease expired or superseded", code="stale_lease")
 
+    frozen_time_mode = draft.model_manifest.get("time_mode") if isinstance(draft.model_manifest, dict) else None
+    if frozen_time_mode is None and isinstance(draft.research_report, dict):
+        frozen_time_mode = draft.research_report.get("time_mode")
+    if frozen_time_mode is None and job.time_mode == "observed":
+        frozen_time_mode = "observed"
+    if frozen_time_mode != job.time_mode:
+        db.rollback()
+        raise ForecastPublicationError("forecast time mode does not match its durable job", code="time_mode_mismatch")
+    if job.time_mode == "historical_research":
+        requested_cutoff = normalize_utc(job.requested_decision_at, name="requested_decision_at")
+        if requested_cutoff != decision_at:
+            db.rollback()
+            raise ForecastPublicationError("historical replay decision cutoff changed", code="time_mode_mismatch")
+
     target_end = _target_end(canonical_contract)
-    if decision_at >= xnys_session_close_at(target_end):
+    target_closes_at = xnys_session_close_at(target_end)
+    if job.time_mode == "historical_research":
+        if decision_at >= target_closes_at:
+            db.rollback()
+            raise ForecastPublicationError("historical decision cutoff is not before its target", code="target_expired")
+        if instant < target_closes_at:
+            db.rollback()
+            raise ForecastPublicationError("historical replay target has not matured", code="target_not_matured")
+    elif decision_at >= target_closes_at:
         db.rollback()
         raise ForecastPublicationError("target has already expired", code="target_expired")
 
@@ -191,6 +213,8 @@ def publish_forecast_version(
             job.completed_at = instant
             job.lease_owner = None
             job.lease_expires_at = None
+            job.error_type = None
+            job.error_message = None
             db.commit()
             return existing, False
         latest = db.scalar(
@@ -245,6 +269,8 @@ def publish_forecast_version(
     job.completed_at = instant
     job.lease_owner = None
     job.lease_expires_at = None
+    job.error_type = None
+    job.error_message = None
     db.commit()
     db.refresh(version)
     return version, True

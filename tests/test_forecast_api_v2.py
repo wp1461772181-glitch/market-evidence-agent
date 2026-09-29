@@ -11,12 +11,14 @@ import app.forecast_v2_api as api
 from app.database import Base, SessionLocal, engine
 from app.evidence_context import freeze_evidence_context
 from app.forecast_jobs import enqueue_job
+from app.jev_learning import run_jev_learning_cycle
 from app.forecast_v2_models import (
     ForecastEvaluationV2,
     ForecastJobV2,
     ForecastVersionV2,
     OfficialMonitorRunV2,
 )
+from app.material_analysis_models import MaterialAnalysisJob, MaterialAnalysisVersion
 from app.models import SecFilingInventory, UploadedEvidence
 from app.main import app as main_app
 
@@ -263,6 +265,105 @@ def test_manual_revision_accepts_changed_review_snapshot_of_parent_source(client
     with SessionLocal() as db:
         root = db.get(ForecastVersionV2, root_id)
         assert root.evidence_version_manifest == initial.evidence_manifest()
+
+
+def test_manual_revision_accepts_new_successful_analysis_for_frozen_parent_candidate(client):
+    parent_time = datetime.now(UTC) - timedelta(hours=1)
+    root_id = _create_version(decision_at=parent_time)
+    source_id = _official_source(
+        accepted_at=parent_time - timedelta(days=1),
+        observed_at=parent_time - timedelta(minutes=10),
+    )
+    source_ref = {"source_type": "official_filing", "source_id": str(source_id)}
+    analysis_id = uuid4()
+    job_id = uuid4()
+    analysis_created_at = parent_time + timedelta(minutes=5)
+
+    with SessionLocal() as db:
+        root = db.get(ForecastVersionV2, root_id)
+        frozen = freeze_evidence_context(
+            db=db,
+            symbol="AAPL",
+            decision_at=parent_time,
+            mode="observed",
+            source_refs=[source_ref],
+            include_automatic_new_sources=False,
+        )
+        root.evidence_version_manifest = frozen.evidence_manifest()
+        event = frozen.events[0]
+        db.add(MaterialAnalysisJob(
+            id=job_id,
+            source_type="official_filing",
+            source_id=source_id,
+            evidence_version_id=event.id,
+            status="succeeded",
+            current_stage="completed",
+            idempotency_key=f"analysis-job-{job_id}",
+            request_fingerprint="a" * 64,
+            input_fingerprint="b" * 64,
+            requested_model="fixture-model",
+            schema_version="material-analysis-v1",
+            prompt_version="fixture-prompt-v1",
+            force=True,
+            cache_hit=False,
+            attempts=1,
+            completed_at=analysis_created_at,
+        ))
+        db.add(MaterialAnalysisVersion(
+            id=analysis_id,
+            source_type="official_filing",
+            source_id=source_id,
+            evidence_version_id=event.id,
+            version_no=1,
+            previous_version_id=None,
+            job_id=job_id,
+            input_fingerprint="b" * 64,
+            schema_version="material-analysis-v1",
+            prompt_version="fixture-prompt-v1",
+            requested_model="fixture-model",
+            actual_model="fixture-model",
+            payload={},
+            source_manifest={"content_sha256": event.content_sha256},
+            created_at=analysis_created_at,
+        ))
+        db.commit()
+        saved_analysis = db.query(MaterialAnalysisVersion).filter_by(
+            source_id=source_id, evidence_version_id=event.id,
+        ).one()
+        assert saved_analysis.created_at > root.decision_at
+        previous_ids = [item["event_version_id"] for item in root.evidence_version_manifest]
+        refrozen = freeze_evidence_context(
+            db=db,
+            symbol=root.symbol,
+            decision_at=datetime.now(UTC),
+            mode="observed",
+            source_refs=[source_ref],
+            previous_event_ids=previous_ids,
+            previous_decision_at=root.decision_at,
+            include_automatic_new_sources=False,
+        )
+        matched_analysis = api._latest_analysis_for_event(db, refrozen.events[0])
+        assert matched_analysis is not None
+        assert matched_analysis.id == analysis_id
+        assert ("official_filing", str(source_id)) in {
+            (item["source_type"], item["source_id"])
+            for item in root.evidence_version_manifest
+        }
+
+    accepted = client.post(
+        f"/v2/forecast-versions/{root_id}/revision-jobs",
+        json={"source_refs": [source_ref]},
+        headers={"Idempotency-Key": "frozen-candidate-new-analysis"},
+    )
+
+    assert accepted.status_code == 202, accepted.text
+    assert accepted.json()["kind"] == "manual_revision"
+    with SessionLocal() as db:
+        db.delete(db.get(MaterialAnalysisVersion, analysis_id))
+        db.commit()
+    with SessionLocal() as db:
+        db.delete(db.get(MaterialAnalysisJob, job_id))
+        db.commit()
 
 
 def test_manual_revision_same_source_state_change_after_completed_job_is_admitted(client):
@@ -697,3 +798,48 @@ def test_main_application_exposes_v2_router_without_running_a_forecast():
         assert response.status_code == 202
         assert response.json()["status"] == "queued"
         assert response.json()["result_version_id"] is None
+
+
+def test_jev_learning_status_shows_pending_observed_rows_and_excludes_historical_replays(client):
+    observed_id = _create_version(symbol="AAPL")
+    historical_id = _create_version(symbol="AAPL")
+    with SessionLocal() as db:
+        observed = db.get(ForecastVersionV2, observed_id)
+        historical = db.get(ForecastVersionV2, historical_id)
+        provider = {
+            "provider": "openrouter",
+            "actual_model": "fixture/jev",
+            "question_version": "jev-direction-test",
+            "raw_probabilities": {"bearish": 0.2, "neutral": 0.3, "bullish": 0.5},
+        }
+        observed.model_status = "experimental_jev"
+        observed.decision_probabilities = provider["raw_probabilities"]
+        observed.model_manifest = {"time_mode": "observed", "decision_provider": provider}
+        historical.model_status = "experimental_jev"
+        historical.decision_probabilities = provider["raw_probabilities"]
+        historical.model_manifest = {"time_mode": "historical_research", "decision_provider": provider}
+        db.add(ForecastEvaluationV2(
+            forecast_version_id=historical.id,
+            target_contract_hash=historical.target_contract_hash,
+            actual_label="bullish",
+            status="succeeded",
+            result_version=1,
+        ))
+        db.commit()
+
+    response = client.get("/v2/jev-learning/status?symbol=AAPL")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "collecting"
+    assert payload["required_mature_roots"] == 420
+    assert payload["observed_forecast_roots"] == 1
+    assert payload["observed_pending_roots"] == 1
+    assert payload["historical_replay_mature_roots_excluded"] == 1
+    assert payload["cohorts"][0]["matured_roots"] == 0
+    assert payload["cohorts"][0]["forecast_roots"] == 1
+    with SessionLocal() as db:
+        cycle = run_jev_learning_cycle(db=db)
+    assert cycle["observed_mature_roots"] == 0
+    assert cycle["historical_replay_mature_roots_excluded"] == 1
+    assert cycle["trained_candidates"] == 0
+    _delete_owned_evaluation_fixture_versions([observed_id, historical_id])

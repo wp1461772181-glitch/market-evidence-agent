@@ -1,31 +1,86 @@
-import { FormEvent, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ApiError, fetchFilingContent, getFilingInventory, getMaterialLibrary, getUploadedEvidence, getV2Evaluations, getV2ForecastRoots, getV2MonitorStatus, getV2Prices, getV2Workspace, reviewFiling, scanOfficialFilings, uploadEvidence } from "./api";
-import type { FilingContent, FilingInventory, FilingReview, OfficialFiling, PriceHistory, UploadedEvidence } from "./types";
+import { Tx, formatDateTime as formatLocalizedDateTime, getLocalePreference, translatePhrase, useLocale } from "./i18n";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { ApiError, getFilingInventory, getJevLearningStatus, getMaterialLibrary, getV2Evaluations, getV2ForecastRoots, getV2MonitorStatus, getV2Prices, getV2Workspace, scanOfficialFilings, submitApiAccessKey } from "./api";
+import type { FilingInventory, JevLearningStatus, PriceHistory } from "./types";
 import { V2ForecastWorkspace } from "./V2ForecastWorkspace";
+import { EvidenceCenter } from "./EvidenceCenter";
 import { MaterialLibrary } from "./MaterialLibrary";
+import { HistoricalReplayWorkspace } from "./HistoricalReplayWorkspace";
 
 const DEFAULT_SYMBOL = "AAPL";
-const SUPPORTED_SYMBOLS = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA"] as const;
+const SUPPORTED_SYMBOLS = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"] as const;
 type SupportedSymbol = typeof SUPPORTED_SYMBOLS[number];
-type ActionState = { kind: "idle" } | { kind: "running" } | { kind: "success"; message: string } | { kind: "error"; message: string };
 type FilingState = { kind: "idle" } | { kind: "loading" } | { kind: "ready"; data: FilingInventory } | { kind: "error"; message: string };
-type FilingFormFilter = "all" | "10-K" | "10-Q" | "8-K";
-type FilingReviewFilter = "all" | "pending" | "accepted" | "rejected";
-type UploadActionState = ActionState;
-type WorkspaceSection = "overview" | "forecast" | "evidence" | "materials" | "revisions" | "evaluation";
+type WorkspaceSection = "overview" | "forecast" | "evidence" | "materials" | "revisions" | "evaluation" | "replay";
 const WORKSPACE_SECTION_TITLE: Record<WorkspaceSection, string> = {
-  overview: "研究总览", forecast: "预测工作台", evidence: "证据中心", materials: "材料库", revisions: "预测修订", evaluation: "到期评估",
+  overview: "研究总览", forecast: "预测工作台", evidence: "证据中心", materials: "材料库", revisions: "预测修订", evaluation: "到期评估", replay: "历史回放",
 };
 
-const INITIAL_FILING_COUNT = 5;
-
 export function App() {
-  const [input, setInput] = useState(DEFAULT_SYMBOL);
+  const [accessPromptOpen, setAccessPromptOpen] = useState(false);
+  const [accessPromptInvalid, setAccessPromptInvalid] = useState(false);
+
+  useEffect(() => {
+    const requireAccessKey = (event: Event) => {
+      setAccessPromptInvalid((event as CustomEvent<boolean>).detail === true);
+      setAccessPromptOpen(true);
+    };
+    const rejectAccessKey = () => {
+      setAccessPromptInvalid(true);
+      setAccessPromptOpen(true);
+    };
+    window.addEventListener("market-evidence-api-access-required", requireAccessKey);
+    window.addEventListener("market-evidence-api-access-invalid", rejectAccessKey);
+    return () => {
+      window.removeEventListener("market-evidence-api-access-required", requireAccessKey);
+      window.removeEventListener("market-evidence-api-access-invalid", rejectAccessKey);
+    };
+  }, []);
+
+  const { t } = useLocale();
+  return <>
+    <WorkspaceApp />
+    {accessPromptOpen && <div className="media-dialog-backdrop" role="presentation">
+      <section className="media-dialog api-access-dialog" role="dialog" aria-modal="true" aria-labelledby="api-access-title" style={{ width: "min(480px, 100%)", maxHeight: "90vh" }}>
+        <header className="media-dialog-header">
+          <div>
+            <p className="section-label">Market Evidence Agent</p>
+            <h3 id="api-access-title">{t("本机后端访问口令")}</h3>
+            <p>{t("输入访问口令后才能读取或修改本机研究数据。")}</p>
+          </div>
+        </header>
+        <div className="media-dialog-content" style={{ gridTemplateColumns: "1fr", overflow: "visible" }}>
+          <form className="evidence-form" onSubmit={(event) => {
+            event.preventDefault();
+            const form = event.currentTarget;
+            const data = new FormData(form);
+            const key = String(data.get("api-access-key") ?? "");
+            submitApiAccessKey(key);
+            setAccessPromptInvalid(false);
+            setAccessPromptOpen(false);
+          }}>
+            {accessPromptInvalid && <p className="material-status material-error" role="alert">{t("访问口令不正确，请重试。")}</p>}
+            <label>{t("访问口令")}<input name="api-access-key" type="password" autoComplete="current-password" autoFocus required /></label>
+            <div className="material-form-actions">
+              <button type="button" className="secondary-action" onClick={() => {
+                submitApiAccessKey(null);
+                setAccessPromptOpen(false);
+                setAccessPromptInvalid(false);
+              }}>{t("稍后")}</button>
+              <button type="submit" className="primary-action">{t("连接后端")}</button>
+            </div>
+          </form>
+        </div>
+      </section>
+    </div>}
+  </>;
+}
+
+function WorkspaceApp() {
   const [requestedSymbol, setRequestedSymbol] = useState(DEFAULT_SYMBOL);
   const [activeSection, setActiveSection] = useState<WorkspaceSection>(sectionFromHash());
   const [activeData, setActiveData] = useState<{ kind: "loading"; symbol: string } | { kind: "ready"; symbol: string; filings: FilingState; priceHistory: PriceHistory | null; priceError: string | null }>({ kind: "loading", symbol: DEFAULT_SYMBOL });
   const [retryKey, setRetryKey] = useState(0);
-  const [scanAction, setScanAction] = useState<ActionState>({ kind: "idle" });
   const requestVersion = useRef(0);
   const activeSymbolRef = useRef(requestedSymbol);
   activeSymbolRef.current = requestedSymbol;
@@ -37,14 +92,15 @@ export function App() {
   }, []);
 
   function navigate(section: WorkspaceSection) {
-    if (section === activeSection) return;
+    if (section === activeSection) {
+      if (section === "evidence" && window.location.hash !== "#evidence") window.location.hash = "evidence";
+      return;
+    }
     window.location.hash = section;
     setActiveSection(section);
   }
 
   function openStock(ticker: SupportedSymbol) {
-    setInput(ticker);
-    setScanAction({ kind: "idle" });
     if (ticker === requestedSymbol) setRetryKey((value) => value + 1);
     else setRequestedSymbol(ticker);
     navigate("overview");
@@ -54,7 +110,6 @@ export function App() {
     const controller = new AbortController();
     const version = ++requestVersion.current;
     setActiveData({ kind: "loading", symbol: requestedSymbol });
-    setScanAction({ kind: "idle" });
     Promise.allSettled([
       getFilingInventory(requestedSymbol, controller.signal),
       getV2Prices(requestedSymbol, controller.signal),
@@ -70,49 +125,18 @@ export function App() {
     return () => controller.abort();
   }, [requestedSymbol, retryKey]);
 
-  function submit(event: FormEvent) {
-    event.preventDefault();
-    const next = input.trim().toUpperCase();
-    if (!next) return;
-    if (next === requestedSymbol) setRetryKey((value) => value + 1);
-    else { setScanAction({ kind: "idle" }); setRequestedSymbol(next); }
-  }
-
   async function startFilingScan() {
     const scanSymbol = requestedSymbol;
-    if (!isSupportedSymbol(scanSymbol)) return;
-    setScanAction({ kind: "running" });
-    try {
-      const result = await scanOfficialFilings(scanSymbol);
-      if (activeSymbolRef.current !== scanSymbol) return;
+    if (!isSupportedSymbol(scanSymbol)) throw new Error(`SEC 扫描仅支持 ${SUPPORTED_SYMBOLS.join("、")}。`);
+    const result = await scanOfficialFilings(scanSymbol);
+    if (activeSymbolRef.current === scanSymbol) {
       setActiveData((previous) => previous.kind === "ready" && previous.symbol === scanSymbol ? { ...previous, filings: { kind: "ready", data: result } } : previous);
-      setScanAction({ kind: "success", message: `扫描完成：发现 ${result.discovered_count} 份，新增 ${result.created_count} 份。` });
-    } catch (error: unknown) {
-      if (activeSymbolRef.current !== scanSymbol) return;
-      setScanAction({ kind: "error", message: actionMessage(error, "扫描官方申报失败。") });
     }
+    return result;
   }
 
-  function updateFilingInventory(filing: OfficialFiling) {
-    if (activeSymbolRef.current !== requestedSymbol) return;
-    const update = (previous: FilingState): FilingState => {
-      if (previous.kind !== "ready") return previous;
-      const found = previous.data.filings.some((item) => item.accession_number === filing.accession_number);
-      return {
-        kind: "ready",
-        data: {
-          ...previous.data,
-          filings: found
-            ? previous.data.filings.map((item) => item.accession_number === filing.accession_number ? { ...item, ...filing } : item)
-            : [...previous.data.filings, filing],
-        },
-      };
-    };
-    setActiveData((previous) => previous.kind === "ready" && previous.symbol === requestedSymbol ? { ...previous, filings: update(previous.filings) } : previous);
-  }
-
-  const shellProps = { input, setInput, submit, activeSection, navigate, symbol: requestedSymbol };
-  if (activeSection === "materials") return <Shell {...shellProps}><MaterialLibrary key={requestedSymbol} symbol={requestedSymbol} onScan={async () => { await startFilingScan(); setRetryKey((value) => value + 1); }} /></Shell>;
+  const shellProps = { activeSection, navigate, symbol: requestedSymbol, onSelectStock: openStock };
+  if (activeSection === "materials") return <Shell {...shellProps}><MaterialLibrary key={requestedSymbol} symbol={requestedSymbol} onScan={async () => { const result = await startFilingScan(); setRetryKey((value) => value + 1); return result; }} /></Shell>;
   if (activeData.kind === "loading" || activeData.symbol !== requestedSymbol) return <Shell {...shellProps}><Loading symbol={requestedSymbol} /></Shell>;
   const supported = isSupportedSymbol(requestedSymbol);
   const revisionsNavigate = activeSection === "revisions" ? "revisions" : "forecast";
@@ -121,25 +145,18 @@ export function App() {
       <WorkspacePageHeader symbol={requestedSymbol} section={activeSection} recordCount={null} supported={supported} />
       {activeSection === "overview" && <CurrentOverviewWorkspace symbol={requestedSymbol} currentFilings={activeData.filings} priceHistory={activeData.priceHistory} priceError={activeData.priceError} onNavigate={navigate} onOpenStock={openStock} />}
       {(activeSection === "forecast" || activeSection === "revisions") && <section className="workspace-stack">
-        {activeSection === "revisions" && <WorkspaceIntro eyebrow="预测与修订" title="从当前版本发起材料修订" description="选择当前预测、版本和新材料，生成保留版本记录的修订。历史版本不会被覆盖。" />}
-        <V2ForecastWorkspace key={`${requestedSymbol}-${revisionsNavigate}`} symbol={requestedSymbol} filings={activeData.filings.kind === "ready" ? activeData.filings.data : null} priceHistory={activeData.priceHistory} />
+        <V2ForecastWorkspace key={`${requestedSymbol}-${revisionsNavigate}`} mode={revisionsNavigate} symbol={requestedSymbol} filings={activeData.filings.kind === "ready" ? activeData.filings.data : null} priceHistory={activeData.priceHistory} onOpenForecast={() => navigate("forecast")} />
         {activeData.priceError && <p className="inventory-status inventory-error" role="status">行情暂不可用：{activeData.priceError}</p>}
       </section>}
-      {activeSection === "evidence" && <section className="workspace-stack">
-        <WorkspaceIntro eyebrow="来源与核验" title="SEC 证据中心" description="保留官方文件扫描、原文读取和人工来源核验；媒体材料可上传并记录你的星级判断。" action={<button className="primary-action" disabled={!supported || scanAction.kind === "running"} onClick={startFilingScan}>{scanAction.kind === "running" ? "正在扫描…" : "扫描官方申报"}</button>} />
-        <ActionNotice state={scanAction} />
-        {!supported && <WorkspaceRestriction />}
-        <section className="evidence-layout">
-          <EvidenceWorkflowPanel symbol={requestedSymbol} supported={supported} />
-          <FilingInventoryPanel symbol={requestedSymbol} state={activeData.filings} onInventoryChanged={updateFilingInventory} />
-        </section>
-      </section>}
+      {activeSection === "evidence" && <EvidenceCenter key={requestedSymbol} symbol={requestedSymbol} supported={supported} onOpenForecast={() => navigate("forecast")} />}
       {activeSection === "evaluation" && <V2EvaluationWorkspace key={requestedSymbol} symbol={requestedSymbol} />}
+      {activeSection === "replay" && <HistoricalReplayWorkspace key={requestedSymbol} initialSymbol={requestedSymbol} />}
     </main>
   </Shell>;
 }
 
 function CurrentOverviewWorkspace({ symbol, currentFilings, priceHistory, priceError, onNavigate, onOpenStock }: { symbol: string; currentFilings: FilingState; priceHistory: PriceHistory | null; priceError: string | null; onNavigate: (section: WorkspaceSection) => void; onOpenStock: (ticker: SupportedSymbol) => void }) {
+  const { t } = useLocale();
   type UniverseItem = { workspace?: Awaited<ReturnType<typeof getV2Workspace>>; workspaceState: "loading" | "ready" | "error"; roots?: Awaited<ReturnType<typeof getV2ForecastRoots>>; materials?: number; filings?: FilingInventory; error?: string; loading: boolean };
   const [universe, setUniverse] = useState<Record<string, UniverseItem>>(() => Object.fromEntries(SUPPORTED_SYMBOLS.map((ticker) => [ticker, { workspaceState: "loading", loading: true }])));
   const [monitor, setMonitor] = useState<{ kind: "loading" } | { kind: "ready"; data: Awaited<ReturnType<typeof getV2MonitorStatus>> } | { kind: "error" }>({ kind: "loading" });
@@ -170,426 +187,189 @@ function CurrentOverviewWorkspace({ symbol, currentFilings, priceHistory, priceE
   const currentWorkspaceState = current?.workspaceState ?? "loading";
   const currentVersion = currentWorkspaceState === "ready" ? current?.workspace?.current_version : null;
   const currentFilingsList = currentFilings.kind === "ready" ? currentFilings.data.filings : [];
-  const pendingSec = currentFilings.kind === "ready" ? currentFilingsList.filter((filing) => filingReviewBucket(filing) === "pending").length : null;
+  const officialFilingCount = currentFilings.kind === "ready" ? currentFilingsList.length : null;
   return <section className="workspace-stack overview-workspace">
-    <WorkspaceIntro eyebrow="研究总览" title="从单股研究队列开始" description="队列汇总独立预测、官方资料和已保存材料。没有预测时仍可上传材料、读取 SEC 原文并开始新研究。" />
-    <section className="overview-focus" aria-label={`${symbol} 当前研究状态`}>
-      <div><p className="eyebrow">当前股票 / {symbol}</p><h2>{currentWorkspaceState === "loading" ? "正在读取研究状态" : currentWorkspaceState === "error" ? "研究状态暂不可用" : currentVersion ? `预测版本 ${currentVersion.version_no}` : "可开始一项新研究"}</h2><p>{currentWorkspaceState === "loading" ? "正在读取当前预测与研究记录。" : currentWorkspaceState === "error" ? "当前预测状态读取失败，请稍后重试。" : currentVersion ? `最近决策时间 ${formatUtc(currentVersion.decision_at)}；选择预测区查看简报、固定目标和行情。` : "目前没有当前预测版本。历史行情与材料仍可查看，也可以直接创建预测。"}</p></div>
-      <div className="overview-focus-actions"><button className="primary-action" disabled={currentWorkspaceState === "loading"} onClick={() => onNavigate("forecast")}>{currentWorkspaceState === "loading" ? "正在读取…" : currentVersion ? "打开预测" : currentWorkspaceState === "ready" ? "创建预测" : "查看预测工作台"}</button><button className="secondary-action" onClick={() => onNavigate("materials")}>查看材料库</button></div>
+    <WorkspaceIntro eyebrow={t("研究总览")} title={t("从单股研究队列开始")} description={t("队列汇总独立预测、官方资料和已保存材料。没有预测时仍可上传材料、读取 SEC 原文并开始新研究。")} />
+    <section className="overview-focus" aria-label={`${symbol} ${t("当前研究状态")}`}>
+      <div><p className="eyebrow">{t("当前股票")} / {symbol}</p><h2>{currentWorkspaceState === "loading" ? t("正在读取研究状态") : currentWorkspaceState === "error" ? t("研究状态暂不可用") : currentVersion ? `${t("预测版本")} ${currentVersion.version_no}` : t("可开始一项新研究")}</h2><p>{currentWorkspaceState === "loading" ? t("正在读取当前预测与研究记录。") : currentWorkspaceState === "error" ? t("当前预测状态读取失败，请稍后重试。") : currentVersion ? `${t("最近决策时间")} ${formatUtc(currentVersion.decision_at)}; ${t("选择预测区查看简报、固定目标和行情。")}` : t("目前没有当前预测版本。历史行情与材料仍可查看，也可以直接创建预测。")}</p></div>
+      <div className="overview-focus-actions"><button className="primary-action" disabled={currentWorkspaceState === "loading"} onClick={() => onNavigate("forecast")}>{currentWorkspaceState === "loading" ? t("正在读取…") : currentVersion ? t("打开预测") : currentWorkspaceState === "ready" ? t("创建预测") : t("查看预测工作台")}</button><button className="secondary-action" onClick={() => onNavigate("materials")}>{<Tx text={"查看材料库"} />}</button></div>
     </section>
-    <section className="overview-metrics" aria-label="当前研究状态">
-      <article><span>独立预测数</span><strong>{current?.roots?.roots.length ?? "—"}</strong><small>{current?.workspace?.pending_job_count ? `${current.workspace.pending_job_count} 项任务处理中` : "按当前预测记录统计"}</small></article>
-      <article><span>材料总数</span><strong>{current?.materials ?? "—"}</strong><small>已保存官方和上传材料</small></article>
-      <article><span>SEC 待核验</span><strong>{pendingSec ?? "—"}</strong><small>{currentFilings.kind === "error" ? "官方资料目录暂不可用" : "当前股票的官方来源"}</small></article>
-      <article><span>监控状态</span><strong>{monitor.kind === "loading" ? "正在读取" : monitor.kind === "error" ? "暂不可用" : monitorHealthLabel(monitor.data.health)}</strong><small>{monitor.kind === "loading" ? "正在读取监控记录" : monitor.kind === "error" ? "无法读取监控状态" : monitor.data.last_success?.completed_at ? `最近成功 ${formatUtc(monitor.data.last_success.completed_at)}` : "尚无成功运行记录"}</small></article>
+    <section className="overview-metrics" aria-label={t("当前研究状态")}>
+      <article><span>{<Tx text={"独立预测数"} />}</span><strong>{current?.roots?.roots.length ?? "—"}</strong><small>{current?.workspace?.pending_job_count ? `${current.workspace.pending_job_count} ${t("项任务处理中")}` : t("按当前预测记录统计")}</small></article>
+      <article><span>{<Tx text={"材料总数"} />}</span><strong>{current?.materials ?? "—"}</strong><small>{<Tx text={"已保存官方和上传材料"} />}</small></article>
+      <article><span>{<Tx text={"SEC 官方材料"} />}</span><strong>{officialFilingCount ?? "—"}</strong><small>{currentFilings.kind === "error" ? t("官方资料目录暂不可用") : t("当前股票已保存的官方文件")}</small></article>
+      <article><span>{<Tx text={"监控状态"} />}</span><strong>{monitor.kind === "loading" ? t("正在读取") : monitor.kind === "error" ? t("暂不可用") : t(monitorHealthLabel(monitor.data.health))}</strong><small>{monitor.kind === "loading" ? t("正在读取监控记录") : monitor.kind === "error" ? t("无法读取监控状态") : monitor.data.last_success?.completed_at ? `${t("最近成功")} ${formatUtc(monitor.data.last_success.completed_at)}` : t("尚无成功运行记录")}</small></article>
     </section>
-    <section className="universe-section" aria-labelledby="universe-title"><div className="section-heading"><div><p className="eyebrow">研究队列</p><h2 id="universe-title">五只关注股票</h2></div><span>按当前研究数据读取</span></div><div className="universe-grid">
+    <section className="universe-section" aria-labelledby="universe-title"><div className="section-heading"><div><p className="eyebrow">{<Tx text={"研究队列"} />}</p><h2 id="universe-title">{<Tx text={"七只关注股票"} />}</h2></div><span>{<Tx text={"按当前研究数据读取"} />}</span></div><div className="universe-grid">
       {SUPPORTED_SYMBOLS.map((ticker) => {
         const item = universe[ticker];
         const count = item?.roots?.roots.length;
-        const pending = item?.filings?.filings.filter((filing) => filingReviewBucket(filing) === "pending").length;
+        const filingCount = item?.filings?.filings.length;
         return <article className={`universe-card ${ticker === symbol ? "is-current" : ""}`} key={ticker}>
-          <div className="universe-card-top"><strong>{ticker}</strong>{ticker === symbol && <span>当前</span>}</div>
-          {item?.loading && <p className="universe-pending">正在读取研究状态…</p>}
+          <div className="universe-card-top"><strong>{ticker}</strong>{ticker === symbol && <span>{<Tx text={"当前"} />}</span>}</div>
+          {item?.loading && <p className="universe-pending">{<Tx text={"正在读取研究状态…"} />}</p>}
           {item?.error && <p className="universe-error" role="status">{item.error}</p>}
-          {item && !item.loading && <><dl><div><dt>独立预测</dt><dd>{count ?? "—"}</dd></div><div><dt>材料</dt><dd>{item.materials ?? "—"}</dd></div><div><dt>待核验 SEC</dt><dd>{pending ?? "—"}</dd></div></dl><small>{item.workspaceState === "loading" ? "正在读取预测状态" : item.workspaceState === "error" ? "预测状态暂不可用" : item.workspace?.current_version ? `最新版本 ${item.workspace.current_version.version_no} · ${modelStatusLabel(item.workspace.current_version.model_status)}` : "当前没有预测版本"}</small></>}
-          <button className="universe-open" type="button" onClick={() => onOpenStock(ticker)}>打开 {ticker} 总览 <span aria-hidden="true">→</span></button>
+          {item && !item.loading && <><dl><div><dt>{<Tx text={"独立预测"} />}</dt><dd>{count ?? "—"}</dd></div><div><dt>{<Tx text={"材料"} />}</dt><dd>{item.materials ?? "—"}</dd></div><div><dt>{<Tx text={"SEC 官方材料"} />}</dt><dd>{filingCount ?? "—"}</dd></div></dl><small>{item.workspaceState === "loading" ? t("正在读取预测状态") : item.workspaceState === "error" ? t("预测状态暂不可用") : item.workspace?.current_version ? `${t("最新版本")} ${item.workspace.current_version.version_no} · ${t(modelStatusLabel(item.workspace.current_version.model_status))}` : t("当前没有预测版本")}</small></>}
+          <button className="universe-open" type="button" onClick={() => onOpenStock(ticker)}>{t("打开")} {ticker} {t("总览")} <span aria-hidden="true">→</span></button>
         </article>;
       })}
     </div></section>
-    <div className="overview-shortcuts"><button className="text-button" onClick={() => onNavigate("evidence")}>扫描或核验 SEC</button><button className="text-button" onClick={() => onNavigate("evaluation")}>查看到期评估</button><span>{priceError ? `行情暂不可用：${priceError}` : priceHistory?.latest_trading_date ? `${symbol} 行情截至 ${priceHistory.latest_trading_date}` : "本地没有可展示的行情"}</span></div>
+    <div className="overview-shortcuts"><button className="text-button" onClick={() => onNavigate("materials")}>{<Tx text={"管理材料 / 扫描 SEC"} />}</button><button className="text-button" onClick={() => onNavigate("evaluation")}>{<Tx text={"查看到期评估"} />}</button><span>{priceError ? `${t("行情暂不可用")}: ${priceError}` : priceHistory?.latest_trading_date ? `${symbol} ${t("行情截至")} ${priceHistory.latest_trading_date}` : t("本地没有可展示的行情")}</span></div>
   </section>;
 }
 
 function V2EvaluationWorkspace({ symbol }: { symbol: string }) {
+  const { t } = useLocale();
   const [state, setState] = useState<{ kind: "loading" } | { kind: "ready"; data: Awaited<ReturnType<typeof getV2Evaluations>> } | { kind: "error"; message: string }>({ kind: "loading" });
+  const [learning, setLearning] = useState<{ kind: "loading" } | { kind: "ready"; data: JevLearningStatus } | { kind: "error"; message: string }>({ kind: "loading" });
   useEffect(() => {
     const controller = new AbortController();
     setState({ kind: "loading" });
+    setLearning({ kind: "loading" });
     getV2Evaluations(symbol, controller.signal).then((data) => { if (!controller.signal.aborted) setState({ kind: "ready", data }); }).catch((error: unknown) => { if (!controller.signal.aborted) setState({ kind: "error", message: actionMessage(error, "暂时无法读取到期评估。") }); });
+    getJevLearningStatus(symbol, controller.signal).then((data) => { if (!controller.signal.aborted) setLearning({ kind: "ready", data }); }).catch((error: unknown) => { if (!controller.signal.aborted) setLearning({ kind: "error", message: actionMessage(error, "暂时无法读取 Jev 学习状态。") }); });
     return () => controller.abort();
   }, [symbol]);
   return <section className="workspace-stack">
     <WorkspaceIntro eyebrow="到期评估" title="按模型分组查看已到期预测" description="每组只统计同一时间模式、模型、服务方和问题版本的代表版本。未到期样本显示为待评，不混入其他模型的指标。" />
-    {state.kind === "loading" && <p className="inventory-status">正在读取评估结果…</p>}
+    <JevLearningReadout state={learning} />
+    {state.kind === "loading" && <p className="inventory-status">{<Tx text={"正在读取评估结果…"} />}</p>}
     {state.kind === "error" && <p className="inventory-status inventory-error" role="alert">{state.message}</p>}
     {state.kind === "ready" && <div className="model-cohort-list">{state.data.model_cohorts?.length ? state.data.model_cohorts.map((cohort, index) => {
       const versions = cohort.roots.flatMap((root) => root.versions);
       const scored = versions.map((version) => version.latest_evaluation).filter((evaluation) => evaluation?.status === "succeeded");
       const average = (values: Array<number | null | undefined>) => { const valid = values.filter((value): value is number => typeof value === "number"); return valid.length ? (valid.reduce((sum, value) => sum + value, 0) / valid.length).toFixed(3) : "—"; };
       return <article className="model-cohort-card" key={`${cohort.model_status}-${cohort.provider}-${cohort.actual_model}-${cohort.question_version ?? "none"}-${index}`}>
-        <div className="section-heading"><div><p className="eyebrow">{cohort.time_mode === "observed" ? "真实观察" : cohort.time_mode === "historical_research" ? "历史研究" : "时间模式未分类"} · {modelStatusLabel(cohort.model_status)}</p><h2>{cohort.provider} / {cohort.actual_model}</h2></div><span>{cohort.status === "available" ? "指标可用" : cohort.status === "pending" ? "等待到期" : "样本不足"}</span></div>
-        <p className="fine-print">问题版本：{cohort.question_version ?? "未记录"} · 样本按同组最高版本计数。</p>
-        <div className="overview-metrics"><article><span>独立预测样本</span><strong>{cohort.sample.root_denominator}</strong><small>同组代表记录</small></article><article><span>已标注 / 已评分</span><strong>{cohort.sample.labelled_root_count} / {cohort.sample.scored_root_count}</strong><small>{cohort.sample.unscored_root_count} 条尚未评分</small></article><article><span>平均 Brier</span><strong>{average(scored.map((value) => value?.brier_score))}</strong><small>仅已成功评分的版本</small></article><article><span>平均 Log loss</span><strong>{average(scored.map((value) => value?.log_loss))}</strong><small>仅已成功评分的版本</small></article></div>
+        <div className="section-heading"><div><p className="eyebrow">{t(cohort.time_mode === "observed" ? "真实观察" : cohort.time_mode === "historical_research" ? "历史研究" : "时间模式未分类")} · {t(modelStatusLabel(cohort.model_status))}</p><h2>{cohort.provider} / {cohort.actual_model}</h2></div><span>{t(cohort.status === "available" ? "指标可用" : cohort.status === "pending" ? "等待到期" : "样本不足")}</span></div>
+        <p className="fine-print">{t("问题版本")}: {cohort.question_version ?? t("未记录")} · {t("样本按同组最高版本计数")}</p>
+        <div className="overview-metrics"><article><span>{<Tx text={"独立预测样本"} />}</span><strong>{cohort.sample.root_denominator}</strong><small>{<Tx text={"同组代表记录"} />}</small></article><article><span>{<Tx text={"已标注 / 已评分"} />}</span><strong>{cohort.sample.labelled_root_count} / {cohort.sample.scored_root_count}</strong><small>{cohort.sample.unscored_root_count} {t("条尚未评分")}</small></article><article><span>{<Tx text={"平均 Brier"} />}</span><strong>{average(scored.map((value) => value?.brier_score))}</strong><small>{<Tx text={"仅已成功评分的版本"} />}</small></article><article><span>{<Tx text={"平均 Log loss"} />}</span><strong>{average(scored.map((value) => value?.log_loss))}</strong><small>{<Tx text={"仅已成功评分的版本"} />}</small></article></div>
       </article>;
-    }) : <div className="evaluation-empty-state"><h2>{state.data.model_cohorts ? "还没有模型分组评估" : "模型分组数据暂不可用"}</h2><p>这里不会用旧版离线报告或跨模型混合分组填补。预测到期并获得可用行情后，结果会进入对应模型组。</p></div>}</div>}
+    }) : <div className="evaluation-empty-state"><h2>{state.data.model_cohorts ? t("还没有模型分组评估") : t("模型分组数据暂不可用")}</h2><p>{<Tx text={"这里不会用旧版离线报告或跨模型混合分组填补。预测到期并获得可用行情后，结果会进入对应模型组。"} />}</p></div>}</div>}
+  </section>;
+}
+
+function JevLearningReadout({ state }: { state: { kind: "loading" } | { kind: "ready"; data: JevLearningStatus } | { kind: "error"; message: string } }) {
+  const { locale, t } = useLocale();
+  if (state.kind === "loading") return <section className="jev-learning-card"><p className="eyebrow">{<Tx text={"Jev 本地校准"} />}</p><p>{<Tx text={"正在读取学习状态…"} />}</p></section>;
+  if (state.kind === "error") return <section className="jev-learning-card"><p className="eyebrow">{<Tx text={"Jev 本地校准"} />}</p><p className="inventory-error" role="alert">{state.message}</p></section>;
+  const status = state.data;
+  const cohorts = status.cohorts;
+  const current = cohorts[0] ?? null;
+  const active = current?.active_model ?? null;
+  const metrics = active?.test_metrics && typeof active.test_metrics === "object" ? active.test_metrics as Record<string, unknown> : null;
+  const rawMetrics = metrics?.raw_jev && typeof metrics.raw_jev === "object" ? metrics.raw_jev as Record<string, unknown> : null;
+  const correctedMetrics = metrics?.candidate && typeof metrics.candidate === "object" ? metrics.candidate as Record<string, unknown> : null;
+  const priorMetrics = metrics?.training_prior_baseline && typeof metrics.training_prior_baseline === "object" ? metrics.training_prior_baseline as Record<string, unknown> : null;
+  const metric = (value: unknown) => typeof value === "number" ? value.toFixed(3) : "—";
+  return <section className="jev-learning-card" aria-label={t("Jev 本地校准器学习状态")}>
+    <div className="section-heading"><div><p className="eyebrow">{<Tx text={"Jev 本地校准"} />}</p><h2>{active ? t("已启用经过时间外验证的校准器") : t("正在积累可训练的真实预测结果")}</h2></div><span>{active ? t("已启用") : t("收集样本中")}</span></div>
+    <p>{current ? `${current.actual_model} · ${t("问题版本")} ${current.question_version}` : t("当前股票还没有可统计的 Jev 预测组。")} {t("校准器只学习如何调整 Jev 的三类概率，不修改 Jev 本身，也不声称改变它的内部参数。")}</p>
+    <div className="overview-metrics jev-learning-metrics">
+      <article><span>{<Tx text={"当前预测组"} />}</span><strong>{current?.forecast_roots ?? 0}</strong><small>{<Tx text={"独立根预测"} />}</small></article>
+      <article><span>{<Tx text={"已到期并评分"} />}</span><strong>{current?.matured_roots ?? 0} / {status.required_mature_roots}</strong><small>{locale === "en-US" ? `At least ${status.minimum_validation_months} months of out-of-time validation` : `至少 ${status.minimum_validation_months} 个月时间外验证`}</small></article>
+      <article><span>{<Tx text={"待到期"} />}</span><strong>{current?.pending_roots ?? 0}</strong><small>{<Tx text={"预测目标为 20 个交易日"} />}</small></article>
+      <article><span>{<Tx text={"历史回放排除"} />}</span><strong>{status.historical_replay_mature_roots_excluded}</strong><small>{<Tx text={"不进入实时校准训练"} />}</small></article>
+    </div>
+    {active && <div className="jev-learning-validation"><strong>{<Tx text={"最近校准器的封存时间外结果"} />}</strong><span>{t("原始 Jev Brier")} {metric(rawMetrics?.brier)} → {t("校准后")} {metric(correctedMetrics?.brier)}</span><span>{t("训练期类别基线 Brier")} {metric(priorMetrics?.brier)} → {t("校准后")} {metric(correctedMetrics?.brier)}</span><span>{t("原始 Log loss")} {metric(rawMetrics?.log_loss)} → {t("校准后")} {metric(correctedMetrics?.log_loss)}</span><small>{<Tx text={"启用条件：按月份分块的 95% 置信区间显示 Brier 同时优于 Jev 和训练期类别基线，且 Log loss 没有明显退化。新的成熟结果会进入下一轮验证。"} />}</small></div>}
+    {!active && <p className="jev-learning-note">{<Tx text={"校准器目前没有启用，所以新预测继续显示原始 Jev 概率。只有足够的真实观察结果通过时间顺序留出验证后才会自动启用；历史回放和同一目标的修订不会混入训练。"} />}</p>}
   </section>;
 }
 function WorkspacePageHeader({ symbol, section, recordCount, supported }: { symbol: string; section: WorkspaceSection; recordCount: number | null; supported: boolean }) {
+  const { t } = useLocale();
+  const title = t(WORKSPACE_SECTION_TITLE[section]);
   return <header className="workspace-heading">
-    <div><p className="eyebrow">{symbol} / {WORKSPACE_SECTION_TITLE[section]}</p><h1 id="workspace-title">{WORKSPACE_SECTION_TITLE[section]}</h1></div>
-    <div className="workspace-context"><span className={`live-dot ${supported ? "" : "muted"}`} aria-hidden="true" /><span>{supported ? "支持新建研究" : "可查看已有研究"}</span>{recordCount !== null && <span className="workspace-record-count">{recordCount} 项独立预测</span>}</div>
+    <div><p className="eyebrow">{symbol} / {title}</p><h1 id="workspace-title">{title}</h1></div>
+    <div className="workspace-context"><span className={`live-dot ${supported ? "" : "muted"}`} aria-hidden="true" /><span>{supported ? t("支持新建研究") : t("可查看已有研究")}</span>{recordCount !== null && <span className="workspace-record-count">{recordCount} {t("项独立预测")}</span>}</div>
   </header>;
 }
 
 function WorkspaceIntro({ eyebrow, title, description, action }: { eyebrow: string; title: string; description: string; action?: ReactNode }) {
+  const { t } = useLocale();
   return <section className="workspace-intro">
-    <div><p className="eyebrow">{eyebrow}</p><h2>{title}</h2><p>{description}</p></div>
+    <div><p className="eyebrow">{t(eyebrow)}</p><h2>{t(title)}</h2><p>{t(description)}</p></div>
     {action && <div className="workspace-intro-action">{action}</div>}
   </section>;
 }
 
-function WorkspaceRestriction() {
-  return <p className="workspace-restriction">当前新建研究与 SEC 扫描支持 {SUPPORTED_SYMBOLS.join(" · ")}。</p>;
-}
-
-function ActionNotice({ state }: { state: ActionState }) {
-  if (state.kind === "idle" || state.kind === "running") return null;
-  return <p className={`action-notice ${state.kind}`} role={state.kind === "error" ? "alert" : "status"}>{state.message}</p>;
-}
-
-function EvidenceWorkflowPanel({ symbol, supported }: { symbol: string; supported: boolean }) {
-  const [uploaded, setUploaded] = useState<{ kind: "loading" } | { kind: "ready"; items: UploadedEvidence[] } | { kind: "error"; message: string }>({ kind: "loading" });
-
-  useEffect(() => {
-    const controller = new AbortController();
-    setUploaded({ kind: "loading" });
-    getUploadedEvidence(symbol, controller.signal)
-      .then((result) => setUploaded({ kind: "ready", items: result.items ?? [] }))
-      .catch((error: unknown) => { if (!controller.signal.aborted) setUploaded({ kind: "error", message: actionMessage(error, "暂时无法读取已上传材料。") }); });
-    return () => controller.abort();
-  }, [symbol]);
-
-  async function handleUpload(input: Parameters<typeof uploadEvidence>[1]) {
-    const item = await uploadEvidence(symbol, input);
-    setUploaded((previous) => ({ kind: "ready", items: sortUploadedEvidence([item, ...(previous.kind === "ready" ? previous.items : [])]) }));
-  }
-
-  return <section className="evidence-workbench evidence-upload-workbench" aria-labelledby="evidence-workbench-title">
-    <div className="workbench-heading">
-      <div><span className="section-label">媒体材料</span><h3 id="evidence-workbench-title">保存未获官方证实的来源</h3></div>
-      <span className="tag">来源记录</span>
-    </div>
-    <p className="workbench-intro">上传媒体报道、行业消息或其他未获官方确认的信息，并记录来源与初步可信度判断。</p>
-    <div className="workbench-grid"><UploadEvidencePanel symbol={symbol} supported={supported} uploaded={uploaded} onUpload={handleUpload} /></div>
-  </section>;
-}
-
-function UploadEvidencePanel({ symbol, supported, uploaded, onUpload }: {
-  symbol: string;
-  supported: boolean;
-  uploaded: { kind: "loading" } | { kind: "ready"; items: UploadedEvidence[] } | { kind: "error"; message: string };
-  onUpload: (input: Parameters<typeof uploadEvidence>[1]) => Promise<void>;
-}) {
-  const [file, setFile] = useState<File | null>(null);
-  const [title, setTitle] = useState("");
-  const [sourceUrl, setSourceUrl] = useState("");
-  const [publishedAt, setPublishedAt] = useState("");
-  const [stars, setStars] = useState(3);
-  const [impactSeverity, setImpactSeverity] = useState<"low" | "medium" | "high">("medium");
-  const [reason, setReason] = useState("");
-  const [action, setAction] = useState<UploadActionState>({ kind: "idle" });
-  const fileInput = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    setFile(null); setTitle(""); setSourceUrl(""); setPublishedAt(""); setStars(3); setImpactSeverity("medium"); setReason(""); setAction({ kind: "idle" });
-    if (fileInput.current) fileInput.current.value = "";
-  }, [symbol]);
-
-  async function submitUpload(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!file || !isAllowedEvidenceFile(file) || !isHttpsUrl(sourceUrl) || !title.trim() || !publishedAt || !reason.trim()) return;
-    setAction({ kind: "running" });
-    try {
-      await onUpload({ file, title: title.trim(), sourceUrl: sourceUrl.trim(), publishedAt: new Date(publishedAt).toISOString(), credibilityStars: stars, credibilityReason: reason.trim(), impactSeverity });
-      setAction({ kind: "success", message: "材料已保存为未获官方证实的媒体证据，可在后续研究中选择。" });
-      setFile(null); setTitle(""); setSourceUrl(""); setPublishedAt(""); setStars(3); setImpactSeverity("medium"); setReason("");
-      if (fileInput.current) fileInput.current.value = "";
-    } catch (error: unknown) {
-      setAction({ kind: "error", message: actionMessage(error, "上传材料失败。") });
-    }
-  }
-
-  const invalidFile = file !== null && !isAllowedEvidenceFile(file);
-  return <article className="workbench-card upload-card">
-    <span className="action-number">03</span>
-    <h3>上传媒体材料</h3>
-    <p>用于媒体报道、行业消息或未获官网确认的内容。只接受 TXT、Markdown、PDF，并保留原始 HTTPS 链接与发布时间。</p>
-    <form className="evidence-form" onSubmit={submitUpload}>
-      <label>材料文件
-        <input ref={fileInput} type="file" accept=".txt,.md,.markdown,.pdf,text/plain,text/markdown,application/pdf" required disabled={!supported || action.kind === "running"} onChange={(event) => setFile(event.target.files?.[0] ?? null)} />
-      </label>
-      {invalidFile && <p className="content-error" role="alert">请选择 TXT、Markdown 或 PDF 文件。</p>}
-      <label>标题<input value={title} required maxLength={240} disabled={!supported || action.kind === "running"} onChange={(event) => setTitle(event.target.value)} placeholder="例如：权威媒体报道产品重大问题" /></label>
-      <label>原始 HTTPS 来源<input value={sourceUrl} required type="url" inputMode="url" disabled={!supported || action.kind === "running"} onChange={(event) => setSourceUrl(event.target.value)} placeholder="https://…" /></label>
-      <label>发布时间<input value={publishedAt} required type="datetime-local" disabled={!supported || action.kind === "running"} onChange={(event) => setPublishedAt(event.target.value)} /></label>
-      <fieldset className="credibility-picker">
-        <legend>用户评估的消息可信度</legend>
-        <div>{[1, 2, 3, 4, 5].map((value) => <label key={value} title={`${value} 星`}><input type="radio" name={`credibility-${symbol}`} value={value} checked={stars === value} disabled={!supported || action.kind === "running"} onChange={() => setStars(value)} /><span aria-hidden="true">★</span><span className="sr-only">{value} 星</span></label>)}</div>
-        <small>{stars} / 5 星 · 记录你的初步判断，不是精确概率，也不代表内容已获官方证实。</small>
-      </fieldset>
-      <label>潜在影响程度
-        <select value={impactSeverity} disabled={!supported || action.kind === "running"} onChange={(event) => setImpactSeverity(event.target.value as "low" | "medium" | "high")}>
-          <option value="low">低 · 可能影响有限</option>
-          <option value="medium">中 · 值得人工审阅</option>
-          <option value="high">高 · 可能显著影响市场预期</option>
-        </select>
-        <small className="field-note">这是对潜在重要性的判断，不是涨跌方向或概率预测。</small>
-      </label>
-      <label>评分理由<textarea value={reason} required rows={3} maxLength={1000} disabled={!supported || action.kind === "running"} onChange={(event) => setReason(event.target.value)} placeholder="例如：媒体的一手采访、交叉报道情况，或尚待确认的原因" /></label>
-      <button className="action-button" type="submit" disabled={!supported || action.kind === "running" || !file || invalidFile || !isHttpsUrl(sourceUrl) || !title.trim() || !publishedAt || !reason.trim()}>{action.kind === "running" ? "正在保存…" : "保存未证实材料"}</button>
-      <ActionNotice state={action} />
-    </form>
-    <UploadedEvidenceList state={uploaded} />
-  </article>;
-}
-
-function UploadedEvidenceList({ state }: { state: { kind: "loading" } | { kind: "ready"; items: UploadedEvidence[] } | { kind: "error"; message: string } }) {
-  if (state.kind === "loading") return <p className="material-status">正在读取已上传材料…</p>;
-  if (state.kind === "error") return <p className="content-error" role="alert">{state.message}</p>;
-  if (!state.items.length) return <p className="material-status">还没有手动上传的媒体材料。</p>;
-  return <div className="uploaded-list" aria-label="已上传媒体材料">
-    <p className="list-caption">已保存 {state.items.length} 份 · 均待进一步核验</p>
-    {sortUploadedEvidence(state.items).slice(0, 4).map((item) => <article className="uploaded-item" key={item.id}>
-      <div><strong>{item.title}</strong><span aria-label={`用户评估 ${item.credibility_stars} 星`}>{"★".repeat(clampStars(item.credibility_stars))}{"☆".repeat(5 - clampStars(item.credibility_stars))}</span></div>
-      <small>{formatDateTime(item.published_at)} · 未获官方证实{item.impact_severity ? ` · 潜在影响${severityLabel(item.impact_severity)}` : ""}</small>
-      <SafeLink href={item.source_url}>打开原始来源 <span>↗</span></SafeLink>
-    </article>)}
-  </div>;
-}
-
-function FilingInventoryPanel({ symbol, state, onInventoryChanged }: { symbol: string; state: FilingState; onInventoryChanged: (filing: OfficialFiling) => void }) {
-  const [content, setContent] = useState<Record<string, { kind: "loading" } | { kind: "ready"; data: FilingContent } | { kind: "error"; message: string }>>({});
-  const [reviewDrafts, setReviewDrafts] = useState<Record<string, { decision: "accepted" | "rejected"; note: string }>>({});
-  const [reviews, setReviews] = useState<Record<string, { kind: "loading" } | { kind: "ready"; data: FilingReview } | { kind: "error"; message: string }>>({});
-  const [formFilter, setFormFilter] = useState<FilingFormFilter>("all");
-  const [reviewFilter, setReviewFilter] = useState<FilingReviewFilter>("all");
-  const [visibleCount, setVisibleCount] = useState(INITIAL_FILING_COUNT);
-  useEffect(() => setContent({}), [symbol]);
-  useEffect(() => {
-    setReviewDrafts({});
-    setReviews({});
-    setFormFilter("all");
-    setReviewFilter("all");
-    setVisibleCount(INITIAL_FILING_COUNT);
-  }, [symbol]);
-  async function loadContent(accessionNumber: string) {
-    setContent((previous) => ({ ...previous, [accessionNumber]: { kind: "loading" } }));
-    try {
-      const data = await fetchFilingContent(symbol, accessionNumber);
-      setContent((previous) => ({ ...previous, [accessionNumber]: { kind: "ready", data } }));
-      onInventoryChanged(data);
-    } catch (error: unknown) {
-      setContent((previous) => ({ ...previous, [accessionNumber]: { kind: "error", message: actionMessage(error, "无法读取这份 SEC 原文摘要。") } }));
-    }
-  }
-  function draftFor(accessionNumber: string) { return reviewDrafts[accessionNumber] ?? { decision: "accepted" as const, note: "" }; }
-  function updateDraft(accessionNumber: string, update: Partial<{ decision: "accepted" | "rejected"; note: string }>) {
-    setReviewDrafts((previous) => ({ ...previous, [accessionNumber]: { ...draftFor(accessionNumber), ...update } }));
-  }
-  async function submitReview(accessionNumber: string) {
-    const draft = draftFor(accessionNumber);
-    if (!draft.note.trim()) return;
-    setReviews((previous) => ({ ...previous, [accessionNumber]: { kind: "loading" } }));
-    try {
-      const data = await reviewFiling(symbol, accessionNumber, draft.decision, draft.note.trim());
-      setReviews((previous) => ({ ...previous, [accessionNumber]: { kind: "ready", data } }));
-      onInventoryChanged(data);
-    } catch (error: unknown) {
-      setReviews((previous) => ({ ...previous, [accessionNumber]: { kind: "error", message: actionMessage(error, "保存人工核验结果失败。") } }));
-    }
-  }
-  if (state.kind === "idle") return null;
-  const displayedFilings = state.kind === "ready"
-    ? state.data.filings
-      .map((baseFiling) => {
-        const review = reviews[baseFiling.accession_number];
-        return review?.kind === "ready" ? review.data : baseFiling;
-      })
-      .sort(sortFilingsNewestFirst)
-    : [];
-  const filteredFilings = displayedFilings.filter((filing) => (
-    (formFilter === "all" || filing.form === formFilter)
-    && (reviewFilter === "all" || filingReviewBucket(filing) === reviewFilter)
-  ));
-  const pendingReviewCount = displayedFilings.filter((filing) => filingReviewBucket(filing) === "pending").length;
-  const visibleFilings = filteredFilings.slice(0, visibleCount);
-  const hasMore = visibleCount < filteredFilings.length;
-  return <section className="filing-inventory" aria-labelledby="filing-title">
-    <div className="inventory-heading"><div><span className="section-label">官方资料目录</span><h3 id="filing-title">{symbol} 的 SEC 申报</h3></div><span className="review-flag">{pendingReviewCount ? `${pendingReviewCount} 份待人工核验` : "已全部人工核验"}</span></div>
-    {state.kind === "loading" && <p className="inventory-status">正在读取已发现的官方申报…</p>}
-    {state.kind === "error" && <p className="inventory-status inventory-error">{state.message}</p>}
-    {state.kind === "ready" && (displayedFilings.length
-      ? <>
-          <div className="filing-controls" aria-label="筛选 SEC 申报">
-            <label>
-              <span>文件类型</span>
-              <select value={formFilter} onChange={(event) => { setFormFilter(event.target.value as FilingFormFilter); setVisibleCount(INITIAL_FILING_COUNT); }}>
-                <option value="all">全部类型</option>
-                <option value="10-K">10-K</option>
-                <option value="10-Q">10-Q</option>
-                <option value="8-K">8-K</option>
-              </select>
-            </label>
-            <label>
-              <span>人工核验</span>
-              <select value={reviewFilter} onChange={(event) => { setReviewFilter(event.target.value as FilingReviewFilter); setVisibleCount(INITIAL_FILING_COUNT); }}>
-                <option value="all">全部状态</option>
-                <option value="pending">待核验</option>
-                <option value="accepted">已接受</option>
-                <option value="rejected">已驳回</option>
-              </select>
-            </label>
-            <p className="filing-count" aria-live="polite">共 {displayedFilings.length} 份 · 当前筛选 {filteredFilings.length} 份 · 显示 {visibleFilings.length} 份</p>
-          </div>
-          {filteredFilings.length
-            ? <div className="filing-list">
-              {visibleFilings.map((filing) => {
-                const review = reviews[filing.accession_number];
-                return <article className="filing-row" key={filing.accession_number}>
-            <div><strong>{filing.form}</strong><span>{filing.filed_at}</span></div>
-            <p>{filing.primary_document}</p>
-            <SafeLink href={filing.source_url}>SEC 原始文件 <span>↗</span></SafeLink>
-            <small>{filing.accepted_at ? `SEC 受理 ${formatSecAcceptedAt(filing.accepted_at)} · ` : ""}已于 {formatDateTime(filing.observed_at)} 发现 · {filingStatus(filing.content_status)}</small>
-            <FilingContentPreview filing={filing} state={content[filing.accession_number]} onLoad={() => loadContent(filing.accession_number)} />
-            <FilingReviewPanel filing={filing} draft={draftFor(filing.accession_number)} state={review} onDraft={(update) => updateDraft(filing.accession_number, update)} onSubmit={() => submitReview(filing.accession_number)} />
-          </article>;
-              })}
-            </div>
-            : <p className="inventory-status">当前筛选没有匹配的已保存申报。</p>}
-          {filteredFilings.length > INITIAL_FILING_COUNT && <div className="filing-pagination">
-            {hasMore
-              ? <button className="text-button" type="button" onClick={() => setVisibleCount((count) => count + INITIAL_FILING_COUNT)}>显示更多（余 {filteredFilings.length - visibleFilings.length} 份）</button>
-              : <button className="text-button" type="button" onClick={() => setVisibleCount(INITIAL_FILING_COUNT)}>收起至最近 {INITIAL_FILING_COUNT} 份</button>}
-          </div>}
-        </>
-      : <p className="inventory-status">尚未发现已保存的官方申报。点击“扫描官方申报”后会在这里列出文件。</p>)}
-    <p className="fine-print inventory-note">目录记录需要先读取正文才能分析；某次预测实际使用的材料可在研究简报中查看。</p>
-  </section>;
-}
-
-function FilingReviewPanel({ filing, draft, state, onDraft, onSubmit }: { filing: OfficialFiling; draft: { decision: "accepted" | "rejected"; note: string }; state: { kind: "loading" } | { kind: "ready"; data: FilingReview } | { kind: "error"; message: string } | undefined; onDraft: (update: Partial<{ decision: "accepted" | "rejected"; note: string }>) => void; onSubmit: () => void }) {
-  const finalized = filing.review_status === "accepted" || filing.review_status === "rejected";
-  if (finalized) return <p className={`review-result ${filing.review_status}`}><strong>人工来源核验：{filing.review_status === "accepted" ? "接受" : "驳回"}</strong>{filing.human_review_note && <span> · {filing.human_review_note}</span>}<small>{filing.reviewed_at ? `核验于 ${formatDateTime(filing.reviewed_at)} · ` : ""}{filing.review_scope_note ?? "仅确认来源相关性；不验证观点、方向或预测。"}</small></p>;
-  return <details className="filing-review">
-    <summary>人工核验这份来源</summary>
-    <p>仅记录这份 SEC 来源是否与研究相关，不会验证模型观点，也不会自动用于预测。</p>
-    <div className="review-decisions" role="group" aria-label="人工核验结论">
-      <button type="button" className={draft.decision === "accepted" ? "selected" : ""} onClick={() => onDraft({ decision: "accepted" })}>接受来源</button>
-      <button type="button" className={draft.decision === "rejected" ? "selected reject" : ""} onClick={() => onDraft({ decision: "rejected" })}>驳回来源</button>
-    </div>
-    <label>核验备注<textarea value={draft.note} onChange={(event) => onDraft({ note: event.target.value })} placeholder="说明该官方文件为何与本研究相关或不相关" rows={3} /></label>
-    <button type="button" className="text-button review-submit" disabled={state?.kind === "loading" || !draft.note.trim()} onClick={onSubmit}>{state?.kind === "loading" ? "正在保存…" : "保存人工结论"}</button>
-    {state?.kind === "error" && <p className="content-error" role="alert">{state.message}</p>}
-  </details>;
-}
-
-function FilingContentPreview({ filing, state, onLoad }: { filing: FilingInventory["filings"][number]; state: { kind: "loading" } | { kind: "ready"; data: FilingContent } | { kind: "error"; message: string } | undefined; onLoad: () => void }) {
-  const loaded = state?.kind === "ready" ? state.data : null;
-  return <div className="filing-content">
-    {!loaded && <button className="text-button" disabled={state?.kind === "loading"} onClick={onLoad}>{state?.kind === "loading" ? "正在读取原文摘要…" : "读取原文摘要"}</button>}
-    {state?.kind === "error" && <p className="content-error" role="alert">{state.message}</p>}
-    {loaded?.content_status === "unavailable" && <p className="content-error">{loaded.content_error ?? "原文暂时不可用。"}</p>}
-    {loaded?.content_status === "fetched" && loaded.content_excerpt && <details className="filing-excerpt">
-      <summary>原文摘要（待人工核验）</summary>
-      <p>{excerptForDisplay(loaded.content_excerpt)}</p>
-      <small>{loaded.content_truncated ? "服务返回的是受限摘录" : "已读取的原文摘要"}{loaded.content_excerpt.length > 6000 ? "；此页仅显示前 6000 字符，全文请打开 SEC 原始文件" : ""} · 内容指纹 {loaded.content_excerpt_sha256?.slice(0, 12) ?? "—"} · 不会自动用于预测</small>
-    </details>}
-  </div>;
-}
-
-function Shell({ input, setInput, submit, activeSection, navigate, symbol, children }: { input: string; setInput: (value: string) => void; submit: (event: FormEvent) => void; activeSection: WorkspaceSection; navigate: (section: WorkspaceSection) => void; symbol: string; children: ReactNode }) {
+function Shell({ activeSection, navigate, symbol, onSelectStock, children }: { activeSection: WorkspaceSection; navigate: (section: WorkspaceSection) => void; symbol: string; onSelectStock: (ticker: SupportedSymbol) => void; children: ReactNode }) {
+  const { locale, setLocale, t } = useLocale();
   const nav: Array<{ id: WorkspaceSection; label: string; hint: string; icon: string }> = [
-    { id: "overview", label: "总览", hint: "研究队列", icon: "◌" },
-    { id: "forecast", label: "预测", hint: "版本与价格", icon: "⌁" },
-    { id: "evidence", label: "证据", hint: "SEC 与核验", icon: "◇" },
-    { id: "materials", label: "材料库", hint: "AI 分析与原文", icon: "▤" },
-    { id: "revisions", label: "预测修订", hint: "材料关联", icon: "↗" },
-    { id: "evaluation", label: "到期评估", hint: "同组样本", icon: "≋" },
+    { id: "overview", label: t("总览"), hint: t("研究队列"), icon: "◌" },
+    { id: "forecast", label: t("预测"), hint: t("版本与价格"), icon: "⌁" },
+    { id: "evidence", label: t("证据"), hint: t("预测引用与事件"), icon: "◇" },
+    { id: "materials", label: t("材料库"), hint: t("AI 分析与原文"), icon: "▤" },
+    { id: "revisions", label: t("预测修订"), hint: t("材料关联"), icon: "↗" },
+    { id: "evaluation", label: t("到期评估"), hint: t("同组样本"), icon: "≋" },
+    { id: "replay", label: t("历史回放"), hint: t("生成已到期样本"), icon: "↺" },
   ];
   return <div className="app-frame">
-    <aside className="app-rail" aria-label="主要导航">
-      <a className="workspace-brand" href="#overview" onClick={() => navigate("overview")} aria-label="Market Evidence Agent 总览"><span className="brand-mark">ME</span><span>market<br /><em>evidence</em></span></a>
-      <div className="rail-context"><span>当前股票</span><strong>{symbol}</strong><small>Agent 研究工作台</small></div>
+    <aside className="app-rail" aria-label={t("主要导航")}>
+      <a className="workspace-brand" href="#overview" onClick={() => navigate("overview")} aria-label={`Market Evidence Agent · ${t("总览")}`}><span className="brand-mark">ME</span><span>market<br /><em>evidence</em></span></a>
+      <div className="rail-context"><span>{<Tx text={"当前股票"} />}</span><strong>{symbol}</strong><small>{<Tx text={"Agent 研究工作台"} />}</small></div>
       <nav className="workspace-nav">
         {nav.map((item) => <button key={item.id} type="button" className={activeSection === item.id ? "active" : ""} aria-current={activeSection === item.id ? "page" : undefined} onClick={() => navigate(item.id)}><span aria-hidden="true">{item.icon}</span><span><strong>{item.label}</strong><small>{item.hint}</small></span></button>)}
       </nav>
-      <div className="rail-bottom"><span className="rail-review-dot" aria-hidden="true" />所有结论需人工审阅</div>
+      <div className="rail-bottom"><span className="rail-review-dot" aria-hidden="true" />{<Tx text={"判断可回到原始来源查看"} />}</div>
     </aside>
     <div className="app-content">
       <header className="topbar">
-      <div className="topbar-path"><span>研究工作台</span><b>/</b><strong>{symbol}</strong></div>
-        <form className="symbol-form" onSubmit={submit}>
-          <label htmlFor="symbol">切换股票</label>
-          <input id="symbol" value={input} onChange={(event) => setInput(event.target.value.toUpperCase())} maxLength={5} autoComplete="off" spellCheck="false" aria-label="股票代码" />
-          <button type="submit">打开</button>
-        </form>
+      <div className="topbar-path"><span>{<Tx text={"研究工作台"} />}</span><b>/</b><strong>{symbol}</strong></div>
+        <div className="toolbar-controls">
+        <div className="symbol-form">
+          <label htmlFor="symbol">{<Tx text={"切换股票"} />}</label>
+          <select id="symbol" value={symbol} onChange={(event) => onSelectStock(event.target.value as SupportedSymbol)} aria-label={t("切换股票")}>
+            {SUPPORTED_SYMBOLS.map((ticker) => <option key={ticker} value={ticker}>{ticker}</option>)}
+          </select>
+        </div>
+        <div className="language-form">
+          <label htmlFor="locale">{t("语言")}</label>
+          <select id="locale" value={locale} onChange={(event) => setLocale(event.target.value as "zh-CN" | "en-US")} aria-label={t("语言")}>
+            <option value="zh-CN">中文</option>
+            <option value="en-US">English</option>
+          </select>
+        </div>
+        </div>
       </header>
       {children}
-      <footer>Market Evidence Agent · 本地研究记录 · 所有结论均须人工审阅</footer>
+      <footer>{<Tx text={"Market Evidence Agent · 本地研究记录 · 研究判断可追溯到原始来源"} />}</footer>
     </div>
   </div>;
 }
 
 function Loading({ symbol }: { symbol: string }) {
-  return <main className="state-card" aria-live="polite" aria-busy="true"><span className="loading-mark" aria-hidden="true" /><p className="kicker">研究工作台</p><h1>正在读取 {symbol} 的研究资料</h1><p>正在读取本地预测、SEC 目录和行情。</p></main>;
+  const { t } = useLocale();
+  return <main className="state-card" aria-live="polite" aria-busy="true"><span className="loading-mark" aria-hidden="true" /><p className="kicker">{<Tx text={"研究工作台"} />}</p><h1>{t("正在读取")} {symbol} {t("的研究资料")}</h1><p>{<Tx text={"正在读取本地预测、SEC 目录和行情。"} />}</p></main>;
 }
 
-function SafeLink({ href, children }: { href: string; children: ReactNode }) { return /^https:\/\//i.test(href) ? <a className="source-link" href={href} target="_blank" rel="noreferrer">{children}</a> : <span className="source-link disabled">来源链接不可用</span>; }
 function isSupportedSymbol(symbol: string): symbol is SupportedSymbol { return (SUPPORTED_SYMBOLS as readonly string[]).includes(symbol); }
 function sectionFromHash(): WorkspaceSection {
-  const value = window.location.hash.replace(/^#/, "");
-  return (["overview", "forecast", "evidence", "materials", "revisions", "evaluation"] as const).includes(value as WorkspaceSection)
+  const value = window.location.hash.replace(/^#/, "").split("/", 1)[0];
+  return (["overview", "forecast", "evidence", "materials", "revisions", "evaluation", "replay"] as const).includes(value as WorkspaceSection)
     ? value as WorkspaceSection
     : "overview";
 }
-function isHttpsUrl(value: string) {
-  try { return new URL(value.trim()).protocol === "https:"; } catch { return false; }
-}
-function isAllowedEvidenceFile(file: File) {
-  return /\.(txt|md|markdown|pdf)$/i.test(file.name)
-    || ["text/plain", "text/markdown", "application/pdf"].includes(file.type);
-}
-function clampStars(value: number) { return Math.min(5, Math.max(1, Math.round(value || 1))); }
-function severityLabel(value: "low" | "medium" | "high") { return { low: "低", medium: "中", high: "高" }[value]; }
-function sortUploadedEvidence(items: UploadedEvidence[]) {
-  return [...items].sort((a, b) => Date.parse(b.published_at) - Date.parse(a.published_at) || (b.id ?? "").localeCompare(a.id ?? ""));
-}
 function actionMessage(error: unknown, fallback: string) {
-  if (!(error instanceof ApiError)) return fallback;
-  if (error.message.includes("SEC_EDGAR_USER_AGENT")) return "尚未配置 SEC 联系邮箱。请先按 README 配置后重试。";
-  return error.message;
-}
-function filingStatus(status: OfficialFiling["content_status"]) { return status === "fetched" ? "原文摘要已读取，仍待核验" : status === "unavailable" ? "原文摘要暂不可用" : "仅发现目录，尚未读取原文"; }
-function filingReviewBucket(filing: OfficialFiling): Exclude<FilingReviewFilter, "all"> {
-  return filing.review_status === "accepted" || filing.review_status === "rejected" ? filing.review_status : "pending";
-}
-function sortFilingsNewestFirst(a: OfficialFiling, b: OfficialFiling) {
-  return b.filed_at.localeCompare(a.filed_at) || b.accession_number.localeCompare(a.accession_number);
+  if (!(error instanceof ApiError)) return translatePhrase(fallback);
+  if (error.message.includes("SEC_EDGAR_USER_AGENT")) return translatePhrase("尚未配置 SEC 联系邮箱。请先按 README 配置后重试。");
+  return translatePhrase(error.message);
 }
 function formatPrice(value: number) { return new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value); }
 function formatReturn(value: number) { return `${value >= 0 ? "+" : ""}${(value * 100).toFixed(1)}%`; }
 function formatPercent(value: number) { return `${(value * 100).toFixed(1)}%`; }
 function modelStatusLabel(status: string) {
-  if (status === "research_only") return "研究结果（未输出概率）";
-  if (status === "experimental_jev") return "Jev 实验模型";
-  if (status === "experimental_joint") return "联合研究模型";
-  if (status === "baseline_only") return "基线模型";
-  return "模型状态未记录";
+  if (status === "research_only") return translatePhrase("研究结果（未输出概率）");
+  if (status === "experimental_jev") return translatePhrase("Jev 实验模型");
+  if (status === "experimental_joint") return translatePhrase("联合研究模型");
+  if (status === "baseline_only") return translatePhrase("基线模型");
+  return translatePhrase("模型状态未记录");
 }
 function monitorHealthLabel(status: string) {
-  if (status === "healthy") return "监控正常";
-  if (status === "delayed") return "监控延迟";
-  if (status === "degraded") return "监控异常";
-  return "尚无记录";
+  if (status === "healthy") return translatePhrase("监控正常");
+  if (status === "delayed") return translatePhrase("监控延迟");
+  if (status === "degraded") return translatePhrase("监控异常");
+  return translatePhrase("尚无记录");
 }
 function signedPoints(value: number) { return `${value >= 0 ? "+" : ""}${(value * 100).toFixed(1)}pp`; }
-function probabilityLabel(key: "bearish" | "neutral" | "bullish") { return { bearish: "看跌", neutral: "中性", bullish: "看涨" }[key]; }
-function formatDate(value: string) { return new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "short", day: "numeric", timeZone: "UTC" }).format(new Date(value)); }
-function formatDateTime(value: string) { return new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", timeZone: "UTC", timeZoneName: "short" }).format(new Date(value)); }
+function probabilityLabel(key: "bearish" | "neutral" | "bullish") { return translatePhrase(({ bearish: "看跌", neutral: "中性", bullish: "看涨" })[key]); }
+function formatDateTime(value: string, locale: "zh-CN" | "en-US" = getLocalePreference()) { return formatLocalizedDateTime(value, locale); }
 function formatUtc(value: string) { return formatDateTime(value); }
-function formatSecAcceptedAt(value: string) {
-  if (/^\d{14}$/.test(value)) return `${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)} ${value.slice(8, 10)}:${value.slice(10, 12)} UTC`;
-  return Number.isNaN(Date.parse(value)) ? value : formatDateTime(value);
-}
-function excerptForDisplay(value: string) { return value.length > 6000 ? `${value.slice(0, 6000)}…` : value; }
