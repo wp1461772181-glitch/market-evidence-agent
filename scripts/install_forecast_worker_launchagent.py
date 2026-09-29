@@ -40,9 +40,6 @@ def main() -> None:
     args = parser.parse_args()
 
     project_root = Path(__file__).resolve().parent.parent
-    python = project_root / ".venv" / "bin" / "python"
-    if not python.is_file():
-        parser.error(f"project virtualenv is missing: {python}")
     launcher = project_root / "scripts" / "run_forecast_worker.sh"
     if not launcher.is_file():
         parser.error(f"forecast worker launcher is missing: {launcher}")
@@ -51,6 +48,10 @@ def main() -> None:
     if args.print_only:
         print(rendered.decode())
         return
+
+    python = project_root / ".venv" / "bin" / "python"
+    if not python.is_file():
+        parser.error(f"project virtualenv is missing: {python}")
 
     launch_agents = Path.home() / "Library" / "LaunchAgents"
     plist_path = launch_agents / f"{LABEL}.plist"

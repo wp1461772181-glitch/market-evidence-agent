@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 from uuid import uuid4
 
@@ -75,7 +76,7 @@ def test_standalone_migration_command_registers_v2_fk_and_applies_twice_in_dispo
         environment = os.environ.copy()
         environment["DATABASE_URL"] = migration_url.render_as_string(hide_password=False)
         script = Path(__file__).parents[1] / "scripts" / "migrate_material_analysis.py"
-        python = Path(__file__).parents[1] / ".venv" / "bin" / "python"
+        python = Path(sys.executable)
 
         check_before = subprocess.run([str(python), str(script), "--check"], env=environment,
                                       capture_output=True, text=True, check=False)
