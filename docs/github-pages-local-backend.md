@@ -11,7 +11,8 @@ details](https://tailscale.com/pricing).
 - GitHub repository: `https://github.com/wp1461772181-glitch/market-evidence-agent` (public).
 - Expected project page: `https://wp1461772181-glitch.github.io/market-evidence-agent/`.
 - Browser origin for CORS: `https://wp1461772181-glitch.github.io` (no repository path).
-- The Pages site and `VITE_API_BASE_URL` Actions variable are not configured yet.
+- The deployed Pages site is `https://wp1461772181-glitch.github.io/market-evidence-agent/`.
+- The Actions variable `VITE_API_BASE_URL` points to the local API's Tailscale Funnel origin.
 - The deployment workflow is manual and refuses to build without the public API origin.
 - The local PostgreSQL data is stored in a Docker-managed volume. Its host port must
   be bound to `127.0.0.1`; never expose port `55432` through a tunnel.
@@ -57,17 +58,18 @@ job is processing:
 ./.venv/bin/python scripts/rebind_postgres_localhost.py --apply
 ```
 
-Start FastAPI in a terminal. It binds to loopback only and loads the ignored
-`.env` on startup:
+Install the API LaunchAgent to start FastAPI at login. Its launcher waits for
+the existing database container, binds only to loopback, and loads the ignored
+`.env` on startup. Review its plist first with `--print`:
 
 ```bash
-./.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+./.venv/bin/python scripts/install_api_launchagent.py --print
+./.venv/bin/python scripts/install_api_launchagent.py
 ```
 
-Confirm `http://127.0.0.1:8000/health` returns `{"status":"ok"}`. Keep the
-forecast worker active as well; the installed macOS LaunchAgent uses the
-existing database container and processes queued forecast/material jobs. Do
-not expose PostgreSQL itself.
+Confirm `http://127.0.0.1:8000/health` returns `{"status":"ok"}`. Logs are
+written to `logs/api-server.*.log`. Keep the forecast worker active as well; its
+LaunchAgent processes queued forecast/material jobs. Do not expose PostgreSQL.
 
 ## Tailscale Funnel
 
@@ -110,8 +112,9 @@ not need them.
 
 ## Remaining boundary
 
-The GitHub repository currently has uncommitted application changes. Review and
-publish the intended release as one coherent change before enabling Pages. The
-public demo is only available while the owner's Mac and local services are
-online; an always-on multi-user service needs an authenticated hosted backend
-and database instead.
+The current application is published from `main`; future frontend changes need
+the CI workflow and a manual Pages deployment. The public demo is available
+while the owner's Mac is online and awake, Docker/OrbStack and the local services
+are running, and Tailscale is connected. This is a personal single-user demo;
+an always-on multi-user service needs an authenticated hosted backend and
+database instead.
