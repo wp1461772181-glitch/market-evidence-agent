@@ -8,11 +8,14 @@ def test_public_mode_keeps_health_open_and_requires_the_access_key(client, monke
     monkeypatch.setattr(main, "APP_API_ACCESS_KEY", "a" * 40)
 
     health = client.get("/health")
-    denied = client.get("/openapi.json")
+    origin = main.allowed_origins[0]
+    denied = client.get("/openapi.json", headers={"Origin": origin})
 
     assert health.status_code == 200
     assert denied.status_code == 401
     assert denied.headers["cache-control"] == "no-store"
+    assert denied.headers["access-control-allow-origin"] == origin
+    assert denied.headers["vary"] == "Origin"
 
 
 def test_public_mode_accepts_the_access_key_and_disables_caching(client, monkeypatch):

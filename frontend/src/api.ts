@@ -2,7 +2,7 @@ import type { DashboardResponse, EvidenceRevision, EvidenceRevisionInventory, Ev
 
 const configuredApiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/+$/, "");
 const accessKeyStorageKey = "market-evidence-agent-api-access-key";
-let pendingAccessKeyRequest: { promise: Promise<string | null>; resolve: (value: string | null) => void } | null = null;
+let pendingAccessKeyRequest: { promise: Promise<string | null>; resolve: (value: string | null) => void; invalidPreviousKey: boolean } | null = null;
 
 function apiUrl(path: string): string {
   if (!configuredApiBaseUrl) return path;
@@ -49,11 +49,15 @@ export function submitApiAccessKey(value: string | null): void {
   pending?.resolve(accessKey);
 }
 
+export function getPendingAccessKeyRequest(): boolean | null {
+  return pendingAccessKeyRequest?.invalidPreviousKey ?? null;
+}
+
 function requestAccessKey(invalidPreviousKey = false): Promise<string | null> {
   if (pendingAccessKeyRequest) return pendingAccessKeyRequest.promise;
   let resolve!: (value: string | null) => void;
   const promise = new Promise<string | null>((finish) => { resolve = finish; });
-  pendingAccessKeyRequest = { promise, resolve };
+  pendingAccessKeyRequest = { promise, resolve, invalidPreviousKey };
   window.dispatchEvent(new CustomEvent("market-evidence-api-access-required", { detail: invalidPreviousKey }));
   return promise;
 }

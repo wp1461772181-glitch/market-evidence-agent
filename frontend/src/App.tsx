@@ -1,6 +1,6 @@
 import { Tx, formatDateTime as formatLocalizedDateTime, getLocalePreference, translatePhrase, useLocale } from "./i18n";
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ApiError, getFilingInventory, getJevLearningStatus, getMaterialLibrary, getV2Evaluations, getV2ForecastRoots, getV2MonitorStatus, getV2Prices, getV2Workspace, scanOfficialFilings, submitApiAccessKey } from "./api";
+import { ApiError, getFilingInventory, getJevLearningStatus, getMaterialLibrary, getPendingAccessKeyRequest, getV2Evaluations, getV2ForecastRoots, getV2MonitorStatus, getV2Prices, getV2Workspace, scanOfficialFilings, submitApiAccessKey } from "./api";
 import type { FilingInventory, JevLearningStatus, PriceHistory } from "./types";
 import { V2ForecastWorkspace } from "./V2ForecastWorkspace";
 import { EvidenceCenter } from "./EvidenceCenter";
@@ -31,6 +31,11 @@ export function App() {
     };
     window.addEventListener("market-evidence-api-access-required", requireAccessKey);
     window.addEventListener("market-evidence-api-access-invalid", rejectAccessKey);
+    const pendingRequest = getPendingAccessKeyRequest();
+    if (pendingRequest !== null) {
+      setAccessPromptInvalid(pendingRequest);
+      setAccessPromptOpen(true);
+    }
     return () => {
       window.removeEventListener("market-evidence-api-access-required", requireAccessKey);
       window.removeEventListener("market-evidence-api-access-invalid", rejectAccessKey);

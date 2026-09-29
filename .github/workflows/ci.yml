@@ -28,6 +28,7 @@ jobs:
           --health-retries 10
     env:
       PUBLIC_API_MODE: "false"
+      CORS_ALLOWED_ORIGINS: https://pages.example.test
       TEST_DATABASE_URL: postgresql+psycopg://market_evidence:market_evidence_dev@localhost:5432/test_market_evidence
     steps:
       - name: Check out source

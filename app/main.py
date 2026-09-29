@@ -87,13 +87,9 @@ allowed_origins = [
     if origin.strip()
 ]
 if allowed_origins:
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=allowed_origins,
-        allow_credentials=False,
-        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        allow_headers=["Accept", "Content-Type", "Idempotency-Key", "Authorization", "X-App-Access-Key"],
-    )
+    cors_middleware_enabled = True
+else:
+    cors_middleware_enabled = False
 app.include_router(forecast_v2_router)
 app.include_router(material_analysis_router)
 app.include_router(localization_router)
@@ -119,6 +115,18 @@ async def protect_public_api(request, call_next):
     response = await call_next(request)
     response.headers["Cache-Control"] = "no-store"
     return response
+
+
+# Register CORS after the authentication middleware so browser clients receive
+# CORS headers even on the 401 response that triggers the access-key prompt.
+if cors_middleware_enabled:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=allowed_origins,
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["Accept", "Content-Type", "Idempotency-Key", "Authorization", "X-App-Access-Key"],
+    )
 
 
 @app.on_event("startup")
