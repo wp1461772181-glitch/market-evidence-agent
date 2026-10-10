@@ -7,7 +7,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from .services import is_valid_symbol, normalize_symbol
+from .services import normalize_symbol
+from .symbols import normalize_market_symbol, yahoo_symbol
 
 
 YAHOO_CHART_BASE_URL = "https://query2.finance.yahoo.com/v8/finance/chart"
@@ -101,9 +102,8 @@ class YahooFinanceProvider:
         forecast input manifest.  Existing ingestion remains free to use
         :meth:`fetch_daily_prices`, which keeps returning ``list[DailyPrice]``.
         """
-        normalized_symbol = normalize_symbol(symbol)
-        if not is_valid_symbol(normalized_symbol):
-            raise ValueError("symbol must contain 1-5 ASCII letters")
+        normalized_symbol = normalize_market_symbol(symbol)
+        provider_symbol = yahoo_symbol(normalized_symbol)
         if start_date > end_date:
             raise ValueError("start_date must be on or before end_date")
 
@@ -117,7 +117,7 @@ class YahooFinanceProvider:
             "events": "div,splits,capitalGains",
             "includeAdjustedClose": "true",
         }
-        url = f"{YAHOO_CHART_BASE_URL}/{normalized_symbol}?{urlencode(params)}"
+        url = f"{YAHOO_CHART_BASE_URL}/{provider_symbol}?{urlencode(params)}"
         request = Request(url, headers={"User-Agent": DEFAULT_USER_AGENT})
 
         try:

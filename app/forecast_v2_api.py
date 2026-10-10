@@ -31,6 +31,7 @@ from .material_analysis_models import MaterialAnalysisVersion
 from .models import SecFilingInventory, UploadedEvidence
 from .schemas import DashboardPriceHistory
 from .services import normalize_symbol
+from .symbols import normalize_market_symbol
 
 
 router = APIRouter(prefix="/v2", tags=["forecast-v2"])
@@ -416,10 +417,10 @@ def get_v2_stock_prices(symbol: str, db: Session = Depends(get_v2_db)) -> dict[s
 
 
 def _supported_symbol(value: str) -> str:
-    normalized = normalize_symbol(value)
-    if normalized not in {"AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"}:
-        raise V2RequestError("symbol is not supported for V2 forecasting")
-    return normalized
+    try:
+        return normalize_market_symbol(value)
+    except ValueError as exc:
+        raise V2RequestError(str(exc)) from exc
 
 
 def _source_ref_payload(refs: list[SourceRefRequest]) -> list[dict[str, str]]:

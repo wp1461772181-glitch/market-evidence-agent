@@ -89,10 +89,20 @@ def test_fetch_daily_prices_normalizes_symbol_and_parses_ohlcv():
     assert captured_request["timeout"] == 20
 
 
+def test_fetch_daily_prices_maps_share_class_to_yahoo_alias_and_canonical_row():
+    captured = {}
+    def fake_opener(request, timeout):
+        captured["url"] = request.full_url
+        return FakeResponse(chart_payload("BRK-B"))
+    rows = YahooFinanceProvider(opener=fake_opener).fetch_daily_prices("brk-b", date(2026, 9, 1), date(2026, 9, 3))
+    assert "/chart/BRK-B?" in captured["url"]
+    assert rows and all(row.symbol == "BRK.B" for row in rows)
+
+
 def test_fetch_daily_prices_rejects_invalid_symbol():
     provider = YahooFinanceProvider(opener=lambda request, timeout: None)
 
-    with pytest.raises(ValueError, match="1-5 ASCII letters"):
+    with pytest.raises(ValueError, match="valid US ticker"):
         provider.fetch_daily_prices("AAPL!", date(2026, 9, 1), date(2026, 9, 3))
 
 

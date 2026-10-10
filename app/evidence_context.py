@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from .forecast_v2_models import EvidenceEventVersionV2
 from .models import SecFilingInventory, UploadedEvidence
 from .services import normalize_symbol
+from .symbols import normalize_market_symbol
 
 
 # V1 rows predate the mandatory coverage/truncation provenance fields.  They
@@ -873,10 +874,10 @@ def _exact_sec_acceptance(row: SecFilingInventory) -> datetime:
 
 
 def _supported_symbol(value: str) -> str:
-    normalized = normalize_symbol(value)
-    if normalized not in {"AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"}:
-        raise EvidenceContextError("symbol is not supported for V2 forecasting")
-    return normalized
+    try:
+        return normalize_market_symbol(value)
+    except ValueError as exc:
+        raise EvidenceContextError(str(exc)) from exc
 
 
 def _validate_candidate_symbol(candidate: _Candidate, symbol: str) -> None:

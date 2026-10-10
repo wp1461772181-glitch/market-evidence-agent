@@ -29,14 +29,17 @@ from sqlalchemy.orm import Session
 
 from .database import engine
 from .models import SecFilingInventory
-from .services import is_valid_symbol, normalize_symbol
+from .services import normalize_symbol
+from .symbols import normalize_market_symbol, sec_ticker_matches
 
 
 SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 SEC_SUBMISSIONS_URL = "https://data.sec.gov/submissions"
 SEC_ARCHIVES_URL = "https://www.sec.gov/Archives/edgar/data"
 SEC_SOURCE = "sec-edgar"
-SUPPORTED_SEC_TICKERS = frozenset({"AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"})
+DEFAULT_SEC_TICKERS = frozenset({"AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"})
+# Compatibility alias for stable default monitor schedules; runtime admission is dynamic.
+SUPPORTED_SEC_TICKERS = DEFAULT_SEC_TICKERS
 SUPPORTED_FORMS = frozenset({"10-K", "10-Q", "8-K"})
 DEFAULT_TIMEOUT_SECONDS = 20
 # SEC's published upper limit is 10 requests/second.  This client waits at
@@ -649,12 +652,10 @@ def canonical_sec_filing_url(*, cik: str, accession_number: str, primary_documen
 
 
 def _supported_symbol(symbol: str) -> str:
-    normalized_symbol = normalize_symbol(symbol)
-    if not is_valid_symbol(normalized_symbol):
-        raise SecFilingsError("symbol must contain 1-5 ASCII letters")
-    if normalized_symbol not in SUPPORTED_SEC_TICKERS:
-        raise SecFilingsError("SEC filing discovery currently supports the Magnificent Seven stocks")
-    return normalized_symbol
+    try:
+        return normalize_market_symbol(normalize_symbol(symbol))
+    except ValueError as exc:
+        raise SecFilingsError(str(exc)) from exc
 
 
 def _cik_for_symbol(tickers: dict, symbol: str) -> str:
@@ -663,12 +664,12 @@ def _cik_for_symbol(tickers: dict, symbol: str) -> str:
             continue
         ticker = item.get("ticker")
         cik = item.get("cik_str")
-        if ticker == symbol and isinstance(cik, int | str):
+        if sec_ticker_matches(symbol, ticker) and isinstance(cik, int | str):
             try:
                 return f"{int(cik):010d}"
             except (TypeError, ValueError) as exc:
                 raise SecFilingsError("SEC ticker mapping is invalid") from exc
-    raise SecFilingsError("SEC does not list this supported ticker")
+    raise SecFilingsError("SEC does not list this ticker; check the symbol spelling or share class")
 
 
 def _recent_filings(payload: dict, cik: str, *, limit: int | None = MAX_DISCOVERED_FILINGS) -> list[DiscoveredSecFiling]:

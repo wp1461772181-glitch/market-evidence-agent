@@ -16,7 +16,8 @@ from typing import Any
 
 from .market_data import YAHOO_SOURCE
 from .market_time import normalize_utc, xnys_session_close_at
-from .services import is_valid_symbol, normalize_symbol
+from .services import normalize_symbol
+from .symbols import normalize_market_symbol
 
 
 FEATURE_VERSION = "market-features-v1"
@@ -310,10 +311,10 @@ def _validate_and_normalize_prices(
 def _validate_symbol(value: object, name: str) -> str:
     if not isinstance(value, str):
         raise ValueError(f"{name} must be a valid symbol")
-    normalized = normalize_symbol(value)
-    if not is_valid_symbol(normalized):
-        raise ValueError(f"{name} must be a valid symbol")
-    return normalized
+    try:
+        return normalize_market_symbol(value)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a valid symbol") from exc
 
 
 def _trading_date(row: object) -> date:

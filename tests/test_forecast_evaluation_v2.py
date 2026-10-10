@@ -555,7 +555,7 @@ def test_due_yahoo_anchor_quote_must_match_the_frozen_contract(
 def test_due_yahoo_refresh_failure_stays_blocked_until_a_later_safe_retry(evaluation_rows):
     anchor = date(2026, 8, 3)
     target = date(2026, 8, 31)
-    job, version = _version(symbol="YRETRY", contract=_yahoo_contract(anchor_date=anchor, target_date=target))
+    job, version = _version(symbol="YRTY", contract=_yahoo_contract(anchor_date=anchor, target_date=target))
     _insert(versions=evaluation_rows, rows=[job, version])
     provider = _YahooProvider(MarketDataError("fixture timeout"))
 
@@ -568,7 +568,7 @@ def test_due_yahoo_refresh_failure_stays_blocked_until_a_later_safe_retry(evalua
         )
     assert _outcomes(version.id)[0].status == "blocked_price"
 
-    provider.result = _yahoo_result(symbol="YRETRY", target_date=target, close=103.0)
+    provider.result = _yahoo_result(symbol="YRTY", target_date=target, close=103.0)
     with SessionLocal() as db:
         run_evaluation_batch(
             db=db,

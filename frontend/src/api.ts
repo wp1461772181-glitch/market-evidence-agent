@@ -71,6 +71,17 @@ export async function scanOfficialFilings(symbol: string): Promise<FilingScanRes
   return requestJson<FilingScanResult>(`/api/filing-inventories/${encodeURIComponent(symbol)}/scan`, { method: "POST" });
 }
 
+export async function initializeMarketData(symbol: string): Promise<{ symbol: string; inserted_count: number; skipped_count: number }> {
+  return requestJson(`/api/market-data/${encodeURIComponent(symbol)}/initialize`, { method: "POST" });
+}
+
+export function saveOwnerAccessKey(value: string): void {
+  if (typeof window !== "undefined") {
+    if (value) window.sessionStorage.setItem(accessKeyStorageKey, value);
+    else window.sessionStorage.removeItem(accessKeyStorageKey);
+  }
+}
+
 export async function fetchFilingContent(symbol: string, accessionNumber: string, refresh = false): Promise<FilingContent> {
   const query = refresh ? "?refresh=true" : "";
   return requestJson<FilingContent>(`/api/filing-inventories/${encodeURIComponent(symbol)}/${encodeURIComponent(accessionNumber)}/fetch${query}`, { method: "POST" });

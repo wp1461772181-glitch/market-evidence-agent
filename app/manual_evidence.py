@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 
 from .database import engine
 from .models import UploadedEvidence
-from .services import is_valid_symbol, normalize_symbol
+from .symbols import normalize_market_symbol
 
 
 MAX_UPLOAD_BYTES = 5_000_000
@@ -165,10 +165,10 @@ def create_uploaded_evidence_table() -> None:
 
 
 def _validated_symbol(symbol: str) -> str:
-    normalized_symbol = normalize_symbol(symbol)
-    if not is_valid_symbol(normalized_symbol):
-        raise ManualEvidenceError("symbol must contain 1-5 ASCII letters")
-    return normalized_symbol
+    try:
+        return normalize_market_symbol(symbol)
+    except ValueError as exc:
+        raise ManualEvidenceError(str(exc)) from exc
 
 
 def _required_text(value: str, field: str, *, maximum: int) -> str:

@@ -18,10 +18,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .forecast_v2_models import ForecastJobV2
-from .services import normalize_symbol
+from .symbols import normalize_market_symbol
 
 
-SUPPORTED_STOCKS = frozenset({"AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"})
+DEFAULT_STOCKS = frozenset({"AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"})
+SUPPORTED_STOCKS = DEFAULT_STOCKS  # stable default set; runtime admission uses ticker validation
 JOB_KINDS = frozenset({"new", "manual_revision", "automatic_revision"})
 RETRY_DELAYS = (timedelta(minutes=1), timedelta(minutes=5), timedelta(minutes=15))
 
@@ -71,9 +72,10 @@ def enqueue_job(
     requested_decision_at: datetime | None = None,
 ) -> ForecastJobV2:
     """Admit one request; identical retries return the already durable job."""
-    normalized = normalize_symbol(symbol)
-    if normalized not in SUPPORTED_STOCKS:
-        raise ForecastJobError("symbol is not supported for V2 forecasting")
+    try:
+        normalized = normalize_market_symbol(symbol)
+    except ValueError as exc:
+        raise ForecastJobError(str(exc)) from exc
     if kind not in JOB_KINDS:
         raise ForecastJobError("unsupported V2 job kind")
     key = idempotency_key.strip()

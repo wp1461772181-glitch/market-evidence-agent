@@ -19,12 +19,14 @@ def test_public_mode_allows_reads_but_protects_owner_writes(monkeypatch):
     origin = main.allowed_origins[0]
     public_read = client.get("/openapi.json", headers={"Origin": origin})
     denied = client.post("/forecast-runs", json={"symbol": "AAPL"}, headers={"Origin": origin})
+    denied_price_seed = client.post("/market-data/AMD/initialize", headers={"Origin": origin})
     owner_valid = client.post("/forecast-runs", json={"symbol": "!invalid!"}, headers={"Origin": origin, "X-App-Access-Key": "a" * 40})
 
     assert health.status_code == 200
     assert public_read.status_code == 200
     assert public_read.headers["cache-control"] == "no-store"
     assert denied.status_code == 401
+    assert denied_price_seed.status_code == 401
     assert denied.headers["cache-control"] == "no-store"
     assert denied.headers["access-control-allow-origin"] == origin
     assert denied.headers["vary"] == "Origin"

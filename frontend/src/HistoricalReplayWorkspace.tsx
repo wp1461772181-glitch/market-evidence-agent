@@ -4,10 +4,9 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { ApiError, createV2HistoricalReplayJob, getV2Evaluations, getV2ForecastVersion, getV2Job } from "./api";
 import type { ResearchMaterialReference, V2EvaluationResponse, V2EvaluationVersion, V2ForecastJob, V2VersionDetail } from "./types";
 
-const SYMBOLS = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"] as const;
 type ReplayResult = { version: V2VersionDetail; evaluation: V2EvaluationVersion | null };
 
-export function HistoricalReplayWorkspace({ initialSymbol }: { initialSymbol: string }) {
+export function HistoricalReplayWorkspace({ initialSymbol, symbols }: { initialSymbol: string; symbols: string[] }) {
   const { locale, t } = useLocale();
   const [symbol, setSymbol] = useState<string>(initialSymbol);
   const [decisionDate, setDecisionDate] = useState(defaultReplayDate);
@@ -104,7 +103,7 @@ export function HistoricalReplayWorkspace({ initialSymbol }: { initialSymbol: st
     </section>
 
     <form className="historical-replay-form" onSubmit={submit}>
-      <label>{<Tx text={"股票代码"} />}<select value={symbol} onChange={(event) => setSymbol(event.target.value)}>{SYMBOLS.map((ticker) => <option key={ticker} value={ticker}>{ticker}</option>)}</select></label>
+      <label>{<Tx text={"股票代码"} />}<select value={symbol} onChange={(event) => setSymbol(event.target.value)}>{!symbols.includes(symbol) && <option value={symbol}>{symbol}</option>}{symbols.map((ticker) => <option key={ticker} value={ticker}>{ticker}</option>)}</select></label>
       <label>{<Tx text={"历史决策日"} />}<input type="date" value={decisionDate} max={todayLocal()} onChange={(event) => setDecisionDate(event.target.value)} required /></label>
       <button className="primary-action" type="submit" disabled={submitting || (job !== null && !isTerminal(job.status))}>{submitting ? t("正在提交…") : t("生成历史回放")}</button>
       <p>{<Tx text={"只能选择已收盘的 XNYS 交易日，并且该日之后的 20 个交易日必须已经结束。默认日期选在约一个月前；若遇到较长假期，请再选早一些。"} />}</p>

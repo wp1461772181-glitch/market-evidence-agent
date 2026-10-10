@@ -22,7 +22,7 @@ from app.training_data import FEATURE_COLUMNS
 
 _NOW = datetime(2026, 9, 15, 21, tzinfo=UTC)
 _OBSERVED_AFTER_REFRESH = datetime(2026, 9, 15, 21, 1, tzinfo=UTC)
-_TEST_SYMBOLS = ("AAPL", "MSFT", "GOOGL", "NVDA", "SPY")
+_TEST_SYMBOLS = ("AAPL", "MSFT", "GOOGL", "NVDA", "AMD", "SPY")
 
 
 @pytest.fixture(autouse=True)
@@ -135,6 +135,18 @@ def test_post_forecast_run_rejects_missing_benchmark_without_archiving(client, m
     before = _snapshot_count()
 
     response = client.post("/forecast-runs", json={"symbol": "MSFT"})
+    assert response.status_code == 422
+    assert "missing observed stock or SPY" in response.json()["detail"]
+    assert _snapshot_count() == before
+
+
+def test_custom_symbol_with_no_observed_prices_is_blocked_without_fake_forecast(client, monkeypatch, trusted_model_dir: Path):
+    monkeypatch.setattr(on_demand, "TRUSTED_MODEL_DIRECTORY", trusted_model_dir)
+    monkeypatch.setattr(on_demand, "_utc_now", lambda: _NOW)
+    monkeypatch.setattr(on_demand, "_refresh_requested_market_data", lambda *args, **kwargs: None)
+    _delete_prices("AMD", "SPY")
+    before = _snapshot_count()
+    response = client.post("/forecast-runs", json={"symbol": "AMD"})
     assert response.status_code == 422
     assert "missing observed stock or SPY" in response.json()["detail"]
     assert _snapshot_count() == before

@@ -1,16 +1,18 @@
 import { AgentAdminPage, AgentChatPanel, AgentChatProviderRoot } from "./AgentChatPanel";
 import { Tx, formatDateTime as formatLocalizedDateTime, getLocalePreference, translatePhrase, useLocale } from "./i18n";
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ApiError, getFilingInventory, getJevLearningStatus, getMaterialLibrary, getV2Evaluations, getV2ForecastRoots, getV2MonitorStatus, getV2Prices, getV2Workspace, scanOfficialFilings } from "./api";
+import { ApiError, getFilingInventory, getJevLearningStatus, getMaterialLibrary, getV2Evaluations, getV2ForecastRoots, getV2MonitorStatus, getV2Prices, getV2Workspace, initializeMarketData, scanOfficialFilings } from "./api";
 import type { FilingInventory, JevLearningStatus, PriceHistory } from "./types";
 import { V2ForecastWorkspace } from "./V2ForecastWorkspace";
 import { EvidenceCenter } from "./EvidenceCenter";
 import { MaterialLibrary } from "./MaterialLibrary";
 import { HistoricalReplayWorkspace } from "./HistoricalReplayWorkspace";
+import { normalizeTicker, normalizeWatchlist, selectionForWatchlist, MAX_WATCHLIST } from "./watchlist.mjs";
 
 const DEFAULT_SYMBOL = "AAPL";
-const SUPPORTED_SYMBOLS = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"] as const;
-type SupportedSymbol = typeof SUPPORTED_SYMBOLS[number];
+const DEFAULT_SYMBOLS = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"];
+const WATCHLIST_KEY = "market-evidence-agent:watchlist:v1";
+type SupportedSymbol = string;
 type FilingState = { kind: "idle" } | { kind: "loading" } | { kind: "ready"; data: FilingInventory } | { kind: "error"; message: string };
 type WorkspaceSection = "overview" | "forecast" | "evidence" | "materials" | "revisions" | "evaluation" | "replay" | "agent" | "admin";
 type ResearchSection = Exclude<WorkspaceSection, "agent" | "admin">;
@@ -23,13 +25,19 @@ export function App() {
 }
 
 function WorkspaceApp() {
-  const [requestedSymbol, setRequestedSymbol] = useState(DEFAULT_SYMBOL);
+  const [symbols, setSymbols] = useState<string[]>(() => { try { return normalizeWatchlist(JSON.parse(localStorage.getItem(WATCHLIST_KEY) ?? "null"), DEFAULT_SYMBOLS); } catch { return DEFAULT_SYMBOLS; } });
+  const [requestedSymbol, setRequestedSymbol] = useState(() => { try { return normalizeTicker(localStorage.getItem("market-evidence-agent:selected-symbol:v1")) ?? DEFAULT_SYMBOL; } catch { return DEFAULT_SYMBOL; } });
+  const [watchInput, setWatchInput] = useState("");
+  const [watchError, setWatchError] = useState("");
   const [activeSection, setActiveSection] = useState<WorkspaceSection>(sectionFromHash());
   const [activeData, setActiveData] = useState<{ kind: "loading"; symbol: string } | { kind: "ready"; symbol: string; filings: FilingState; priceHistory: PriceHistory | null; priceError: string | null }>({ kind: "loading", symbol: DEFAULT_SYMBOL });
   const [retryKey, setRetryKey] = useState(0);
   const requestVersion = useRef(0);
   const activeSymbolRef = useRef(requestedSymbol);
   activeSymbolRef.current = requestedSymbol;
+  useEffect(() => { try { localStorage.setItem(WATCHLIST_KEY, JSON.stringify(symbols)); } catch { /* optional preference */ } }, [symbols]);
+  useEffect(() => { if (symbols.length) setRequestedSymbol(current => selectionForWatchlist(current, symbols)); }, [symbols]);
+  useEffect(() => { try { localStorage.setItem("market-evidence-agent:selected-symbol:v1", requestedSymbol); } catch { /* optional preference */ } }, [requestedSymbol]);
 
   useEffect(() => {
     const onHashChange = () => setActiveSection(sectionFromHash());
@@ -71,13 +79,15 @@ function WorkspaceApp() {
     return () => controller.abort();
   }, [requestedSymbol, retryKey]);
 
-  const shellProps = { activeSection, navigate, symbol: requestedSymbol, onSelectStock: openStock };
+  function addWatchSymbol() { const ticker = normalizeTicker(watchInput); if (!ticker) { setWatchError("请输入有效的美股代码，例如 AMD 或 BRK.B。"); return; } if (symbols.includes(ticker)) { setWatchError("该代码已在关注列表中。"); return; } if (symbols.length >= MAX_WATCHLIST) { setWatchError("关注列表最多保存 30 个代码。"); return; } setSymbols(items => [...items, ticker]); setWatchInput(""); setWatchError(""); openStock(ticker); }
+  function removeWatchSymbol(ticker: string) { const remaining = symbols.filter(item => item !== ticker); setSymbols(remaining); setRequestedSymbol(current => selectionForWatchlist(current, remaining)); }
+  const shellProps = { activeSection, navigate, symbol: requestedSymbol, symbols, onSelectStock: openStock, watchInput, setWatchInput, addWatchSymbol, watchError, setWatchError };
   if (activeSection === "agent") return <Shell {...shellProps}><AgentChatPanel onSettings={() => navigate("admin")} /></Shell>;
   if (activeSection === "admin") return <Shell {...shellProps}><AgentAdminPage onBack={() => navigate("agent")} /></Shell>;
 
   async function startFilingScan() {
     const scanSymbol = requestedSymbol;
-    if (!isSupportedSymbol(scanSymbol)) throw new Error(`SEC 扫描仅支持 ${SUPPORTED_SYMBOLS.join("、")}。`);
+    if (!isSupportedSymbol(scanSymbol)) throw new Error("SEC 扫描需要有效的美股代码。");
     const result = await scanOfficialFilings(scanSymbol);
     if (activeSymbolRef.current === scanSymbol) {
       setActiveData((previous) => previous.kind === "ready" && previous.symbol === scanSymbol ? { ...previous, filings: { kind: "ready", data: result } } : previous);
@@ -86,34 +96,37 @@ function WorkspaceApp() {
   }
 
   if (activeSection === "materials") return <Shell {...shellProps}><MaterialLibrary key={requestedSymbol} symbol={requestedSymbol} onScan={async () => { const result = await startFilingScan(); setRetryKey((value) => value + 1); return result; }} /></Shell>;
+  if (!symbols.length) return <Shell {...shellProps}><main className="workspace"><section className="empty-watchlist"><h1>{translatePhrase("关注列表为空")}</h1><p>{translatePhrase("添加一只股票，或恢复默认关注股票，继续查看研究总览。")}</p><button className="primary-action" onClick={() => { setSymbols(DEFAULT_SYMBOLS); setRequestedSymbol(DEFAULT_SYMBOL); }}>{translatePhrase("恢复默认股票")}</button></section></main></Shell>;
   if (activeData.kind === "loading" || activeData.symbol !== requestedSymbol) return <Shell {...shellProps}><Loading symbol={requestedSymbol} /></Shell>;
   const supported = isSupportedSymbol(requestedSymbol);
   const revisionsNavigate = activeSection === "revisions" ? "revisions" : "forecast";
   return <Shell {...shellProps}>
     <main className="workspace" aria-labelledby="workspace-title">
       <WorkspacePageHeader symbol={requestedSymbol} section={activeSection} recordCount={null} supported={supported} />
-      {activeSection === "overview" && <CurrentOverviewWorkspace symbol={requestedSymbol} currentFilings={activeData.filings} priceHistory={activeData.priceHistory} priceError={activeData.priceError} onNavigate={navigate} onOpenStock={openStock} />}
+      {activeSection === "overview" && <CurrentOverviewWorkspace symbols={symbols} onRemove={removeWatchSymbol} symbol={requestedSymbol} currentFilings={activeData.filings} priceHistory={activeData.priceHistory} priceError={activeData.priceError} onNavigate={navigate} onOpenStock={openStock} onPricesInitialized={() => setRetryKey(value => value + 1)} />}
       {(activeSection === "forecast" || activeSection === "revisions") && <section className="workspace-stack">
         <V2ForecastWorkspace key={`${requestedSymbol}-${revisionsNavigate}`} mode={revisionsNavigate} symbol={requestedSymbol} filings={activeData.filings.kind === "ready" ? activeData.filings.data : null} priceHistory={activeData.priceHistory} onOpenForecast={() => navigate("forecast")} />
         {activeData.priceError && <p className="inventory-status inventory-error" role="status">行情暂不可用：{activeData.priceError}</p>}
       </section>}
       {activeSection === "evidence" && <EvidenceCenter key={requestedSymbol} symbol={requestedSymbol} supported={supported} onOpenForecast={() => navigate("forecast")} />}
       {activeSection === "evaluation" && <V2EvaluationWorkspace key={requestedSymbol} symbol={requestedSymbol} />}
-      {activeSection === "replay" && <HistoricalReplayWorkspace key={requestedSymbol} initialSymbol={requestedSymbol} />}
+      {activeSection === "replay" && <HistoricalReplayWorkspace key={requestedSymbol} initialSymbol={requestedSymbol} symbols={symbols} />}
     </main>
   </Shell>;
 }
 
-function CurrentOverviewWorkspace({ symbol, currentFilings, priceHistory, priceError, onNavigate, onOpenStock }: { symbol: string; currentFilings: FilingState; priceHistory: PriceHistory | null; priceError: string | null; onNavigate: (section: WorkspaceSection) => void; onOpenStock: (ticker: SupportedSymbol) => void }) {
+function CurrentOverviewWorkspace({ symbols, onRemove, symbol, currentFilings, priceHistory, priceError, onNavigate, onOpenStock, onPricesInitialized }: { symbols: string[]; onRemove: (ticker: string) => void; symbol: string; currentFilings: FilingState; priceHistory: PriceHistory | null; priceError: string | null; onNavigate: (section: WorkspaceSection) => void; onOpenStock: (ticker: SupportedSymbol) => void; onPricesInitialized: () => void }) {
   const { t } = useLocale();
   type UniverseItem = { workspace?: Awaited<ReturnType<typeof getV2Workspace>>; workspaceState: "loading" | "ready" | "error"; roots?: Awaited<ReturnType<typeof getV2ForecastRoots>>; materials?: number; filings?: FilingInventory; error?: string; loading: boolean };
-  const [universe, setUniverse] = useState<Record<string, UniverseItem>>(() => Object.fromEntries(SUPPORTED_SYMBOLS.map((ticker) => [ticker, { workspaceState: "loading", loading: true }])));
+  const [universe, setUniverse] = useState<Record<string, UniverseItem>>(() => Object.fromEntries(symbols.map((ticker) => [ticker, { workspaceState: "loading", loading: true }])));
   const [monitor, setMonitor] = useState<{ kind: "loading" } | { kind: "ready"; data: Awaited<ReturnType<typeof getV2MonitorStatus>> } | { kind: "error" }>({ kind: "loading" });
+  const [priceSeedState, setPriceSeedState] = useState("");
+  async function initializePrices() { if (priceSeedState === "正在初始化行情…") return; setPriceSeedState("正在初始化行情…"); try { const result = await initializeMarketData(symbol); setPriceSeedState(result.inserted_count ? "行情初始化成功，新增行情已自动刷新。" : "初始化完成，但供应商没有返回可保存的行情。"); onPricesInitialized(); } catch (error) { setPriceSeedState(actionMessage(error, "行情初始化失败；请先配置操作口令。")); } }
   useEffect(() => {
     const controller = new AbortController();
     setMonitor({ kind: "loading" });
-    setUniverse(Object.fromEntries(SUPPORTED_SYMBOLS.map((ticker) => [ticker, { workspaceState: "loading", loading: true }])));
-    Promise.all(SUPPORTED_SYMBOLS.map(async (ticker) => {
+    setUniverse(Object.fromEntries(symbols.map((ticker) => [ticker, { workspaceState: "loading", loading: true }])));
+    Promise.all(symbols.map(async (ticker) => {
       const [workspace, roots, materials, filings] = await Promise.allSettled([
         getV2Workspace(ticker, controller.signal), getV2ForecastRoots(ticker, controller.signal),
         getMaterialLibrary(ticker, { limit: 1, signal: controller.signal }), getFilingInventory(ticker, controller.signal),
@@ -131,7 +144,7 @@ function CurrentOverviewWorkspace({ symbol, currentFilings, priceHistory, priceE
     })).then((entries) => { if (!controller.signal.aborted) setUniverse(Object.fromEntries(entries)); });
     getV2MonitorStatus(controller.signal).then((data) => { if (!controller.signal.aborted) setMonitor({ kind: "ready", data }); }).catch(() => { if (!controller.signal.aborted) setMonitor({ kind: "error" }); });
     return () => controller.abort();
-  }, [symbol]);
+  }, [symbol, symbols.join(",")]);
   const current = universe[symbol];
   const currentWorkspaceState = current?.workspaceState ?? "loading";
   const currentVersion = currentWorkspaceState === "ready" ? current?.workspace?.current_version : null;
@@ -149,8 +162,8 @@ function CurrentOverviewWorkspace({ symbol, currentFilings, priceHistory, priceE
       <article><span>{<Tx text={"SEC 官方材料"} />}</span><strong>{officialFilingCount ?? "—"}</strong><small>{currentFilings.kind === "error" ? t("官方资料目录暂不可用") : t("当前股票已保存的官方文件")}</small></article>
       <article><span>{<Tx text={"监控状态"} />}</span><strong>{monitor.kind === "loading" ? t("正在读取") : monitor.kind === "error" ? t("暂不可用") : t(monitorHealthLabel(monitor.data.health))}</strong><small>{monitor.kind === "loading" ? t("正在读取监控记录") : monitor.kind === "error" ? t("无法读取监控状态") : monitor.data.last_success?.completed_at ? `${t("最近成功")} ${formatUtc(monitor.data.last_success.completed_at)}` : t("尚无成功运行记录")}</small></article>
     </section>
-    <section className="universe-section" aria-labelledby="universe-title"><div className="section-heading"><div><p className="eyebrow">{<Tx text={"研究队列"} />}</p><h2 id="universe-title">{<Tx text={"七只关注股票"} />}</h2></div><span>{<Tx text={"按当前研究数据读取"} />}</span></div><div className="universe-grid">
-      {SUPPORTED_SYMBOLS.map((ticker) => {
+    <section className="universe-section" aria-labelledby="universe-title"><div className="section-heading"><div><p className="eyebrow">{<Tx text={"研究队列"} />}</p><h2 id="universe-title">{<Tx text={"自选股票"} />}</h2></div><span>{<Tx text={"按当前研究数据读取"} />}</span></div><div className="universe-grid">
+      {symbols.map((ticker) => {
         const item = universe[ticker];
         const count = item?.roots?.roots.length;
         const filingCount = item?.filings?.filings.length;
@@ -159,11 +172,11 @@ function CurrentOverviewWorkspace({ symbol, currentFilings, priceHistory, priceE
           {item?.loading && <p className="universe-pending">{<Tx text={"正在读取研究状态…"} />}</p>}
           {item?.error && <p className="universe-error" role="status">{item.error}</p>}
           {item && !item.loading && <><dl><div><dt>{<Tx text={"独立预测"} />}</dt><dd>{count ?? "—"}</dd></div><div><dt>{<Tx text={"材料"} />}</dt><dd>{item.materials ?? "—"}</dd></div><div><dt>{<Tx text={"SEC 官方材料"} />}</dt><dd>{filingCount ?? "—"}</dd></div></dl><small>{item.workspaceState === "loading" ? t("正在读取预测状态") : item.workspaceState === "error" ? t("预测状态暂不可用") : item.workspace?.current_version ? `${t("最新版本")} ${item.workspace.current_version.version_no} · ${t(modelStatusLabel(item.workspace.current_version.model_status))}` : t("当前没有预测版本")}</small></>}
-          <button className="universe-open" type="button" onClick={() => onOpenStock(ticker)}>{t("打开")} {ticker} {t("总览")} <span aria-hidden="true">→</span></button>
+          <div className="watch-card-actions"><button className="universe-open" type="button" onClick={() => onOpenStock(ticker)}>{t("打开")} {ticker} {t("总览")} <span aria-hidden="true">→</span></button><button className="watch-remove" type="button" onClick={() => onRemove(ticker)} aria-label={`${t("从关注列表移除")} ${ticker}`}>×</button></div>
         </article>;
       })}
     </div></section>
-    <div className="overview-shortcuts"><button className="text-button" onClick={() => onNavigate("materials")}>{<Tx text={"管理材料 / 扫描 SEC"} />}</button><button className="text-button" onClick={() => onNavigate("evaluation")}>{<Tx text={"查看到期评估"} />}</button><span>{priceError ? `${t("行情暂不可用")}: ${priceError}` : priceHistory?.latest_trading_date ? `${symbol} ${t("行情截至")} ${priceHistory.latest_trading_date}` : t("本地没有可展示的行情")}</span></div>
+    <div className="overview-shortcuts"><button className="text-button" onClick={() => onNavigate("materials")}>{<Tx text={"管理材料 / 扫描 SEC"} />}</button><button className="text-button" onClick={() => onNavigate("evaluation")}>{<Tx text={"查看到期评估"} />}</button><span>{priceError ? `${t("行情暂不可用")}: ${priceError}` : priceHistory?.latest_trading_date ? `${symbol} ${t("行情截至")} ${priceHistory.latest_trading_date}` : t("本地没有可展示的行情")}</span><button className="text-button" type="button" onClick={initializePrices} disabled={priceSeedState === "正在初始化行情…"}>{t("初始化一年行情")}</button>{priceSeedState && <small role="status">{t(priceSeedState)}</small>}</div>
   </section>;
 }
 
@@ -240,7 +253,7 @@ function WorkspaceIntro({ eyebrow, title, description, action }: { eyebrow: stri
   </section>;
 }
 
-function Shell({ activeSection, navigate, symbol, onSelectStock, children }: { activeSection: WorkspaceSection; navigate: (section: WorkspaceSection) => void; symbol: string; onSelectStock: (ticker: SupportedSymbol) => void; children: ReactNode }) {
+function Shell({ activeSection, navigate, symbol, symbols, onSelectStock, watchInput, setWatchInput, addWatchSymbol, watchError, setWatchError, children }: { activeSection: WorkspaceSection; navigate: (section: WorkspaceSection) => void; symbol: string; symbols: string[]; onSelectStock: (ticker: SupportedSymbol) => void; watchInput: string; setWatchInput: (value: string) => void; addWatchSymbol: () => void; watchError: string; setWatchError: (value: string) => void; children: ReactNode }) {
   const { locale, setLocale, t } = useLocale();
   const navRef = useRef<HTMLElement>(null);
   useEffect(() => {
@@ -279,9 +292,11 @@ function Shell({ activeSection, navigate, symbol, onSelectStock, children }: { a
         {activeSection !== "agent" && activeSection !== "admin" && <div className="symbol-form">
           <label htmlFor="symbol">{<Tx text={"切换股票"} />}</label>
           <select id="symbol" value={symbol} onChange={(event) => onSelectStock(event.target.value as SupportedSymbol)} aria-label={t("切换股票")}>
-            {SUPPORTED_SYMBOLS.map((ticker) => <option key={ticker} value={ticker}>{ticker}</option>)}
+            {!symbols.includes(symbol) && <option value={symbol}>{symbol} · {t("当前")}</option>}
+            {symbols.map((ticker) => <option key={ticker} value={ticker}>{ticker}</option>)}
           </select>
         </div>}
+        {activeSection !== "agent" && activeSection !== "admin" && <form className="watchlist-add" onSubmit={event => { event.preventDefault(); addWatchSymbol(); }}><label className="visually-hidden" htmlFor="watch-add">{t("添加股票")}</label><input id="watch-add" value={watchInput} onChange={event => { setWatchInput(event.target.value); setWatchError(""); }} placeholder={t("添加代码，如 AMD")} maxLength={10} /><button type="submit" aria-label={t("添加股票")}>+</button>{watchError && <span role="alert">{t(watchError)}</span>}</form>}
         <div className="language-form">
           <label htmlFor="locale">{t("语言")}</label>
           <select id="locale" value={locale} onChange={(event) => setLocale(event.target.value as "zh-CN" | "en-US")} aria-label={t("语言")}>
@@ -302,7 +317,8 @@ function Loading({ symbol }: { symbol: string }) {
   return <main className="state-card" aria-live="polite" aria-busy="true"><span className="loading-mark" aria-hidden="true" /><p className="kicker">{<Tx text={"研究工作台"} />}</p><h1>{t("正在读取")} {symbol} {t("的研究资料")}</h1><p>{<Tx text={"正在读取本地预测、SEC 目录和行情。"} />}</p></main>;
 }
 
-function isSupportedSymbol(symbol: string): symbol is SupportedSymbol { return (SUPPORTED_SYMBOLS as readonly string[]).includes(symbol); }
+function isSupportedSymbol(symbol: string): symbol is SupportedSymbol { return isValidSymbol(symbol); }
+function isValidSymbol(symbol: string): boolean { return /^[A-Z]{1,5}(?:[.-][A-Z]{1,2})?$/i.test(symbol.trim()); }
 function sectionFromHash(): WorkspaceSection {
   const value = window.location.hash.replace(/^#/, "").split("/", 1)[0];
   return (["overview", "forecast", "evidence", "materials", "revisions", "evaluation", "replay", "agent", "admin"] as const).includes(value as WorkspaceSection)

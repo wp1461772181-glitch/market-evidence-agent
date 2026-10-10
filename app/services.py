@@ -1,15 +1,24 @@
 import hashlib
+from .symbols import normalize_market_symbol
 
 
 MODEL_VERSION = "mock-v1"
 
 
 def normalize_symbol(symbol: str) -> str:
-    return symbol.strip().upper()
+    try:
+        return normalize_market_symbol(symbol)
+    except ValueError:
+        # Keep normalization total for legacy callers; validators reject it.
+        return symbol.strip().upper() if isinstance(symbol, str) else ""
 
 
 def is_valid_symbol(symbol: str) -> bool:
-    return symbol.isascii() and symbol.isalpha() and 1 <= len(symbol) <= 5
+    try:
+        normalize_market_symbol(symbol)
+        return True
+    except ValueError:
+        return False
 
 
 def mock_forecast(symbol: str) -> tuple[float, float, float]:

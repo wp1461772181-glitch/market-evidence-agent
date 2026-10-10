@@ -1,0 +1,9 @@
+# Custom US stock symbols
+
+The dashboard watchlist is a browser-local convenience list. It accepts normalized US ticker symbols such as `AMD` and share classes such as `BRK.B` (Yahoo Finance requests use `BRK-B`; SEC lookup compares SEC's ticker spelling). Removing a ticker only changes that browser's list and does not remove stored research history.
+
+A newly added ticker starts with empty local prices, filings, materials, forecasts, and evaluation history. From its overview, use **Initialize one year of prices** to request a bounded one-year daily-price seed; this is an explicit network action and uses the existing owner access-key protection for writes. In Materials, run an explicit SEC scan; SEC discovery first resolves the ticker against SEC's published company mapping, so syntactically valid but unlisted symbols fail with a safe mapping error. Uploads and V2 forecast/replay paths accept valid ticker syntax, but forecast jobs remain blocked until sufficient point-in-time prices and eligible evidence exist.
+
+The automatic price refresher and official monitors retain the seven default tickers first, then add validated symbols found in persisted price rows/revisions, forecast jobs/versions, SEC inventory, or uploaded evidence, capped at 40 total symbols per run. Additional symbols are considered in stable sorted order. Adding a browser-only watchlist item does not schedule paid AI work or automatic collection; explicit price initialization persists local rows and makes that symbol eligible for the bounded refresh and monitor lists. Company-specific TechCrunch tags remain configured only for the original seven; other tickers receive generic symbol search attempts from GDELT and an explicit unsupported result from that tag feed.
+
+Frozen V2 training and evaluation snapshots retain their original historical symbol contracts. This runtime ticker expansion does not invent old prices, evidence, forecasts, or scores for a new symbol.

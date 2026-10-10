@@ -1,6 +1,6 @@
 import os
 import secrets
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated
 from uuid import UUID
@@ -53,6 +53,10 @@ from .sec_filings import (
     review_inventory_filing,
     scan_sec_filings,
 )
+from .market_data import fetch_daily_prices
+from .market_data_ingestion import ingest_market_data
+from .forecast_contract import latest_completed_xnys_session
+from .symbols import normalize_market_symbol
 from .schemas import (
     ForecastRequest,
     ForecastRunResponse,
@@ -371,6 +375,30 @@ def get_filing_inventory(symbol: str, db: Session = Depends(get_db)) -> dict:
     except SecFilingsError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {"symbol": normalize_symbol(symbol), "filings": filings}
+
+
+@app.post("/market-data/{symbol}/initialize")
+def initialize_market_data(symbol: str) -> dict:
+    """Explicitly seed at most one year of daily prices for one valid ticker."""
+    try:
+        normalized = normalize_market_symbol(symbol)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    end = latest_completed_xnys_session(datetime.now(UTC))
+    start = end - timedelta(days=370)
+    try:
+        summary = ingest_market_data([normalized], start, end, datetime.now(UTC), fetcher=fetch_daily_prices)
+    except Exception as exc:
+        # Provider/database details can contain private response data; expose a
+        # stable upstream failure while preserving the original server log.
+        raise HTTPException(status_code=502, detail="Price initialization failed; check provider settings and retry") from exc
+    return {
+        "symbol": normalized,
+        "from": start.isoformat(),
+        "through": end.isoformat(),
+        "inserted_count": summary.inserted_count,
+        "skipped_count": summary.skipped_count,
+    }
 
 
 @app.post(

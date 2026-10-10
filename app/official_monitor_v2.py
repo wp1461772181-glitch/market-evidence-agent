@@ -21,7 +21,8 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from .forecast_evaluation_v2 import run_evaluation_batch
-from .forecast_jobs import SUPPORTED_STOCKS, enqueue_job
+from .forecast_jobs import DEFAULT_STOCKS, enqueue_job
+from .symbols import normalize_market_symbol
 from .forecast_v2_models import ForecastJobV2, ForecastVersionV2, OfficialMonitorRunV2
 from .evidence_context import MAX_NEW_DOCUMENTS
 from .market_time import xnys_session_close_at
@@ -75,7 +76,7 @@ def run_once(
     db: Session,
     provider: SecEdgarProvider | None = None,
     observed_at: datetime | None = None,
-    symbols: Iterable[str] = tuple(sorted(SUPPORTED_STOCKS)),
+    symbols: Iterable[str] | None = None,
     max_pages: int = 3,
     max_filings: int = 1_000,
     received_at_factory: Callable[[], datetime] | None = None,
@@ -129,7 +130,7 @@ def _run_locked(
     """Run while the PostgreSQL session-level monitor lock is held."""
     instant = observed_at
     active_provider = provider or SecEdgarProvider()
-    normalized_symbols = _symbols(symbols)
+    normalized_symbols = _symbols(symbols if symbols is not None else _active_symbols(db))
     run = OfficialMonitorRunV2(status="running", started_at=instant, per_symbol_results={})
     db.add(run)
     db.commit()
@@ -287,11 +288,18 @@ def _release_monitor_lock(connection) -> None:
         connection.close()
 
 
+
+def _active_symbols(db: Session) -> tuple[str, ...]:
+    from .forecast_v2_models import ForecastJobV2, ForecastVersionV2
+    from .models import SecFilingInventory, UploadedEvidence
+    from sqlalchemy import select
+    from .active_symbols import active_symbols
+    return active_symbols(db, extra_models=(ForecastJobV2, ForecastVersionV2, SecFilingInventory, UploadedEvidence))
+
 def _symbols(values: Iterable[str]) -> tuple[str, ...]:
-    normalized = tuple(sorted({str(value).strip().upper() for value in values}))
-    unsupported = set(normalized) - SUPPORTED_STOCKS
-    if not normalized or unsupported:
-        raise ValueError("official V2 monitoring supports only: " + ", ".join(sorted(SUPPORTED_STOCKS)))
+    normalized = tuple(sorted({normalize_market_symbol(str(value)) for value in values}))
+    if not normalized:
+        raise ValueError("at least one valid ticker is required")
     return normalized
 
 

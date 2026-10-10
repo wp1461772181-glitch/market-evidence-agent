@@ -57,10 +57,17 @@ def test_prices_returns_empty_dashboard_shape_for_supported_symbol(client):
 
 
 def test_prices_rejects_unsupported_symbol(client):
-    response = client.get("/v2/stocks/ZZZ/prices")
+    response = client.get("/v2/stocks/AMD!/prices")
 
     assert response.status_code == 422
-    assert "symbol is not supported" in response.json()["detail"]
+    assert "valid US ticker" in response.json()["detail"]
+
+
+def test_prices_accepts_valid_custom_symbol_with_no_data(client):
+    response = client.get("/v2/stocks/AMD/prices")
+    assert response.status_code == 200
+    assert response.json()["symbol"] == "AMD"
+    assert response.json()["price_history"]["candles"] == []
 
 
 def test_prices_reuses_visible_ohlc_and_matching_spy_close_excluding_future_observation(client):

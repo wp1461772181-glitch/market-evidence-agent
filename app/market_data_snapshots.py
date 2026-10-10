@@ -7,7 +7,8 @@ from .database import SessionLocal
 from .market_data import YAHOO_SOURCE
 from .market_time import normalize_utc
 from .models import MarketPriceRevision
-from .services import is_valid_symbol, normalize_symbol
+from .services import normalize_symbol
+from .symbols import normalize_market_symbol
 
 
 SnapshotMode = Literal["historical_research", "observed"]
@@ -35,9 +36,7 @@ def get_market_data(
     preventing future corrections from changing old feature snapshots.
     ``observed`` also requires that each version had already reached this system.
     """
-    normalized_symbol = normalize_symbol(symbol)
-    if not is_valid_symbol(normalized_symbol):
-        raise ValueError("symbol must contain 1-5 ASCII letters")
+    normalized_symbol = normalize_market_symbol(symbol)
     if not source:
         raise ValueError("source must not be empty")
     if mode not in {"historical_research", "observed"}:

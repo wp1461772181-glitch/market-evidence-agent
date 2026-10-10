@@ -417,9 +417,18 @@ def test_rejects_unknown_symbols_and_unconfigured_provider(monkeypatch):
     try:
         _provider(opener).discover("ZZZ")
     except SecFilingsError as exc:
-        assert "currently supports the Magnificent Seven" in str(exc)
+        assert "SEC does not list this ticker" in str(exc)
     else:
-        raise AssertionError("unsupported ticker must fail before external access")
+        raise AssertionError("unknown SEC mapping must fail closed")
+
+
+def test_dynamic_ticker_validation_and_sec_share_class_mapping():
+    assert sec_filings._supported_symbol("amd") == "AMD"
+    assert sec_filings._supported_symbol("brk-b") == "BRK.B"
+    assert sec_filings._cik_for_symbol({"0": {"ticker": "AMD", "cik_str": 2488}}, "amd") == "0000002488"
+    assert sec_filings._cik_for_symbol({"0": {"ticker": "BRK-B", "cik_str": 1067983}}, "BRK.B") == "0001067983"
+    with pytest.raises(SecFilingsError, match="valid US ticker"):
+        sec_filings._supported_symbol("AMD!")
 
 
 def test_reconstructs_canonical_source_url_and_rejects_tampered_or_redirected_destinations():

@@ -20,6 +20,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 from xml.etree import ElementTree
+from .symbols import normalize_market_symbol
 
 
 SUPPORTED_SYMBOLS = ("AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA")
@@ -139,7 +140,7 @@ class GdeltDocSource:
 
     def discover(self, *, symbol: str, discovered_at: datetime) -> SourceAttempt:
         normalized_symbol = _validate_symbol(symbol)
-        query, terms = _SYMBOL_QUERIES[normalized_symbol]
+        query, terms = _SYMBOL_QUERIES.get(normalized_symbol, (f'"{normalized_symbol}"', (normalized_symbol.lower(),)))
         request_url = self._request_url(query)
         try:
             payload = json.loads(self._http_get(request_url, self.timeout_seconds).decode("utf-8"))
@@ -209,6 +210,8 @@ class TechCrunchRssSource:
 
     def discover(self, *, symbol: str, discovered_at: datetime) -> SourceAttempt:
         normalized_symbol = _validate_symbol(symbol)
+        if normalized_symbol not in _TECHCRUNCH_TAGS:
+            return SourceAttempt(source_name=self.name, symbol=normalized_symbol, status="unsupported", source_url=None, detail="No company-specific TechCrunch tag is configured; generic symbol search remains available.")
         request_url = f"{TECHCRUNCH_RSS_BASE_URL}/{_TECHCRUNCH_TAGS[normalized_symbol]}/feed/"
         try:
             root = ElementTree.fromstring(self._http_get(request_url, self.timeout_seconds))
@@ -438,10 +441,7 @@ def _default_http_get(url: str, timeout_seconds: float) -> bytes:
 
 
 def _validate_symbol(symbol: str) -> str:
-    normalized = symbol.strip().upper()
-    if normalized not in SUPPORTED_SYMBOLS:
-        raise ValueError(f"unsupported symbol: {symbol}")
-    return normalized
+    return normalize_market_symbol(symbol)
 
 
 def _aware_utc(value: datetime, name: str) -> datetime:

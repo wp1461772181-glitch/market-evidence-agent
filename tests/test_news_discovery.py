@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from urllib.parse import unquote
 from urllib.error import HTTPError
 
 from app.news_discovery import (
@@ -9,9 +10,20 @@ from app.news_discovery import (
     TechCrunchRssSource,
     discover_news_candidates,
 )
+from app.news_discovery import _validate_symbol
 
 
 RUN_AT = datetime(2026, 9, 25, 2, 5, tzinfo=UTC)
+
+
+def test_custom_tickers_use_generic_gdelt_search_and_skip_unconfigured_tags():
+    urls = []
+    gdelt = GdeltDocSource(http_get=lambda url, _timeout: (urls.append(url) or _gdelt_payload([])))
+    assert _validate_symbol("brk-b") == "BRK.B"
+    assert gdelt.discover(symbol="AMD", discovered_at=RUN_AT).status == "empty"
+    assert '"AMD"' in unquote(urls[0])
+    tag = TechCrunchRssSource(http_get=lambda *_: (_ for _ in ()).throw(AssertionError("no tag URL expected")))
+    assert tag.discover(symbol="AMD", discovered_at=RUN_AT).status == "unsupported"
 
 
 def _gdelt_payload(articles: list[dict[str, str]]) -> bytes:

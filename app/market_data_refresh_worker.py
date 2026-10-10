@@ -26,14 +26,19 @@ def refresh_once(*, now: datetime | None = None) -> dict[str, object]:
     from .database import SessionLocal
     from .features import BENCHMARK_SYMBOL
     from .forecast_contract import latest_completed_xnys_session
-    from .forecast_jobs import SUPPORTED_STOCKS
+    from .forecast_jobs import DEFAULT_STOCKS
+    from .forecast_v2_models import ForecastJobV2, ForecastVersionV2
+    from .models import SecFilingInventory, UploadedEvidence
+    from sqlalchemy import select
     from .market_data import YAHOO_SOURCE, fetch_daily_prices
     from .market_data_ingestion import ingest_market_data
     from .models import MarketPrice, MarketPriceRevision
+    from .active_symbols import active_symbols
 
     instant = (now or datetime.now(UTC)).astimezone(UTC)
     latest_session = latest_completed_xnys_session(instant)
-    symbols = sorted((*SUPPORTED_STOCKS, BENCHMARK_SYMBOL))
+    with SessionLocal() as db:
+        symbols = (*active_symbols(db, extra_models=(ForecastJobV2, ForecastVersionV2, SecFilingInventory, UploadedEvidence)), BENCHMARK_SYMBOL)
     results: dict[str, dict[str, object]] = {}
 
     for symbol in symbols:

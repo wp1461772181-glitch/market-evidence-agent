@@ -82,6 +82,12 @@ def test_volatility_is_annualized_sample_standard_deviation_of_twenty_returns():
     assert row.volatility_20d == pytest.approx(expected)
 
 
+def test_runtime_features_accept_custom_and_share_class_symbols():
+    stock = _series("BRK.B", daily_growth=0.01)
+    spy = _series("SPY", daily_growth=0.005)
+    assert _row(build_features({"BRK.B": stock, "SPY": spy}), "BRK.B", stock[-1].trading_date).symbol == "BRK.B"
+
+
 def test_future_stock_or_benchmark_bars_do_not_change_past_features():
     stock = _series("AAPL", daily_growth=0.01, count=31)
     spy = _series("SPY", daily_growth=0.005, count=31)

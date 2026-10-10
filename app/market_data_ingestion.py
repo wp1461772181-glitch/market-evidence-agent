@@ -14,6 +14,7 @@ from .market_data import DailyPrice, YAHOO_SOURCE, fetch_daily_prices
 from .market_time import normalize_utc, xnys_session_close_at
 from .models import IngestionRun, MarketPrice, MarketPriceRevision
 from .services import normalize_symbol
+from .symbols import normalize_market_symbol
 
 
 @dataclass(frozen=True)
@@ -188,6 +189,7 @@ def ingest_market_data(
 ) -> IngestionSummary:
     if not symbols:
         raise ValueError("symbols must not be empty")
+    normalized_symbols = tuple(sorted({normalize_market_symbol(symbol) for symbol in symbols}))
     if start_date > end_date:
         raise ValueError("start_date must be on or before end_date")
     if not source:
@@ -206,7 +208,7 @@ def ingest_market_data(
         try:
             if _add_legacy_revisions(db):
                 db.flush()
-            for symbol in symbols:
+            for symbol in normalized_symbols:
                 rows = fetcher(symbol, start_date, end_date)
                 # The system cannot have observed a provider response before
                 # the fetch returned. This timestamp intentionally comes

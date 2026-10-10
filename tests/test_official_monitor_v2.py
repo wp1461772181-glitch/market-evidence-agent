@@ -8,13 +8,32 @@ from app.database import Base, SessionLocal, engine
 from app.forecast_contract import create_root_contract
 from app.forecast_v2_models import ForecastEvaluationV2, ForecastJobV2, ForecastVersionV2, OfficialMonitorRunV2
 from app.models import SecFilingInventory
+from app.models import MarketPrice
 from app.official_monitor_v2 import INITIAL_LOOKBACK, MONITOR_LOCK_KEY, run_once
+from app.official_monitor_v2 import _symbols
+from app.active_symbols import active_symbols
 from sqlalchemy import text
 from app.sec_filings import DiscoveredSecFiling, SecDiscoveryCoverage, SecFilingContent, SecFilingsError
+import pytest
 
 
 NOW = datetime(2026, 9, 12, 12, tzinfo=UTC)
 SYMBOLS = ("AAPL", "AMZN", "GOOGL", "MSFT", "NVDA")
+
+
+def test_active_tickers_include_initialized_custom_prices_and_validate_explicit_symbols():
+    Base.metadata.create_all(bind=engine)
+    price = MarketPrice(symbol="AMD", trading_date=date(2026, 9, 11), open=1, high=1, low=1, close=1, volume=1, source="fixture", fetched_at=NOW)
+    with SessionLocal() as db:
+        db.add(price)
+        db.commit()
+        active = active_symbols(db)
+        assert "AMD" in active and "AAPL" in active
+        assert _symbols(["brk-b"]) == ("BRK.B",)
+        with pytest.raises(ValueError, match="valid US ticker"):
+            _symbols(["AMD!"])
+        db.delete(price)
+        db.commit()
 
 
 class _Provider:

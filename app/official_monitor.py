@@ -88,7 +88,7 @@ def run_once(
     provider: SecEdgarProvider | None = None,
     revision_callback: RevisionCallback | None = None,
     observed_at: datetime | None = None,
-    symbols: Iterable[str] = tuple(sorted(SUPPORTED_SEC_TICKERS)),
+    symbols: Iterable[str] | None = None,
 ) -> OfficialMonitorResult:
     """Scan every supported ticker once and attempt only eligible revisions.
 
@@ -101,10 +101,14 @@ def run_once(
     run_time = _as_utc(observed_at or datetime.now(UTC), "observed_at")
     active_provider = provider or SecEdgarProvider()
     callback = revision_callback or _default_revision_callback
-    normalized_symbols = tuple(sorted(set(symbols)))
-    unsupported = set(normalized_symbols) - SUPPORTED_SEC_TICKERS
-    if unsupported:
-        raise ValueError(f"official monitoring supports only: {', '.join(sorted(SUPPORTED_SEC_TICKERS))}")
+    if symbols is None:
+        from .forecast_v2_models import ForecastJobV2, ForecastVersionV2
+        from .models import UploadedEvidence
+        from .active_symbols import active_symbols
+        normalized_symbols = active_symbols(db, extra_models=(ForecastJobV2, ForecastVersionV2, SecFilingInventory, UploadedEvidence))
+    else:
+        from .symbols import normalize_market_symbol
+        normalized_symbols = tuple(sorted({normalize_market_symbol(value) for value in symbols}))
 
     results: list[SymbolMonitorResult] = []
     for symbol in normalized_symbols:

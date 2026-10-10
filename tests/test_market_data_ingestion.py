@@ -34,6 +34,18 @@ def _rows(source: str) -> list[DailyPrice]:
     ]
 
 
+def test_ingestion_rejects_invalid_symbols_before_collection(monkeypatch):
+    from app.market_data_ingestion import ingest_market_data
+    called = False
+    def fetcher(*args):
+        nonlocal called
+        called = True
+        return []
+    with pytest.raises(ValueError, match="valid US ticker"):
+        ingest_market_data(["AMD!"], date(2026, 9, 1), date(2026, 9, 2), datetime(2026, 9, 3, tzinfo=UTC), fetcher=fetcher)
+    assert called is False
+
+
 def test_ingestion_persists_prices_and_completed_run(client):
     from app.market_data_ingestion import ingest_market_data
 
