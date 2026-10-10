@@ -3,39 +3,48 @@ import pytest
 from app import main
 
 
-def test_public_mode_keeps_health_open_and_requires_the_access_key(client, monkeypatch):
+def test_public_mode_allows_reads_but_protects_owner_writes(client, monkeypatch):
     monkeypatch.setattr(main, "PUBLIC_API_MODE", True)
     monkeypatch.setattr(main, "APP_API_ACCESS_KEY", "a" * 40)
 
     health = client.get("/health")
     origin = main.allowed_origins[0]
-    denied = client.get("/openapi.json", headers={"Origin": origin})
+    public_read = client.get("/openapi.json", headers={"Origin": origin})
+    denied = client.post("/forecast-runs", json={"symbol": "AAPL"}, headers={"Origin": origin})
 
     assert health.status_code == 200
+    assert public_read.status_code == 200
+    assert public_read.headers["cache-control"] == "no-store"
     assert denied.status_code == 401
     assert denied.headers["cache-control"] == "no-store"
     assert denied.headers["access-control-allow-origin"] == origin
     assert denied.headers["vary"] == "Origin"
 
 
-def test_public_mode_accepts_the_access_key_and_disables_caching(client, monkeypatch):
+def test_public_chat_bypasses_owner_key_but_owner_write_uses_it(client, monkeypatch):
     access_key = "b" * 40
     monkeypatch.setattr(main, "PUBLIC_API_MODE", True)
     monkeypatch.setattr(main, "APP_API_ACCESS_KEY", access_key)
 
-    response = client.get("/openapi.json", headers={"X-App-Access-Key": access_key})
+    from app.agent_chat_api import ChatResponse
+    async def fake_call(payload, messages, max_tokens):
+        return ChatResponse(content="hello", model=payload.model)
+    monkeypatch.setattr("app.agent_chat_api._limited_call", fake_call)
+    response = client.post("/api/agent-chat/hello", json={"provider":"deepseek","model":"deepseek-chat","api_key":"test-key-123","messages":[]})
+    denied_write = client.post("/forecast-runs", json={"symbol":"AAPL"})
 
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
+    assert denied_write.status_code == 401
 
 
 def test_public_mode_rejects_unicode_and_fails_closed_without_a_key(client, monkeypatch):
     monkeypatch.setattr(main, "PUBLIC_API_MODE", True)
     monkeypatch.setattr(main, "APP_API_ACCESS_KEY", "c" * 40)
 
-    unicode_response = client.get("/openapi.json", headers={"X-App-Access-Key": b"\xff"})
+    unicode_response = client.post("/forecast-runs", json={"symbol":"AAPL"}, headers={"X-App-Access-Key": b"\xff"})
     monkeypatch.setattr(main, "APP_API_ACCESS_KEY", "")
-    missing_key_response = client.get("/openapi.json")
+    missing_key_response = client.post("/forecast-runs", json={"symbol":"AAPL"})
 
     assert unicode_response.status_code == 401
     assert missing_key_response.status_code == 503

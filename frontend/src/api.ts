@@ -2,7 +2,6 @@ import type { DashboardResponse, EvidenceRevision, EvidenceRevisionInventory, Ev
 
 const configuredApiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/+$/, "");
 const accessKeyStorageKey = "market-evidence-agent-api-access-key";
-let pendingAccessKeyRequest: { promise: Promise<string | null>; resolve: (value: string | null) => void; invalidPreviousKey: boolean } | null = null;
 
 function apiUrl(path: string): string {
   if (!configuredApiBaseUrl) return path;
@@ -12,54 +11,25 @@ function apiUrl(path: string): string {
 
 async function fetchApi(path: string, init: RequestInit = {}): Promise<Response> {
   const storedKey = typeof window === "undefined" ? null : window.sessionStorage.getItem(accessKeyStorageKey);
-  const send = (key: string | null, retryAfterAccessPrompt = false) => {
-    const headers = new Headers(init.headers);
-    headers.set("Accept", "application/json");
-    if (key) headers.set("X-App-Access-Key", key);
-    else headers.delete("X-App-Access-Key");
-    return fetch(apiUrl(path), {
-      ...init,
-      ...(retryAfterAccessPrompt ? { signal: AbortSignal.timeout(30_000) } : {}),
-      headers,
-    });
-  };
-
-  let response = await send(storedKey);
-  if (response.status !== 401 || typeof window === "undefined") return response;
-
-  if (storedKey) {
-    window.sessionStorage.removeItem(accessKeyStorageKey);
-  }
-  const accessKey = await requestAccessKey(storedKey !== null);
-  if (!accessKey) return response;
-
-  response = await send(accessKey, true);
-  if (response.status === 401) {
-    window.sessionStorage.removeItem(accessKeyStorageKey);
-    window.dispatchEvent(new Event("market-evidence-api-access-invalid"));
-  }
-  return response;
+  const headers = new Headers(init.headers);
+  headers.set("Accept", "application/json");
+  if (storedKey) headers.set("X-App-Access-Key", storedKey);
+  else headers.delete("X-App-Access-Key");
+  return fetch(apiUrl(path), { ...init, headers });
 }
 
-export function submitApiAccessKey(value: string | null): void {
-  const accessKey = value?.trim() || null;
-  if (accessKey) window.sessionStorage.setItem(accessKeyStorageKey, accessKey);
-  const pending = pendingAccessKeyRequest;
-  pendingAccessKeyRequest = null;
-  pending?.resolve(accessKey);
-}
-
-export function getPendingAccessKeyRequest(): boolean | null {
-  return pendingAccessKeyRequest?.invalidPreviousKey ?? null;
-}
-
-function requestAccessKey(invalidPreviousKey = false): Promise<string | null> {
-  if (pendingAccessKeyRequest) return pendingAccessKeyRequest.promise;
-  let resolve!: (value: string | null) => void;
-  const promise = new Promise<string | null>((finish) => { resolve = finish; });
-  pendingAccessKeyRequest = { promise, resolve, invalidPreviousKey };
-  window.dispatchEvent(new CustomEvent("market-evidence-api-access-required", { detail: invalidPreviousKey }));
-  return promise;
+export type AgentChatProvider = "deepseek" | "openrouter";
+export type AgentChatConfig = { provider: AgentChatProvider; model: string; api_key: string };
+export type AgentChatMessage = { role: "user" | "assistant"; content: string };
+export async function agentChatRequest(path: "hello" | "messages", config: AgentChatConfig, messages: AgentChatMessage[], signal: AbortSignal): Promise<{ content: string; model: string }> {
+  const response = await fetch(apiUrl(`/api/agent-chat/${path}`), {
+    method: "POST", signal, cache: "no-store",
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    body: JSON.stringify({ ...config, messages }),
+  });
+  const payload: unknown = await response.json().catch(() => null);
+  if (!response.ok) throw apiErrorFromPayload(payload, response.status);
+  return payload as { content: string; model: string };
 }
 
 export class ApiError extends Error {
@@ -298,7 +268,7 @@ function apiErrorFromPayload(payload: unknown, status: number): ApiError {
   const rawDetail = typeof payload === "object" && payload !== null && "detail" in payload
     ? (payload as { detail: unknown }).detail
     : null;
-  const detail = typeof rawDetail === "object" && rawDetail !== null && "message" in rawDetail
+  const detail = status === 401 ? "此操作仅站点所有者可执行。" : typeof rawDetail === "object" && rawDetail !== null && "message" in rawDetail
     ? String((rawDetail as { message: unknown }).message)
     : typeof rawDetail === "string" ? rawDetail : `请求失败（${status}）`;
   return new ApiError(detail, status);

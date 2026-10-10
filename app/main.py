@@ -6,7 +6,9 @@ from typing import Annotated
 from uuid import UUID
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Response, UploadFile, status
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
@@ -30,6 +32,7 @@ from .manual_evidence import (
     create_uploaded_evidence_table,
     uploaded_evidence_for_symbol,
 )
+from .agent_chat_api import router as agent_chat_router
 from .material_analysis_api import router as material_analysis_router
 from .localization_api import router as localization_router
 from .event_provider import EventProviderError, configured_deepseek_model, create_deepseek_provider_from_env
@@ -81,6 +84,14 @@ PUBLIC_API_MODE = os.getenv("PUBLIC_API_MODE", "false").strip().lower() in {"1",
 APP_API_ACCESS_KEY = os.getenv("APP_API_ACCESS_KEY", "")
 
 app = FastAPI(title="Market Evidence Agent", version="0.1.0")
+
+@app.exception_handler(RequestValidationError)
+async def safe_agent_chat_validation(request: Request, exc: RequestValidationError):
+    if request.url.path in {"/api/agent-chat/hello", "/api/agent-chat/messages"}:
+        from .agent_chat_api import safe_validation_response
+        return await safe_validation_response(request, exc)
+    return await request_validation_exception_handler(request, exc)
+
 allowed_origins = [
     origin.strip().rstrip("/")
     for origin in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",")
@@ -90,6 +101,7 @@ if allowed_origins:
     cors_middleware_enabled = True
 else:
     cors_middleware_enabled = False
+app.include_router(agent_chat_router)
 app.include_router(forecast_v2_router)
 app.include_router(material_analysis_router)
 app.include_router(localization_router)
@@ -97,8 +109,23 @@ app.include_router(localization_router)
 
 @app.middleware("http")
 async def protect_public_api(request, call_next):
-    if not PUBLIC_API_MODE or request.url.path == "/health" or request.method == "OPTIONS":
-        return await call_next(request)
+    public_chat = request.method == "POST" and request.url.path in {"/api/agent-chat/hello", "/api/agent-chat/messages"}
+    if request.url.path in {"/api/agent-chat/hello", "/api/agent-chat/messages"}:
+        try:
+            if int(request.headers.get("content-length", "0")) > 32_000:
+                return JSONResponse(status_code=413, content={"detail": "request_too_large"}, headers={"Cache-Control": "no-store"})
+        except ValueError:
+            return JSONResponse(status_code=400, content={"detail": "invalid_content_length"}, headers={"Cache-Control": "no-store"})
+    public_read = request.method in {"GET", "HEAD"} or request.url.path == "/health" or request.method == "OPTIONS"
+    if not PUBLIC_API_MODE:
+        response = await call_next(request)
+        if public_chat or public_read:
+            response.headers["Cache-Control"] = "no-store"
+        return response
+    if public_chat or public_read:
+        response = await call_next(request)
+        response.headers["Cache-Control"] = "no-store"
+        return response
     if not APP_API_ACCESS_KEY:
         return JSONResponse(
             status_code=503,

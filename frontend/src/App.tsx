@@ -1,6 +1,7 @@
+import { AgentChatPanel } from "./AgentChatPanel";
 import { Tx, formatDateTime as formatLocalizedDateTime, getLocalePreference, translatePhrase, useLocale } from "./i18n";
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ApiError, getFilingInventory, getJevLearningStatus, getMaterialLibrary, getPendingAccessKeyRequest, getV2Evaluations, getV2ForecastRoots, getV2MonitorStatus, getV2Prices, getV2Workspace, scanOfficialFilings, submitApiAccessKey } from "./api";
+import { ApiError, getFilingInventory, getJevLearningStatus, getMaterialLibrary, getV2Evaluations, getV2ForecastRoots, getV2MonitorStatus, getV2Prices, getV2Workspace, scanOfficialFilings } from "./api";
 import type { FilingInventory, JevLearningStatus, PriceHistory } from "./types";
 import { V2ForecastWorkspace } from "./V2ForecastWorkspace";
 import { EvidenceCenter } from "./EvidenceCenter";
@@ -17,68 +18,7 @@ const WORKSPACE_SECTION_TITLE: Record<WorkspaceSection, string> = {
 };
 
 export function App() {
-  const [accessPromptOpen, setAccessPromptOpen] = useState(false);
-  const [accessPromptInvalid, setAccessPromptInvalid] = useState(false);
-
-  useEffect(() => {
-    const requireAccessKey = (event: Event) => {
-      setAccessPromptInvalid((event as CustomEvent<boolean>).detail === true);
-      setAccessPromptOpen(true);
-    };
-    const rejectAccessKey = () => {
-      setAccessPromptInvalid(true);
-      setAccessPromptOpen(true);
-    };
-    window.addEventListener("market-evidence-api-access-required", requireAccessKey);
-    window.addEventListener("market-evidence-api-access-invalid", rejectAccessKey);
-    const pendingRequest = getPendingAccessKeyRequest();
-    if (pendingRequest !== null) {
-      setAccessPromptInvalid(pendingRequest);
-      setAccessPromptOpen(true);
-    }
-    return () => {
-      window.removeEventListener("market-evidence-api-access-required", requireAccessKey);
-      window.removeEventListener("market-evidence-api-access-invalid", rejectAccessKey);
-    };
-  }, []);
-
-  const { t } = useLocale();
-  return <>
-    <WorkspaceApp />
-    {accessPromptOpen && <div className="media-dialog-backdrop" role="presentation">
-      <section className="media-dialog api-access-dialog" role="dialog" aria-modal="true" aria-labelledby="api-access-title" style={{ width: "min(480px, 100%)", maxHeight: "90vh" }}>
-        <header className="media-dialog-header">
-          <div>
-            <p className="section-label">Market Evidence Agent</p>
-            <h3 id="api-access-title">{t("本机后端访问口令")}</h3>
-            <p>{t("输入访问口令后才能读取或修改本机研究数据。")}</p>
-          </div>
-        </header>
-        <div className="media-dialog-content" style={{ gridTemplateColumns: "1fr", overflow: "visible" }}>
-          <form className="evidence-form" onSubmit={(event) => {
-            event.preventDefault();
-            const form = event.currentTarget;
-            const data = new FormData(form);
-            const key = String(data.get("api-access-key") ?? "");
-            submitApiAccessKey(key);
-            setAccessPromptInvalid(false);
-            setAccessPromptOpen(false);
-          }}>
-            {accessPromptInvalid && <p className="material-status material-error" role="alert">{t("访问口令不正确，请重试。")}</p>}
-            <label>{t("访问口令")}<input name="api-access-key" type="password" autoComplete="current-password" autoFocus required /></label>
-            <div className="material-form-actions">
-              <button type="button" className="secondary-action" onClick={() => {
-                submitApiAccessKey(null);
-                setAccessPromptOpen(false);
-                setAccessPromptInvalid(false);
-              }}>{t("稍后")}</button>
-              <button type="submit" className="primary-action">{t("连接后端")}</button>
-            </div>
-          </form>
-        </div>
-      </section>
-    </div>}
-  </>;
+  return <><WorkspaceApp /><AgentChatPanel /></>;
 }
 
 function WorkspaceApp() {

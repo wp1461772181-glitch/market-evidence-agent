@@ -19,13 +19,20 @@ details](https://tailscale.com/pricing).
 
 ## Security boundary
 
-GitHub Pages is public. The browser asks for one shared app access key and stores
-it only in the current tab's session storage. FastAPI checks the key on every
-route except `/health`, compares it in constant time, and sends `no-store`
-responses. This is suitable for a private personal demo where the owner controls
-the key; it is not multi-user authentication and the key should not be shared as
-a public password. CORS only limits browser origins; the access key is the API
-gate.
+GitHub Pages is public. With `PUBLIC_API_MODE=true`, GET/HEAD reads, OPTIONS,
+health, and the two BYOK chat endpoints are public. `POST /api/agent-chat/hello`
+and `POST /api/agent-chat/messages` accept a user supplied provider key for that
+request and do not use the site owner key. All other write operations still
+require `X-App-Access-Key`; the browser no longer blocks public browsing with a
+site-wide key prompt. Keep the owner key strong and private. CORS restricts
+browser origins but is not authentication.
+
+Agent chat supports DeepSeek and OpenRouter through fixed HTTPS endpoints. The
+user enters a model ID and key in the Agent panel. The key stays in browser
+component memory and is not persisted; provider/model preferences may be saved.
+A real hello completion with a non-empty assistant response must succeed before
+chat is enabled. No server-side provider key fallback is used. The general chat
+cannot access the project's material library, forecasts, or tools.
 
 Keep DeepSeek/OpenRouter keys and database credentials in the ignored local
 `.env`. Never place them in `VITE_*`, GitHub Pages files, or the frontend bundle.
@@ -101,8 +108,9 @@ the local services return.
    `VITE_API_BASE_URL` with the Funnel HTTPS origin only, for example
    `https://<machine>.<tailnet>.ts.net` (no path; trailing slash is optional).
 4. Run **Actions → Deploy frontend to GitHub Pages → Run workflow**.
-5. Open `https://wp1461772181-glitch.github.io/market-evidence-agent/`, enter
-   the local app access key, and confirm the dashboard loads from FastAPI.
+5. Open `https://wp1461772181-glitch.github.io/market-evidence-agent/` and confirm
+   public read views load. Owner-only write actions require the owner access key;
+   BYOK chat is configured independently in the Agent panel.
 
 The workflow sets the correct `/<repository-name>/` base path, builds with
 `npm ci` and `npm run build`, and deploys only when the API origin variable is
