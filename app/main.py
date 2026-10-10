@@ -87,7 +87,7 @@ app = FastAPI(title="Market Evidence Agent", version="0.1.0")
 
 @app.exception_handler(RequestValidationError)
 async def safe_agent_chat_validation(request: Request, exc: RequestValidationError):
-    if request.url.path in {"/api/agent-chat/hello", "/api/agent-chat/messages"}:
+    if request.url.path in {"/agent-chat/hello", "/agent-chat/messages"}:
         from .agent_chat_api import safe_validation_response
         return await safe_validation_response(request, exc)
     return await request_validation_exception_handler(request, exc)
@@ -101,7 +101,7 @@ allowed_origins = [
 class AgentChatBodyLimitMiddleware:
     """Enforce a byte cap while receiving bodies, before JSON parsing."""
     LIMIT = 32_000
-    PATHS = {"/api/agent-chat/hello", "/api/agent-chat/messages"}
+    PATHS = {"/agent-chat/hello", "/agent-chat/messages"}
 
     def __init__(self, app):
         self.app = app
@@ -163,7 +163,7 @@ app.include_router(localization_router)
 
 @app.middleware("http")
 async def protect_public_api(request, call_next):
-    public_chat = request.method == "POST" and request.url.path in {"/api/agent-chat/hello", "/api/agent-chat/messages"}
+    public_chat = request.method == "POST" and request.url.path in {"/agent-chat/hello", "/agent-chat/messages"}
     public_read = request.method in {"GET", "HEAD"} or request.url.path == "/health" or request.method == "OPTIONS"
     if not PUBLIC_API_MODE:
         response = await call_next(request)

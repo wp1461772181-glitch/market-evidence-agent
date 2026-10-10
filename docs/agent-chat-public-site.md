@@ -8,7 +8,7 @@ The API key stays in React component memory and is not persisted or returned. Pr
 
 ## Public access boundary
 
-With `PUBLIC_API_MODE=true`, GET and HEAD reads, OPTIONS, and `/health` are public. Only `POST /api/agent-chat/hello` and `POST /api/agent-chat/messages` are additionally public; they use the API key in the request and do not use `APP_API_ACCESS_KEY`. Forecast creation, collection, upload, translation, review, and other write operations continue to require `X-App-Access-Key`. Keep `APP_API_ACCESS_KEY` strong (at least 32 characters) and configure exact `CORS_ALLOWED_ORIGINS` values without `*`.
+With `PUBLIC_API_MODE=true`, GET and HEAD reads, OPTIONS, and `/health` are public. Only `POST /agent-chat/hello` and `POST /agent-chat/messages` are additionally public; they use the API key in the request and do not use `APP_API_ACCESS_KEY`. Forecast creation, collection, upload, translation, review, and other write operations continue to require `X-App-Access-Key`. Keep `APP_API_ACCESS_KEY` strong (at least 32 characters) and configure exact `CORS_ALLOWED_ORIGINS` values without `*`.
 
 ## Deploy and use
 

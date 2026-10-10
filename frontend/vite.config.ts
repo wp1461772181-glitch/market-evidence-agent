@@ -1,5 +1,6 @@
 import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
+import { rewriteAgentChatProxyPath } from "./src/agent-chat-url.mjs";
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
@@ -14,7 +15,7 @@ export default defineConfig(({ mode }) => {
         "/api": {
           target: "http://127.0.0.1:8000",
           changeOrigin: true,
-          rewrite: (path) => path.replace(/^\/api/, ""),
+          rewrite: (path) => rewriteAgentChatProxyPath(path).replace(/^\/api/, ""),
         },
       },
     },

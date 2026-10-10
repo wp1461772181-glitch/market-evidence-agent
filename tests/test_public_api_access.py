@@ -40,7 +40,7 @@ def test_public_chat_bypasses_owner_key_but_owner_write_uses_it(client, monkeypa
     async def fake_call(payload, messages, max_tokens):
         return ChatResponse(content="hello", model=payload.model)
     monkeypatch.setattr("app.agent_chat_api._limited_call", fake_call)
-    response = client.post("/api/agent-chat/hello", json={"provider":"deepseek","model":"deepseek-chat","api_key":"test-key-123","messages":[]})
+    response = client.post("/agent-chat/hello", json={"provider":"deepseek","model":"deepseek-chat","api_key":"test-key-123","messages":[]})
     denied_write = client.post("/forecast-runs", json={"symbol":"AAPL"})
 
     assert response.status_code == 200

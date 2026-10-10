@@ -20,8 +20,8 @@ details](https://tailscale.com/pricing).
 ## Security boundary
 
 GitHub Pages is public. With `PUBLIC_API_MODE=true`, GET/HEAD reads, OPTIONS,
-health, and the two BYOK chat endpoints are public. `POST /api/agent-chat/hello`
-and `POST /api/agent-chat/messages` accept a user supplied provider key for that
+health, and the two BYOK chat endpoints are public. `POST /agent-chat/hello`
+and `POST /agent-chat/messages` accept a user supplied provider key for that
 request and do not use the site owner key. All other write operations still
 require `X-App-Access-Key`; the browser no longer blocks public browsing with a
 site-wide key prompt. Keep the owner key strong and private. CORS restricts

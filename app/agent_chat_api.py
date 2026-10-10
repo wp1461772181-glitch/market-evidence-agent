@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, SecretStr, field_validator
 
-router = APIRouter(prefix="/api/agent-chat", tags=["agent-chat"])
+router = APIRouter(prefix="/agent-chat", tags=["agent-chat"])
 PROVIDERS = {
     "deepseek": "https://api.deepseek.com/chat/completions",
     "openrouter": "https://openrouter.ai/api/v1/chat/completions",

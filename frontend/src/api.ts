@@ -1,6 +1,7 @@
 import type { DashboardResponse, EvidenceRevision, EvidenceRevisionInventory, EvidenceRevisionRequest, FilingContent, FilingInventory, FilingReview, FilingScanResult, ForecastRunResult, JevLearningStatus, LocalizationResult, MaterialAnalysisHistory, MaterialAnalysisJob, MaterialAnalysisVersion, MaterialItem, MaterialLibraryResponse, MaterialOriginal, MaterialSourceType, PriceHistory, UploadedEvidence, UploadedEvidenceInventory, V2EvaluationResponse, V2ForecastJob, V2ForecastRoots, V2MonitorStatus, V2SourceRef, V2Timeline, V2VersionDetail, V2Workspace } from "./types";
+import { agentChatUrl } from "./agent-chat-url.mjs";
 
-const configuredApiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/+$/, "");
+const configuredApiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? "";
 const accessKeyStorageKey = "market-evidence-agent-api-access-key";
 
 function apiUrl(path: string): string {
@@ -22,7 +23,7 @@ export type AgentChatProvider = "deepseek" | "openrouter";
 export type AgentChatConfig = { provider: AgentChatProvider; model: string; api_key: string };
 export type AgentChatMessage = { role: "user" | "assistant"; content: string };
 export async function agentChatRequest(path: "hello" | "messages", config: AgentChatConfig, messages: AgentChatMessage[], signal: AbortSignal): Promise<{ content: string; model: string }> {
-  const response = await fetch(apiUrl(`/api/agent-chat/${path}`), {
+  const response = await fetch(agentChatUrl(path, configuredApiBaseUrl), {
     method: "POST", signal, cache: "no-store",
     headers: { Accept: "application/json", "Content-Type": "application/json" },
     body: JSON.stringify({ ...config, messages }),
