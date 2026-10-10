@@ -173,7 +173,7 @@ def test_failed_turn_remains_visible_on_restore(monkeypatch):
 def test_stream_validates_bounded_key_and_nonblank_message(monkeypatch):
     provider_fixture(monkeypatch)
     with TestClient(main.app) as client:
-        for key,message in [('x'*513,'valid'), (KEY,'   ')]:
+        for key,message in [('x'*2049,'valid'), (KEY,'   ')]:
             response=client.post('/agent-chat/stream',headers={'X-Chat-Session':SESSION},json={'provider':'deepseek','model':'deepseek-chat','api_key':key,'message':message})
             assert response.status_code==422
             assert key not in response.text

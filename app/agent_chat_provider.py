@@ -3,24 +3,31 @@ import asyncio
 import json
 import httpx
 from fastapi import HTTPException
-from .agent_chat_api import PROVIDERS
+from .agent_chat_api import PROVIDERS, BASE_URLS, PinnedPublicTransport
 
-async def decision_request(provider, model, api_key, messages, schemas):
+def endpoint(provider, base_url=None):
+    if base_url is None: return PROVIDERS[provider]
+    base=base_url.rstrip("/")
+    return base if base.endswith("/chat/completions") else base+"/chat/completions"
+async def decision_request(provider, model, api_key, messages, schemas, base_url=None):
     body={"model":model,"messages":messages,"tools":schemas,"tool_choice":"auto","max_tokens":1200,"stream":False}
-    return await _post(provider,api_key,body)
-async def _post(provider,key,body):
+    if provider=="minimax":body["reasoning_split"]=True
+    return await _post(provider,api_key,body,base_url)
+async def _post(provider,key,body,base_url=None):
     headers={"Authorization":f"Bearer {key}","Content-Type":"application/json"}
     if provider=="openrouter":headers["X-Title"]="Market Evidence Agent"
     try:
         async with asyncio.timeout(25):
-          async with httpx.AsyncClient(timeout=httpx.Timeout(25),follow_redirects=False) as client:
-            async with client.stream("POST",PROVIDERS[provider],headers=headers,json=body) as r:
+          options={"timeout":httpx.Timeout(25),"follow_redirects":False,"trust_env":False}
+          if base_url: options["transport"]=PinnedPublicTransport()
+          async with httpx.AsyncClient(**options) as client:
+            async with client.stream("POST",endpoint(provider,base_url),headers=headers,json=body) as r:
                 if 300 <= r.status_code < 400: raise HTTPException(502,"provider_redirect_rejected")
                 if r.status_code>=400:
                     codes={400:"provider_model_unavailable_or_invalid_request",401:"provider_invalid_key",403:"provider_model_access_denied",404:"provider_model_unavailable_or_invalid_request",422:"provider_model_unavailable_or_invalid_request",429:"provider_rate_or_quota_error"}
                     raise HTTPException(429 if r.status_code==429 else 502,codes.get(r.status_code,"provider_error"))
                 chunks=[]; total=0
-                async for chunk in r.aiter_bytes():
+                async for chunk in r.aiter_bytes(chunk_size=16_384):
                     total+=len(chunk)
                     if total>1_000_000:raise HTTPException(502,"provider_response_too_large")
                     chunks.append(chunk)
@@ -34,14 +41,17 @@ async def _post(provider,key,body):
     if not isinstance(msg,dict):raise HTTPException(502,"provider_incompatible_response")
     return data,msg
 
-async def stream_answer(provider,model,api_key,messages,reasoning_collector=None):
+async def stream_answer(provider,model,api_key,messages,reasoning_collector=None,base_url=None):
     body={"model":model,"messages":messages,"max_tokens":1800,"stream":True,"tools":[],"tool_choice":"none"}
+    if provider=="minimax":body["reasoning_split"]=True
     headers={"Authorization":f"Bearer {api_key}","Content-Type":"application/json"}
     if provider=="openrouter":headers["X-Title"]="Market Evidence Agent"
     try:
         async with asyncio.timeout(25):
-            async with httpx.AsyncClient(timeout=httpx.Timeout(25),follow_redirects=False) as client:
-                async with client.stream("POST",PROVIDERS[provider],headers=headers,json=body) as r:
+            options={"timeout":httpx.Timeout(25),"follow_redirects":False,"trust_env":False}
+            if base_url: options["transport"]=PinnedPublicTransport()
+            async with httpx.AsyncClient(**options) as client:
+                async with client.stream("POST",endpoint(provider,base_url),headers=headers,json=body) as r:
                     if 300 <= r.status_code < 400: raise HTTPException(502,"provider_redirect_rejected")
                     if r.status_code>=400:
                         codes={400:"provider_model_unavailable_or_invalid_request",401:"provider_invalid_key",403:"provider_model_access_denied",404:"provider_model_unavailable_or_invalid_request",422:"provider_model_unavailable_or_invalid_request",429:"provider_rate_or_quota_error"}

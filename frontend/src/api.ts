@@ -19,8 +19,8 @@ async function fetchApi(path: string, init: RequestInit = {}): Promise<Response>
   return fetch(apiUrl(path), { ...init, headers });
 }
 
-export type AgentChatProvider = "deepseek" | "openrouter";
-export type AgentChatConfig = { provider: AgentChatProvider; model: string; api_key: string };
+export type AgentChatProvider = "deepseek" | "kimi" | "minimax" | "qwen" | "zhipu" | "doubao" | "hunyuan" | "baidu" | "siliconflow" | "openrouter" | "custom";
+export type AgentChatConfig = { provider: AgentChatProvider; base_url?: string; model: string; api_key: string };
 export type AgentChatMessage = { role: "user" | "assistant" | "tool"; content: string; status?: string; tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }>; tool_call_id?: string; tool_trace?: Array<{ call_id?: string; name: string; arguments?: unknown; result?: unknown; status: string }> };
 export type AgentChatEvent = { event: string; data: Record<string, unknown> };
 const chatCredentialKey = "market-evidence-agent:chat-session:v1";

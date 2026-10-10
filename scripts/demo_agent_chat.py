@@ -22,6 +22,7 @@ from app.models import MarketPrice, SecFilingInventory
 from app.agent_chat_models import AgentFAQ
 from app.agent_faq_seed import seed_faq
 from app.main import app as production_app
+from app import agent_chat_api, agent_chat_provider, agent_chat_stream
 from app.agent_chat_api import PROVIDERS
 import uvicorn
 
@@ -105,8 +106,25 @@ def prepare_fixture_database():
 async def main():
     mock_port=int(os.environ.get("AGENT_DEMO_MOCK_PORT","8899")); api_port=int(os.environ.get("AGENT_DEMO_API_PORT","8018"))
     if not (1024<=mock_port<=65535 and 1024<=api_port<=65535): raise SystemExit("Demo ports must be in 1024..65535")
-    PROVIDERS["deepseek"] = f"http://127.0.0.1:{mock_port}/chat/completions"
-    PROVIDERS["openrouter"] = f"http://127.0.0.1:{mock_port}/chat/completions"
+    local=f"http://127.0.0.1:{mock_port}/chat/completions"
+    # Demo-only routing deliberately ignores every UI-supplied preset/custom URL.
+    # The browser's fake key and model ID still pass through unchanged.
+    for name in ("deepseek","kimi","minimax","qwen","zhipu","doubao","hunyuan","baidu","siliconflow","openrouter","custom"):
+        PROVIDERS[name]=local
+    original_call=agent_chat_api._call
+    async def demo_call(payload,messages,max_tokens):
+        return await original_call(payload.model_copy(update={"provider":"deepseek","base_url":None}),messages,max_tokens)
+    agent_chat_api._call=demo_call
+    original_decision=agent_chat_provider.decision_request
+    original_answer=agent_chat_provider.stream_answer
+    async def demo_decision(provider,model,api_key,messages,schemas,base_url=None):
+        return await original_decision("deepseek",model,api_key,messages,schemas,None)
+    async def demo_answer(provider,model,api_key,messages,reasoning_collector=None,base_url=None):
+        async for piece in original_answer("deepseek",model,api_key,messages,reasoning_collector,None): yield piece
+    agent_chat_provider.decision_request=demo_decision
+    agent_chat_provider.stream_answer=demo_answer
+    agent_chat_stream.decision_request=demo_decision
+    agent_chat_stream.stream_answer=demo_answer
     prepare_fixture_database()
     print(f"DEMO ONLY: local incremental mock provider on :{mock_port}; fixed disposable PostgreSQL fixture DB; no paid provider calls.")
     print(f"DEMO ONLY: API http://127.0.0.1:{api_port}; mock provider :{mock_port}")
