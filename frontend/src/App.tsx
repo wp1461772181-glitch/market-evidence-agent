@@ -1,4 +1,4 @@
-import { AgentChatPanel } from "./AgentChatPanel";
+import { AgentAdminPage, AgentChatPanel, AgentChatProviderRoot } from "./AgentChatPanel";
 import { Tx, formatDateTime as formatLocalizedDateTime, getLocalePreference, translatePhrase, useLocale } from "./i18n";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ApiError, getFilingInventory, getJevLearningStatus, getMaterialLibrary, getV2Evaluations, getV2ForecastRoots, getV2MonitorStatus, getV2Prices, getV2Workspace, scanOfficialFilings } from "./api";
@@ -12,13 +12,14 @@ const DEFAULT_SYMBOL = "AAPL";
 const SUPPORTED_SYMBOLS = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"] as const;
 type SupportedSymbol = typeof SUPPORTED_SYMBOLS[number];
 type FilingState = { kind: "idle" } | { kind: "loading" } | { kind: "ready"; data: FilingInventory } | { kind: "error"; message: string };
-type WorkspaceSection = "overview" | "forecast" | "evidence" | "materials" | "revisions" | "evaluation" | "replay";
-const WORKSPACE_SECTION_TITLE: Record<WorkspaceSection, string> = {
+type WorkspaceSection = "overview" | "forecast" | "evidence" | "materials" | "revisions" | "evaluation" | "replay" | "agent" | "admin";
+type ResearchSection = Exclude<WorkspaceSection, "agent" | "admin">;
+const WORKSPACE_SECTION_TITLE: Record<ResearchSection, string> = {
   overview: "研究总览", forecast: "预测工作台", evidence: "证据中心", materials: "材料库", revisions: "预测修订", evaluation: "到期评估", replay: "历史回放",
 };
 
 export function App() {
-  return <><WorkspaceApp /><AgentChatPanel /></>;
+  return <AgentChatProviderRoot><WorkspaceApp /></AgentChatProviderRoot>;
 }
 
 function WorkspaceApp() {
@@ -70,6 +71,10 @@ function WorkspaceApp() {
     return () => controller.abort();
   }, [requestedSymbol, retryKey]);
 
+  const shellProps = { activeSection, navigate, symbol: requestedSymbol, onSelectStock: openStock };
+  if (activeSection === "agent") return <Shell {...shellProps}><AgentChatPanel onSettings={() => navigate("admin")} /></Shell>;
+  if (activeSection === "admin") return <Shell {...shellProps}><AgentAdminPage onBack={() => navigate("agent")} /></Shell>;
+
   async function startFilingScan() {
     const scanSymbol = requestedSymbol;
     if (!isSupportedSymbol(scanSymbol)) throw new Error(`SEC 扫描仅支持 ${SUPPORTED_SYMBOLS.join("、")}。`);
@@ -80,7 +85,6 @@ function WorkspaceApp() {
     return result;
   }
 
-  const shellProps = { activeSection, navigate, symbol: requestedSymbol, onSelectStock: openStock };
   if (activeSection === "materials") return <Shell {...shellProps}><MaterialLibrary key={requestedSymbol} symbol={requestedSymbol} onScan={async () => { const result = await startFilingScan(); setRetryKey((value) => value + 1); return result; }} /></Shell>;
   if (activeData.kind === "loading" || activeData.symbol !== requestedSymbol) return <Shell {...shellProps}><Loading symbol={requestedSymbol} /></Shell>;
   const supported = isSupportedSymbol(requestedSymbol);
@@ -219,7 +223,7 @@ function JevLearningReadout({ state }: { state: { kind: "loading" } | { kind: "r
     {!active && <p className="jev-learning-note">{<Tx text={"校准器目前没有启用，所以新预测继续显示原始 Jev 概率。只有足够的真实观察结果通过时间顺序留出验证后才会自动启用；历史回放和同一目标的修订不会混入训练。"} />}</p>}
   </section>;
 }
-function WorkspacePageHeader({ symbol, section, recordCount, supported }: { symbol: string; section: WorkspaceSection; recordCount: number | null; supported: boolean }) {
+function WorkspacePageHeader({ symbol, section, recordCount, supported }: { symbol: string; section: ResearchSection; recordCount: number | null; supported: boolean }) {
   const { t } = useLocale();
   const title = t(WORKSPACE_SECTION_TITLE[section]);
   return <header className="workspace-heading">
@@ -238,6 +242,17 @@ function WorkspaceIntro({ eyebrow, title, description, action }: { eyebrow: stri
 
 function Shell({ activeSection, navigate, symbol, onSelectStock, children }: { activeSection: WorkspaceSection; navigate: (section: WorkspaceSection) => void; symbol: string; onSelectStock: (ticker: SupportedSymbol) => void; children: ReactNode }) {
   const { locale, setLocale, t } = useLocale();
+  const navRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (activeSection === "admin") return;
+    const navElement = navRef.current;
+    const activeItem = navElement?.querySelector<HTMLElement>('[aria-current="page"]');
+    if (!navElement || !activeItem) return;
+    const navRect = navElement.getBoundingClientRect();
+    const itemRect = activeItem.getBoundingClientRect();
+    if (itemRect.left < navRect.left) navElement.scrollLeft -= navRect.left - itemRect.left;
+    else if (itemRect.right > navRect.right) navElement.scrollLeft += itemRect.right - navRect.right;
+  }, [activeSection]);
   const nav: Array<{ id: WorkspaceSection; label: string; hint: string; icon: string }> = [
     { id: "overview", label: t("总览"), hint: t("研究队列"), icon: "◌" },
     { id: "forecast", label: t("预测"), hint: t("版本与价格"), icon: "⌁" },
@@ -246,26 +261,27 @@ function Shell({ activeSection, navigate, symbol, onSelectStock, children }: { a
     { id: "revisions", label: t("预测修订"), hint: t("材料关联"), icon: "↗" },
     { id: "evaluation", label: t("到期评估"), hint: t("同组样本"), icon: "≋" },
     { id: "replay", label: t("历史回放"), hint: t("生成已到期样本"), icon: "↺" },
+    { id: "agent", label: t("Agent 对话"), hint: t("通用模型聊天"), icon: "✳" },
   ];
   return <div className="app-frame">
     <aside className="app-rail" aria-label={t("主要导航")}>
       <a className="workspace-brand" href="#overview" onClick={() => navigate("overview")} aria-label={`Market Evidence Agent · ${t("总览")}`}><span className="brand-mark">ME</span><span>market<br /><em>evidence</em></span></a>
-      <div className="rail-context"><span>{<Tx text={"当前股票"} />}</span><strong>{symbol}</strong><small>{<Tx text={"Agent 研究工作台"} />}</small></div>
-      <nav className="workspace-nav">
+      <div className="rail-context"><span>{activeSection === "agent" || activeSection === "admin" ? t("工作区") : <Tx text={"当前股票"} />}</span><strong>{activeSection === "agent" || activeSection === "admin" ? t("Agent") : symbol}</strong><small>{<Tx text={"Agent 研究工作台"} />}</small></div>
+      <nav ref={navRef} className="workspace-nav">
         {nav.map((item) => <button key={item.id} type="button" className={activeSection === item.id ? "active" : ""} aria-current={activeSection === item.id ? "page" : undefined} onClick={() => navigate(item.id)}><span aria-hidden="true">{item.icon}</span><span><strong>{item.label}</strong><small>{item.hint}</small></span></button>)}
       </nav>
-      <div className="rail-bottom"><span className="rail-review-dot" aria-hidden="true" />{<Tx text={"判断可回到原始来源查看"} />}</div>
+      <div className="rail-bottom"><button className="rail-admin-link" type="button" aria-current={activeSection === "admin" ? "page" : undefined} onClick={() => navigate(activeSection === "admin" ? "agent" : "admin")}>{activeSection === "admin" ? t("返回 Agent 对话") : t("后台设置")}</button>{activeSection !== "agent" && activeSection !== "admin" && <span><span className="rail-review-dot" aria-hidden="true" />{<Tx text={"判断可回到原始来源查看"} />}</span>}</div>
     </aside>
     <div className="app-content">
       <header className="topbar">
-      <div className="topbar-path"><span>{<Tx text={"研究工作台"} />}</span><b>/</b><strong>{symbol}</strong></div>
+      <div className="topbar-path"><span>{<Tx text={"研究工作台"} />}</span><b>/</b><strong>{activeSection === "agent" ? t("Agent 对话") : activeSection === "admin" ? t("后台设置") : symbol}</strong></div>
         <div className="toolbar-controls">
-        <div className="symbol-form">
+        {activeSection !== "agent" && activeSection !== "admin" && <div className="symbol-form">
           <label htmlFor="symbol">{<Tx text={"切换股票"} />}</label>
           <select id="symbol" value={symbol} onChange={(event) => onSelectStock(event.target.value as SupportedSymbol)} aria-label={t("切换股票")}>
             {SUPPORTED_SYMBOLS.map((ticker) => <option key={ticker} value={ticker}>{ticker}</option>)}
           </select>
-        </div>
+        </div>}
         <div className="language-form">
           <label htmlFor="locale">{t("语言")}</label>
           <select id="locale" value={locale} onChange={(event) => setLocale(event.target.value as "zh-CN" | "en-US")} aria-label={t("语言")}>
@@ -289,7 +305,7 @@ function Loading({ symbol }: { symbol: string }) {
 function isSupportedSymbol(symbol: string): symbol is SupportedSymbol { return (SUPPORTED_SYMBOLS as readonly string[]).includes(symbol); }
 function sectionFromHash(): WorkspaceSection {
   const value = window.location.hash.replace(/^#/, "").split("/", 1)[0];
-  return (["overview", "forecast", "evidence", "materials", "revisions", "evaluation", "replay"] as const).includes(value as WorkspaceSection)
+  return (["overview", "forecast", "evidence", "materials", "revisions", "evaluation", "replay", "agent", "admin"] as const).includes(value as WorkspaceSection)
     ? value as WorkspaceSection
     : "overview";
 }
