@@ -144,3 +144,51 @@ def test_request_validation_never_reflects_api_key(monkeypatch):
     assert response.status_code == 422
     assert response.json() == {"detail": "invalid_agent_chat_request"}
     assert "tiny" not in response.text
+    malformed = client.post("/api/agent-chat/hello", content='{"api_key":"private-raw-body', headers={"Content-Type": "application/json"})
+    assert malformed.status_code == 422
+    assert malformed.json() == {"detail": "invalid_agent_chat_request"}
+    assert "private-raw-body" not in malformed.text
+
+
+def test_openrouter_never_sends_test_referer(monkeypatch):
+    mock = MockAsyncClient()
+    monkeypatch.setattr("app.agent_chat_api.httpx.AsyncClient", lambda **kwargs: mock)
+    assert client.post("/api/agent-chat/hello", json=request_body(provider="openrouter", model="vendor/model")).status_code == 200
+    assert "HTTP-Referer" not in mock.seen[1]
+
+
+def test_actual_body_limit_without_content_length_and_multibyte_body():
+    from app.main import AgentChatBodyLimitMiddleware
+    async def invoke(body):
+        sent = []
+        chunks = [body[:19000], body[19000:]]
+        async def receive():
+            chunk = chunks.pop(0) if chunks else b""
+            return {"type": "http.request", "body": chunk, "more_body": bool(chunks)}
+        async def app(scope, receive, send):
+            data = await receive()
+            sent.append(("app", data["body"]))
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"{}"})
+        async def send(message): sent.append(message)
+        scope = {"type": "http", "method": "POST", "path": "/api/agent-chat/hello", "headers": [(b"origin", b"https://pages.github.io")]}
+        await AgentChatBodyLimitMiddleware(app)(scope, receive, send)
+        return sent
+    oversized = asyncio.run(invoke(b"x" * 32001))
+    assert next(item["status"] for item in oversized if isinstance(item, dict) and item["type"] == "http.response.start") == 413
+    assert next(item for item in oversized if isinstance(item, dict) and item["type"] == "http.response.start")["headers"]
+
+
+def test_actual_app_chat_body_boundary_and_unicode(monkeypatch):
+    from app import main
+    from app.agent_chat_api import ChatResponse
+    async def fake_call(payload, messages, max_tokens):
+        return ChatResponse(content="ok", model=payload.model)
+    monkeypatch.setattr("app.agent_chat_api._limited_call", fake_call)
+    public = TestClient(main.app)
+    normal = public.post("/api/agent-chat/messages", json={**request_body(), "messages": [{"role": "user", "content": "你好，市场"}]})
+    oversized = public.post("/api/agent-chat/hello", content=b"x" * 32001, headers={"Origin": main.allowed_origins[0] if main.allowed_origins else ""})
+    assert normal.status_code == 200
+    assert oversized.status_code == 413 and oversized.headers["cache-control"] == "no-store"
+    if main.allowed_origins:
+        assert oversized.headers["access-control-allow-origin"] == main.allowed_origins[0]

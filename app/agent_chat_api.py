@@ -55,7 +55,6 @@ class ChatResponse(BaseModel):
 async def _call(payload: ChatRequest, messages: list[dict[str, str]], max_tokens: int) -> ChatResponse:
     headers = {"Authorization": f"Bearer {payload.api_key.get_secret_value()}", "Content-Type": "application/json"}
     if payload.provider == "openrouter":
-        headers["HTTP-Referer"] = "https://wp1461772181-glitch.github.io/market-evidence-agent/"
         headers["X-Title"] = "Market Evidence Agent"
     body = {"model": payload.model, "messages": [{"role": "system", "content": SYSTEM_PROMPT}, *messages], "max_tokens": max_tokens}
     try:
@@ -83,7 +82,7 @@ async def _call(payload: ChatRequest, messages: list[dict[str, str]], max_tokens
         model = data.get("model")
     except (ValueError, KeyError, IndexError, TypeError) as exc:
         raise HTTPException(502, "provider_incompatible_response") from exc
-    if not isinstance(content, str) or not content.strip() or len(content) > 12000:
+    if not isinstance(content, str) or not content.strip() or len(content) > 4000:
         raise HTTPException(502, "provider_empty_or_invalid_answer")
     return ChatResponse(content=content, model=model if isinstance(model, str) else payload.model)
 

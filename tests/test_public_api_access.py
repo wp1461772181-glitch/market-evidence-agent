@@ -3,7 +3,15 @@ import pytest
 from app import main
 
 
-def test_public_mode_allows_reads_but_protects_owner_writes(client, monkeypatch):
+@pytest.fixture
+def client():
+    from fastapi.testclient import TestClient
+    return TestClient(main.app)
+
+
+def test_public_mode_allows_reads_but_protects_owner_writes(monkeypatch):
+    from fastapi.testclient import TestClient
+    client = TestClient(main.app)
     monkeypatch.setattr(main, "PUBLIC_API_MODE", True)
     monkeypatch.setattr(main, "APP_API_ACCESS_KEY", "a" * 40)
 
@@ -11,6 +19,7 @@ def test_public_mode_allows_reads_but_protects_owner_writes(client, monkeypatch)
     origin = main.allowed_origins[0]
     public_read = client.get("/openapi.json", headers={"Origin": origin})
     denied = client.post("/forecast-runs", json={"symbol": "AAPL"}, headers={"Origin": origin})
+    owner_valid = client.post("/forecast-runs", json={"symbol": "!invalid!"}, headers={"Origin": origin, "X-App-Access-Key": "a" * 40})
 
     assert health.status_code == 200
     assert public_read.status_code == 200
@@ -19,6 +28,7 @@ def test_public_mode_allows_reads_but_protects_owner_writes(client, monkeypatch)
     assert denied.headers["cache-control"] == "no-store"
     assert denied.headers["access-control-allow-origin"] == origin
     assert denied.headers["vary"] == "Origin"
+    assert owner_valid.status_code == 422
 
 
 def test_public_chat_bypasses_owner_key_but_owner_write_uses_it(client, monkeypatch):

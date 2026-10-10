@@ -97,6 +97,60 @@ allowed_origins = [
     for origin in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",")
     if origin.strip()
 ]
+
+class AgentChatBodyLimitMiddleware:
+    """Enforce a byte cap while receiving bodies, before JSON parsing."""
+    LIMIT = 32_000
+    PATHS = {"/api/agent-chat/hello", "/api/agent-chat/messages"}
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http" or scope.get("method") != "POST" or scope.get("path") not in self.PATHS:
+            await self.app(scope, receive, send)
+            return
+        headers = {key.lower(): value for key, value in scope.get("headers", [])}
+        declared = headers.get(b"content-length")
+        if declared:
+            try:
+                if int(declared) > self.LIMIT:
+                    await self._reject(scope, send, 413, "request_too_large")
+                    return
+            except ValueError:
+                await self._reject(scope, send, 400, "invalid_content_length")
+                return
+        chunks, total, more = [], 0, True
+        while more:
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                return
+            chunk = message.get("body", b"")
+            total += len(chunk)
+            if total > self.LIMIT:
+                await self._reject(scope, send, 413, "request_too_large")
+                return
+            chunks.append(chunk)
+            more = message.get("more_body", False)
+        body = b"".join(chunks)
+        delivered = False
+        async def replay():
+            nonlocal delivered
+            if not delivered:
+                delivered = True
+                return {"type": "http.request", "body": body, "more_body": False}
+            return await receive()
+        await self.app(scope, replay, send)
+
+    async def _reject(self, scope, send, status_code, detail):
+        body = (f'{{"detail":"{detail}"}}').encode()
+        headers = [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode()), (b"cache-control", b"no-store")]
+        origin = dict(scope.get("headers", [])).get(b"origin")
+        if origin and origin.decode("latin-1").rstrip("/") in allowed_origins:
+            headers.extend([(b"access-control-allow-origin", origin), (b"vary", b"Origin")])
+        await send({"type": "http.response.start", "status": status_code, "headers": headers})
+        await send({"type": "http.response.body", "body": body})
+
 if allowed_origins:
     cors_middleware_enabled = True
 else:
@@ -110,12 +164,6 @@ app.include_router(localization_router)
 @app.middleware("http")
 async def protect_public_api(request, call_next):
     public_chat = request.method == "POST" and request.url.path in {"/api/agent-chat/hello", "/api/agent-chat/messages"}
-    if request.url.path in {"/api/agent-chat/hello", "/api/agent-chat/messages"}:
-        try:
-            if int(request.headers.get("content-length", "0")) > 32_000:
-                return JSONResponse(status_code=413, content={"detail": "request_too_large"}, headers={"Cache-Control": "no-store"})
-        except ValueError:
-            return JSONResponse(status_code=400, content={"detail": "invalid_content_length"}, headers={"Cache-Control": "no-store"})
     public_read = request.method in {"GET", "HEAD"} or request.url.path == "/health" or request.method == "OPTIONS"
     if not PUBLIC_API_MODE:
         response = await call_next(request)
@@ -154,6 +202,7 @@ if cors_middleware_enabled:
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Accept", "Content-Type", "Idempotency-Key", "Authorization", "X-App-Access-Key"],
     )
+app.add_middleware(AgentChatBodyLimitMiddleware)
 
 
 @app.on_event("startup")

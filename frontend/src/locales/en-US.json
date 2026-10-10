@@ -857,5 +857,6 @@
   "模型不可用或请求参数不受支持。": "Model unavailable or request parameters unsupported.",
   "当前对话请求较多，请稍后重试。": "Chat is busy. Try again shortly.",
   "服务端点拒绝了重定向请求。": "The provider endpoint rejected a redirect.",
-  "模型服务暂不可用，请稍后重试。": "The model provider is temporarily unavailable. Try again later."
+  "模型服务暂不可用，请稍后重试。": "The model provider is temporarily unavailable. Try again later.",
+  "消息过长，请缩短后重试。": "Message is too long. Shorten it and try again."
 }
