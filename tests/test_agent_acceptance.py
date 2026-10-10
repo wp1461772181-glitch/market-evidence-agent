@@ -1,0 +1,296 @@
+"""Independent reviewer acceptance against real disposable PostgreSQL and provider transport."""
+import asyncio
+import json
+from datetime import UTC, date, datetime
+from uuid import uuid4
+
+import httpx
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
+
+from app.database import Base, SessionLocal, engine
+import app.main as main
+import app.agent_tools as tools
+import app.agent_chat_store as store
+import app.agent_chat_provider as provider
+from app.agent_chat_models import AgentMessage, AgentConversation
+from app.agent_faq_seed import seed_faq
+from app.models import MarketPrice, SecFilingInventory, UploadedEvidence
+
+KEY = 'demo-not-a-real-api-key'
+SESSION = 'parent-session-' + 'c' * 48
+
+@pytest.fixture(autouse=True)
+def setup(disposable_database, monkeypatch):
+    Base.metadata.create_all(engine)
+    with SessionLocal() as s:
+        seed_faq(s)
+        s.commit()
+    async_engine = create_async_engine(engine.url, poolclass=NullPool)
+    factory = async_sessionmaker(async_engine, expire_on_commit=False)
+    monkeypatch.setattr(tools, '_async_session', factory)
+    monkeypatch.setattr(store, 'Session', factory)
+    yield
+    asyncio.run(async_engine.dispose())
+
+
+def run(coro):
+    return asyncio.run(coro)
+
+
+def filing(symbol='TSTA'):
+    now = datetime.now(UTC)
+    obj = SecFilingInventory(symbol=symbol, cik='0000320193', accession_number=f'0000320193-26-{uuid4().int % 1000000:06d}', form='10-Q', filed_at=date(2026, 10, 9), primary_document='q.htm', source_url='https://www.sec.gov/Archives/acceptance-q.htm', source='sec-edgar', review_status='pending_review', observed_at=now, content_status='fetched', content_excerpt='UniqueParentKeyword official research facts')
+    with SessionLocal() as s:
+        s.add(obj); s.commit()
+    return obj
+
+
+def call(name='query_research_faq', args=None, ident='call-parent'):
+    return {'id':ident, 'type':'function', 'function':{'name':name, 'arguments':json.dumps(args or {'keyword':'可信度'}, ensure_ascii=False)}}
+
+
+class ByteStream(httpx.AsyncByteStream):
+    def __init__(self, body): self.body = body
+    async def __aiter__(self):
+        for chunk in self.body:
+            await asyncio.sleep(0)
+            yield chunk
+
+
+def provider_fixture(monkeypatch, decision=None, chunks=None):
+    requests = []
+    decision = decision or {'role':'assistant', 'content':None, 'tool_calls':[call()]}
+    chunks = chunks or [b'data: {"choices":[{"delta":{"content":"first"}}]}\n\n', b'data: {"choices":[{"delta":{"content":" second"},"finish_reason":"stop"}]}\n\n', b'data: [DONE]\n\n']
+    async def handler(request):
+        body=json.loads(request.content); requests.append(body)
+        if body.get('stream'):
+            return httpx.Response(200, headers={'content-type':'text/event-stream'}, stream=ByteStream(chunks))
+        return httpx.Response(200, json={'model':'test', 'choices':[{'message':decision}]})
+    original=httpx.AsyncClient
+    monkeypatch.setattr(provider.httpx, 'AsyncClient', lambda **kw: original(transport=httpx.MockTransport(handler), **kw))
+    return requests
+
+
+def frames(response):
+    output=[]
+    for block in response.text.split('\n\n'):
+        if not block.strip():continue
+        lines=block.splitlines()
+        output.append((lines[0][7:], json.loads(next(x[6:] for x in lines if x.startswith('data: ')))))
+    return output
+
+
+def send(client, message='what is credibility', cid=None):
+    return client.post('/agent-chat/stream', headers={'X-Chat-Session':SESSION}, json={'provider':'deepseek', 'model':'deepseek-chat','api_key':KEY,'message':message,'conversation_id':cid})
+
+
+def test_real_saved_prices_keep_numeric_values():
+    with SessionLocal() as s:
+        s.add(MarketPrice(symbol='TSTP', trading_date=date(2026,10,9),open=101,high=104,low=99,close=102.5,volume=1200,source='parent-fixture',fetched_at=datetime.now(UTC)));s.commit()
+    result=run(tools.query_stock_prices.ainvoke({'symbol':'TSTP'}))
+    assert result['ok'] and result['data']
+    assert result['data'][0]['close'] == 102.5
+    assert result['data'][0]['volume'] == 1200
+
+
+def test_real_sec_query_without_form():
+    filing('TSTS')
+    result=run(tools.query_sec_filings.ainvoke({'symbol':'TSTS'}))
+    assert result['ok'] and result['data'][0]['form']=='10-Q'
+
+
+def test_material_query_includes_sec_and_keeps_literal_wildcards():
+    filing('TSTM')
+    result=run(tools.query_materials.ainvoke({'symbol':'TSTM','keyword':'UniqueParentKeyword'}))
+    assert result['ok'] and result['data'], 'existing SEC material must be searchable'
+    miss=run(tools.query_materials.ainvoke({'symbol':'TSTM','keyword':'%'}))
+    assert miss['data']==[]
+
+
+def test_faq_expected_keyword_miss_and_empty_prices():
+    hit=run(tools.query_research_faq.ainvoke({'keyword':'费用'}))
+    miss=run(tools.query_research_faq.ainvoke({'keyword':'价钱'}))
+    empty=run(tools.query_stock_prices.ainvoke({'symbol':'TSTE'}))
+    assert hit['data'] and not miss['data'] and not empty['data']
+
+
+def test_stream_ownership_persistence_and_tool_disable(monkeypatch):
+    requests=provider_fixture(monkeypatch)
+    with TestClient(main.app) as client:
+        response=send(client); events=frames(response)
+        assert response.status_code==200 and events[-1][0]=='done'
+        assert [e[1]['text'] for e in events if e[0]=='delta']==['first',' second']
+        assert [e[0] for e in events].index('tool_result')<[e[0] for e in events].index('delta')
+        cid=events[0][1]['conversation_id']
+        owned=client.get(f'/agent-chat/conversations/{cid}/messages',headers={'X-Chat-Session':SESSION})
+        assert owned.status_code==200
+        assert client.get(f'/agent-chat/conversations/{cid}/messages',headers={'X-Chat-Session':'other-browser-'+'d'*48}).status_code==404
+        assert send(client,cid=cid).status_code==200
+        assert len(requests)==4
+        assert requests[1].get('tool_choice')=='none', 'second request explicitly disables tools'
+    with SessionLocal() as s:
+        rows=s.query(AgentMessage).filter(AgentMessage.conversation_id == cid).all()
+        assert KEY not in json.dumps([{'content':r.content,'tools':r.tool_calls} for r in rows])
+        assert {r.role for r in rows}=={'user','assistant','tool'}
+
+
+def test_reasoning_round_trip_is_complete(monkeypatch):
+    thought='r'*8100
+    decision={'role':'assistant','content':None,'tool_calls':[call()], 'reasoning_content':thought}
+    requests=provider_fixture(monkeypatch,decision)
+    with TestClient(main.app) as client:
+        events=frames(send(client))
+        assert events[-1][0]=='done'
+        cid=events[0][1]['conversation_id']
+        send(client,cid=cid)
+    tool_decision=next(m for m in requests[1]['messages'] if m.get('tool_calls'))
+    assert tool_decision.get('reasoning_content')==thought
+    historic=next(m for m in requests[2]['messages'] if m.get('tool_calls'))
+    assert historic.get('reasoning_content')==thought
+
+
+def test_incomplete_provider_stream_cannot_report_success(monkeypatch):
+    provider_fixture(monkeypatch,chunks=[b'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'])
+    with TestClient(main.app) as client:
+        events=frames(send(client))
+    assert not any(e[0]=='done' for e in events)
+    assert events[-1][0]=='error'
+
+
+def test_failed_turn_remains_visible_on_restore(monkeypatch):
+    provider_fixture(monkeypatch,chunks=[b'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n',b'data: {"error":{"message":"provider failure"}}\n\n'])
+    with TestClient(main.app) as client:
+        events=frames(send(client));cid=events[0][1]['conversation_id']
+        assert events[-1][0]=='error'
+        rows=client.get(f'/agent-chat/conversations/{cid}/messages',headers={'X-Chat-Session':SESSION}).json()['messages']
+        assert any(r.get('status')=='failed' for r in rows)
+        assert any('partial' in r['content'] for r in rows)
+
+
+def test_stream_validates_bounded_key_and_nonblank_message(monkeypatch):
+    provider_fixture(monkeypatch)
+    with TestClient(main.app) as client:
+        for key,message in [('x'*513,'valid'), (KEY,'   ')]:
+            response=client.post('/agent-chat/stream',headers={'X-Chat-Session':SESSION},json={'provider':'deepseek','model':'deepseek-chat','api_key':key,'message':message})
+            assert response.status_code==422
+            assert key not in response.text
+
+
+def test_current_message_is_sent_and_no_tool_path_streams(monkeypatch):
+    requests=provider_fixture(monkeypatch,decision={'role':'assistant','content':'decision only'})
+    with TestClient(main.app) as client:
+        events=frames(send(client,message='parent-current-message'))
+    assert events[-1][0]=='done'
+    assert len(requests)==2
+    assert requests[0]['messages'][-1]['role']=='user'
+    assert requests[0]['messages'][-1]['content']=='parent-current-message'
+    assert not any(e[0]=='tool_start' for e in events)
+
+
+def test_multiple_tool_requests_are_all_closed_without_execution(monkeypatch):
+    import app.agent_chat_stream as stream
+    from unittest.mock import AsyncMock
+    execute=AsyncMock()
+    monkeypatch.setattr(stream,'execute_tool',execute)
+    requests=provider_fixture(monkeypatch,decision={'role':'assistant','content':None,'tool_calls':[call(ident='call-1'),call(ident='call-2')]})
+    with TestClient(main.app) as client:
+        events=frames(send(client))
+    assert events[-1][0]=='done' and execute.await_count==0
+    msgs=requests[1]['messages']
+    proposed=[m for m in msgs if m.get('tool_calls')][0]['tool_calls']
+    results=[m['tool_call_id'] for m in msgs if m['role']=='tool']
+    assert {c['id'] for c in proposed}==set(results)=={'call-1','call-2'}
+
+
+def test_chat_capacity_applies_to_entire_stream(monkeypatch):
+    import app.agent_chat_api as legacy
+    monkeypatch.setattr(legacy.REQUEST_SLOTS,'_value',0)
+    provider_fixture(monkeypatch)
+    with TestClient(main.app) as client:
+        response=send(client)
+    assert response.status_code==503
+
+
+def test_provider_redirect_is_rejected_safely(monkeypatch):
+    async def handler(request):
+        return httpx.Response(302,headers={'location':'https://untrusted.invalid/anything'},json={'choices':[{'message':{'role':'assistant','content':'redirect'}}]})
+    original=httpx.AsyncClient
+    monkeypatch.setattr(provider.httpx,'AsyncClient',lambda **kw: original(transport=httpx.MockTransport(handler),**kw))
+    with TestClient(main.app) as client:
+        events=frames(send(client))
+    assert events[-1][0]=='error'
+    assert events[-1][1]['code']=='provider_redirect_rejected'
+    assert not any(e[0]=='done' for e in events)
+
+
+def test_final_reasoning_preserved_for_next_turn_but_hidden_from_browser(monkeypatch):
+    chunks=[b'data: {"choices":[{"delta":{"reasoning_content":"private-final-reasoning"}}]}\n\n',b'data: {"choices":[{"delta":{"content":"public answer"},"finish_reason":"stop"}]}\n\n',b'data: [DONE]\n\n']
+    requests=provider_fixture(monkeypatch,decision={'role':'assistant','content':'direct decision'},chunks=chunks)
+    with TestClient(main.app) as client:
+        response=send(client);events=frames(response);cid=events[0][1]['conversation_id']
+        assert events[-1][0]=='done'
+        assert 'private-final-reasoning' not in response.text
+        restored=client.get(f'/agent-chat/conversations/{cid}/messages',headers={'X-Chat-Session':SESSION})
+        assert 'private-final-reasoning' not in restored.text
+        assert send(client,cid=cid).status_code==200
+    previous=next(m for m in requests[2]['messages'] if m['role']=='assistant' and m.get('content')=='public answer')
+    assert previous.get('reasoning_content')=='private-final-reasoning'
+
+
+def test_forecast_uses_current_workspace_version_and_structured_probabilities():
+    from app.forecast_v2_models import ForecastJobV2, ForecastVersionV2
+    now=datetime.now(UTC)
+    with SessionLocal() as s:
+        job=ForecastJobV2(symbol='TSTF',kind='new',status='succeeded',idempotency_key=f'parent-{uuid4()}',request_fingerprint='b'*64)
+        s.add(job);s.flush()
+        ident=uuid4()
+        root=ForecastVersionV2(id=ident,root_id=ident,job_id=job.id,version_no=1,symbol='TSTF',target_contract={'target_end_date':'2027-01-29'},target_contract_hash='a'*64,decision_at=now,market_cutoff_at=now,price_input_manifest={},evidence_version_manifest=[],feature_snapshot={},baseline_probabilities={'bearish':0.2,'neutral':0.3,'bullish':0.5},joint_probabilities=None,model_status='research_only',model_manifest={},trigger_type='manual')
+        s.add(root);s.commit()
+    result=run(tools.query_latest_forecast.ainvoke({'symbol':'TSTF'}))
+    assert result['ok'] and result['data']
+    row=result['data'][0]
+    assert row['version_no']==1
+    assert row['probabilities']=={'bearish':0.2,'neutral':0.3,'bullish':0.5}
+    assert 'forecast_versions_v2' in result['source']
+
+
+def test_provider_truncation_finish_cannot_be_marked_success(monkeypatch):
+    provider_fixture(monkeypatch,chunks=[b'data: {"choices":[{"delta":{"content":"truncated"},"finish_reason":"length"}]}\n\n',b'data: [DONE]\n\n'])
+    with TestClient(main.app) as client:
+        events=frames(send(client))
+    assert not any(e[0]=='done' for e in events)
+    assert events[-1][0]=='error'
+
+
+def test_disconnect_before_body_iteration_releases_capacity(monkeypatch):
+    import app.agent_chat_stream as stream
+    import app.agent_chat_api as legacy
+    from starlette.requests import Request
+    before=legacy.REQUEST_SLOTS._value
+    monkeypatch.setattr(legacy.REQUEST_SLOTS,'_value',before)
+    async def exercise():
+        scope={'type':'http','method':'POST','path':'/agent-chat/stream','headers':[],'asgi':{'spec_version':'2.4'}}
+        response=await stream.stream_chat(stream.StreamRequest(provider='deepseek',model='deepseek-chat',api_key=KEY,message='never started'),Request(scope),SESSION)
+        async def disconnected_send(message): raise OSError('peer disconnected before headers')
+        async def receive():return {'type':'http.disconnect'}
+        try:await response(scope,receive,disconnected_send)
+        except Exception:pass
+    run(exercise())
+    assert legacy.REQUEST_SLOTS._value==before
+
+
+def test_final_openrouter_reasoning_details_round_trip_without_exposure(monkeypatch):
+    details=[{'type':'reasoning.encrypted','data':'encrypted-fixture','id':'reason-1','index':0}]
+    piece=json.dumps({'choices':[{'delta':{'reasoning_details':details}}]}).encode()
+    chunks=[b'data: '+piece+b'\n\n',b'data: {"choices":[{"delta":{"content":"public answer"},"finish_reason":"stop"}]}\n\n',b'data: [DONE]\n\n']
+    requests=provider_fixture(monkeypatch,decision={'role':'assistant','content':'direct decision'},chunks=chunks)
+    with TestClient(main.app) as client:
+        events=frames(send(client));cid=events[0][1]['conversation_id']
+        assert events[-1][0]=='done'
+        assert 'encrypted-fixture' not in client.get(f'/agent-chat/conversations/{cid}/messages',headers={'X-Chat-Session':SESSION}).text
+        send(client,cid=cid)
+    previous=next(m for m in requests[2]['messages'] if m['role']=='assistant' and m.get('content')=='public answer')
+    assert previous.get('reasoning_details')==details

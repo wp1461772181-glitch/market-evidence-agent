@@ -1,0 +1,7 @@
+[
+  {"id":"faq-fee-exact-hit","kind":"tool-selection","user_text":"费用是多少？请查研究 FAQ。","expected_tool":"query_research_faq","expected_keyword":"费用","fixture_match":"yes"},
+  {"id":"faq-price-synonym-literal-miss","kind":"retrieval-evaluation","user_text":"价钱是多少？","expected_tool":"query_research_faq","expected_keyword":"价钱","expected_match":"no","limitation":"literal ILIKE search does not perform synonym expansion"},
+  {"id":"aapl-saved-prices","kind":"tool-selection","user_text":"查看 AAPL 最近五个交易日的行情。","expected_tool":"query_stock_prices","fixture_symbol":"AAPL","expected_rows":[{"date":"2026-10-09","close":252.5},{"date":"2026-10-08","close":252.0},{"date":"2026-10-07","close":251.5},{"date":"2026-10-06","close":251.0},{"date":"2026-10-05","close":250.5}],"must_say_saved_not_live":true},
+  {"id":"aapl-sec-saved-inventory","kind":"tool-selection","user_text":"AAPL 已保存的最新财报有哪些？","expected_tool":"query_sec_filings","expected_filing_date":"2026-08-01","expected_source":"https://www.sec.gov/Archives/edgar/data/320193/000032019326000001/aapl-20260630.htm","must_say_no_external_fetch":true},
+  {"id":"amd-no-records","kind":"empty-result","user_text":"查看 AMD 最近行情。","expected_tool":"query_stock_prices","fixture_symbol":"AMD","expected_rows":0,"must_not_invent_market_data":true}
+]

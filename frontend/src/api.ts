@@ -21,7 +21,51 @@ async function fetchApi(path: string, init: RequestInit = {}): Promise<Response>
 
 export type AgentChatProvider = "deepseek" | "openrouter";
 export type AgentChatConfig = { provider: AgentChatProvider; model: string; api_key: string };
-export type AgentChatMessage = { role: "user" | "assistant"; content: string };
+export type AgentChatMessage = { role: "user" | "assistant" | "tool"; content: string; status?: string; tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }>; tool_call_id?: string; tool_trace?: Array<{ call_id?: string; name: string; arguments?: unknown; result?: unknown; status: string }> };
+export type AgentChatEvent = { event: string; data: Record<string, unknown> };
+const chatCredentialKey = "market-evidence-agent:chat-session:v1";
+const chatConversationKey = "market-evidence-agent:chat-conversation:v1";
+function chatCredential(): string {
+  let value = window.sessionStorage.getItem(chatCredentialKey);
+  if (!value) { value = `${crypto.randomUUID()}${crypto.randomUUID()}`; window.sessionStorage.setItem(chatCredentialKey, value); }
+  return value;
+}
+export async function restoreAgentChat(): Promise<{ conversationId: string | null; messages: AgentChatMessage[] }> {
+  const conversationId = window.sessionStorage.getItem(chatConversationKey);
+  if (!conversationId) return { conversationId: null, messages: [] };
+  const response = await fetch(agentChatUrl("messages", configuredApiBaseUrl).replace(/messages$/, `conversations/${encodeURIComponent(conversationId)}/messages`), {
+    headers: { Accept: "application/json", "X-Chat-Session": chatCredential() }, cache: "no-store",
+  });
+  if (response.status === 404) return { conversationId: null, messages: [] };
+  if (!response.ok) throw new ApiError("无法恢复服务端聊天记录。", response.status);
+  const data = await response.json() as { messages?: AgentChatMessage[] };
+  return { conversationId, messages: Array.isArray(data.messages) ? data.messages : [] };
+}
+export function clearAgentConversation(): void { window.sessionStorage.removeItem(chatConversationKey); }
+export async function agentChatStream(config: AgentChatConfig, message: string, conversationId: string | null, signal: AbortSignal, onEvent: (event: AgentChatEvent) => boolean | void): Promise<string> {
+  const response = await fetch(agentChatUrl("stream", configuredApiBaseUrl), { method: "POST", signal, cache: "no-store", headers: { Accept: "text/event-stream", "Content-Type": "application/json", "X-Chat-Session": chatCredential() }, body: JSON.stringify({ ...config, message, conversation_id: conversationId }) });
+  if (!response.ok) { const payload = await response.json().catch(() => null); throw apiErrorFromPayload(payload, response.status); }
+  const reader = response.body?.getReader(); if (!reader) throw new ApiError("服务未返回流式响应。");
+  const decoder = new TextDecoder(); let buffer = "", answer = "", eventName = "message", receivedDone = false;
+  while (true) {
+    const { value, done } = await reader.read(); buffer += decoder.decode(value, { stream: !done });
+    let boundary; while ((boundary = buffer.indexOf("\n\n")) >= 0) {
+      const chunk = buffer.slice(0, boundary); buffer = buffer.slice(boundary + 2); let raw = "";
+      for (const line of chunk.split(/\r?\n/)) { if (line.startsWith("event:")) eventName = line.slice(6).trim(); else if (line.startsWith("data:")) raw += line.slice(5).trim(); }
+      if (!raw) continue; let data: Record<string, unknown>; try { data = JSON.parse(raw); } catch { throw new ApiError("服务返回了无效的聊天事件。"); }
+      if (eventName === "delta" && typeof data.text === "string") answer += data.text;
+      const receivedEvent = eventName;
+      const accepted = onEvent({ event: receivedEvent, data });
+      if (accepted !== false && receivedEvent === "conversation" && typeof data.conversation_id === "string") window.sessionStorage.setItem(chatConversationKey, data.conversation_id);
+      if (receivedEvent === "done" && data.status === "complete") receivedDone = true;
+      eventName = "message";
+      if (receivedEvent === "error") throw new ApiError(String(data.code ?? "chat_failed"));
+    }
+    if (done) break;
+  }
+  if (!receivedDone) throw new ApiError("provider_incomplete_stream");
+  return answer;
+}
 export async function agentChatRequest(path: "hello" | "messages", config: AgentChatConfig, messages: AgentChatMessage[], signal: AbortSignal): Promise<{ content: string; model: string }> {
   const response = await fetch(agentChatUrl(path, configuredApiBaseUrl), {
     method: "POST", signal, cache: "no-store",

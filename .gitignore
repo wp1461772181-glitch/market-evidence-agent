@@ -25,4 +25,5 @@ logs/
 # Frontend dependencies and Vite build output.
 frontend/node_modules/
 frontend/dist/
+frontend-build/
 *.tsbuildinfo

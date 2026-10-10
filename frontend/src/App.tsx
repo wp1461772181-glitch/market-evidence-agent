@@ -274,7 +274,7 @@ function Shell({ activeSection, navigate, symbol, symbols, onSelectStock, watchI
     { id: "revisions", label: t("预测修订"), hint: t("材料关联"), icon: "↗" },
     { id: "evaluation", label: t("到期评估"), hint: t("同组样本"), icon: "≋" },
     { id: "replay", label: t("历史回放"), hint: t("生成已到期样本"), icon: "↺" },
-    { id: "agent", label: t("Agent 对话"), hint: t("通用模型聊天"), icon: "✳" },
+    { id: "agent", label: t("Agent 对话"), hint: t("研究工具对话"), icon: "✳" },
   ];
   return <div className="app-frame">
     <aside className="app-rail" aria-label={t("主要导航")}>

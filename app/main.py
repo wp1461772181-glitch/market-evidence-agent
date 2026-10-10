@@ -33,6 +33,9 @@ from .manual_evidence import (
     uploaded_evidence_for_symbol,
 )
 from .agent_chat_api import router as agent_chat_router
+from .agent_chat_stream import router as agent_chat_stream_router
+from .agent_chat_models import AgentConversation, AgentMessage, AgentFAQ
+from .agent_faq_seed import seed_faq
 from .material_analysis_api import router as material_analysis_router
 from .localization_api import router as localization_router
 from .event_provider import EventProviderError, configured_deepseek_model, create_deepseek_provider_from_env
@@ -91,7 +94,7 @@ app = FastAPI(title="Market Evidence Agent", version="0.1.0")
 
 @app.exception_handler(RequestValidationError)
 async def safe_agent_chat_validation(request: Request, exc: RequestValidationError):
-    if request.url.path in {"/agent-chat/hello", "/agent-chat/messages"}:
+    if request.url.path in {"/agent-chat/hello", "/agent-chat/messages", "/agent-chat/stream"}:
         from .agent_chat_api import safe_validation_response
         return await safe_validation_response(request, exc)
     return await request_validation_exception_handler(request, exc)
@@ -105,7 +108,7 @@ allowed_origins = [
 class AgentChatBodyLimitMiddleware:
     """Enforce a byte cap while receiving bodies, before JSON parsing."""
     LIMIT = 32_000
-    PATHS = {"/agent-chat/hello", "/agent-chat/messages"}
+    PATHS = {"/agent-chat/hello", "/agent-chat/messages", "/agent-chat/stream"}
 
     def __init__(self, app):
         self.app = app
@@ -160,6 +163,7 @@ if allowed_origins:
 else:
     cors_middleware_enabled = False
 app.include_router(agent_chat_router)
+app.include_router(agent_chat_stream_router)
 app.include_router(forecast_v2_router)
 app.include_router(material_analysis_router)
 app.include_router(localization_router)
@@ -167,7 +171,7 @@ app.include_router(localization_router)
 
 @app.middleware("http")
 async def protect_public_api(request, call_next):
-    public_chat = request.method == "POST" and request.url.path in {"/agent-chat/hello", "/agent-chat/messages"}
+    public_chat = request.method == "POST" and request.url.path in {"/agent-chat/hello", "/agent-chat/messages", "/agent-chat/stream"}
     public_read = request.method in {"GET", "HEAD"} or request.url.path == "/health" or request.method == "OPTIONS"
     if not PUBLIC_API_MODE:
         response = await call_next(request)
@@ -204,7 +208,7 @@ if cors_middleware_enabled:
         allow_origins=allowed_origins,
         allow_credentials=False,
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        allow_headers=["Accept", "Content-Type", "Idempotency-Key", "Authorization", "X-App-Access-Key"],
+        allow_headers=["Accept", "Content-Type", "Idempotency-Key", "Authorization", "X-App-Access-Key", "X-Chat-Session"],
     )
 app.add_middleware(AgentChatBodyLimitMiddleware)
 
@@ -227,6 +231,9 @@ def create_tables() -> None:
     create_sec_filing_inventory_table()
     create_uploaded_evidence_table()
     create_evidence_revision_tables()
+    with SessionLocal() as session:
+        seed_faq(session)
+        session.commit()
 
 
 def get_db():
