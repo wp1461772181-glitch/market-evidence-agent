@@ -70,11 +70,13 @@ def test_knowledge_health_reports_safe_disabled_and_ready_states(monkeypatch):
     import app.main as main
     monkeypatch.setenv('RAG_ENABLED','false')
     monkeypatch.setattr(runtime_module,'get_runtime',lambda:None)
-    assert main.knowledge_health()=={'enabled':False,'ready':False}
+    assert main.knowledge_health()=={'enabled':False,'ready':False,'milvus':'unavailable'}
     class Runtime:
-        def health(self):return {'ready':True,'generation':'g'*64,'milvus':{'ok':True}}
+        ready=True
+        last_health_check=__import__('time').monotonic()
+        settings=type('Settings',(),{'generation':'g'*64})()
     monkeypatch.setattr(runtime_module,'get_runtime',lambda:Runtime())
-    assert main.knowledge_health()=={'enabled':True,'ready':True,'generation':'g'*64,'milvus':{'ok':True}}
+    assert main.knowledge_health()=={'enabled':True,'ready':True,'generation':'g'*64,'milvus':'healthy','health_age_seconds':0.0}
 
 def test_retrieved_faq_evidence_numbering_matches_retained_chunks_and_duplicate_titles(monkeypatch):
     import asyncio

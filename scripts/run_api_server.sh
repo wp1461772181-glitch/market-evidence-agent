@@ -8,10 +8,24 @@ CONTAINER_NAME="market-evidence-postgres"
 DATABASE_NAME="market_evidence"
 DATABASE_USER="market_evidence"
 MAX_WAIT_SECONDS="${MARKET_EVIDENCE_API_WAIT_SECONDS:-90}"
-API_PYTHON="${MARKET_EVIDENCE_API_PYTHON:-${PROJECT_ROOT}/.venv/bin/python}"
+RAG_FLAG="${RAG_ENABLED:-}"
+if [ -z "$RAG_FLAG" ] && [ -f "${PROJECT_ROOT}/.env" ]; then
+    RAG_FLAG=$(sed -n 's/^RAG_ENABLED[[:space:]]*=[[:space:]]*\([^#]*\).*$/\1/p' "${PROJECT_ROOT}/.env" | tail -n 1 | tr -d "'\" ")
+fi
+RAG_FLAG=$(printf '%s' "$RAG_FLAG" | tr '[:upper:]' '[:lower:]')
+if [ -n "${MARKET_EVIDENCE_API_PYTHON:-}" ]; then
+    API_PYTHON="$MARKET_EVIDENCE_API_PYTHON"
+elif [ "$RAG_FLAG" = "1" ] || [ "$RAG_FLAG" = "true" ] || [ "$RAG_FLAG" = "yes" ]; then
+    API_PYTHON="${PROJECT_ROOT}/.venv-rag/bin/python"
+else
+    API_PYTHON="${PROJECT_ROOT}/.venv/bin/python"
+fi
 case "$API_PYTHON" in /*) ;; *) API_PYTHON="${PROJECT_ROOT}/${API_PYTHON#./}" ;; esac
 RUNTIME_ROOT="${PROJECT_ROOT}/data/releases/current"
 if [ ! -d "$RUNTIME_ROOT" ]; then RUNTIME_ROOT="$PROJECT_ROOT"; fi
+export RAG_MODEL_PATH="${RAG_MODEL_PATH:-${PROJECT_ROOT}/data/knowledge/models/bge-m3}"
+export RAG_RERANKER_PATH="${RAG_RERANKER_PATH:-${PROJECT_ROOT}/data/knowledge/models/bge-reranker-v2-m3}"
+export RAG_THRESHOLD_PATH="${RAG_THRESHOLD_PATH:-${PROJECT_ROOT}/data/knowledge/calibration/threshold.json}"
 if [ -z "${LOCAL_MODEL_PROFILES_PATH:-}" ]; then LOCAL_MODEL_PROFILES_PATH="$PROJECT_ROOT/data/model-profiles.json"; fi
 export LOCAL_MODEL_PROFILES_PATH
 if [ -z "${PERSONAL_CHAT_LOGIN_PATH:-}" ]; then PERSONAL_CHAT_LOGIN_PATH="$PROJECT_ROOT/data/personal-chat-login.json"; fi

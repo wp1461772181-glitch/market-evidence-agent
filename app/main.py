@@ -171,11 +171,15 @@ def create_tables() -> None:
         seed_faq(session)
         session.commit()
     if os.getenv("RAG_ENABLED", "false").strip().lower() in {"1", "true", "yes"}:
-        from .knowledge.runtime import start_runtime
-        start_runtime()
+        from .knowledge.runtime import start_runtime_background
+        start_runtime_background()
+        from .knowledge.source_sync import start_source_sync
+        start_source_sync(SessionLocal)
 
 @app.on_event("shutdown")
 def stop_knowledge_runtime() -> None:
+    from .knowledge.source_sync import stop_source_sync
+    stop_source_sync()
     from .knowledge.runtime import stop_runtime
     stop_runtime()
 
@@ -198,11 +202,16 @@ def health() -> dict[str, str]:
 @app.get("/health/knowledge")
 def knowledge_health() -> dict[str, object]:
     from .knowledge.runtime import get_runtime
+    from .knowledge.settings import KnowledgeSettings
+    configured=KnowledgeSettings.from_env(validate_model=False)
     runtime=get_runtime()
     if runtime is None:
-        return {"enabled":os.getenv("RAG_ENABLED","false").strip().lower() in {"1","true","yes"},"ready":False}
-    health=runtime.health()
-    return {"enabled":True,"ready":bool(health.get("ready")),"generation":health.get("generation"),"milvus":health.get("milvus")}
+        return {"enabled":configured.enabled,"ready":False,"milvus":"unavailable"}
+    age=max(0.0,__import__('time').monotonic()-runtime.last_health_check)
+    healthy=bool(runtime.ready and age<=30.0)
+    if not healthy:runtime.ready=False
+    return {"enabled":True,"ready":healthy,"generation":runtime.settings.generation,
+            "milvus":"healthy" if healthy else "stale_or_unavailable","health_age_seconds":round(age,1)}
 
 
 # 调用旧研究工作流并保存研究运行结果，不会自动生成 V3 预测版本。

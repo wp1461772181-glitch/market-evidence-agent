@@ -31,3 +31,18 @@ def test_sec_rejects_excerpt_when_stored_hash_does_not_match_actual_text():
       content_excerpt='actual text',content_excerpt_sha256='0'*64,content_status='fetched',review_status='accepted',
       content_source_url='https://example.test/excerpt',filed_at=None,observed_at=None,content_observed_at=None,content_truncated=True)
     assert adapt_sec(row) is None
+
+def test_sec_fetched_pending_review_is_indexable_but_tampering_is_not():
+    import hashlib
+    from datetime import UTC, datetime, timedelta
+    excerpt='Item 2. Management reports revenue increased 18 percent during FY2025.'
+    now=datetime.now(UTC)
+    row=dict(id='s3',symbol='AMD',primary_document='10-Q',source_url='https://www.sec.gov/Archives/edgar/data/example',
+      content_excerpt=excerpt,content_excerpt_sha256=hashlib.sha256(excerpt.encode()).hexdigest(),content_status='fetched',
+      review_status='pending_review',reviewed_at=None,content_source_url=None,filed_at=(now-timedelta(days=1)).date(),
+      observed_at=now-timedelta(minutes=1),content_observed_at=now,content_truncated=True)
+    assert adapt_sec(row) is not None
+    assert adapt_sec({**row,'content_excerpt':'tampered'}) is None
+    assert adapt_sec({**row,'content_excerpt_sha256':None}) is None
+    accepted=adapt_sec({**row,'review_status':'accepted','reviewed_at':now-timedelta(minutes=2)})
+    assert accepted.source_hash==adapt_sec(row).source_hash

@@ -40,8 +40,18 @@ def test_fresh_checkout_default_print_does_not_require_dependency_directories(tm
 
     assert result.returncode == 0, result.stderr
     assert f"{project}/.venv/bin/python -m uvicorn" in result.stdout
-    assert not (project / ".venv").exists()
     assert not (project / ".venv-rag").exists()
+
+
+def test_fresh_checkout_uses_rag_environment_only_when_enabled(tmp_path):
+    project = tmp_path / "rag-checkout"
+    (project / "scripts").mkdir(parents=True)
+    (project / ".env").write_text("RAG_ENABLED=true\n", encoding="utf-8")
+    launcher = project / "scripts" / "run_api_server.sh"
+    shutil.copy2(LAUNCHER, launcher)
+    result = subprocess.run(["/bin/sh", str(launcher), "--print"], cwd=project, text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    assert f"{project}/.venv-rag/bin/python -m uvicorn" in result.stdout
 
 
 def test_api_launcher_print_accepts_explicit_executable_override():

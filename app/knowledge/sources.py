@@ -71,7 +71,7 @@ def adapt_uploaded(row: Any, *, owner_hash: str | None, allowlist: set[str]) -> 
       str(row['title']),row.get('source_url'),_utc(row.get('published_at')),_utc(row.get('observed_at')),_utc(row.get('observed_at')),False,'plain_text',text)
 
 def adapt_sec(row: Any) -> SourceDocument | None:
-    if row.get('review_status') not in (None,'accepted') or row.get('content_status') not in (None,'fetched'): return None
+    if row.get('content_status') not in (None,'fetched'): return None
     text=str(row.get('content_excerpt') or '')
     if not text.strip() or not row.get('content_excerpt_sha256'): return None
     if _hash(text)!=str(row['content_excerpt_sha256']):return None
@@ -79,7 +79,7 @@ def adapt_sec(row: Any) -> SourceDocument | None:
     name=row.get('content_document_name') or row.get('primary_document') or 'SEC filing excerpt'
     source_hash=_snapshot_hash(text=text,title=str(name),url=url,symbol=str(row['symbol']),filed_at=row.get('filed_at'),
       content_observed_at=_utc(row.get('content_observed_at')),observed_at=_utc(row.get('observed_at')),truncated=bool(row.get('content_truncated')),
-      review_status=row.get('review_status'),reviewed_at=_utc(row.get('reviewed_at')),content_status=row.get('content_status'),
+      content_status=row.get('content_status'),
       kind=str(row.get('content_kind') or 'sec_excerpt'))
     filed=row.get('filed_at')
     published=datetime.combine(filed,datetime.min.time(),tzinfo=UTC) if filed and not isinstance(filed,datetime) else _utc(filed)

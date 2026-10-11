@@ -1,0 +1,117 @@
+"""Bounded keyset sync from the authoritative MaterialLibrary tables."""
+from __future__ import annotations
+
+import logging
+import threading
+from datetime import UTC, datetime
+from uuid import UUID
+
+from sqlalchemy import and_, exists, select
+
+from .models import KnowledgeDocument, KnowledgeExtractionRun, KnowledgeUploadOwner
+from .repository import ingest_documents
+from .sources import adapt_faq, adapt_sec, adapt_uploaded
+
+log = logging.getLogger(__name__)
+_stop = threading.Event()
+_thread: threading.Thread | None = None
+
+
+def sync_source_batch(session_factory, tokenizer, generation: str, *, source_type: str, batch_size: int = 5) -> dict:
+    """Process one durable keyset page; unmapped uploads are never selected."""
+    from ..agent_chat_models import AgentFAQ
+    from ..models import SecFilingInventory, UploadedEvidence
+
+    if source_type not in {"sec", "faq", "upload"}:
+        raise ValueError("unsupported source type")
+    batch_size = max(1, min(10, int(batch_size)))
+    scope_key = f"material_sync.{source_type}"
+    with session_factory() as session:
+        state = session.scalar(select(KnowledgeExtractionRun).where(KnowledgeExtractionRun.scope_key == scope_key).with_for_update())
+        if state is None:
+            state = KnowledgeExtractionRun(scope_key=scope_key, batch_status="running", processed_count=0)
+            session.add(state); session.flush()
+        cursor = state.cursor
+        if source_type == "faq":
+            last = int(cursor or 0)
+            rows = session.scalars(select(AgentFAQ).where(AgentFAQ.id > last).order_by(AgentFAQ.id).limit(batch_size)).all()
+            docs = [adapt_faq({"id": r.id, "question": r.question, "answer": r.answer, "category": r.category}) for r in rows]
+            next_cursor = str(rows[-1].id) if rows else None
+        elif source_type == "sec":
+            last = UUID(cursor) if cursor else UUID(int=0)
+            already_bootstrapped = session.scalar(select(exists().where(and_(
+                KnowledgeDocument.source_table == "sec_filing_inventory",
+                KnowledgeDocument.source_id == "9af2ef08-e7e6-4e2d-bf47-68d1a163957c"))))
+            if cursor is None and not already_bootstrapped:
+                # Controlled first bootstrap includes the accepted AMD quality target first.
+                target = session.get(SecFilingInventory, UUID("9af2ef08-e7e6-4e2d-bf47-68d1a163957c"))
+                rows = [target] if target and target.content_status == "fetched" and target.content_excerpt else []
+            else:
+                rows = []
+            if not rows:
+                rows = session.scalars(select(SecFilingInventory).where(
+                    SecFilingInventory.id > last, SecFilingInventory.content_status == "fetched",
+                    SecFilingInventory.content_excerpt.is_not(None)).order_by(SecFilingInventory.id).limit(batch_size)).all()
+            docs = [doc for r in rows if (doc := adapt_sec({c.key: getattr(r, c.key) for c in r.__table__.columns}))]
+            next_cursor = str(rows[-1].id) if rows else None
+        else:
+            last = UUID(cursor) if cursor else UUID(int=0)
+            rows = session.execute(select(UploadedEvidence, KnowledgeUploadOwner.owner_hash)
+                .join(KnowledgeUploadOwner, KnowledgeUploadOwner.upload_id == UploadedEvidence.id)
+                .where(UploadedEvidence.id > last).order_by(UploadedEvidence.id).limit(batch_size)).all()
+            docs = [doc for row, owner in rows if (doc := adapt_uploaded({
+                "id": row.id, "symbol": row.symbol, "title": row.title, "source_url": row.source_url,
+                "published_at": row.published_at, "observed_at": row.observed_at,
+                "content_sha256": row.content_sha256, "content_text": row.content_text,
+            }, owner_hash=owner, allowlist=set()))]
+            next_cursor = str(rows[-1][0].id) if rows else None
+        counts = ingest_documents(session, docs, tokenizer, generation)
+        if next_cursor:
+            state.cursor = next_cursor; state.processed_count += len(rows); state.batch_status = "running"
+        else:
+            # A fresh keyset cycle permits future inserts without rescanning an initial prefix forever.
+            state.cursor = None; state.processed_count = 0; state.batch_status = "idle"
+        state.completed_at = datetime.now(UTC)
+        session.commit()
+        return {"source_type": source_type, "scanned": len(rows), "accepted": len(docs), "cursor": next_cursor, **counts}
+
+
+def start_source_sync(session_factory, interval_seconds: float = 30.0) -> None:
+    global _thread
+    if _thread and _thread.is_alive(): return
+    _stop.clear()
+
+    def run():
+        while not _stop.is_set():
+            try:
+                from .runtime import get_runtime
+                runtime = get_runtime()
+                if runtime is None:
+                    _stop.wait(max(5.0, interval_seconds))
+                    continue
+                from .runtime import get_tokenizer
+                from .settings import KnowledgeSettings
+                settings = runtime.settings
+                tokenizer = get_tokenizer()
+                for kind in ("faq", "sec", "upload"):
+                    result = sync_source_batch(session_factory, tokenizer, settings.generation, source_type=kind, batch_size=5)
+                    if result["scanned"]:
+                        from .indexing import index_pending
+                        # Run the shared inference executor synchronously on this worker thread without creating a nested loop.
+                        import concurrent.futures
+                        future = concurrent.futures.Future()
+                        def invoke():
+                            try: future.set_result(index_pending(session_factory, runtime.embedder, runtime.index,
+                                settings.generation, max_tasks=10, worker_id="material-sync"))
+                            except Exception as exc: future.set_exception(exc)
+                        runtime.executor.executor.submit(invoke)
+                        future.result(timeout=180)
+            except Exception as exc:
+                log.warning("material source sync batch failed (%s)", type(exc).__name__)
+            _stop.wait(max(5.0, interval_seconds))
+    _thread = threading.Thread(target=run, name="material-library-sync", daemon=True)
+    _thread.start()
+
+
+def stop_source_sync() -> None:
+    _stop.set()

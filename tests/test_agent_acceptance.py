@@ -43,7 +43,9 @@ def run(coro):
 
 def filing(symbol='TSTA'):
     now = datetime.now(UTC)
-    obj = SecFilingInventory(symbol=symbol, cik='0000320193', accession_number=f'0000320193-26-{uuid4().int % 1000000:06d}', form='10-Q', filed_at=date(2026, 10, 9), primary_document='q.htm', source_url='https://www.sec.gov/Archives/acceptance-q.htm', source='sec-edgar', review_status='pending_review', observed_at=now, content_status='fetched', content_excerpt='UniqueParentKeyword official research facts')
+    excerpt='UniqueParentKeyword official research facts'
+    import hashlib
+    obj = SecFilingInventory(symbol=symbol, cik='0000320193', accession_number=f'0000320193-26-{uuid4().int % 1000000:06d}', form='10-Q', filed_at=date(2026, 10, 9), primary_document='q.htm', source_url='https://www.sec.gov/Archives/acceptance-q.htm', source='sec-edgar', review_status='pending_review', observed_at=now, content_status='fetched', content_excerpt=excerpt,content_excerpt_sha256=hashlib.sha256(excerpt.encode()).hexdigest(),content_observed_at=now)
     with SessionLocal() as s:
         s.add(obj); s.commit()
     return obj

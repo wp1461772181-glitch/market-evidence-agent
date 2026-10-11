@@ -55,7 +55,7 @@ def _source_hash(session:Session,doc:KnowledgeDocument,*,historical:bool=False):
         current=adapt_sec({c.key:getattr(row,c.key) for c in row.__table__.columns})
         if not current or (current.scope,current.visibility,current.owner_hash)!=(doc.scope,doc.visibility,doc.owner_hash):return None
         if historical:
-            if row.review_status!='accepted' or row.content_status!='fetched' or not row.reviewed_at:return None
+            if row.content_status!='fetched':return None
             return doc.source_hash
         # SEC citations freeze the complete provenance snapshot, not only the
         # body digest (which remains stable when an exhibit URL is corrected).

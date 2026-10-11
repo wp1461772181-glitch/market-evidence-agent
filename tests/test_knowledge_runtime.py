@@ -1,4 +1,4 @@
-import asyncio, threading, time
+import asyncio, threading
 
 def test_disabled_settings_do_not_require_model_files(monkeypatch,tmp_path):
     from app.knowledge.settings import KnowledgeSettings
@@ -10,6 +10,12 @@ def test_enabled_settings_require_model_files(monkeypatch,tmp_path):
     monkeypatch.setenv('RAG_ENABLED','true');monkeypatch.setenv('RAG_MODEL_PATH',str(tmp_path/'missing'))
     import pytest
     with pytest.raises(ValueError,match='model files are missing'): KnowledgeSettings.from_env()
+
+def test_default_retrieval_strategy_uses_measured_hybrid_tradeoff(monkeypatch,tmp_path):
+    from app.knowledge.settings import KnowledgeSettings
+    monkeypatch.setenv('RAG_ENABLED','false');monkeypatch.setenv('RAG_MODEL_PATH',str(tmp_path/'missing'))
+    monkeypatch.delenv('RAG_RETRIEVAL_STRATEGY',raising=False)
+    assert KnowledgeSettings.from_env().strategy=='hybrid'
 
 def test_cancelled_waiter_keeps_capacity_slot_until_worker_finishes():
     from app.knowledge.runtime import BoundedInference
@@ -78,3 +84,63 @@ def test_runtime_readiness_requires_low_confidence_table(monkeypatch):
     settings=SimpleNamespace(enabled=True)
     with pytest.raises(RuntimeError,match='explicit knowledge migration'):
         runtime_module.start_runtime(settings)
+
+
+def test_health_endpoint_does_not_keep_stale_ready_after_refresh_deadline(monkeypatch):
+    import time
+    from types import SimpleNamespace
+    import app.knowledge.runtime as runtime_module
+    from app.main import knowledge_health
+    runtime=SimpleNamespace(ready=True,last_health_check=time.monotonic()-31,
+        settings=SimpleNamespace(generation='g'*64),health_error=None)
+    monkeypatch.setattr(runtime_module,'get_runtime',lambda:runtime)
+    monkeypatch.setenv('RAG_ENABLED','true')
+    result=knowledge_health()
+    assert result['enabled'] is True and result['ready'] is False
+    assert result['milvus']=='stale_or_unavailable' and runtime.ready is False
+
+
+def test_unreachable_milvus_and_core_health_are_bounded(disposable_database,monkeypatch):
+    import socket,time
+    import pytest
+    import app.knowledge.runtime as runtime_module
+    from app.knowledge.vector_store import MilvusIndex
+    from fastapi.testclient import TestClient
+    from app.main import app
+    probe=socket.socket();probe.bind(('127.0.0.1',0));port=probe.getsockname()[1];probe.close()
+    started=time.monotonic()
+    with pytest.raises(Exception):MilvusIndex(f'http://127.0.0.1:{port}','unreachable-test',timeout=0.5)
+    assert time.monotonic()-started<2.0
+    monkeypatch.setenv('RAG_ENABLED','true')
+    monkeypatch.setattr(runtime_module,'start_runtime_background',lambda:None)
+    with TestClient(app) as client:
+        started=time.monotonic();knowledge=client.get('/health/knowledge');core=client.get('/health')
+        assert knowledge.status_code==200 and knowledge.json()['ready'] is False
+        assert core.status_code==200 and core.json()['status']=='ok'
+        assert time.monotonic()-started<2.0
+
+
+def test_runtime_health_failure_clears_ready_and_schedules_reconnect(monkeypatch):
+    import time
+    from types import SimpleNamespace
+    import app.knowledge.runtime as runtime_module
+    failed=threading.Event();retried=threading.Event()
+    class DeadIndex:
+        def health(self):raise ConnectionError('local test endpoint unavailable')
+    class Runtime:
+        ready=True;last_health_check=time.monotonic()-4;index=DeadIndex();health_error=None
+        def close(self):failed.set()
+    original=runtime_module._runtime
+    original_thread=runtime_module._recovery_thread
+    runtime_module._runtime=Runtime()
+    runtime_module._recovery_thread=None;runtime_module._recovery_stop.clear()
+    monkeypatch.setattr(runtime_module,'start_runtime',lambda *args,**kwargs:retried.set())
+    try:
+        runtime_module.start_runtime_background(retry_seconds=1)
+        assert failed.wait(2)
+        assert retried.wait(3)
+        assert runtime_module._runtime is None
+    finally:
+        runtime_module._recovery_stop.set()
+        runtime_module._runtime=original
+        runtime_module._recovery_thread=original_thread

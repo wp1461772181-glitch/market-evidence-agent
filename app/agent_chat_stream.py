@@ -25,6 +25,7 @@ Financial answer contract:
 - Cite evidence only with the exact [n] ordinals present in the current numbered tool evidence. Never invent, renumber, remap, or reuse a citation number for another source. If no matching numbered evidence exists, do not cite it.
 - Never promise or imply guaranteed returns, and never state a definite future market direction. Stars are source-credibility ratings, not probabilities that a stock will rise.
 - A stored excerpt, including a truncated excerpt, is only the saved passage; never describe it as a complete filing, full report, or full financial statement.
+- Use query_sec_filings for saved fetched filing text; its excerpt coverage flag indicates whether only part of the stored body is shown. Use query_material_analysis only when asked for the latest saved AI analysis, and label its summary as AI analysis rather than an official filing fact. Use query_materials for source-grounded passage search.
 - State the applicable source and as-of date when supplied. These instructions do not replace checking that each factual claim is actually supported by the cited evidence."""
 def _record_low_confidence(question,conversation_id,turn_id,owner,reason):
  from .database import SessionLocal

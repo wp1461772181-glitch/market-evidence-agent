@@ -21,7 +21,7 @@ class KnowledgeSettings:
     threshold_path: Path
     reranker_path: Path=Path('data/knowledge/models/bge-reranker-v2-m3')
     reranker_revision: str=RERANKER_REVISION
-    strategy: str='dense'
+    strategy: str='hybrid'
     @classmethod
     def from_env(cls, *, validate_model: bool | None=None):
         enabled=os.getenv('RAG_ENABLED','false').strip().lower() in {'1','true','yes'}
@@ -32,7 +32,7 @@ class KnowledgeSettings:
         if (enabled if validate_model is None else validate_model) and (not (path/'config.json').is_file() or not any((path/n).is_file() for n in ('pytorch_model.bin','model.safetensors'))):
             raise ValueError('pinned BGE-M3 model files are missing; download the fixed revision first')
         generation=embedding_generation(MODEL_ID,revision,FORMAT_VERSION,CHUNKER_VERSION)
-        strategy=os.getenv('RAG_RETRIEVAL_STRATEGY','dense').strip().lower()
+        strategy=os.getenv('RAG_RETRIEVAL_STRATEGY','hybrid').strip().lower()
         if strategy not in {'dense','bm25','hybrid','hybrid_rerank'}: raise ValueError('unsupported RAG retrieval strategy')
         reranker_path=Path(os.getenv('RAG_RERANKER_PATH',root/'data/knowledge/models/bge-reranker-v2-m3')).expanduser()
         reranker_revision=os.getenv('RAG_RERANKER_REVISION',RERANKER_REVISION)

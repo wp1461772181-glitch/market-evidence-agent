@@ -27,6 +27,7 @@ services:
   milvus-standalone:
     container_name: market-rag-standalone
     image: milvusdb/milvus:v2.6.13
+    restart: unless-stopped
     command: ["milvus", "run", "standalone"]
     security_opt:
       - seccomp:unconfined

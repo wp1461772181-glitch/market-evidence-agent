@@ -77,9 +77,9 @@ def importable(source_type:str,symbol:str|None=Query(default=None,max_length=16)
     with SessionLocal() as session:
         if source_type=='faq': rows=session.scalars(select(AgentFAQ).order_by(AgentFAQ.category,AgentFAQ.id).limit(200)).all();items=[{'id':str(r.id),'title':r.question,'symbol':None,'source_type':'research_faq'} for r in rows]
         elif source_type=='sec':
-            query=select(SecFilingInventory).where(SecFilingInventory.review_status=='accepted',SecFilingInventory.content_status=='fetched')
+            query=select(SecFilingInventory).where(SecFilingInventory.content_status=='fetched',SecFilingInventory.content_excerpt.is_not(None),SecFilingInventory.content_excerpt_sha256.is_not(None))
             if symbol:query=query.where(SecFilingInventory.symbol==symbol.upper())
-            rows=session.scalars(query.order_by(SecFilingInventory.observed_at.desc()).limit(300)).all();items=[{'id':str(r.id),'title':r.content_document_name or r.primary_document or 'SEC filing','symbol':r.symbol,'source_type':'official_filing'} for r in rows if r.content_excerpt and r.content_excerpt_sha256]
+            rows=session.scalars(query.order_by(SecFilingInventory.observed_at.desc()).limit(300)).all();items=[{'id':str(r.id),'title':r.content_document_name or r.primary_document or 'SEC filing','symbol':r.symbol,'source_type':'official_filing','status':'stored/fetched'} for r in rows if r.content_excerpt and r.content_excerpt_sha256]
         elif source_type=='upload':
             from .models import KnowledgeUploadOwner
             query=select(UploadedEvidence).join(KnowledgeUploadOwner,KnowledgeUploadOwner.upload_id==UploadedEvidence.id).where(KnowledgeUploadOwner.owner_hash==owner_hash(identity))
@@ -94,6 +94,15 @@ def list_documents(x_chat_session:str|None=Header(default=None),limit:int=Query(
     with SessionLocal() as session:
         rows=session.scalars(select(KnowledgeDocument).where(_scope(session,identity)).order_by(KnowledgeDocument.created_at.desc()).limit(limit)).all()
         return {'items':[{'id':str(d.id),'title':d.title,'symbol':d.symbol,'source_type':d.source_type,'observed_at':d.observed_at.isoformat() if d.observed_at else None,'available_at':d.available_at.isoformat() if d.available_at else None,'status':d.status,'active':d.active,'owner_scope':d.scope,'chunks':session.scalar(select(__import__('sqlalchemy').func.count()).select_from(KnowledgeChunk).where(KnowledgeChunk.document_id==d.id))} for d in rows]}
+
+@router.get('/sync-status')
+def sync_status(x_chat_session:str|None=Header(default=None),x_app_access_key:str|None=Header(default=None)):
+    _write_access(x_app_access_key,x_chat_session)
+    from .models import KnowledgeExtractionRun
+    with SessionLocal() as session:
+        rows=session.scalars(select(KnowledgeExtractionRun).where(KnowledgeExtractionRun.scope_key.like('material_sync.%')).order_by(KnowledgeExtractionRun.scope_key)).all()
+        return {'items':[{'source_type':row.scope_key.rsplit('.',1)[-1],'cursor':row.cursor,
+            'processed_count':row.processed_count,'status':row.batch_status,'updated_at':row.completed_at.isoformat() if row.completed_at else None} for row in rows]}
 
 @router.post('/import')
 def import_existing(payload:ImportRequest,x_chat_session:str|None=Header(default=None),x_app_access_key:str|None=Header(default=None)):
