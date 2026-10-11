@@ -1,6 +1,7 @@
 import type { DashboardResponse, EvidenceRevision, EvidenceRevisionInventory, EvidenceRevisionRequest, FilingContent, FilingInventory, FilingReview, FilingScanResult, ForecastRunResult, JevLearningStatus, LocalizationResult, MaterialAnalysisHistory, MaterialAnalysisJob, MaterialAnalysisVersion, MaterialItem, MaterialLibraryResponse, MaterialOriginal, MaterialSourceType, PriceHistory, UploadedEvidence, UploadedEvidenceInventory, V2EvaluationResponse, V2ForecastJob, V2ForecastRoots, V2MonitorStatus, V2SourceRef, V2Timeline, V2VersionDetail, V2Workspace } from "./types";
 import { agentChatUrl } from "./agent-chat-url.mjs";
 import { fetchAgentChatModels } from "./agent-chat-models.mjs";
+import { activeChatCredential, changeChatMode, currentChatMode, conversationCreatedAtForMode, conversationForMode, selectConversationForMode } from "./chat-identity.mjs";
 
 export const configuredApiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/+$/, "");
 const accessKeyStorageKey = "market-evidence-agent-api-access-key";
@@ -24,25 +25,42 @@ export type AgentChatProvider = "deepseek" | "kimi" | "minimax" | "qwen" | "zhip
 export type AgentChatConfig = { provider: AgentChatProvider; base_url?: string; model: string; api_key: string };
 export type AgentChatMessage = { role: "user" | "assistant" | "tool"; content: string; status?: string; tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }>; tool_call_id?: string; tool_trace?: Array<{ call_id?: string; name: string; arguments?: unknown; result?: unknown; status: string }> };
 export type AgentChatEvent = { event: string; data: Record<string, unknown> };
-const chatCredentialKey = "market-evidence-agent:chat-session:v1";
 const chatConversationKey = "market-evidence-agent:chat-conversation:v1";
-function chatCredential(): string {
-  let value = window.sessionStorage.getItem(chatCredentialKey);
-  if (!value) { value = `${crypto.randomUUID()}${crypto.randomUUID()}`; window.sessionStorage.setItem(chatCredentialKey, value); }
-  return value;
+export type ChatMode = "guest" | "personal";
+export function getChatMode(): ChatMode { return currentChatMode(window.localStorage); }
+export function setChatMode(mode: ChatMode, credential?: string): void {
+  changeChatMode(window.localStorage,window.sessionStorage,mode,credential);
 }
-export async function restoreAgentChat(): Promise<{ conversationId: string | null; messages: AgentChatMessage[] }> {
-  const conversationId = window.sessionStorage.getItem(chatConversationKey);
-  if (!conversationId) return { conversationId: null, messages: [] };
+function chatCredential(): string {
+  return activeChatCredential(window.localStorage,window.sessionStorage,()=>`${crypto.randomUUID()}${crypto.randomUUID()}`);
+}
+export async function personalChatLogin(code: string, signal?: AbortSignal): Promise<string> {
+  const response = await fetch(agentChatUrl("stream", configuredApiBaseUrl).replace(/stream$/, "personal-login"), { method:"POST", signal, cache:"no-store", headers:{Accept:"application/json","Content-Type":"application/json"}, body:JSON.stringify({code}) });
+  const payload = await response.json().catch(()=>null) as {credential?:unknown}|null;
+  if (!response.ok || typeof payload?.credential !== "string") throw new ApiError("个人登录暂不可用。", response.status);
+  return payload.credential;
+}
+export type ConversationSummary = { id:string; title:string; created_at:string; updated_at:string };
+export async function listAgentConversations(offset=0,signal?:AbortSignal): Promise<{conversations:ConversationSummary[];hasMore:boolean}> {
+  const url = agentChatUrl("stream", configuredApiBaseUrl).replace(/stream$/, `conversations?limit=30&offset=${offset}`);
+  const response = await fetch(url,{signal,cache:"no-store",headers:{Accept:"application/json","X-Chat-Session":chatCredential()}});
+  if(!response.ok) throw new ApiError("历史对话暂时无法加载。",response.status);
+  const data=await response.json() as {conversations?:unknown;has_more?:unknown};
+  return {conversations:Array.isArray(data.conversations)?data.conversations as unknown as ConversationSummary[]:[],hasMore:data.has_more===true};
+}
+export async function restoreAgentChat(selectedId?: string | null, signal?: AbortSignal, requireExisting=false): Promise<{ conversationId: string | null; createdAt:string|null; messages: AgentChatMessage[] }> {
+  const conversationId = selectedId ?? conversationForMode(window.localStorage) ?? window.sessionStorage.getItem(chatConversationKey);
+  if (!conversationId) return { conversationId: null, createdAt:null, messages: [] };
   const response = await fetch(agentChatUrl("messages", configuredApiBaseUrl).replace(/messages$/, `conversations/${encodeURIComponent(conversationId)}/messages`), {
-    headers: { Accept: "application/json", "X-Chat-Session": chatCredential() }, cache: "no-store",
+    signal, headers: { Accept: "application/json", "X-Chat-Session": chatCredential() }, cache: "no-store",
   });
-  if (response.status === 404) return { conversationId: null, messages: [] };
+  if (response.status === 404) { if(requireExisting)throw new ApiError("无法恢复服务端聊天记录。",404); return { conversationId: null, createdAt:null, messages: [] }; }
   if (!response.ok) throw new ApiError("无法恢复服务端聊天记录。", response.status);
   const data = await response.json() as { messages?: AgentChatMessage[] };
-  return { conversationId, messages: Array.isArray(data.messages) ? data.messages : [] };
+  return { conversationId, createdAt:conversationCreatedAtForMode(window.localStorage), messages: Array.isArray(data.messages) ? data.messages : [] };
 }
-export function clearAgentConversation(): void { window.sessionStorage.removeItem(chatConversationKey); }
+export function clearAgentConversation(): void { selectConversationForMode(window.localStorage,window.sessionStorage,null); }
+export function selectAgentConversation(id:string|null,createdAt?:string|null):void { selectConversationForMode(window.localStorage,window.sessionStorage,id,undefined,createdAt); }
 export async function agentChatStream(config: AgentChatConfig, message: string, conversationId: string | null, signal: AbortSignal, onEvent: (event: AgentChatEvent) => boolean | void): Promise<string> {
   const response = await fetch(agentChatUrl("stream", configuredApiBaseUrl), { method: "POST", signal, cache: "no-store", headers: { Accept: "text/event-stream", "Content-Type": "application/json", "X-Chat-Session": chatCredential() }, body: JSON.stringify({ ...config, message, conversation_id: conversationId }) });
   if (!response.ok) { const payload = await response.json().catch(() => null); throw apiErrorFromPayload(payload, response.status); }

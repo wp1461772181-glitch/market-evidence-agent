@@ -33,6 +33,7 @@ from .manual_evidence import (
 from .local_model_profiles import router as local_model_profiles_router
 from .agent_chat_api import router as agent_chat_router
 from .agent_chat_stream import router as agent_chat_stream_router
+from .agent_chat_identity import router as agent_chat_identity_router
 from .agent_chat_models import AgentConversation, AgentMessage, AgentFAQ
 from .agent_faq_seed import seed_faq
 from .material_analysis_api import router as material_analysis_router
@@ -94,7 +95,7 @@ app = FastAPI(title="Market Evidence Agent", version="0.1.0")
 
 @app.exception_handler(RequestValidationError)
 async def safe_agent_chat_validation(request: Request, exc: RequestValidationError):
-    if request.url.path in {"/agent-chat/hello", "/agent-chat/messages", "/agent-chat/stream", "/agent-chat/models"}:
+    if request.url.path in {"/agent-chat/hello", "/agent-chat/messages", "/agent-chat/stream", "/agent-chat/models", "/agent-chat/personal-login"}:
         from .agent_chat_api import safe_validation_response
         return await safe_validation_response(request, exc)
     return await request_validation_exception_handler(request, exc)
@@ -112,6 +113,7 @@ else:
 app.include_router(agent_chat_router)
 app.include_router(local_model_profiles_router)
 app.include_router(agent_chat_stream_router)
+app.include_router(agent_chat_identity_router)
 app.include_router(forecast_v2_router)
 app.include_router(material_analysis_router)
 app.include_router(localization_router)

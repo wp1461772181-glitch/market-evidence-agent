@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 class AgentChatBodyLimitMiddleware:
     """Enforce a byte cap while receiving agent-chat bodies."""
     LIMIT = 32_000
-    PATHS = {"/agent-chat/hello", "/agent-chat/messages", "/agent-chat/stream", "/agent-chat/models"}
+    PATHS = {"/agent-chat/hello", "/agent-chat/messages", "/agent-chat/stream", "/agent-chat/models", "/agent-chat/personal-login"}
 
     def __init__(self, app, allowed_origins=()):
         self.app = app
@@ -70,13 +70,18 @@ def create_agent_chat_access_middleware(public_mode: bool, access_key: str):
         is_public = current(public_mode)
         configured_key = current(access_key)
         public_chat = request.method == "POST" and request.url.path in AgentChatBodyLimitMiddleware.PATHS
+        public_chat_list = request.method == "GET" and request.url.path == "/agent-chat/conversations"
+        if request.method == "GET" and request.url.path.startswith("/agent-chat/conversations/") and request.url.path.endswith("/messages"):
+            chat_session = request.headers.get("X-Chat-Session", "")
+            if not 32 <= len(chat_session) <= 256:
+                return JSONResponse(status_code=401, content={"detail": "chat_session_required"}, headers={"Cache-Control": "no-store"})
         public_read = request.method in {"GET", "HEAD"} or request.url.path == "/health" or request.method == "OPTIONS"
         if not is_public:
             response = await call_next(request)
             if public_chat or public_read or request.url.path == "/agent-chat/local-model-profiles":
                 response.headers["Cache-Control"] = "no-store"
             return response
-        if public_chat or public_read:
+        if public_chat or public_chat_list or public_read:
             response = await call_next(request)
             response.headers["Cache-Control"] = "no-store"
             return response

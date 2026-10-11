@@ -66,3 +66,20 @@ async def finish_conversation(conversation_id: str, status: str):
         if conv:
             conv.status=status
             await s.commit()
+
+async def list_conversations(credential: str, limit: int = 20, offset: int = 0):
+    """Return only conversations owned by this credential, with a bounded title lookup."""
+    async with Session() as s:
+        first_question = (select(AgentMessage.content)
+            .where(AgentMessage.conversation_id == AgentConversation.id, AgentMessage.role == "user")
+            .order_by(AgentMessage.sequence.asc()).limit(1).scalar_subquery())
+        rows = (await s.execute(
+            select(AgentConversation.id, AgentConversation.created_at, AgentConversation.updated_at, first_question)
+            .where(AgentConversation.owner_hash == owner_hash(credential))
+            .order_by(AgentConversation.updated_at.desc(), AgentConversation.id.desc())
+            .offset(offset).limit(limit)
+        )).all()
+        output = []
+        for cid, created_at, updated_at, title in rows:
+            output.append({"id": str(cid), "created_at": created_at.isoformat(), "updated_at": updated_at.isoformat(), "title": (title or "新建对话")[:120]})
+        return output

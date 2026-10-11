@@ -12,6 +12,8 @@ RUNTIME_ROOT="${PROJECT_ROOT}/data/releases/current"
 if [ ! -d "$RUNTIME_ROOT" ]; then RUNTIME_ROOT="$PROJECT_ROOT"; fi
 if [ -z "${LOCAL_MODEL_PROFILES_PATH:-}" ]; then LOCAL_MODEL_PROFILES_PATH="$PROJECT_ROOT/data/model-profiles.json"; fi
 export LOCAL_MODEL_PROFILES_PATH
+if [ -z "${PERSONAL_CHAT_LOGIN_PATH:-}" ]; then PERSONAL_CHAT_LOGIN_PATH="$PROJECT_ROOT/data/personal-chat-login.json"; fi
+export PERSONAL_CHAT_LOGIN_PATH
 PATH="${HOME:-}/.orbstack/bin:/opt/homebrew/bin:/usr/local/bin:/Applications/OrbStack.app/Contents/MacOS/bin:/usr/bin:/bin"
 export PATH
 

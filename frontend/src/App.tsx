@@ -8,6 +8,8 @@ import { EvidenceCenter } from "./EvidenceCenter";
 import { MaterialLibrary } from "./MaterialLibrary";
 import { HistoricalReplayWorkspace } from "./HistoricalReplayWorkspace";
 import { normalizeTicker, normalizeWatchlist, selectionForWatchlist, MAX_WATCHLIST } from "./watchlist.mjs";
+import { getChatMode, setChatMode, personalChatLogin } from "./api";
+import { chatSessionKey } from "./chat-session.mjs";
 
 const DEFAULT_SYMBOL = "AAPL";
 const DEFAULT_SYMBOLS = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"];
@@ -21,10 +23,18 @@ const WORKSPACE_SECTION_TITLE: Record<ResearchSection, string> = {
 };
 
 export function App() {
-  return <AgentChatProviderRoot><WorkspaceApp /></AgentChatProviderRoot>;
+  return <AppEntry />;
 }
 
-function WorkspaceApp() {
+function AppEntry(){
+  const {t}=useLocale();
+  const [mode,setMode]=useState(()=>localStorage.getItem("market-evidence-agent:chat-mode:v1")?getChatMode():null),[code,setCode]=useState(""),[error,setError]=useState("");
+  async function login(){try{const credential=await personalChatLogin(code);setChatMode("personal",credential);window.location.hash="agent";setMode("personal")}catch{setError("个人登录暂不可用，请检查登录码后重试。")}}
+  if(mode)return <AgentChatProviderRoot key={chatSessionKey(mode,localStorage.getItem(mode==="personal"?"market-evidence-agent:personal-chat-session:v1":"market-evidence-agent:chat-session:v1"))}><WorkspaceApp key={mode} onModeChange={setMode}/></AgentChatProviderRoot>;
+  return <main className="entry-choice"><p className="eyebrow">Market Evidence Agent</p><h1>{t("选择聊天模式")}</h1><p>{t("访客与个人聊天记录保存在服务端 PostgreSQL。浏览器仅保存模型配置和聊天身份；股票和分析写入仍使用独立操作口令。")}</p><div><button className="primary-action" onClick={()=>{setChatMode("guest");window.location.hash="agent";setMode("guest")}}>{t("继续访客聊天")}</button><label>{t("个人聊天登录码")}<input type="password" value={code} maxLength={256} autoComplete="current-password" onChange={e=>setCode(e.target.value)}/></label><button className="secondary-action" disabled={!code} onClick={()=>void login()}>{t("登录个人聊天")}</button>{error&&<p role="alert">{error}</p>}</div></main>;
+}
+
+function WorkspaceApp({onModeChange}:{onModeChange:(mode:"guest"|"personal")=>void}) {
   const [symbols, setSymbols] = useState<string[]>(() => { try { return normalizeWatchlist(JSON.parse(localStorage.getItem(WATCHLIST_KEY) ?? "null"), DEFAULT_SYMBOLS); } catch { return DEFAULT_SYMBOLS; } });
   const [requestedSymbol, setRequestedSymbol] = useState(() => { try { return normalizeTicker(localStorage.getItem("market-evidence-agent:selected-symbol:v1")) ?? DEFAULT_SYMBOL; } catch { return DEFAULT_SYMBOL; } });
   const [watchInput, setWatchInput] = useState("");
@@ -82,7 +92,7 @@ function WorkspaceApp() {
   function addWatchSymbol() { const ticker = normalizeTicker(watchInput); if (!ticker) { setWatchError("请输入有效的美股代码，例如 AMD 或 BRK.B。"); return; } if (symbols.includes(ticker)) { setWatchError("该代码已在关注列表中。"); return; } if (symbols.length >= MAX_WATCHLIST) { setWatchError("关注列表最多保存 30 个代码。"); return; } setSymbols(items => [...items, ticker]); setWatchInput(""); setWatchError(""); openStock(ticker); }
   function removeWatchSymbol(ticker: string) { const remaining = symbols.filter(item => item !== ticker); setSymbols(remaining); setRequestedSymbol(current => selectionForWatchlist(current, remaining)); }
   const shellProps = { activeSection, navigate, symbol: requestedSymbol, symbols, onSelectStock: openStock, watchInput, setWatchInput, addWatchSymbol, watchError, setWatchError };
-  if (activeSection === "agent") return <Shell {...shellProps}><AgentChatPanel onSettings={() => navigate("admin")} /></Shell>;
+  if (activeSection === "agent") return <Shell {...shellProps}><AgentChatPanel onSettings={() => navigate("admin")} onModeChange={onModeChange} /></Shell>;
   if (activeSection === "admin") return <Shell {...shellProps}><AgentAdminPage onBack={() => navigate("agent")} /></Shell>;
 
   async function startFilingScan() {
@@ -256,6 +266,10 @@ function WorkspaceIntro({ eyebrow, title, description, action }: { eyebrow: stri
 function Shell({ activeSection, navigate, symbol, symbols, onSelectStock, watchInput, setWatchInput, addWatchSymbol, watchError, setWatchError, children }: { activeSection: WorkspaceSection; navigate: (section: WorkspaceSection) => void; symbol: string; symbols: string[]; onSelectStock: (ticker: SupportedSymbol) => void; watchInput: string; setWatchInput: (value: string) => void; addWatchSymbol: () => void; watchError: string; setWatchError: (value: string) => void; children: ReactNode }) {
   const { locale, setLocale, t } = useLocale();
   const navRef = useRef<HTMLElement>(null);
+  const [menuOpen,setMenuOpen]=useState(false),[pinned,setPinned]=useState(false);
+  const menuRegion=useRef<HTMLDivElement>(null);
+  useEffect(()=>{const key=(e:KeyboardEvent)=>{if(e.key==="Escape"){setMenuOpen(false);setPinned(false)}};const outside=(e:PointerEvent)=>{if(!menuRegion.current?.contains(e.target as Node)){setMenuOpen(false);setPinned(false)}};const hover=(e:PointerEvent)=>{if(!pinned)setMenuOpen(Boolean(menuRegion.current?.contains(e.target as Node)))};document.addEventListener("keydown",key);document.addEventListener("pointerdown",outside);document.addEventListener("pointermove",hover);return()=>{document.removeEventListener("keydown",key);document.removeEventListener("pointerdown",outside);document.removeEventListener("pointermove",hover)}},[pinned]);
+  const drawerNavigate=(section:WorkspaceSection)=>{setMenuOpen(false);setPinned(false);navigate(section)};
   useEffect(() => {
     if (activeSection === "admin") return;
     const navElement = navRef.current;
@@ -277,17 +291,17 @@ function Shell({ activeSection, navigate, symbol, symbols, onSelectStock, watchI
     { id: "agent", label: t("Agent 对话"), hint: t("研究工具对话"), icon: "✳" },
   ];
   return <div className="app-frame">
-    <aside className="app-rail" aria-label={t("主要导航")}>
+    <div className="nav-drawer-region" ref={menuRegion} ><button className="nav-menu-trigger" aria-label={t("打开导航菜单")} aria-expanded={menuOpen} onClick={()=>setPinned(value=>{setMenuOpen(!value);return !value})} onFocus={()=>setMenuOpen(true)} onMouseEnter={()=>{if(!pinned)setMenuOpen(true)}}>☰</button><aside className={`app-rail ${menuOpen?"is-open":""}`} aria-label={t("主要导航")}>
       <a className="workspace-brand" href="#overview" onClick={() => navigate("overview")} aria-label={`Market Evidence Agent · ${t("总览")}`}><span className="brand-mark">ME</span><span>market<br /><em>evidence</em></span></a>
       <div className="rail-context"><span>{activeSection === "agent" || activeSection === "admin" ? t("工作区") : <Tx text={"当前股票"} />}</span><strong>{activeSection === "agent" || activeSection === "admin" ? t("Agent") : symbol}</strong><small>{<Tx text={"Agent 研究工作台"} />}</small></div>
       <nav ref={navRef} className="workspace-nav">
-        {nav.map((item) => <button key={item.id} type="button" className={activeSection === item.id ? "active" : ""} aria-current={activeSection === item.id ? "page" : undefined} onClick={() => navigate(item.id)}><span aria-hidden="true">{item.icon}</span><span><strong>{item.label}</strong><small>{item.hint}</small></span></button>)}
+        {nav.map((item) => <button key={item.id} type="button" className={activeSection === item.id ? "active" : ""} aria-current={activeSection === item.id ? "page" : undefined} onClick={() => drawerNavigate(item.id)}><span aria-hidden="true">{item.icon}</span><span><strong>{item.label}</strong><small>{item.hint}</small></span></button>)}
       </nav>
-      <div className="rail-bottom"><button className="rail-admin-link" type="button" aria-current={activeSection === "admin" ? "page" : undefined} onClick={() => navigate(activeSection === "admin" ? "agent" : "admin")}>{activeSection === "admin" ? t("返回 Agent 对话") : t("后台设置")}</button>{activeSection !== "agent" && activeSection !== "admin" && <span><span className="rail-review-dot" aria-hidden="true" />{<Tx text={"判断可回到原始来源查看"} />}</span>}</div>
-    </aside>
+      <div className="rail-bottom"><button className="rail-admin-link" type="button" aria-current={activeSection === "admin" ? "page" : undefined} onClick={() => drawerNavigate(activeSection === "admin" ? "agent" : "admin")}>{activeSection === "admin" ? t("返回 Agent 对话") : t("后台设置")}</button>{activeSection !== "agent" && activeSection !== "admin" && <span><span className="rail-review-dot" aria-hidden="true" />{<Tx text={"判断可回到原始来源查看"} />}</span>}</div>
+    </aside></div>
     <div className="app-content">
       <header className="topbar">
-      <div className="topbar-path"><span>{<Tx text={"研究工作台"} />}</span><b>/</b><strong>{activeSection === "agent" ? t("Agent 对话") : activeSection === "admin" ? t("后台设置") : symbol}</strong></div>
+      {activeSection !== "agent" && activeSection !== "admin" && <div className="topbar-path"><span>{<Tx text={"研究工作台"} />}</span><b>/</b><strong>{symbol}</strong></div>}
         <div className="toolbar-controls">
         {activeSection !== "agent" && activeSection !== "admin" && <div className="symbol-form">
           <label htmlFor="symbol">{<Tx text={"切换股票"} />}</label>
