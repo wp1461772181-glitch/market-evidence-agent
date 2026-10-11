@@ -73,7 +73,8 @@ def test_pinning_keeps_hostname_tls_and_api_path(monkeypatch):
  asyncio.run(run())
  assert len(calls)==1 and seen[0].url.host=='8.8.8.8'
  assert seen[0].headers['host']=='research.example'
- assert seen[0].extensions['sni_hostname'] in ('research.example',b'research.example')
+ assert seen[0].extensions['sni_hostname']=='research.example'
+ assert isinstance(seen[0].extensions['sni_hostname'],str)
  assert seen[0].url.path=='/custom/v1/chat/completions'
  assert seen[0].headers['authorization']=='Bearer '+FAKE
 

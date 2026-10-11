@@ -1,7 +1,8 @@
 import type { DashboardResponse, EvidenceRevision, EvidenceRevisionInventory, EvidenceRevisionRequest, FilingContent, FilingInventory, FilingReview, FilingScanResult, ForecastRunResult, JevLearningStatus, LocalizationResult, MaterialAnalysisHistory, MaterialAnalysisJob, MaterialAnalysisVersion, MaterialItem, MaterialLibraryResponse, MaterialOriginal, MaterialSourceType, PriceHistory, UploadedEvidence, UploadedEvidenceInventory, V2EvaluationResponse, V2ForecastJob, V2ForecastRoots, V2MonitorStatus, V2SourceRef, V2Timeline, V2VersionDetail, V2Workspace } from "./types";
 import { agentChatUrl } from "./agent-chat-url.mjs";
+import { fetchAgentChatModels } from "./agent-chat-models.mjs";
 
-const configuredApiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/+$/, "");
+export const configuredApiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/+$/, "");
 const accessKeyStorageKey = "market-evidence-agent-api-access-key";
 
 function apiUrl(path: string): string {
@@ -75,6 +76,17 @@ export async function agentChatRequest(path: "hello" | "messages", config: Agent
   const payload: unknown = await response.json().catch(() => null);
   if (!response.ok) throw apiErrorFromPayload(payload, response.status);
   return payload as { content: string; model: string };
+}
+
+export async function agentChatModels(config: Pick<AgentChatConfig, "provider" | "base_url"> & Partial<Pick<AgentChatConfig,"api_key">>, signal: AbortSignal): Promise<{status:string;ordering:string;models:Array<{id:string;name:string}>}> {
+  const response = await fetchAgentChatModels(config, signal, configuredApiBaseUrl);
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null) as {detail?:unknown}|null;
+    const code = typeof payload?.detail === "string" && /^[a-z0-9_]{1,80}$/.test(payload.detail) ? payload.detail : "model_discovery_unavailable";
+    throw new ApiError(code, response.status);
+  }
+  const payload = await response.json() as {status?:unknown;ordering?:unknown;models?:unknown};
+  return {status:typeof payload.status === "string"?payload.status:"empty",ordering:typeof payload.ordering === "string"?payload.ordering:"unknown",models:Array.isArray(payload.models)?payload.models.slice(0,5) as Array<{id:string;name:string}>:[]};
 }
 
 export class ApiError extends Error {
@@ -171,7 +183,7 @@ export async function uploadEvidence(
   form.set("credibility_stars", String(input.credibilityStars));
   form.set("credibility_reason", input.credibilityReason);
   form.set("impact_severity", input.impactSeverity);
-  return requestJson<UploadedEvidence>(`/api/uploaded-evidence/${encodeURIComponent(symbol)}`, { method: "POST", body: form });
+  return requestJson<UploadedEvidence>(`/api/uploaded-evidence/${encodeURIComponent(symbol)}`, { method: "POST", headers: { "X-Chat-Session": chatCredential() }, body: form });
 }
 
 export async function getEvidenceRevisions(symbol: string, signal?: AbortSignal): Promise<EvidenceRevisionInventory> {

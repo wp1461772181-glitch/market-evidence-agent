@@ -4,6 +4,8 @@ from typing import Literal
 from urllib.parse import urlsplit, urlunsplit
 import ipaddress, socket
 import json
+import re
+from datetime import datetime
 
 import asyncio
 
@@ -56,16 +58,7 @@ class ChatRequest(BaseModel):
     @field_validator("base_url")
     @classmethod
     def safe_base_url(cls, value):
-        if value is None: return value
-        if any(ord(c)<32 or c=="\\" for c in value): raise ValueError("invalid endpoint")
-        p=urlsplit(value.strip())
-        if p.scheme!="https" or not p.hostname or p.username or p.password or p.query or p.fragment: raise ValueError("invalid endpoint")
-        try: port=p.port
-        except ValueError as exc: raise ValueError("invalid endpoint") from exc
-        if "%" in p.netloc or (port is not None and not 1 <= port <= 65535): raise ValueError("invalid endpoint")
-        path=p.path.rstrip("/")
-        if path.endswith("/chat/completions"): path=path[:-len("/chat/completions")].rstrip("/")
-        return urlunsplit(("https",p.netloc,path,"",""))
+        return _validated_base_url(value)
 
     @field_validator("api_key")
     @classmethod
@@ -85,12 +78,41 @@ class ChatResponse(BaseModel):
     content: str
     model: str
 
+def _validated_base_url(value):
+    if value is None: return value
+    if any(ord(c)<32 or c=="\\" for c in value): raise ValueError("invalid endpoint")
+    p=urlsplit(value.strip())
+    if p.scheme!="https" or not p.hostname or p.username or p.password or p.query or p.fragment: raise ValueError("invalid endpoint")
+    try: port=p.port
+    except ValueError as exc: raise ValueError("invalid endpoint") from exc
+    if "%" in p.netloc or (port is not None and not 1 <= port <= 65535): raise ValueError("invalid endpoint")
+    path=p.path.rstrip("/")
+    if path.endswith("/chat/completions"): path=path[:-len("/chat/completions")].rstrip("/")
+    return urlunsplit(("https",p.netloc,path,"",""))
+
+class ModelDiscoveryRequest(BaseModel):
+    provider: Literal["deepseek", "kimi", "minimax", "qwen", "zhipu", "doubao", "hunyuan", "baidu", "siliconflow", "openrouter", "custom"]
+    base_url: str | None = Field(default=None, max_length=2048)
+    api_key: SecretStr | None = None
+
+    @model_validator(mode="after")
+    def validate_discovery(self):
+        if self.provider == "custom" and not self.base_url: raise ValueError("custom endpoint required")
+        if self.provider != "openrouter" and (self.api_key is None or not 8 <= len(self.api_key.get_secret_value().strip()) <= 2048): raise ValueError("invalid key length")
+        if self.provider == "openrouter" and self.api_key is not None and not self.api_key.get_secret_value().strip(): self.api_key = None
+        if self.api_key is not None and not 8 <= len(self.api_key.get_secret_value().strip()) <= 2048: raise ValueError("invalid key length")
+        return self
+
+    @field_validator("base_url")
+    @classmethod
+    def safe_discovery_base_url(cls, value): return _validated_base_url(value)
+
 class PinnedPublicTransport(httpx.AsyncBaseTransport):
     """Resolve every endpoint request, reject any non-public answer, then connect to a pinned IP."""
-    def __init__(self, inner=None): self.inner=inner or httpx.AsyncHTTPTransport(trust_env=False)
+    def __init__(self, inner=None, *, allow_internal_query=False): self.inner=inner or httpx.AsyncHTTPTransport(trust_env=False); self.allow_internal_query=allow_internal_query
     async def handle_async_request(self, request):
         host=request.url.host; port=request.url.port or 443
-        if request.url.scheme!="https" or request.url.username or request.url.password or request.url.query or request.url.fragment:
+        if request.url.scheme!="https" or request.url.username or request.url.password or (request.url.query and not self.allow_internal_query) or request.url.fragment:
             raise httpx.ConnectError("unsafe_endpoint")
         try:
             answers=await asyncio.wait_for(asyncio.get_running_loop().getaddrinfo(host,port,type=socket.SOCK_STREAM),timeout=5)
@@ -103,7 +125,9 @@ class PinnedPublicTransport(httpx.AsyncBaseTransport):
         if port!=443: authority+=f":{port}"
         request.headers["host"]=authority
         request.url=request.url.copy_with(host=str(ip),port=port)
-        request.extensions["sni_hostname"]=original_host.encode()
+        # HTTPX's documented extension contract is a hostname string. httpcore
+        # passes this value directly to start_tls(server_hostname=...).
+        request.extensions["sni_hostname"]=original_host
         return await self.inner.handle_async_request(request)
     async def aclose(self): await self.inner.aclose()
 
@@ -193,6 +217,110 @@ async def chat(payload: ChatRequest):
     if not payload.messages:
         raise HTTPException(422, "messages_required")
     return await _limited_call(payload, [item.model_dump() for item in payload.messages], 800)
+
+MODEL_LIST_LIMIT = 8_000_000
+MODEL_DISCOVERY_TIMEOUT = 20.0
+MODEL_DISCOVERY_UNSUPPORTED_PROVIDERS = {"minimax"}
+_NON_CHAT_WORDS = ("embed", "embedding", "rerank", "re-rank", "bge-", "image", "audio", "video", "speech-to-text", "text-to-speech", "transcription")
+_GENERATIVE_MODALITIES = {"image", "audio", "video"}
+
+def _model_is_conversational(row: dict) -> bool:
+    kind = str(row.get("type", row.get("object", ""))).lower()
+    input_modalities = row.get("input_modalities")
+    output_modalities = row.get("output_modalities")
+    architecture = row.get("architecture")
+    if isinstance(architecture, dict):
+        input_modalities = architecture.get("input_modalities", input_modalities)
+        output_modalities = architecture.get("output_modalities", output_modalities)
+    if kind and any(word in kind for word in ("embedding", "rerank", "image", "audio", "video")):
+        return False
+    if isinstance(output_modalities, list):
+        normalized_output = {str(value).lower() for value in output_modalities}
+        return "text" in normalized_output and not normalized_output.intersection(_GENERATIVE_MODALITIES)
+    if isinstance(input_modalities, list) and input_modalities and not any(str(value).lower() == "text" for value in input_modalities): return False
+    identity = " ".join(str(row.get(key, "")) for key in ("id", "name", "type")).lower()
+    return not any(word in identity for word in _NON_CHAT_WORDS)
+
+def _normalize_models(payload: object) -> tuple[list[dict], str]:
+    if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+        raise ValueError("incompatible")
+    items = []
+    seen = set()
+    has_timestamp = False
+    valid_record_count = 0
+    for position, row in enumerate(payload["data"]):
+        if not isinstance(row, dict): continue
+        identifier = row.get("id")
+        if not isinstance(identifier, str) or not 1 <= len(identifier) <= 160 or not re.fullmatch(r"[A-Za-z0-9._:/-]+", identifier) or identifier in seen: continue
+        valid_record_count += 1
+        seen.add(identifier)
+        if not _model_is_conversational(row): continue
+        label = row.get("name")
+        item = {"id": identifier, "name": label.strip()[:160] if isinstance(label, str) and label.strip() else identifier, "_position": position}
+        timestamp = row.get("created", row.get("release_date", row.get("published_time")))
+        if isinstance(timestamp, str):
+            try: timestamp = datetime.fromisoformat(timestamp.replace("Z", "+00:00")).timestamp()
+            except ValueError: timestamp = None
+        if isinstance(timestamp, (int, float)) and not isinstance(timestamp, bool) and timestamp > 0:
+            item["_timestamp"] = timestamp
+            has_timestamp = True
+        items.append(item)
+    if has_timestamp:
+        items.sort(key=lambda item: (-item.get("_timestamp", 0), item["_position"]))
+        ordering = "provider_timestamp_desc_with_undated" if any("_timestamp" not in item for item in items) else "provider_timestamp_desc"
+    else:
+        ordering = "upstream_order_unknown_recency"
+    if payload["data"] and not valid_record_count: raise ValueError("incompatible")
+    result = [{key: value for key, value in row.items() if not key.startswith("_")} for row in items[:5]]
+    return result, ordering
+
+@router.post("/models")
+async def discover_models(payload: ModelDiscoveryRequest):
+    if payload.base_url is not None:
+        base = payload.base_url
+    else:
+        base = BASE_URLS.get(payload.provider, "")
+    if not base:
+        return {"status": "unsupported", "models": [], "ordering": "unknown"}
+    if payload.provider in MODEL_DISCOVERY_UNSUPPORTED_PROVIDERS and base.rstrip("/") == BASE_URLS[payload.provider]:
+        return {"status": "unsupported", "models": [], "ordering": "unknown"}
+    siliconflow_query = payload.provider == "siliconflow" and base.rstrip("/") == BASE_URLS["siliconflow"]
+    target = base.rstrip("/") + "/models" + ("?sub_type=chat" if siliconflow_query else "")
+    headers = {"Accept": "application/json"}
+    if payload.api_key is not None:
+        headers["Authorization"] = f"Bearer {payload.api_key.get_secret_value()}"
+    if payload.provider == "openrouter": headers["X-Title"] = "Market Evidence Agent"
+    try:
+        await asyncio.wait_for(REQUEST_SLOTS.acquire(), timeout=2.0)
+    except TimeoutError as exc:
+        raise HTTPException(503, "model_discovery_capacity_reached") from exc
+    try:
+        try:
+            async with asyncio.timeout(MODEL_DISCOVERY_TIMEOUT):
+                async with httpx.AsyncClient(timeout=httpx.Timeout(MODEL_DISCOVERY_TIMEOUT), follow_redirects=False, trust_env=False, transport=PinnedPublicTransport(allow_internal_query=siliconflow_query)) as client:
+                    async with client.stream("GET", target, headers=headers) as response:
+                        code = response.status_code
+                        if 300 <= code < 400: raise HTTPException(502, "model_discovery_redirect_rejected")
+                        if code in (404, 405): return {"status": "unsupported", "models": [], "ordering": "unknown"}
+                        if code == 401: raise HTTPException(502, "model_discovery_auth_required")
+                        if code == 403: raise HTTPException(502, "model_discovery_access_denied")
+                        if code == 429: raise HTTPException(429, "model_discovery_rate_limited")
+                        if code >= 400: raise HTTPException(502, "model_discovery_unavailable")
+                        raw = bytearray()
+                        async for chunk in response.aiter_bytes(chunk_size=16384):
+                            raw.extend(chunk)
+                            if len(raw) > MODEL_LIST_LIMIT: raise HTTPException(502, "model_discovery_response_too_large")
+            try: upstream = json.loads(raw)
+            except (ValueError, TypeError) as exc: raise HTTPException(502, "model_discovery_incompatible_response") from exc
+            try: models, ordering = _normalize_models(upstream)
+            except ValueError as exc: raise HTTPException(502, "model_discovery_incompatible_response") from exc
+            return {"status": "available" if models else "empty", "models": models, "ordering": ordering}
+        except (httpx.TimeoutException, TimeoutError) as exc:
+            raise HTTPException(504, "model_discovery_timeout") from exc
+        except httpx.HTTPError as exc:
+            raise HTTPException(502, "model_discovery_network_error") from exc
+    finally:
+        REQUEST_SLOTS.release()
 
 
 async def safe_validation_response(request: Request, _exc) -> JSONResponse:

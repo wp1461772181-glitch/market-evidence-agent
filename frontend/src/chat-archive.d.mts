@@ -1,0 +1,14 @@
+export type ArchiveTrace = { call_id?: string; name: string; arguments?: unknown; result?: unknown; status: "running" | "complete" | "not_found" | "failed" | "cancelled" };
+export type ArchiveMessage = { role: "user" | "assistant"; content: string; status?: "complete" | "failed" | "cancelled"; tool_trace?: ArchiveTrace[] };
+export type ArchiveConversation = { id: string; created_at: string; updated_at: string; messages: ArchiveMessage[] };
+export type ChatArchive = { marker: string; version: 1; created_at: string; updated_at: string; conversations: ArchiveConversation[] };
+export const ARCHIVE_MARKER: string;
+export const MAX_ARCHIVE_BYTES: number;
+export const MAX_ARCHIVE_MESSAGES: number;
+export function createArchive(conversations?: ArchiveConversation[], now?: string): ChatArchive;
+export function validateArchive(input: string | unknown): ChatArchive;
+export function mergeConversation(archive: ChatArchive, conversation: ArchiveConversation): ChatArchive;
+export function createSerializedWriter<TTarget, TValue>(write: (target: TTarget, value: TValue) => Promise<unknown>): (target: TTarget, value: TValue) => Promise<unknown>;
+export function writeAtomically(handle: { createWritable: () => Promise<{ write: (value: string) => Promise<void>; close: () => Promise<void>; abort?: () => Promise<void> }> }, value: string): Promise<void>;
+export function isPickerCancelled(error: unknown): boolean;
+export function serializeArchive(archive: ChatArchive): string;

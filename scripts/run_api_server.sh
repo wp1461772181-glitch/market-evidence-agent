@@ -8,11 +8,15 @@ CONTAINER_NAME="market-evidence-postgres"
 DATABASE_NAME="market_evidence"
 DATABASE_USER="market_evidence"
 MAX_WAIT_SECONDS="${MARKET_EVIDENCE_API_WAIT_SECONDS:-90}"
+RUNTIME_ROOT="${PROJECT_ROOT}/data/releases/current"
+if [ ! -d "$RUNTIME_ROOT" ]; then RUNTIME_ROOT="$PROJECT_ROOT"; fi
+if [ -z "${LOCAL_MODEL_PROFILES_PATH:-}" ]; then LOCAL_MODEL_PROFILES_PATH="$PROJECT_ROOT/data/model-profiles.json"; fi
+export LOCAL_MODEL_PROFILES_PATH
 PATH="${HOME:-}/.orbstack/bin:/opt/homebrew/bin:/usr/local/bin:/Applications/OrbStack.app/Contents/MacOS/bin:/usr/bin:/bin"
 export PATH
 
 if [ "${1:-}" = "--print" ]; then
-    printf '%s\n' "API server: ${PROJECT_ROOT}/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000"
+    printf '%s\n' "API server: ${PROJECT_ROOT}/.venv/bin/python -m uvicorn app.main:app --app-dir ${RUNTIME_ROOT} --env-file ${PROJECT_ROOT}/.env --host 127.0.0.1 --port 8000"
     printf '%s\n' "Required existing container: ${CONTAINER_NAME} (${DATABASE_USER}/${DATABASE_NAME})"
     printf '%s\n' "Database binding must remain on 127.0.0.1:55432."
     printf '%s\n' "Dry run only: Docker and service state were not changed."
@@ -66,4 +70,4 @@ until "$DOCKER_BIN" exec "$CONTAINER_NAME" pg_isready -U "$DATABASE_USER" -d "$D
 done
 
 printf '%s\n' "PostgreSQL is ready; starting the loopback-only API."
-exec "${PROJECT_ROOT}/.venv/bin/python" -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+exec "${PROJECT_ROOT}/.venv/bin/python" -m uvicorn app.main:app --app-dir "$RUNTIME_ROOT" --env-file "$PROJECT_ROOT/.env" --host 127.0.0.1 --port 8000

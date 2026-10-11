@@ -1,5 +1,4 @@
 import os
-import secrets
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated
@@ -10,7 +9,6 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Respon
 from fastapi.exceptions import RequestValidationError
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
@@ -32,6 +30,7 @@ from .manual_evidence import (
     create_uploaded_evidence_table,
     uploaded_evidence_for_symbol,
 )
+from .local_model_profiles import router as local_model_profiles_router
 from .agent_chat_api import router as agent_chat_router
 from .agent_chat_stream import router as agent_chat_stream_router
 from .agent_chat_models import AgentConversation, AgentMessage, AgentFAQ
@@ -85,6 +84,7 @@ from .schemas import (
     UploadedEvidenceResponse,
 )
 from .services import MODEL_VERSION, is_valid_symbol, mock_forecast, normalize_symbol
+from .agent_chat_middleware import AgentChatBodyLimitMiddleware, create_agent_chat_access_middleware
 
 
 PUBLIC_API_MODE = os.getenv("PUBLIC_API_MODE", "false").strip().lower() in {"1", "true", "yes"}
@@ -94,7 +94,7 @@ app = FastAPI(title="Market Evidence Agent", version="0.1.0")
 
 @app.exception_handler(RequestValidationError)
 async def safe_agent_chat_validation(request: Request, exc: RequestValidationError):
-    if request.url.path in {"/agent-chat/hello", "/agent-chat/messages", "/agent-chat/stream"}:
+    if request.url.path in {"/agent-chat/hello", "/agent-chat/messages", "/agent-chat/stream", "/agent-chat/models"}:
         from .agent_chat_api import safe_validation_response
         return await safe_validation_response(request, exc)
     return await request_validation_exception_handler(request, exc)
@@ -105,99 +105,19 @@ allowed_origins = [
     if origin.strip()
 ]
 
-class AgentChatBodyLimitMiddleware:
-    """Enforce a byte cap while receiving bodies, before JSON parsing."""
-    LIMIT = 32_000
-    PATHS = {"/agent-chat/hello", "/agent-chat/messages", "/agent-chat/stream"}
-
-    def __init__(self, app):
-        self.app = app
-
-    async def __call__(self, scope, receive, send):
-        if scope.get("type") != "http" or scope.get("method") != "POST" or scope.get("path") not in self.PATHS:
-            await self.app(scope, receive, send)
-            return
-        headers = {key.lower(): value for key, value in scope.get("headers", [])}
-        declared = headers.get(b"content-length")
-        if declared:
-            try:
-                if int(declared) > self.LIMIT:
-                    await self._reject(scope, send, 413, "request_too_large")
-                    return
-            except ValueError:
-                await self._reject(scope, send, 400, "invalid_content_length")
-                return
-        chunks, total, more = [], 0, True
-        while more:
-            message = await receive()
-            if message["type"] == "http.disconnect":
-                return
-            chunk = message.get("body", b"")
-            total += len(chunk)
-            if total > self.LIMIT:
-                await self._reject(scope, send, 413, "request_too_large")
-                return
-            chunks.append(chunk)
-            more = message.get("more_body", False)
-        body = b"".join(chunks)
-        delivered = False
-        async def replay():
-            nonlocal delivered
-            if not delivered:
-                delivered = True
-                return {"type": "http.request", "body": body, "more_body": False}
-            return await receive()
-        await self.app(scope, replay, send)
-
-    async def _reject(self, scope, send, status_code, detail):
-        body = (f'{{"detail":"{detail}"}}').encode()
-        headers = [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode()), (b"cache-control", b"no-store")]
-        origin = dict(scope.get("headers", [])).get(b"origin")
-        if origin and origin.decode("latin-1").rstrip("/") in allowed_origins:
-            headers.extend([(b"access-control-allow-origin", origin), (b"vary", b"Origin")])
-        await send({"type": "http.response.start", "status": status_code, "headers": headers})
-        await send({"type": "http.response.body", "body": body})
-
 if allowed_origins:
     cors_middleware_enabled = True
 else:
     cors_middleware_enabled = False
 app.include_router(agent_chat_router)
+app.include_router(local_model_profiles_router)
 app.include_router(agent_chat_stream_router)
 app.include_router(forecast_v2_router)
 app.include_router(material_analysis_router)
 app.include_router(localization_router)
 
 
-@app.middleware("http")
-async def protect_public_api(request, call_next):
-    public_chat = request.method == "POST" and request.url.path in {"/agent-chat/hello", "/agent-chat/messages", "/agent-chat/stream"}
-    public_read = request.method in {"GET", "HEAD"} or request.url.path == "/health" or request.method == "OPTIONS"
-    if not PUBLIC_API_MODE:
-        response = await call_next(request)
-        if public_chat or public_read:
-            response.headers["Cache-Control"] = "no-store"
-        return response
-    if public_chat or public_read:
-        response = await call_next(request)
-        response.headers["Cache-Control"] = "no-store"
-        return response
-    if not APP_API_ACCESS_KEY:
-        return JSONResponse(
-            status_code=503,
-            content={"detail": "服务端尚未配置访问口令 / API access key is not configured"},
-            headers={"Cache-Control": "no-store"},
-        )
-    supplied_key = request.headers.get("X-App-Access-Key", "")
-    if not secrets.compare_digest(supplied_key.encode("utf-8"), APP_API_ACCESS_KEY.encode("utf-8")):
-        return JSONResponse(
-            status_code=401,
-            content={"detail": "访问口令无效，请重试 / Invalid API access key"},
-            headers={"Cache-Control": "no-store"},
-        )
-    response = await call_next(request)
-    response.headers["Cache-Control"] = "no-store"
-    return response
+app.middleware("http")(create_agent_chat_access_middleware(lambda: PUBLIC_API_MODE, lambda: APP_API_ACCESS_KEY))
 
 
 # Register CORS after the authentication middleware so browser clients receive
@@ -209,8 +129,9 @@ if cors_middleware_enabled:
         allow_credentials=False,
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Accept", "Content-Type", "Idempotency-Key", "Authorization", "X-App-Access-Key", "X-Chat-Session"],
+        expose_headers=["X-Model-Profile-Path", "X-Model-Profile-Storage"],
     )
-app.add_middleware(AgentChatBodyLimitMiddleware)
+app.add_middleware(AgentChatBodyLimitMiddleware, allowed_origins=allowed_origins)
 
 
 @app.on_event("startup")
