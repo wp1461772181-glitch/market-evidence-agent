@@ -15,6 +15,7 @@ import app.main as main
 import app.agent_tools as tools
 import app.agent_chat_store as store
 import app.agent_chat_provider as provider
+from app.agent_chat_store import owner_hash
 from app.agent_chat_models import AgentMessage, AgentConversation
 from app.agent_faq_seed import seed_faq
 from app.models import MarketPrice, SecFilingInventory, UploadedEvidence
@@ -102,17 +103,75 @@ def test_real_sec_query_without_form():
     assert result['ok'] and result['data'][0]['form']=='10-Q'
 
 
-def test_material_search_without_dense_runtime_is_explicitly_unavailable():
+def test_material_search_without_dense_runtime_is_explicitly_unavailable(monkeypatch):
+    monkeypatch.setenv('RAG_ENABLED','true')
     filing('TSTM')
     result=run(tools.query_materials.ainvoke({'symbol':'TSTM','keyword':'UniqueParentKeyword'}))
     assert result=={'ok':False,'data':None,'error_code':'knowledge_unavailable','source':'knowledge_chunks','as_of':None}
 
 
-def test_faq_without_dense_runtime_is_explicitly_unavailable():
+def test_faq_without_dense_runtime_is_explicitly_unavailable(monkeypatch):
+    monkeypatch.setenv('RAG_ENABLED','true')
     result=run(tools.query_research_faq.ainvoke({'keyword':'费用'}))
     empty=run(tools.query_stock_prices.ainvoke({'symbol':'TSTE'}))
     assert result['error_code']=='knowledge_unavailable' and result['data'] is None
     assert empty['ok'] and empty['data']==[]
+
+
+def test_disabled_rag_uses_saved_faq_and_material_sql_without_retriever(monkeypatch):
+    monkeypatch.setenv('RAG_ENABLED','false')
+    async def forbidden(*args,**kwargs): raise AssertionError('dense retriever must not run while RAG is disabled')
+    monkeypatch.setattr(tools,'retrieve_faq',forbidden);monkeypatch.setattr(tools,'retrieve_materials',forbidden)
+    faq=run(tools.query_research_faq.ainvoke({'keyword':'可信度'}))
+    assert faq['ok'] and faq['_retrieval_mode']=='legacy' and faq['data']
+    now=datetime.now(UTC)
+    upload_id=uuid4()
+    from app.knowledge.models import KnowledgeUploadOwner
+    with SessionLocal() as s:
+        s.add(UploadedEvidence(id=upload_id,symbol='TSTL',title='UniqueLegacyRevenue',source_url='https://example.test/source',published_at=now,observed_at=now,credibility_stars=3,credibility_reason='fixture',impact_severity='low',filename='fixture.txt',content_sha256='a'*64,raw_content=b'x',content_text='UniqueLegacyRevenue revenue fact',status='unconfirmed'))
+        s.add(KnowledgeUploadOwner(upload_id=upload_id,owner_hash=owner_hash(SESSION)))
+        s.commit()
+    from app.knowledge.runtime import research_context
+    with research_context(owner_hash(SESSION)):
+        material=run(tools.query_materials.ainvoke({'symbol':'TSTL','keyword':'UniqueLegacyRevenue'}))
+    assert material['ok'] and material['_retrieval_mode']=='legacy' and any(row['id']==str(upload_id) for row in material['data'])
+    with research_context(owner_hash('guest-session-'+'g'*40)):
+        guest=run(tools.query_materials.ainvoke({'symbol':'TSTL','keyword':'UniqueLegacyRevenue'}))
+    assert guest['data']==[]
+
+
+def test_disabled_rag_materials_allow_approved_public_sec_only(monkeypatch):
+    monkeypatch.setenv('RAG_ENABLED','false')
+    now=datetime.now(UTC)
+    content='UniqueAcceptedSECExcerpt revenue fact'
+    import hashlib
+    obj=SecFilingInventory(symbol='TSTU',cik='0000320193',accession_number=f'0000320193-26-{uuid4().int % 1000000:06d}',form='10-Q',filed_at=date.today(),primary_document='q.htm',source_url='https://www.sec.gov/Archives/accepted-q.htm',source='sec-edgar',review_status='accepted',reviewed_at=now,observed_at=now,content_status='fetched',content_observed_at=now,content_excerpt=content,content_excerpt_sha256=hashlib.sha256(content.encode()).hexdigest())
+    with SessionLocal() as s:s.add(obj);s.commit()
+    result=run(tools.query_materials.ainvoke({'symbol':'TSTU','keyword':'UniqueAcceptedSECExcerpt'}))
+    assert result['ok'] and len(result['data'])==1 and result['data'][0]['material_type']=='official_filing'
+
+
+def test_legacy_unmapped_upload_is_visible_only_to_configured_site_owner(monkeypatch,tmp_path):
+    import base64,hashlib,json
+    from app.agent_chat_identity import owner_credential_matches
+    from app.knowledge.runtime import research_context
+    monkeypatch.setenv('RAG_ENABLED','false')
+    credential='configured-site-owner-'+'o'*64
+    salt=b'test-only-generated-salt'
+    config=tmp_path/'generated-login.json'
+    config.write_text(json.dumps({'salt':base64.b64encode(salt).decode(),'hash':base64.b64encode(b'x'*32).decode(),'iterations':100000,'chat_credential':credential}))
+    monkeypatch.setenv('PERSONAL_CHAT_LOGIN_PATH',str(config))
+    now=datetime.now(UTC);upload_id=uuid4()
+    with SessionLocal() as s:
+        s.add(UploadedEvidence(id=upload_id,symbol='TSTV',title='UnmappedLegacyPrivate',source_url='https://example.test/private',published_at=now,observed_at=now,credibility_stars=3,credibility_reason='fixture',impact_severity='low',filename='fixture.txt',content_sha256='b'*64,raw_content=b'y',content_text='UnmappedLegacyPrivate private fact',status='unconfirmed'));s.commit()
+    assert owner_credential_matches(credential)
+    with research_context(owner_hash(credential)) as context:
+        context.legacy_unmapped_owner=owner_credential_matches(credential)
+        owner_result=run(tools.query_materials.ainvoke({'symbol':'TSTV','keyword':'UnmappedLegacyPrivate'}))
+    with research_context(owner_hash('guest-session-'+'z'*40)):
+        guest_result=run(tools.query_materials.ainvoke({'symbol':'TSTV','keyword':'UnmappedLegacyPrivate'}))
+    assert any(row['id']==str(upload_id) for row in owner_result['data'])
+    assert guest_result['data']==[]
 
 
 def test_stream_ownership_persistence_and_tool_disable(monkeypatch):

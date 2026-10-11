@@ -91,7 +91,7 @@ def test_api_launchagent_prints_a_loopback_only_persistent_plist():
 
 
 def test_api_launcher_print_accepts_explicit_executable_runtime_without_starting_services():
-    override = PROJECT_ROOT / ".venv-rag" / "bin" / "python"
+    override = Path(sys.executable)
     result = subprocess.run(
         ["/bin/sh", str(LAUNCHER), "--print"],
         cwd=PROJECT_ROOT,

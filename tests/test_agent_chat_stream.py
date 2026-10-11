@@ -169,6 +169,7 @@ def test_disconnect_before_body_iteration_releases_capacity(monkeypatch):
 ])
 def test_knowledge_refusal_and_failure_sse_persists_final_role_status(monkeypatch,result,judge_result,expected_status,expected_pool):
     import app.agent_chat_stream as module
+    monkeypatch.setenv('RAG_ENABLED','true')
     from starlette.requests import Request
     seen=[];finished=[];decisions=[];pool=[]
     async def yes(*args):return True
@@ -212,6 +213,7 @@ def test_knowledge_refusal_and_failure_sse_persists_final_role_status(monkeypatc
 ])
 def test_knowledge_sse_persists_real_messages_and_low_confidence_rows(disposable_database,monkeypatch,tool_result,expected_status,expected_low_confidence):
     import app.agent_chat_stream as module
+    monkeypatch.setenv('RAG_ENABLED','true')
     from app.agent_chat_models import AgentConversation,AgentMessage
     from app.database import Base,engine,SessionLocal
     from app.knowledge.models import LowConfidenceQuestion
@@ -244,3 +246,33 @@ def test_knowledge_sse_persists_real_messages_and_low_confidence_rows(disposable
     with SessionLocal() as session:
         stored=session.scalars(select(LowConfidenceQuestion).where(LowConfidenceQuestion.conversation_id==conversations[0]['id'])).all()
     assert bool(stored)==expected_low_confidence
+
+
+def test_legacy_saved_material_stream_uses_original_answer_path_without_modern_refusal(monkeypatch):
+    import app.agent_chat_stream as module
+    from starlette.requests import Request
+    calls=[]
+    async def decide(*args):
+        calls.append(args)
+        return {}, {'tool_calls':[{'id':'legacy-call','type':'function','function':{'name':'query_materials','arguments':'{"symbol":"DEMO","keyword":"revenue"}'}}]}
+    async def tool(*args):return {'ok':True,'data':[{'excerpt':'Saved legacy excerpt'}],'source':'saved_data','as_of':None,'_retrieval_mode':'legacy'}
+    async def answer(*args):yield 'Saved-data answer.'
+    async def append(*args,**kwargs):pass
+    async def empty(*args):return []
+    async def yes(*args):return True
+    async def finish(*args):pass
+    async def create(*args):return '12345678-1234-5678-1234-567812345678'
+    monkeypatch.setattr(module,'decision_request',decide);monkeypatch.setattr(module,'stream_answer',answer)
+    monkeypatch.setattr(module,'execute_tool',tool);monkeypatch.setattr(module,'append_message',append)
+    monkeypatch.setattr(module,'history',empty);monkeypatch.setattr(module,'verify_conversation',yes)
+    monkeypatch.setattr(module,'create_conversation',create);monkeypatch.setattr(module,'finish_conversation',finish)
+    payload=StreamRequest(provider='deepseek',model='deepseek-chat',api_key='abcdefgh',message='DEMO revenue?',conversation_id=None)
+    req=Request({'type':'http','method':'POST','path':'/agent-chat/stream','headers':[]})
+    async def collect():
+        response=await module.stream_chat(payload,req,'legacy-owner-'+'x'*40)
+        return ''.join([part async for part in response.body_iterator])
+    wire=asyncio.run(collect())
+    assert 'Saved-data answer.' in wire and 'event: done' in wire
+    assert 'event: error' not in wire and len(calls)==1
+    assert 'knowledge_unavailable' not in wire and '没有找到足够证据' not in wire
+    assert '[1]' not in wire

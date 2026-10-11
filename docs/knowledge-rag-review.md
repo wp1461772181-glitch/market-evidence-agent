@@ -64,3 +64,9 @@ PUBLIC_API_MODE=false .venv-rag/bin/python -m scripts.demo_knowledge_chat
 - 加入 PostgreSQL 预先筛选 current/historical 授权 snapshot UUID，并用 Milvus ID filter 在 ANN 排序前限定候选后，再复跑全量：`574 passed, 1 skipped, 40 warnings`，65.61s；日志 `/tmp/market-rag-accept-20261011/full-pytest-final2.log`。
 - 新筛选逻辑下真实 RAG evaluation + live DeepSeek acceptance：2 passed（92.35s），日志 `/tmp/market-rag-accept-20261011/real-gates-final.log`。
 - 本机端口实测 localhost:8000 已被 PID 4415 监听，5174 Vite 的 proxy target 为 8000。不能让现有 5174 指向独立 8015 而不改其配置；本轮未停/重配用户的现有服务。故 8015 browser API server 未完成，frontend browser acceptance 仍为未验证状态。
+# 2026-10-11 deployment regression caught before cutover
+
+- The primary reviewer caught that `query_materials` and `query_research_faq` had been routed unconditionally through dense retrieval while the production gate was intentionally off pending the corpus quality threshold. This would have broken existing saved-data chat tools if the candidate had been switched live.
+- Restored an explicit SQL-backed legacy lane for disabled RAG, with owner mapping checks for private uploads, configured owner credential verification for legacy unmapped uploads, accepted/hash-matching public SEC excerpts, and the existing response bounds. The enabled lane remains fail-closed and keeps semantic retrieval and modern evidence checks.
+- Stream processing now keeps legacy results on the original answer path; citation restoration and modern evidence sufficiency gates remain limited to modern retrieval results. Regression coverage uses a disposable PostgreSQL database and mocked provider functions, without corpus indexing, model inference, or provider calls.
+- This focused fix was performed after the successful remote publication but before production source-pointer switch. No production switch/restart, push, or commit was performed as part of the fix.

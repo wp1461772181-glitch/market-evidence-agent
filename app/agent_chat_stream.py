@@ -199,11 +199,14 @@ async def stream_chat(payload:StreamRequest,request:Request,x_chat_session:str|N
       yield frame("tool_start",{"call_id":call_id,"name":name,"arguments":args})
       from .knowledge.runtime import research_context
       with research_context(owner_hash(x_chat_session)) as research:
+       from .agent_chat_identity import owner_credential_matches
+       research.legacy_unmapped_owner=owner_credential_matches(x_chat_session)
        result=await execute_tool(name,args)
        citation_sidecar.extend(research.citations or [])
+     retrieval_mode=result.pop('_retrieval_mode',None) if isinstance(result,dict) else None
      result=bounded_tool_result(result)
      tool_content=json.dumps(result,ensure_ascii=False,separators=(',',':'))
-     tool_messages.append({"role":"tool","tool_call_id":call_id,"name":name,"content":tool_content,"_result":result})
+     tool_messages.append({"role":"tool","tool_call_id":call_id,"name":name,"content":tool_content,"_result":result,"_retrieval_mode":retrieval_mode})
      yield frame("tool_result",{"call_id":call_id,"name":name,"result":result})
     for stored in tool_messages:
      await append_message(cid,turn,"tool",stored["content"],tool_call_id=stored["tool_call_id"])
@@ -211,7 +214,7 @@ async def stream_chat(payload:StreamRequest,request:Request,x_chat_session:str|N
    else:
     messages.append({"role":"assistant","content":decision.get("content"),**protocol_meta})
    if _protocol_size({"messages":messages})>40000: raise HTTPException(413,"chat_context_too_large")
-   knowledge_call=next((item for item in tool_messages if item.get('name') in {'query_materials','query_research_faq'}),None) if calls else None
+   knowledge_call=next((item for item in tool_messages if item.get('name') in {'query_materials','query_research_faq'} and item.get('_retrieval_mode')!='legacy'),None) if calls else None
    if knowledge_call:
     result=knowledge_call.get('_result') or {}
     from .knowledge.quality import evidence_state,parse_sufficiency

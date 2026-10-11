@@ -27,3 +27,7 @@ frontend/node_modules/
 frontend/dist/
 frontend-build/
 *.tsbuildinfo
+.venv-rag/
+
+# Local build and model-evaluation scratch output.
+build/

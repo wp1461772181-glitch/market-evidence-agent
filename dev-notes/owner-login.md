@@ -51,3 +51,16 @@ No production commands, local RAG demo, migration, database, port, launch agent,
 ## 2026-10-11 publication started
 
 - Primary acceptance for the clean candidate: **657 passed, 4 skipped** with the CI CORS environment configured. Publication proceeds using only the reviewed candidate manifest; no production migration or RAG enablement is in scope.
+
+## 2026-10-11 focused disabled-RAG compatibility correction
+
+- Legacy material lookup now checks PostgreSQL `to_regclass` before joining `knowledge_upload_owners`. If that optional table is absent, saved uploads remain readable only when the request carries the server-verified owner context and its legacy-unmapped-owner authorization; guests receive no uploads. When the mapping table exists, mapped owner matching and the existing verified-owner rule for unmapped rows remain in place. Public legacy SEC excerpts remain available under their checks.
+- Legacy SEC excerpt eligibility now requires accepted/fetched content, a present `reviewed_at`, a present `content_observed_at`, valid PostgreSQL timestamp values no later than both the request cutoff and current time, and a matching saved content hash. Result `as_of` includes the body observation time. Enabled RAG retrieval was not changed.
+- Added a real isolated PostgreSQL absence/recovery regression: the test temporarily renames only `knowledge_upload_owners` inside pytest's unique disposable `test_*` database, exercises the legacy SQL, restores the table in `finally`, and verifies mapped-owner behavior after restoration. Cutoff-before-excerpt and missing-observation cases are rejected. Launcher override portability regression now uses `sys.executable` and has no local `.venv-rag` path.
+- Verification: focused backend checks **29 passed**; full command `PUBLIC_API_MODE=false CORS_ALLOWED_ORIGINS=https://pages.example.test .venv/bin/python -m pytest -q` **662 passed, 4 skipped**. Existing dependency/FastAPI deprecation and duplicate OpenAPI operation-ID warnings remain. `git diff --check` checked after this note. No commit, push, restart, migration, or real data/provider call was performed; primary fresh acceptance is still pending.
+
+## 2026-10-11 pre-publication acceptance
+
+- Independently reviewed publication fix: disabled-RAG compatibility preserves saved legacy FAQ/material reads without invoking dense retrieval; the CI launcher portability regression uses `sys.executable` and no checkout-local `.venv-rag` assumption. `.gitignore` excludes the local `.venv-rag/` and build scratch output.
+- Fresh local backend acceptance: **662 passed, 4 skipped**, with `PUBLIC_API_MODE=false` and CI-equivalent CORS configuration. Frontend acceptance remains fresh and unchanged: **67 passed** and production build succeeded.
+- The exact prior CI run for base `20afa052b531d018f1a271521aca3fa3c0f8118e` failed on the obsolete local `.venv-rag` test path; that assertion is corrected to use the running interpreter. Production remains on the previously verified source pointer until the new commit's CI succeeds.
