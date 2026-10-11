@@ -1,7 +1,7 @@
 import { AgentAdminPage, AgentChatPanel, AgentChatProviderRoot } from "./AgentChatPanel";
 import { Tx, formatDateTime as formatLocalizedDateTime, getLocalePreference, translatePhrase, useLocale } from "./i18n";
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ApiError, getFilingInventory, getJevLearningStatus, getMaterialLibrary, getV2Evaluations, getV2ForecastRoots, getV2MonitorStatus, getV2Prices, getV2Workspace, initializeMarketData, scanOfficialFilings } from "./api";
+import { ApiError, getFilingInventory, getJevLearningStatus, getMaterialLibrary, getV2Evaluations, getV2ForecastRoots, getV2MonitorStatus, getV2Prices, getV2Workspace, initializeMarketData, scanOfficialFilings, hasOwnerAccessKey, saveOwnerAccessKey } from "./api";
 import type { FilingInventory, JevLearningStatus, PriceHistory } from "./types";
 import { V2ForecastWorkspace } from "./V2ForecastWorkspace";
 import { EvidenceCenter } from "./EvidenceCenter";
@@ -266,10 +266,27 @@ function WorkspaceIntro({ eyebrow, title, description, action }: { eyebrow: stri
 function Shell({ activeSection, navigate, symbol, symbols, onSelectStock, watchInput, setWatchInput, addWatchSymbol, watchError, setWatchError, children }: { activeSection: WorkspaceSection; navigate: (section: WorkspaceSection) => void; symbol: string; symbols: string[]; onSelectStock: (ticker: SupportedSymbol) => void; watchInput: string; setWatchInput: (value: string) => void; addWatchSymbol: () => void; watchError: string; setWatchError: (value: string) => void; children: ReactNode }) {
   const { locale, setLocale, t } = useLocale();
   const navRef = useRef<HTMLElement>(null);
-  const [menuOpen,setMenuOpen]=useState(false),[pinned,setPinned]=useState(false);
+  const [menuOpen,setMenuOpen]=useState(false),[pinned,setPinned]=useState(()=>localStorage.getItem("market-evidence-agent:nav-pinned:v1")==="1");
+  const [isNarrow,setIsNarrow]=useState(()=>window.matchMedia("(max-width: 760px)").matches);
+  const effectivePinned=pinned&&!isNarrow;
+  const [ownerDialog,setOwnerDialog]=useState(false),[ownerInput,setOwnerInput]=useState(""),[ownerHasKey,setOwnerHasKey]=useState(hasOwnerAccessKey);
   const menuRegion=useRef<HTMLDivElement>(null);
-  useEffect(()=>{const key=(e:KeyboardEvent)=>{if(e.key==="Escape"){setMenuOpen(false);setPinned(false)}};const outside=(e:PointerEvent)=>{if(!menuRegion.current?.contains(e.target as Node)){setMenuOpen(false);setPinned(false)}};const hover=(e:PointerEvent)=>{if(!pinned)setMenuOpen(Boolean(menuRegion.current?.contains(e.target as Node)))};document.addEventListener("keydown",key);document.addEventListener("pointerdown",outside);document.addEventListener("pointermove",hover);return()=>{document.removeEventListener("keydown",key);document.removeEventListener("pointerdown",outside);document.removeEventListener("pointermove",hover)}},[pinned]);
-  const drawerNavigate=(section:WorkspaceSection)=>{setMenuOpen(false);setPinned(false);navigate(section)};
+  const ownerInputRef=useRef<HTMLInputElement>(null),ownerReturnFocus=useRef<HTMLElement|null>(null);
+  const unpin=()=>{setPinned(false);localStorage.removeItem("market-evidence-agent:nav-pinned:v1");setMenuOpen(false)};
+  useEffect(()=>{const media=window.matchMedia("(max-width: 760px)"),change=()=>setIsNarrow(media.matches);change();media.addEventListener("change",change);return()=>media.removeEventListener("change",change)},[]);
+  useEffect(()=>{const key=(e:KeyboardEvent)=>{if(e.key==="Escape"){if(ownerDialog)setOwnerDialog(false);else if(isNarrow)setMenuOpen(false);else unpin()}};const outside=(e:PointerEvent)=>{if((isNarrow||!pinned)&&!menuRegion.current?.contains(e.target as Node))setMenuOpen(false)};const hover=(e:PointerEvent)=>{if(!isNarrow&&!pinned)setMenuOpen(Boolean(menuRegion.current?.contains(e.target as Node)))};const auth=()=>{ownerReturnFocus.current=document.activeElement instanceof HTMLElement?document.activeElement:null;setOwnerHasKey(hasOwnerAccessKey());setOwnerInput("");setOwnerDialog(true)};const keyChange=()=>setOwnerHasKey(hasOwnerAccessKey());document.addEventListener("keydown",key);document.addEventListener("pointerdown",outside);document.addEventListener("pointermove",hover);window.addEventListener("owner-auth-required",auth);window.addEventListener("owner-access-key-changed",keyChange);return()=>{document.removeEventListener("keydown",key);document.removeEventListener("pointerdown",outside);document.removeEventListener("pointermove",hover);window.removeEventListener("owner-auth-required",auth);window.removeEventListener("owner-access-key-changed",keyChange)}},[pinned,isNarrow,ownerDialog]);
+  useEffect(()=>{
+    if(ownerDialog){
+      const backdrop=document.querySelector<HTMLElement>(".owner-auth-backdrop"),content=backdrop?.parentElement;
+      const inerted=content?[...content.children].filter((item):item is HTMLElement=>item instanceof HTMLElement&&item!==backdrop):[];
+      const nav=menuRegion.current;
+      const targets=[...inerted,...(nav?[nav]:[])];
+      const prior=targets.map(item=>item.hasAttribute("inert"));targets.forEach(item=>item.setAttribute("inert",""));
+      ownerInputRef.current?.focus();
+      return()=>{targets.forEach((item,index)=>{if(!prior[index])item.removeAttribute("inert")});const target=ownerReturnFocus.current;ownerReturnFocus.current=null;if(target?.isConnected)target.focus()};
+    }
+  },[ownerDialog]);
+  const drawerNavigate=(section:WorkspaceSection)=>{if(isNarrow||!pinned)setMenuOpen(false);navigate(section)};
   useEffect(() => {
     if (activeSection === "admin") return;
     const navElement = navRef.current;
@@ -290,8 +307,8 @@ function Shell({ activeSection, navigate, symbol, symbols, onSelectStock, watchI
     { id: "replay", label: t("历史回放"), hint: t("生成已到期样本"), icon: "↺" },
     { id: "agent", label: t("Agent 对话"), hint: t("研究工具对话"), icon: "✳" },
   ];
-  return <div className="app-frame">
-    <div className="nav-drawer-region" ref={menuRegion} ><button className="nav-menu-trigger" aria-label={t("打开导航菜单")} aria-expanded={menuOpen} onClick={()=>setPinned(value=>{setMenuOpen(!value);return !value})} onFocus={()=>setMenuOpen(true)} onMouseEnter={()=>{if(!pinned)setMenuOpen(true)}}>☰</button><aside className={`app-rail ${menuOpen?"is-open":""}`} aria-label={t("主要导航")}>
+  return <div className={`app-frame${effectivePinned?" is-nav-pinned":""}`}>
+    <div className="nav-drawer-region" ref={menuRegion} ><button className="nav-menu-trigger" aria-label={t(isNarrow?(menuOpen?"收起导航":"打开导航菜单"):(pinned?"收起导航":"打开导航菜单"))} aria-expanded={isNarrow?menuOpen:menuOpen||effectivePinned} aria-controls="workspace-navigation" onClick={()=>{if(isNarrow){setMenuOpen(open=>!open);return}if(pinned)unpin();else{setPinned(true);localStorage.setItem("market-evidence-agent:nav-pinned:v1","1");setMenuOpen(true)}}} onMouseEnter={()=>{if(!isNarrow&&!pinned)setMenuOpen(true)}}>☰</button><aside id="workspace-navigation" className={`app-rail ${menuOpen||effectivePinned?"is-open":""}`} aria-label={t("主要导航")}>
       <a className="workspace-brand" href="#overview" onClick={() => navigate("overview")} aria-label={`Market Evidence Agent · ${t("总览")}`}><span className="brand-mark">ME</span><span>market<br /><em>evidence</em></span></a>
       <div className="rail-context"><span>{activeSection === "agent" || activeSection === "admin" ? t("工作区") : <Tx text={"当前股票"} />}</span><strong>{activeSection === "agent" || activeSection === "admin" ? t("Agent") : symbol}</strong><small>{<Tx text={"Agent 研究工作台"} />}</small></div>
       <nav ref={navRef} className="workspace-nav">
@@ -321,6 +338,7 @@ function Shell({ activeSection, navigate, symbol, symbols, onSelectStock, watchI
         </div>
       </header>
       {children}
+      {ownerDialog&&<div className="owner-auth-backdrop" onKeyDownCapture={e=>{if(e.key==="Escape"){e.preventDefault();e.stopPropagation();setOwnerDialog(false);return}if(e.key==="Tab"){const dialog=e.currentTarget.querySelector<HTMLElement>(".owner-auth-dialog");const items=dialog?[...dialog.querySelectorAll<HTMLElement>('button:not([disabled]),input:not([disabled])')]:[];const first=items[0],last=items.at(-1);if(e.shiftKey&&document.activeElement===first){e.preventDefault();last?.focus()}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first?.focus()}}}} onMouseDown={e=>{if(e.target===e.currentTarget)setOwnerDialog(false)}}><section className="owner-auth-dialog" role="dialog" aria-modal="true" aria-labelledby="owner-auth-title"><button className="owner-auth-close" type="button" aria-label={t("关闭")} onClick={()=>setOwnerDialog(false)}>×</button><p className="eyebrow">{t("站点写入操作")}</p><h2 id="owner-auth-title">{t("需要操作口令")}</h2><p>{t(ownerHasKey?"当前会话中的操作口令未被服务器接受。":"尚未设置操作口令。个人聊天身份只用于聊天记录，不能授权股票和分析写入。")}</p><label>{t("站点操作口令")}<input ref={ownerInputRef} type="password" value={ownerInput} autoComplete="off" onChange={e=>setOwnerInput(e.target.value)}/></label><div><button className="primary-action" disabled={!ownerInput} onClick={()=>{saveOwnerAccessKey(ownerInput);setOwnerHasKey(true);setOwnerDialog(false)}}>{t("保存到当前会话")}</button><button className="secondary-action" onClick={()=>setOwnerDialog(false)}>{t("稍后")}</button></div><small>{t("保存仅更新本会话中的口令，不代表服务器已验证。请返回刚才的操作并手动重试。")}</small></section></div>}
       <footer>{<Tx text={"Market Evidence Agent · 本地研究记录 · 研究判断可追溯到原始来源"} />}</footer>
     </div>
   </div>;

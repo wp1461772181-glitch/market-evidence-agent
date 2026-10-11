@@ -1062,5 +1062,16 @@
   "高 · 可能显著影响市场预期": "High · May significantly affect market expectations",
   "默认最新版本": "Default to latest version",
   "），没有发布预测版本。": "), no forecast version was published.",
-  "＋ 添加模型": "＋ Add model"
+  "＋ 添加模型": "＋ Add model",
+  "收起导航": "Collapse navigation",
+  "站点写入操作": "Site write access",
+  "需要操作口令": "Operation key required",
+  "当前会话中的操作口令未被服务器接受。": "The operation key saved in this session was rejected by the server.",
+  "尚未设置操作口令。": "No operation key is set.",
+  "个人聊天身份只用于聊天记录，不能授权股票和分析写入。": "Personal chat identity only applies to chat history and cannot authorize stock or analysis writes.",
+  "站点操作口令": "Site operation key",
+  "保存到当前会话": "Save for this session",
+  "操作口令已填写": "Operation key is set",
+  "个人聊天身份不授予站点写入权限；填写状态不代表服务器已验证": "Personal chat identity does not grant site write access; a filled key has not been verified by the server",
+  "保存仅更新本会话中的口令，不代表服务器已验证。请返回刚才的操作并手动重试。": "Saving only updates this session. The server has not verified the key. Return to the previous action and retry it manually."
 }

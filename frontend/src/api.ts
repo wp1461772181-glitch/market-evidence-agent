@@ -1,10 +1,12 @@
 import type { DashboardResponse, EvidenceRevision, EvidenceRevisionInventory, EvidenceRevisionRequest, FilingContent, FilingInventory, FilingReview, FilingScanResult, ForecastRunResult, JevLearningStatus, LocalizationResult, MaterialAnalysisHistory, MaterialAnalysisJob, MaterialAnalysisVersion, MaterialItem, MaterialLibraryResponse, MaterialOriginal, MaterialSourceType, PriceHistory, UploadedEvidence, UploadedEvidenceInventory, V2EvaluationResponse, V2ForecastJob, V2ForecastRoots, V2MonitorStatus, V2SourceRef, V2Timeline, V2VersionDetail, V2Workspace } from "./types";
 import { agentChatUrl } from "./agent-chat-url.mjs";
 import { fetchAgentChatModels } from "./agent-chat-models.mjs";
+import { apiErrorMessage } from "./api-errors.mjs";
 import { activeChatCredential, changeChatMode, currentChatMode, conversationCreatedAtForMode, conversationForMode, selectConversationForMode } from "./chat-identity.mjs";
 
 export const configuredApiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/+$/, "");
 const accessKeyStorageKey = "market-evidence-agent-api-access-key";
+export function hasOwnerAccessKey(): boolean { return typeof window !== "undefined" && Boolean(window.sessionStorage.getItem(accessKeyStorageKey)); }
 
 function apiUrl(path: string): string {
   if (!configuredApiBaseUrl) return path;
@@ -153,6 +155,7 @@ export function saveOwnerAccessKey(value: string): void {
   if (typeof window !== "undefined") {
     if (value) window.sessionStorage.setItem(accessKeyStorageKey, value);
     else window.sessionStorage.removeItem(accessKeyStorageKey);
+    window.dispatchEvent(new Event("owner-access-key-changed"));
   }
 }
 
@@ -346,18 +349,16 @@ async function requestJson<T>(url: string, init: RequestInit = {}): Promise<T> {
     throw error;
   }
   const payload: unknown = await response.json().catch(() => null);
-  if (!response.ok) throw apiErrorFromPayload(payload, response.status);
+  if (!response.ok) {
+    const ownerWrite = ["POST", "PUT", "PATCH", "DELETE"].includes((init.method ?? "GET").toUpperCase());
+    if (response.status === 401 && ownerWrite) window.dispatchEvent(new CustomEvent("owner-auth-required", { detail: { hasKey: hasOwnerAccessKey() } }));
+    throw apiErrorFromPayload(payload, response.status, ownerWrite);
+  }
   return payload as T;
 }
 
-function apiErrorFromPayload(payload: unknown, status: number): ApiError {
-  const rawDetail = typeof payload === "object" && payload !== null && "detail" in payload
-    ? (payload as { detail: unknown }).detail
-    : null;
-  const detail = status === 401 ? "此操作仅站点所有者可执行。" : typeof rawDetail === "object" && rawDetail !== null && "message" in rawDetail
-    ? String((rawDetail as { message: unknown }).message)
-    : typeof rawDetail === "string" ? rawDetail : `请求失败（${status}）`;
-  return new ApiError(detail, status);
+function apiErrorFromPayload(payload: unknown, status: number, ownerWrite = false): ApiError {
+  return new ApiError(apiErrorMessage(payload, status, { ownerWrite, hasOwnerKey: hasOwnerAccessKey() }), status);
 }
 
 function isDashboard(value: unknown): value is DashboardResponse {
