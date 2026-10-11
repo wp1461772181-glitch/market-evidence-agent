@@ -34,14 +34,37 @@ class BoundedInference:
     def __init__(self, function, *, workers: int=1, queue_capacity: int=1):
         self.function=function; self.executor=ThreadPoolExecutor(max_workers=workers,thread_name_prefix='bge-m3')
         self.slots=asyncio.Semaphore(workers+queue_capacity)
+        self._foreground_condition=threading.Condition()
+        self._foreground_waiters=0
     async def run(self,*args): return await self.run_fn(self.function,*args)
     async def run_fn(self,function,*args):
-        await self.slots.acquire()
+        with self._foreground_condition:
+            self._foreground_waiters+=1
+            self._foreground_condition.notify_all()
+        try:
+            await self.slots.acquire()
+        except BaseException:
+            with self._foreground_condition:
+                self._foreground_waiters-=1
+                self._foreground_condition.notify_all()
+            raise
         loop=asyncio.get_running_loop()
         future=loop.run_in_executor(self.executor,function,*args)
-        def release(_): loop.call_soon_threadsafe(self.slots.release)
+        def release(_):
+            loop.call_soon_threadsafe(self.slots.release)
+            with self._foreground_condition:
+                self._foreground_waiters-=1
+                self._foreground_condition.notify_all()
         future.add_done_callback(release)
         return await asyncio.shield(future)
+    def run_background_sync(self,function,*args):
+        """Run one exclusive background slice, yielding between foreground calls."""
+        with self._foreground_condition:
+            self._foreground_condition.wait_for(lambda:self._foreground_waiters==0)
+            # Keep the lock through submit so a foreground call arriving now is
+            # queued behind at most this one bounded background slice.
+            future=self.executor.submit(function,*args)
+        return future.result()
     def close(self): self.executor.shutdown(wait=True,cancel_futures=False)
 
 class KnowledgeRuntime:

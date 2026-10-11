@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from datetime import UTC, datetime
 from uuid import UUID
@@ -76,6 +77,18 @@ def sync_source_batch(session_factory, tokenizer, generation: str, *, source_typ
         return {"source_type": source_type, "scanned": len(rows), "accepted": len(docs), "cursor": next_cursor, **counts}
 
 
+def sync_sources_once(session_factory, runtime, tokenizer) -> None:
+    """Advance each source cursor, then optionally index one leased task."""
+    settings = runtime.settings
+    for kind in ("faq", "sec", "upload"):
+        sync_source_batch(session_factory, tokenizer, settings.generation, source_type=kind, batch_size=5)
+    if os.getenv("RAG_INDEXING_ENABLED", "false").strip().lower() in {"1", "true", "yes"}:
+        from .indexing import index_pending
+        runtime.executor.run_background_sync(lambda: index_pending(
+            session_factory, runtime.embedder, runtime.index,
+            settings.generation, max_tasks=1, worker_id="material-sync"))
+
+
 def start_source_sync(session_factory, interval_seconds: float = 30.0) -> None:
     global _thread
     if _thread and _thread.is_alive(): return
@@ -90,22 +103,8 @@ def start_source_sync(session_factory, interval_seconds: float = 30.0) -> None:
                     _stop.wait(max(5.0, interval_seconds))
                     continue
                 from .runtime import get_tokenizer
-                from .settings import KnowledgeSettings
-                settings = runtime.settings
                 tokenizer = get_tokenizer()
-                for kind in ("faq", "sec", "upload"):
-                    result = sync_source_batch(session_factory, tokenizer, settings.generation, source_type=kind, batch_size=5)
-                    if result["scanned"]:
-                        from .indexing import index_pending
-                        # Run the shared inference executor synchronously on this worker thread without creating a nested loop.
-                        import concurrent.futures
-                        future = concurrent.futures.Future()
-                        def invoke():
-                            try: future.set_result(index_pending(session_factory, runtime.embedder, runtime.index,
-                                settings.generation, max_tasks=10, worker_id="material-sync"))
-                            except Exception as exc: future.set_exception(exc)
-                        runtime.executor.executor.submit(invoke)
-                        future.result(timeout=180)
+                sync_sources_once(session_factory, runtime, tokenizer)
             except Exception as exc:
                 log.warning("material source sync batch failed (%s)", type(exc).__name__)
             _stop.wait(max(5.0, interval_seconds))

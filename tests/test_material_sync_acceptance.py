@@ -88,6 +88,21 @@ def test_source_sync_waits_when_runtime_is_unavailable(monkeypatch):
     assert len(calls) <= 2, "an unavailable model must wait, not spin on a background CPU loop"
 
 
+def test_indexing_disabled_still_advances_all_material_sources(monkeypatch):
+    from types import SimpleNamespace
+    from app.knowledge import source_sync
+
+    seen=[]
+    monkeypatch.setenv("RAG_INDEXING_ENABLED", "false")
+    monkeypatch.setattr(source_sync, "sync_source_batch", lambda _factory, _tokenizer, _generation, *, source_type, batch_size:
+        seen.append((source_type, batch_size)) or {"scanned": 5})
+    runtime=SimpleNamespace(settings=SimpleNamespace(generation="g"*64),
+        executor=SimpleNamespace(run_background_sync=lambda *_: (_ for _ in ()).throw(AssertionError("indexing must be disabled"))),
+        embedder=object(),index=object())
+    source_sync.sync_sources_once(lambda:None,runtime,object())
+    assert seen == [("faq",5),("sec",5),("upload",5)]
+
+
 def test_recovery_cannot_start_a_new_runtime_after_shutdown(monkeypatch):
     import threading
     from app.knowledge import runtime

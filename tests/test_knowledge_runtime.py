@@ -37,6 +37,35 @@ def test_cancelled_waiter_keeps_capacity_slot_until_worker_finishes():
         runtime.close()
     asyncio.run(scenario())
 
+def test_interactive_inference_runs_between_background_index_slices():
+    """A foreground call queued during backfill must run before its next task."""
+    from app.knowledge.runtime import BoundedInference
+    entered=threading.Event();release=threading.Event();order=[]
+    inference=BoundedInference(lambda values:(order.append(values[0]),values)[1],workers=1,queue_capacity=1)
+    def background_slice(number):
+        if number==1:
+            entered.set()
+            assert release.wait(2)
+        order.append(f'index-{number}')
+    def backfill():
+        for number in (1,2,3):
+            inference.run_background_sync(background_slice,number)
+    worker=threading.Thread(target=backfill)
+    worker.start()
+    def foreground_is_queued():
+        with inference._foreground_condition:
+            return inference._foreground_condition.wait_for(lambda:inference._foreground_waiters>0,1)
+    async def scenario():
+        assert await asyncio.to_thread(entered.wait,1)
+        foreground=asyncio.create_task(inference.run(['interactive-retrieval']))
+        assert await asyncio.to_thread(foreground_is_queued)
+        release.set()
+        await foreground
+        await asyncio.to_thread(worker.join,2)
+    asyncio.run(scenario())
+    inference.close()
+    assert order.index('interactive-retrieval') < order.index('index-2')
+
 def test_explicit_index_use_still_validates_missing_model(monkeypatch,tmp_path):
     import pytest
     from app.knowledge.settings import KnowledgeSettings
