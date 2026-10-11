@@ -1,7 +1,8 @@
 from app.agent_tools import TOOL_REGISTRY,tool_schemas
 import pytest
 
-def test_tool_contract_and_disabled_runtime_failure():
+def test_tool_contract_and_enabled_runtime_failure(monkeypatch):
+    monkeypatch.setenv('RAG_ENABLED','true')
     from app.agent_tools import query_materials,query_research_faq
     import asyncio
     material=TOOL_REGISTRY['query_materials'].args_schema.model_json_schema()
