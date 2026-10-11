@@ -139,3 +139,8 @@ html,body,#root{max-width:100%}.app-frame,.app-content,.workspace{min-width:0}.a
 @media(max-width:760px){.app-frame.is-nav-pinned{grid-template-columns:minmax(0,1fr)!important}.app-frame.is-nav-pinned .nav-drawer-region{position:fixed;top:0;left:0;width:0;height:100dvh;grid-column:auto;grid-row:auto;z-index:72}.app-frame.is-nav-pinned .app-rail{position:fixed!important;inset:0 auto 0 0;width:min(276px,calc(100vw - 58px));height:100dvh;transform:translateX(0);box-shadow:0 15px 40px #13271f30}.app-frame.is-nav-pinned .nav-menu-trigger{position:fixed;left:14px;top:13px;z-index:73}.agent-thread-grid{grid-template-columns:22px minmax(0,1fr);gap:7px}.agent-turn-preview{left:42px!important;right:12px;width:auto;top:auto!important;bottom:24px}.agent-thread{max-width:100%}.agent-composer{width:min(880px,calc(100% - 28px));margin-left:calc((100% - min(880px,100% - 28px))/2 + 14px)}}
 @media(max-width:760px){.app-frame.is-nav-pinned .nav-drawer-region{position:fixed}.app-frame.is-nav-pinned .app-rail{position:fixed!important}}
 .agent-turn-preview{pointer-events:auto}
+
+/* Assistant answers read as plain text in the centered reading column. */
+.agent-message.is-assistant{align-self:stretch;text-align:left;border:0;border-radius:0;padding:0;background:transparent;box-shadow:none}
+.agent-message.is-assistant .markdown-body{text-align:left}
+@media(max-width:760px){.agent-message.is-assistant{padding:0}}

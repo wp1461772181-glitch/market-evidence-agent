@@ -80,3 +80,9 @@ Start the fixture only on loopback with `./.venv/bin/uvicorn scripts.chat_ux_fix
 - Direct clarification: “居中是用户的提问右对齐，然后 X轴长度不超过一半”. The assistant reading column and conversation remain centered; user questions align to the right within that column, remain fit-content, and are capped at 50% at every viewport width. Removed the mobile 80%/92% exceptions.
 - Updated `.agent-message.is-user` with right-side grid placement and right anchoring. Existing assistant and composer layout rules are unchanged.
 - Primary acceptance after clarification: all 63 frontend tests and production build passed. At1440px, user.right=thread.right=1360px and bubblewidth222.59px within779px column; at390px, each bubblewidth164.5px within329px column, rightaligned374px, documentwidth390px. Saved current simulated-data screenshot to data/chat-ux-refined.jpg.
+
+## Assistant answer presentation clarification (2026-10-11)
+
+- Direct clarification: assistant answers are left aligned and need no border. Answers now flow left aligned in the existing centered reading column, without a card border, background, shadow, rounded corners, or card padding on desktop and mobile. User questions remain right aligned, fit-content, and capped at 50% at all viewport widths.
+- Markdown table borders, tool badges, copy controls, turn ticks, and history/navigation layout remain governed by their existing rules.
+- Primary verification:63 frontendtests passed and productionbuild passed. Browser at1440px confirmed assistant left581px=columnleft581px, textleft, border0/backgroundtransparent/shadownone/padding0; at390px left45px=columnleft45px, sameplainstyling, user164.5px=halfcolumn and rightaligned374px, no pageoverflow. Screenshot data/chat-ux-plain-assistant.jpg uses fictional fixtures; no realmodelcall or productionmutation.
