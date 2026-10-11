@@ -1,4 +1,5 @@
 import asyncio
+import os
 from sqlalchemy.exc import OperationalError, TimeoutError as SATimeout
 from .agent_tools import TOOL_REGISTRY
 
@@ -11,7 +12,11 @@ async def execute_tool(name: str, arguments: dict) -> dict:
     except Exception:
         return {"ok":False,"data":None,"error_code":"invalid_arguments","source":None,"as_of":None}
     try:
-        async with asyncio.timeout(5):
+        # Cold BGE loading and cross-encoder swapping can take tens of seconds.
+        # Keep market/ordinary tools on their existing short budget.
+        is_knowledge = name in {"query_research_faq", "query_materials"}
+        timeout = max(1.0, float(os.getenv("KNOWLEDGE_RETRIEVAL_TIMEOUT_SECONDS", "30"))) if is_knowledge else 5.0
+        async with asyncio.timeout(timeout):
             for attempt in range(2):
                 try:
                     value=await tool.ainvoke(parsed.model_dump())

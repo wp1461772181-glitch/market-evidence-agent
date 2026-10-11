@@ -6,3 +6,4 @@ export function conversationForMode(localStorage:StorageLike,mode?:"guest"|"pers
 export function conversationCreatedAtForMode(localStorage:StorageLike,mode?:"guest"|"personal"):string|null;
 export function selectConversationForMode(localStorage:StorageLike,sessionStorage:StorageLike,id:string|null,mode?:"guest"|"personal",createdAt?:string|null):void;
 export function activeChatCredential(localStorage:StorageLike,sessionStorage:StorageLike,randomCredential:()=>string):string;
+export function applyChatIdentity(headers:HeadersInit,credential:string):Headers;

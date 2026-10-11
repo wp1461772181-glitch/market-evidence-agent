@@ -1,0 +1,42 @@
+{
+  "calibration": [
+    {"id":"c01","kind":"faq","query":"查研究材料的可信度星级如何理解","expected_source":"1","expected_question":"研究材料可信度星级是什么？"},
+    {"id":"c02","kind":"faq","query":"数据和研究要收取什么费用","expected_source":"2","expected_question":"市场研究数据的费用是多少？"},
+    {"id":"c03","kind":"faq","query":"系统给出的预测是不是保证盈利","expected_source":"3","expected_question":"系统中的预测代表什么？"},
+    {"id":"c04","kind":"material","symbol":"DEMO","query":"What was DEMO's FY2025 revenue and unit?","expected_source":"00000000-0000-4000-8000-000000000001","expected_text":"123"},
+    {"id":"c05","kind":"material","symbol":"DEMO","query":"2025财年营业收入是多少，单位是什么","expected_source":"00000000-0000-4000-8000-000000000001","expected_text":"USD million"},
+    {"id":"c06","kind":"material","symbol":"DEMO","query":"How much operating cash did the company generate in FY2025?","expected_source":"00000000-0000-4000-8000-000000000001","expected_text":"8"},
+    {"id":"c07","kind":"material","symbol":"DEMO","query":"What is the FY2025 EBITDA?","expected_none":true},
+    {"id":"c08","kind":"material","symbol":"DEMB","query":"What was FY2025 revenue?","expected_none":true},
+    {"id":"c09","kind":"material","symbol":"DEMO","query":"Revenue in fiscal 2025 dollars","expected_source":"00000000-0000-4000-8000-000000000001","expected_text":"Revenue"},
+    {"id":"c10","kind":"material","symbol":"DEMO","query":"Who owns the private Cedar acquisition rumour?","owner":"A","expected_none":true},
+    {"id":"c11","kind":"material","symbol":"DEMO","query":"When is owner A's Aurora prototype review?","owner":"A","expected_source":"00000000-0000-4000-8000-000000000002","expected_text":"2026-04-15"},
+    {"id":"c12","kind":"material","symbol":"DEMO","query":"When is owner B's Cedar merger plan discussion?","owner":"B","expected_source":"00000000-0000-4000-8000-000000000003","expected_text":"Project Cedar"}
+  ],
+  "heldout": [
+    {"id":"h01","kind":"faq","query":"三星可信度是否等于上涨概率 60%","expected_source":"1","expected_question":"研究材料可信度星级是什么？"},
+    {"id":"h02","kind":"faq","query":"本地保存的研究材料会联网重新抓取吗","expected_source":"2","expected_question":"市场研究数据的费用是多少？"},
+    {"id":"h03","kind":"faq","query":"这个预测是否代表确定收益","expected_source":"3","expected_question":"系统中的预测代表什么？"},
+    {"id":"h04","kind":"material","symbol":"DEMO","query":"Tell me DEMO's sales for the year ending FY2025, including units.","expected_source":"00000000-0000-4000-8000-000000000001","expected_text":"123"},
+    {"id":"h05","kind":"material","symbol":"DEMO","query":"DEMO reported how much top line in FY25?","expected_source":"00000000-0000-4000-8000-000000000001","expected_text":"123"},
+    {"id":"h06","kind":"material","symbol":"DEMO","query":"2025年度营业收入和币种单位","expected_source":"00000000-0000-4000-8000-000000000001","expected_text":"USD million"},
+    {"id":"h07","kind":"material","symbol":"DEMO","query":"What was gross profit for fiscal 2025?","expected_source":"00000000-0000-4000-8000-000000000001","expected_text":"62"},
+    {"id":"h08","kind":"material","symbol":"DEMO","query":"DEMO FY25 gross margin dollars","expected_source":"00000000-0000-4000-8000-000000000001","expected_text":"62"},
+    {"id":"h09","kind":"material","symbol":"DEMO","query":"2025财年毛利是多少","expected_source":"00000000-0000-4000-8000-000000000001","expected_text":"62"},
+    {"id":"h10","kind":"material","symbol":"DEMO","query":"What was operating income in FY2025?","expected_source":"00000000-0000-4000-8000-000000000001","expected_text":"18"},
+    {"id":"h11","kind":"material","symbol":"DEMO","query":"FY25 cash generated from business operations","expected_source":"00000000-0000-4000-8000-000000000001","expected_text":"8"},
+    {"id":"h12","kind":"material","symbol":"DEMO","query":"2025财年经营活动现金流","expected_source":"00000000-0000-4000-8000-000000000001","expected_text":"8"},
+    {"id":"h13","kind":"material","symbol":"DEMO","query":"Where is the original source for the FY2025 financial excerpt?","expected_source":"00000000-0000-4000-8000-000000000001","expected_text":"123"},
+    {"id":"h14","kind":"material","symbol":"DEMO","query":"What does the saved SEC excerpt state about EBITDA?","expected_none":true},
+    {"id":"h15","kind":"material","symbol":"DEMO","query":"Give me owner B's confidential Cedar acquisition information","owner":"A","expected_none":true},
+    {"id":"h16","kind":"material","symbol":"DEMO","query":"Summarize my Project Aurora prototype review date","owner":"A","expected_source":"00000000-0000-4000-8000-000000000002","expected_text":"2026-04-15"},
+    {"id":"h17","kind":"material","symbol":"DEMO","query":"What is the internal Cedar merger plan?","owner":"B","expected_source":"00000000-0000-4000-8000-000000000003","expected_text":"Project Cedar"},
+    {"id":"h18","kind":"material","symbol":"DEMO","query":"What is Apple's FY2025 revenue?","expected_none":true},
+    {"id":"h19","kind":"material","symbol":"DEMO","query":"Did FY2025 sales equal 123 USD million?","expected_source":"00000000-0000-4000-8000-000000000001","expected_text":"123"},
+    {"id":"h20","kind":"material","symbol":"DEMO","query":"How much did DEMO generate from operations, with period and unit?","expected_source":"00000000-0000-4000-8000-000000000001","expected_text":"USD million"},
+    {"id":"h21","kind":"material","symbol":"DEMB","query":"Revenue amount in the annual report","expected_none":true},
+    {"id":"h22","kind":"material","symbol":"DEMO","query":"What date was the private Aurora prototype review?","owner":"A","expected_source":"00000000-0000-4000-8000-000000000002","expected_text":"2026-04-15"},
+    {"id":"h23","kind":"faq","query":"咨询本产品资料查询的价格或收费","expected_source":"2","expected_question":"市场研究数据的费用是多少？"},
+    {"id":"h24","kind":"faq","query":"Does a research forecast promise certain returns?","expected_source":"3","expected_question":"系统中的预测代表什么？"}
+  ]
+}

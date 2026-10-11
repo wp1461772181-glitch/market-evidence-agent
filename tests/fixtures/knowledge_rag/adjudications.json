@@ -1,0 +1,9 @@
+{
+  "source_queries_sha256": "review baseline snapshot: /tmp/market-rag-build-20261011/queries-review-baseline.json",
+  "adjudications": [
+    {"id":"c07","split":"calibration","original_label":"expected_none","adjudicated_label":{"expected_source":"00000000-0000-4000-8000-000000000004","expected_text":"no EBITDA amount"},"reason":"The query asks for a numeric value that is absent; the SEC excerpt is still relevant because it explicitly states no EBITDA amount is present."},
+    {"id":"h14","split":"heldout","original_label":"expected_none","adjudicated_label":{"expected_source":"00000000-0000-4000-8000-000000000004","expected_text":"no EBITDA amount"},"reason":"The original asks what the saved excerpt states about EBITDA; the original synthetic excerpt explicitly states it contains no EBITDA amount."},
+    {"id":"h15","split":"heldout","original_label":"expected_none","adjudicated_label":{"privacy_only":true},"reason":"No cross-owner source may be returned; unrelated public or owner-A private rows do not violate the owner-B confidentiality question."},
+    {"id":"h18","split":"heldout","original_label":"expected_none","adjudicated_label":{"exclude_from_accuracy":true},"reason":"The question names Apple while the controller supplies DEMO; this is controller ambiguity, not a clean wrong-symbol retrieval negative."}
+  ]
+}

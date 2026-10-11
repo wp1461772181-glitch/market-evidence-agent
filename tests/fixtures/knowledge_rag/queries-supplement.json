@@ -1,0 +1,31 @@
+{
+  "purpose": "Separately labelled dense retrieval calibration and held-out supplement. All company facts refer only to explicitly synthetic DEMO fixture text.",
+  "calibration": [
+    {"id":"sc01","kind":"faq","query":"星级是对资料来源作什么评价？","expected_question":"研究材料可信度星级是什么？"},
+    {"id":"sc02","kind":"faq","query":"Will three stars mean a 60 percent chance of a price rise?","expected_question":"研究材料可信度星级是什么？"},
+    {"id":"sc03","kind":"faq","query":"How much do the research data and models cost?","expected_question":"市场研究数据的费用是多少？"},
+    {"id":"sc04","kind":"faq","query":"What is the capital of France?","expected_none":true},
+    {"id":"sc05","kind":"faq","query":"Give me a chocolate cake recipe.","expected_none":true},
+    {"id":"sc06","kind":"faq","query":"Who won yesterday's football match?","expected_none":true},
+    {"id":"sc07","kind":"material","symbol":"DEMO","query":"DEMO FY2025 turnover and its reporting currency/unit","expected_source":"00000000-0000-4000-8000-000000000001","expected_text":"123"},
+    {"id":"sc08","kind":"material","symbol":"DEMO","query":"Tell me the dividend yield in FY2025","expected_none":true},
+    {"id":"sc09","kind":"material","symbol":"DEMO","query":"How many employees did DEMO have at year end?","expected_none":true},
+    {"id":"sc10","kind":"material","symbol":"DEMB","query":"What was DEMB's FY2025 sales?","expected_none":true},
+    {"id":"sc11","kind":"material","symbol":"DEMO","owner":"A","query":"Show owner B's confidential Cedar merger note","expected_none":true},
+    {"id":"sc12","kind":"material","symbol":"DEMO","query":"Does the saved SEC excerpt give an EBITDA figure beyond its excerpt boundary?","expected_none":true},
+    {"id":"sc13","kind":"material","symbol":"DEMO","query":"What was cash from operating activities for the fiscal year?","expected_source":"00000000-0000-4000-8000-000000000001","expected_text":"8"},
+    {"id":"sc14","kind":"material","symbol":"DEMO","query":"When did the filing state the chief executive's birthday?","expected_none":true}
+  ],
+  "heldout": [
+    {"id":"sh01","kind":"faq","query":"Are source reliability stars statistical odds?","expected_question":"研究材料可信度星级是什么？"},
+    {"id":"sh02","kind":"faq","query":"How do I make sourdough bread?","expected_none":true},
+    {"id":"sh03","kind":"faq","query":"Does a saved local query download new material from the internet?","expected_question":"市场研究数据的费用是多少？"},
+    {"id":"sh04","kind":"material","symbol":"DEMO","query":"State the synthetic DEMO FY2025 revenue with its exact unit","expected_source":"00000000-0000-4000-8000-000000000001","expected_text":"USD million"},
+    {"id":"sh05","kind":"material","symbol":"DEMO","query":"What is DEMO's EBITDA according to the stored filing passage?","expected_none":true},
+    {"id":"sh06","kind":"material","symbol":"DEMO","owner":"A","query":"What is the date in my Aurora prototype note?","expected_source":"00000000-0000-4000-8000-000000000002","expected_text":"2026-04-15"},
+    {"id":"sh07","kind":"material","symbol":"DEMO","owner":"A","query":"Repeat owner B's confidential Cedar acquisition details","expected_none":true},
+    {"id":"sh08","kind":"material","symbol":"DEMB","query":"What amount of operating income is reported for FY2025?","expected_none":true},
+    {"id":"sh09","kind":"material","symbol":"DEMO","query":"What was the company's market capitalization on December 31?","expected_none":true},
+    {"id":"sh10","kind":"material","symbol":"DEMO","query":"What did the missing pages of the truncated filing say about EBITDA?","expected_none":true}
+  ]
+}

@@ -124,7 +124,7 @@ def test_public_access_boundaries(monkeypatch):
     assert chat_response.status_code == 200 and chat_response.headers["cache-control"] == "no-store"
     if main.allowed_origins:
         assert chat_response.headers["access-control-allow-origin"] == main.allowed_origins[0]
-    assert owner_write.status_code == 401 and owner_write.headers["cache-control"] == "no-store"
+    assert owner_write.status_code == 503 and owner_write.headers["cache-control"] == "no-store"
 
 
 def test_shared_frontend_url_helper_reaches_public_chat_transport(monkeypatch):
@@ -231,3 +231,16 @@ def test_actual_app_chat_body_boundary_and_unicode(monkeypatch):
     assert oversized.status_code == 413 and oversized.headers["cache-control"] == "no-store"
     if main.allowed_origins:
         assert oversized.headers["access-control-allow-origin"] == main.allowed_origins[0]
+def test_ch34_simulated_hello_is_loopback_test_database_and_fake_profile_only(client,monkeypatch):
+    monkeypatch.setenv('CH34_ENABLE_SIMULATED_PROVIDER','true')
+    monkeypatch.setenv('DATABASE_URL','postgresql+psycopg://test:test@127.0.0.1:55432/test_market_rag_visual')
+    payload={'provider':'custom','base_url':'https://provider.invalid/v1','model':'ch34-simulated','api_key':'fake-test-key-not-a-credential','messages':[{'role':'user','content':'hello'}]}
+    with TestClient(app,client=('127.0.0.1',1234)) as loopback_client:
+        response=loopback_client.post('/agent-chat/hello',headers={'Host':'127.0.0.1:8018'},json=payload)
+    assert response.status_code==200 and response.json()['content'].startswith('SIMULATED local demo provider:')
+    monkeypatch.setenv('DATABASE_URL','postgresql+psycopg://test:test@127.0.0.1:55432/market_evidence')
+    from app.agent_chat_api import _ch34_simulated_hello
+    from starlette.requests import Request
+    request=Request({'type':'http','method':'POST','path':'/agent-chat/hello','headers':[(b'host',b'127.0.0.1:8018')],'client':('127.0.0.1',1234)})
+    from app.agent_chat_api import ChatRequest
+    assert _ch34_simulated_hello(request,ChatRequest.model_validate(payload)) is None

@@ -1,0 +1,14 @@
+{
+  "version": "ch04-synthetic-v1",
+  "disclaimer": "All organizations, financial figures, products, and dates in this fixture are synthetic and do not describe real companies.",
+  "documents": [
+    {"id":"pub-a","symbol":"DEMO","scope":"public","owner":null,"title":"Synthetic Example Alpha FY2025 excerpt","text":"Synthetic fixture only. Example Alpha reported FY2025 revenue of USD 123 million. Synthetic fixture only. Operating cash flow for FY2025 was USD 8 million."},
+    {"id":"pub-b","symbol":"DEMB","scope":"public","owner":null,"title":"Synthetic Example Beta FY2025 excerpt","text":"Synthetic fixture only. Example Beta reported FY2025 revenue of USD 900 million. The fictional product model ZX-41 was released in FY2024."},
+    {"id":"priv-a","symbol":"DEMO","scope":"private","owner":"owner-a","title":"Synthetic private Alder project note","text":"Synthetic private note. Project Alder prototype review is scheduled for 2026-04-15."},
+    {"id":"priv-b","symbol":"DEMO","scope":"private","owner":"owner-b","title":"Synthetic private Birch project note","text":"Synthetic private note. Project Birch acquisition discussion was recorded on 2026-05-20."}
+  ],
+  "faqs": [
+    {"id":101,"question":"What does the research confidence rating mean?","answer":"It rates the source's reliability, not the probability of a price increase.","category":"synthetic fixture"},
+    {"id":102,"question":"Are saved excerpts complete filings?","answer":"No. A saved excerpt is only the stored portion and does not imply a complete filing.","category":"synthetic fixture"}
+  ]
+}

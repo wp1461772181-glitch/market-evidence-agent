@@ -62,13 +62,16 @@ class AgentChatBodyLimitMiddleware:
         await send({"type": "http.response.body", "body": body})
 
 
-def create_agent_chat_access_middleware(public_mode: bool, access_key: str):
+def create_agent_chat_access_middleware(public_mode: bool, access_key: str, owner_configured=None):
     def current(value):
         return value() if callable(value) else value
 
     async def protect_public_api(request, call_next):
         is_public = current(public_mode)
         configured_key = current(access_key)
+        from .agent_chat_identity import _load_config, owner_credential_matches
+        login_config = _load_config()
+        owner_configured_now = current(owner_configured) if owner_configured is not None else login_config is not None
         public_chat = request.method == "POST" and request.url.path in AgentChatBodyLimitMiddleware.PATHS
         public_chat_list = request.method == "GET" and request.url.path == "/agent-chat/conversations"
         if request.method == "GET" and request.url.path.startswith("/agent-chat/conversations/") and request.url.path.endswith("/messages"):
@@ -76,7 +79,7 @@ def create_agent_chat_access_middleware(public_mode: bool, access_key: str):
             if not 32 <= len(chat_session) <= 256:
                 return JSONResponse(status_code=401, content={"detail": "chat_session_required"}, headers={"Cache-Control": "no-store"})
         public_read = request.method in {"GET", "HEAD"} or request.url.path == "/health" or request.method == "OPTIONS"
-        if not is_public:
+        if not is_public and not owner_configured_now:
             response = await call_next(request)
             if public_chat or public_read or request.url.path == "/agent-chat/local-model-profiles":
                 response.headers["Cache-Control"] = "no-store"
@@ -85,11 +88,14 @@ def create_agent_chat_access_middleware(public_mode: bool, access_key: str):
             response = await call_next(request)
             response.headers["Cache-Control"] = "no-store"
             return response
-        if not configured_key:
-            return JSONResponse(status_code=503, content={"detail": "服务端尚未配置访问口令 / API access key is not configured"}, headers={"Cache-Control": "no-store"})
+        if is_public and login_config is None:
+            return JSONResponse(status_code=503, content={"detail": "owner_login_unavailable"}, headers={"Cache-Control": "no-store"})
         supplied_key = request.headers.get("X-App-Access-Key", "")
-        if not secrets.compare_digest(supplied_key.encode("utf-8"), configured_key.encode("utf-8")):
-            return JSONResponse(status_code=401, content={"detail": "访问口令无效，请重试 / Invalid API access key"}, headers={"Cache-Control": "no-store"})
+        session = request.headers.get("X-Chat-Session", "")
+        legacy_ok = bool(configured_key and supplied_key and secrets.compare_digest(supplied_key.encode("utf-8"), configured_key.encode("utf-8")))
+        if not owner_credential_matches(session) and not legacy_ok:
+            status = 503 if is_public and not login_config and not configured_key else 401
+            return JSONResponse(status_code=status, content={"detail": "owner_login_required"}, headers={"Cache-Control": "no-store"})
         response = await call_next(request)
         response.headers["Cache-Control"] = "no-store"
         return response

@@ -38,6 +38,11 @@ def _make_disposable_database_url() -> URL:
 
 _DISPOSABLE_DATABASE_URL = _make_disposable_database_url()
 os.environ["DATABASE_URL"] = _DISPOSABLE_DATABASE_URL.render_as_string(hide_password=False)
+# Never let a normal local pytest run discover a real developer owner-login
+# file. Auth tests opt in explicitly with generated tmp_path configuration.
+os.environ["PERSONAL_CHAT_LOGIN_PATH"] = os.path.join(
+    os.path.abspath(os.getenv("TMPDIR", "/tmp")), f"pytest-missing-owner-{uuid4().hex}.json"
+)
 
 # These imports must remain after DATABASE_URL is set so every application
 # module and test shares the disposable database engine.

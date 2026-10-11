@@ -1,7 +1,7 @@
 import { AgentAdminPage, AgentChatPanel, AgentChatProviderRoot } from "./AgentChatPanel";
 import { Tx, formatDateTime as formatLocalizedDateTime, getLocalePreference, translatePhrase, useLocale } from "./i18n";
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ApiError, getFilingInventory, getJevLearningStatus, getMaterialLibrary, getV2Evaluations, getV2ForecastRoots, getV2MonitorStatus, getV2Prices, getV2Workspace, initializeMarketData, scanOfficialFilings, hasOwnerAccessKey, saveOwnerAccessKey } from "./api";
+import { ApiError, getFilingInventory, getJevLearningStatus, getMaterialLibrary, getV2Evaluations, getV2ForecastRoots, getV2MonitorStatus, getV2Prices, getV2Workspace, initializeMarketData, scanOfficialFilings } from "./api";
 import type { FilingInventory, JevLearningStatus, PriceHistory } from "./types";
 import { V2ForecastWorkspace } from "./V2ForecastWorkspace";
 import { EvidenceCenter } from "./EvidenceCenter";
@@ -10,6 +10,7 @@ import { HistoricalReplayWorkspace } from "./HistoricalReplayWorkspace";
 import { normalizeTicker, normalizeWatchlist, selectionForWatchlist, MAX_WATCHLIST } from "./watchlist.mjs";
 import { getChatMode, setChatMode, personalChatLogin } from "./api";
 import { chatSessionKey } from "./chat-session.mjs";
+import { completePersonalLogin } from "./chat-mode-switch.mjs";
 
 const DEFAULT_SYMBOL = "AAPL";
 const DEFAULT_SYMBOLS = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"];
@@ -31,7 +32,7 @@ function AppEntry(){
   const [mode,setMode]=useState(()=>localStorage.getItem("market-evidence-agent:chat-mode:v1")?getChatMode():null),[code,setCode]=useState(""),[error,setError]=useState("");
   async function login(){try{const credential=await personalChatLogin(code);setChatMode("personal",credential);window.location.hash="agent";setMode("personal")}catch{setError("个人登录暂不可用，请检查登录码后重试。")}}
   if(mode)return <AgentChatProviderRoot key={chatSessionKey(mode,localStorage.getItem(mode==="personal"?"market-evidence-agent:personal-chat-session:v1":"market-evidence-agent:chat-session:v1"))}><WorkspaceApp key={mode} onModeChange={setMode}/></AgentChatProviderRoot>;
-  return <main className="entry-choice"><p className="eyebrow">Market Evidence Agent</p><h1>{t("选择聊天模式")}</h1><p>{t("访客与个人聊天记录保存在服务端 PostgreSQL。浏览器仅保存模型配置和聊天身份；股票和分析写入仍使用独立操作口令。")}</p><div><button className="primary-action" onClick={()=>{setChatMode("guest");window.location.hash="agent";setMode("guest")}}>{t("继续访客聊天")}</button><label>{t("个人聊天登录码")}<input type="password" value={code} maxLength={256} autoComplete="current-password" onChange={e=>setCode(e.target.value)}/></label><button className="secondary-action" disabled={!code} onClick={()=>void login()}>{t("登录个人聊天")}</button>{error&&<p role="alert">{error}</p>}</div></main>;
+  return <main className="entry-choice"><p className="eyebrow">Market Evidence Agent</p><h1>{t("选择聊天模式")}</h1><p>{t("访客与个人聊天记录保存在服务端 PostgreSQL。登录个人账户后即可进行站点操作。")}</p><div><button className="primary-action" onClick={()=>{setChatMode("guest");window.location.hash="agent";setMode("guest")}}>{t("继续访客聊天")}</button><label>{t("个人聊天登录码")}<input type="password" value={code} maxLength={256} autoComplete="current-password" onChange={e=>setCode(e.target.value)}/></label><button className="secondary-action" disabled={!code} onClick={()=>void login()}>{t("登录个人聊天")}</button>{error&&<p role="alert">{error}</p>}</div></main>;
 }
 
 function WorkspaceApp({onModeChange}:{onModeChange:(mode:"guest"|"personal")=>void}) {
@@ -91,7 +92,7 @@ function WorkspaceApp({onModeChange}:{onModeChange:(mode:"guest"|"personal")=>vo
 
   function addWatchSymbol() { const ticker = normalizeTicker(watchInput); if (!ticker) { setWatchError("请输入有效的美股代码，例如 AMD 或 BRK.B。"); return; } if (symbols.includes(ticker)) { setWatchError("该代码已在关注列表中。"); return; } if (symbols.length >= MAX_WATCHLIST) { setWatchError("关注列表最多保存 30 个代码。"); return; } setSymbols(items => [...items, ticker]); setWatchInput(""); setWatchError(""); openStock(ticker); }
   function removeWatchSymbol(ticker: string) { const remaining = symbols.filter(item => item !== ticker); setSymbols(remaining); setRequestedSymbol(current => selectionForWatchlist(current, remaining)); }
-  const shellProps = { activeSection, navigate, symbol: requestedSymbol, symbols, onSelectStock: openStock, watchInput, setWatchInput, addWatchSymbol, watchError, setWatchError };
+  const shellProps = { activeSection, navigate, symbol: requestedSymbol, symbols, onSelectStock: openStock, watchInput, setWatchInput, addWatchSymbol, watchError, setWatchError, onModeChange };
   if (activeSection === "agent") return <Shell {...shellProps}><AgentChatPanel onSettings={() => navigate("admin")} onModeChange={onModeChange} /></Shell>;
   if (activeSection === "admin") return <Shell {...shellProps}><AgentAdminPage onBack={() => navigate("agent")} /></Shell>;
 
@@ -131,7 +132,7 @@ function CurrentOverviewWorkspace({ symbols, onRemove, symbol, currentFilings, p
   const [universe, setUniverse] = useState<Record<string, UniverseItem>>(() => Object.fromEntries(symbols.map((ticker) => [ticker, { workspaceState: "loading", loading: true }])));
   const [monitor, setMonitor] = useState<{ kind: "loading" } | { kind: "ready"; data: Awaited<ReturnType<typeof getV2MonitorStatus>> } | { kind: "error" }>({ kind: "loading" });
   const [priceSeedState, setPriceSeedState] = useState("");
-  async function initializePrices() { if (priceSeedState === "正在初始化行情…") return; setPriceSeedState("正在初始化行情…"); try { const result = await initializeMarketData(symbol); setPriceSeedState(result.inserted_count ? "行情初始化成功，新增行情已自动刷新。" : "初始化完成，但供应商没有返回可保存的行情。"); onPricesInitialized(); } catch (error) { setPriceSeedState(actionMessage(error, "行情初始化失败；请先配置操作口令。")); } }
+  async function initializePrices() { if (priceSeedState === "正在初始化行情…") return; setPriceSeedState("正在初始化行情…"); try { const result = await initializeMarketData(symbol); setPriceSeedState(result.inserted_count ? "行情初始化成功，新增行情已自动刷新。" : "初始化完成，但供应商没有返回可保存的行情。"); onPricesInitialized(); } catch (error) { setPriceSeedState(actionMessage(error, "行情初始化失败，请登录个人账户后重试。")); } }
   useEffect(() => {
     const controller = new AbortController();
     setMonitor({ kind: "loading" });
@@ -263,29 +264,19 @@ function WorkspaceIntro({ eyebrow, title, description, action }: { eyebrow: stri
   </section>;
 }
 
-function Shell({ activeSection, navigate, symbol, symbols, onSelectStock, watchInput, setWatchInput, addWatchSymbol, watchError, setWatchError, children }: { activeSection: WorkspaceSection; navigate: (section: WorkspaceSection) => void; symbol: string; symbols: string[]; onSelectStock: (ticker: SupportedSymbol) => void; watchInput: string; setWatchInput: (value: string) => void; addWatchSymbol: () => void; watchError: string; setWatchError: (value: string) => void; children: ReactNode }) {
+function Shell({ activeSection, navigate, symbol, symbols, onSelectStock, watchInput, setWatchInput, addWatchSymbol, watchError, setWatchError, onModeChange, children }: { activeSection: WorkspaceSection; navigate: (section: WorkspaceSection) => void; symbol: string; symbols: string[]; onSelectStock: (ticker: SupportedSymbol) => void; watchInput: string; setWatchInput: (value: string) => void; addWatchSymbol: () => void; watchError: string; setWatchError: (value: string) => void; onModeChange:(mode:"guest"|"personal")=>void; children: ReactNode }) {
   const { locale, setLocale, t } = useLocale();
   const navRef = useRef<HTMLElement>(null);
   const [menuOpen,setMenuOpen]=useState(false),[pinned,setPinned]=useState(()=>localStorage.getItem("market-evidence-agent:nav-pinned:v1")==="1");
   const [isNarrow,setIsNarrow]=useState(()=>window.matchMedia("(max-width: 760px)").matches);
   const effectivePinned=pinned&&!isNarrow;
-  const [ownerDialog,setOwnerDialog]=useState(false),[ownerInput,setOwnerInput]=useState(""),[ownerHasKey,setOwnerHasKey]=useState(hasOwnerAccessKey);
+  const [ownerDialog,setOwnerDialog]=useState(false),[ownerInput,setOwnerInput]=useState(""),[ownerError,setOwnerError]=useState(""),[ownerBusy,setOwnerBusy]=useState(false);
+  const ownerDialogRef=useRef<HTMLElement>(null),ownerInputRef=useRef<HTMLInputElement>(null),ownerReturnFocus=useRef<HTMLElement|null>(null);
+  useEffect(()=>{if(!ownerDialog)return;ownerReturnFocus.current=document.activeElement instanceof HTMLElement?document.activeElement:null;const background=Array.from(document.querySelectorAll<HTMLElement>(".app-frame > :not(.app-content), .app-content > :not(.owner-auth-backdrop)"));const prior=background.map(el=>el.inert);background.forEach(el=>{el.inert=true});ownerInputRef.current?.focus();const trap=(event:KeyboardEvent)=>{if(event.key!=="Tab")return;const items=ownerDialogRef.current?.querySelectorAll<HTMLElement>('button:not([disabled]),input:not([disabled]),[href],select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])');if(!items?.length)return;const first=items[0],last=items[items.length-1];if(event.shiftKey&&(document.activeElement===first||!ownerDialogRef.current?.contains(document.activeElement))){event.preventDefault();last.focus()}else if(!event.shiftKey&&(document.activeElement===last||!ownerDialogRef.current?.contains(document.activeElement))){event.preventDefault();first.focus()}};document.addEventListener("keydown",trap,true);return()=>{document.removeEventListener("keydown",trap,true);background.forEach((el,i)=>{el.inert=prior[i]});ownerReturnFocus.current?.focus()}},[ownerDialog]);
   const menuRegion=useRef<HTMLDivElement>(null);
-  const ownerInputRef=useRef<HTMLInputElement>(null),ownerReturnFocus=useRef<HTMLElement|null>(null);
   const unpin=()=>{setPinned(false);localStorage.removeItem("market-evidence-agent:nav-pinned:v1");setMenuOpen(false)};
   useEffect(()=>{const media=window.matchMedia("(max-width: 760px)"),change=()=>setIsNarrow(media.matches);change();media.addEventListener("change",change);return()=>media.removeEventListener("change",change)},[]);
-  useEffect(()=>{const key=(e:KeyboardEvent)=>{if(e.key==="Escape"){if(ownerDialog)setOwnerDialog(false);else if(isNarrow)setMenuOpen(false);else unpin()}};const outside=(e:PointerEvent)=>{if((isNarrow||!pinned)&&!menuRegion.current?.contains(e.target as Node))setMenuOpen(false)};const hover=(e:PointerEvent)=>{if(!isNarrow&&!pinned)setMenuOpen(Boolean(menuRegion.current?.contains(e.target as Node)))};const auth=()=>{ownerReturnFocus.current=document.activeElement instanceof HTMLElement?document.activeElement:null;setOwnerHasKey(hasOwnerAccessKey());setOwnerInput("");setOwnerDialog(true)};const keyChange=()=>setOwnerHasKey(hasOwnerAccessKey());document.addEventListener("keydown",key);document.addEventListener("pointerdown",outside);document.addEventListener("pointermove",hover);window.addEventListener("owner-auth-required",auth);window.addEventListener("owner-access-key-changed",keyChange);return()=>{document.removeEventListener("keydown",key);document.removeEventListener("pointerdown",outside);document.removeEventListener("pointermove",hover);window.removeEventListener("owner-auth-required",auth);window.removeEventListener("owner-access-key-changed",keyChange)}},[pinned,isNarrow,ownerDialog]);
-  useEffect(()=>{
-    if(ownerDialog){
-      const backdrop=document.querySelector<HTMLElement>(".owner-auth-backdrop"),content=backdrop?.parentElement;
-      const inerted=content?[...content.children].filter((item):item is HTMLElement=>item instanceof HTMLElement&&item!==backdrop):[];
-      const nav=menuRegion.current;
-      const targets=[...inerted,...(nav?[nav]:[])];
-      const prior=targets.map(item=>item.hasAttribute("inert"));targets.forEach(item=>item.setAttribute("inert",""));
-      ownerInputRef.current?.focus();
-      return()=>{targets.forEach((item,index)=>{if(!prior[index])item.removeAttribute("inert")});const target=ownerReturnFocus.current;ownerReturnFocus.current=null;if(target?.isConnected)target.focus()};
-    }
-  },[ownerDialog]);
+  useEffect(()=>{const key=(e:KeyboardEvent)=>{if(e.key==="Escape"){if(ownerDialog)setOwnerDialog(false);else if(isNarrow)setMenuOpen(false);else unpin()}};const outside=(e:PointerEvent)=>{if((isNarrow||!pinned)&&!menuRegion.current?.contains(e.target as Node))setMenuOpen(false)};const hover=(e:PointerEvent)=>{if(!isNarrow&&!pinned)setMenuOpen(Boolean(menuRegion.current?.contains(e.target as Node)))};const auth=()=>{setOwnerInput("");setOwnerError("");setOwnerDialog(true)};document.addEventListener("keydown",key);document.addEventListener("pointerdown",outside);document.addEventListener("pointermove",hover);window.addEventListener("owner-auth-required",auth);return()=>{document.removeEventListener("keydown",key);document.removeEventListener("pointerdown",outside);document.removeEventListener("pointermove",hover);window.removeEventListener("owner-auth-required",auth)}},[pinned,isNarrow,ownerDialog]);
   const drawerNavigate=(section:WorkspaceSection)=>{if(isNarrow||!pinned)setMenuOpen(false);navigate(section)};
   useEffect(() => {
     if (activeSection === "admin") return;
@@ -338,7 +329,7 @@ function Shell({ activeSection, navigate, symbol, symbols, onSelectStock, watchI
         </div>
       </header>
       {children}
-      {ownerDialog&&<div className="owner-auth-backdrop" onKeyDownCapture={e=>{if(e.key==="Escape"){e.preventDefault();e.stopPropagation();setOwnerDialog(false);return}if(e.key==="Tab"){const dialog=e.currentTarget.querySelector<HTMLElement>(".owner-auth-dialog");const items=dialog?[...dialog.querySelectorAll<HTMLElement>('button:not([disabled]),input:not([disabled])')]:[];const first=items[0],last=items.at(-1);if(e.shiftKey&&document.activeElement===first){e.preventDefault();last?.focus()}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first?.focus()}}}} onMouseDown={e=>{if(e.target===e.currentTarget)setOwnerDialog(false)}}><section className="owner-auth-dialog" role="dialog" aria-modal="true" aria-labelledby="owner-auth-title"><button className="owner-auth-close" type="button" aria-label={t("关闭")} onClick={()=>setOwnerDialog(false)}>×</button><p className="eyebrow">{t("站点写入操作")}</p><h2 id="owner-auth-title">{t("需要操作口令")}</h2><p>{t(ownerHasKey?"当前会话中的操作口令未被服务器接受。":"尚未设置操作口令。个人聊天身份只用于聊天记录，不能授权股票和分析写入。")}</p><label>{t("站点操作口令")}<input ref={ownerInputRef} type="password" value={ownerInput} autoComplete="off" onChange={e=>setOwnerInput(e.target.value)}/></label><div><button className="primary-action" disabled={!ownerInput} onClick={()=>{saveOwnerAccessKey(ownerInput);setOwnerHasKey(true);setOwnerDialog(false)}}>{t("保存到当前会话")}</button><button className="secondary-action" onClick={()=>setOwnerDialog(false)}>{t("稍后")}</button></div><small>{t("保存仅更新本会话中的口令，不代表服务器已验证。请返回刚才的操作并手动重试。")}</small></section></div>}
+      {ownerDialog&&<div className="owner-auth-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)setOwnerDialog(false)}}><section ref={ownerDialogRef} className="owner-auth-dialog" role="dialog" aria-modal="true" aria-labelledby="owner-auth-title"><button className="owner-auth-close" type="button" aria-label={t("关闭")} onClick={()=>setOwnerDialog(false)}>×</button><p className="eyebrow">{t("站点写入操作")}</p><h2 id="owner-auth-title">{t("请登录个人账户")}</h2><p>{t("登录后可继续进行站点操作。登录完成后，请手动重试刚才未完成的操作。")}</p><label>{t("个人登录密码或口令")}<input ref={ownerInputRef} type="password" value={ownerInput} autoComplete="current-password" onChange={e=>setOwnerInput(e.target.value)}/></label>{ownerError&&<p role="alert">{ownerError}</p>}<div><button className="primary-action" disabled={!ownerInput||ownerBusy} onClick={()=>{setOwnerBusy(true);void personalChatLogin(ownerInput).then(credential=>{completePersonalLogin(credential,setChatMode,onModeChange);setOwnerDialog(false);setOwnerInput("")}).catch(error=>setOwnerError(error instanceof Error?error.message:t("登录暂不可用。"))).finally(()=>setOwnerBusy(false))}}>{ownerBusy?t("正在登录…"):t("登录并授权")}</button><button className="secondary-action" onClick={()=>setOwnerDialog(false)}>{t("稍后")}</button></div></section></div>}
       <footer>{<Tx text={"Market Evidence Agent · 本地研究记录 · 研究判断可追溯到原始来源"} />}</footer>
     </div>
   </div>;

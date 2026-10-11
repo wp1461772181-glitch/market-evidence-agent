@@ -1,0 +1,210 @@
+{
+  "calibration": [
+    {
+      "id": "cal-1",
+      "kind": "material",
+      "symbol": "DEMO",
+      "query": "How much revenue did Example Alpha report in FY2025 and what unit?",
+      "expected_source": "pub-a",
+      "marker": "USD 123 million"
+    },
+    {
+      "id": "cal-2",
+      "kind": "material",
+      "symbol": "DEMB",
+      "query": "Find exact product model ZX-41 and release fiscal year",
+      "expected_source": "pub-b",
+      "marker": "ZX-41"
+    },
+    {
+      "id": "cal-3",
+      "kind": "faq",
+      "query": "Does the confidence rating mean chance of a stock price increase?",
+      "expected_source": "101",
+      "marker": "not the probability"
+    },
+    {
+      "id": "cal-4",
+      "kind": "material",
+      "symbol": "DEMO",
+      "owner": "owner-a",
+      "query": "When is the Alder prototype review?",
+      "expected_source": "priv-a",
+      "marker": "2026-04-15"
+    },
+    {
+      "id": "cal-5",
+      "kind": "material",
+      "symbol": "DEMO",
+      "query": "经营现金流 FY2025 金额和币种",
+      "expected_source": "pub-a",
+      "marker": "USD 8 million",
+      "query_type": "bilingual_paraphrase"
+    },
+    {
+      "id": "cal-6",
+      "kind": "material",
+      "symbol": "DEMO",
+      "query": "DEMO 2025 operating cash flow USD millions",
+      "expected_source": "pub-a",
+      "marker": "USD 8 million",
+      "query_type": "ticker_year_units"
+    },
+    {
+      "id": "cal-7",
+      "kind": "material",
+      "symbol": "DEMB",
+      "query": "ZX-41 model release in FY2024",
+      "expected_source": "pub-b",
+      "marker": "ZX-41",
+      "query_type": "exact_identifier"
+    },
+    {
+      "id": "cal-8",
+      "kind": "faq",
+      "query": "Are stored excerpts necessarily full SEC filings?",
+      "expected_source": "102",
+      "marker": "only the stored portion",
+      "query_type": "bilingual_paraphrase"
+    },
+    {
+      "id": "cal-9",
+      "kind": "material",
+      "symbol": "DEMC",
+      "query": "DEMC FY2025 revenue amount",
+      "expected_none": true,
+      "query_type": "zero_evidence"
+    },
+    {
+      "id": "cal-10",
+      "kind": "material",
+      "symbol": "DEMO",
+      "owner": "owner-a",
+      "query": "Show Project Birch acquisition date",
+      "expected_none": true,
+      "forbidden_source": "priv-b",
+      "query_type": "owner_boundary"
+    },
+    {
+      "id": "cal-11",
+      "kind": "material",
+      "symbol": "DEMB",
+      "query": "Example Alpha FY2025 revenue",
+      "expected_none": true,
+      "query_type": "cross_stock"
+    },
+    {
+      "id": "cal-12",
+      "kind": "material",
+      "symbol": "DEMO",
+      "query": "What was revenue as of FY2027?",
+      "expected_none": true,
+      "query_type": "time_version_boundary"
+    }
+  ],
+  "heldout": [
+    {
+      "id": "test-1",
+      "kind": "material",
+      "symbol": "DEMO",
+      "query": "营收 revenue for fiscal 2025, including currency and scale",
+      "expected_source": "pub-a",
+      "marker": "USD 123 million"
+    },
+    {
+      "id": "test-2",
+      "kind": "material",
+      "symbol": "DEMO",
+      "owner": "owner-b",
+      "query": "Project Birch discussion date",
+      "expected_source": "priv-b",
+      "marker": "2026-05-20"
+    },
+    {
+      "id": "test-3",
+      "kind": "material",
+      "symbol": "DEMO",
+      "owner": "owner-a",
+      "query": "What is the other user's Birch acquisition plan?",
+      "expected_none": true,
+      "forbidden_source": "priv-b"
+    },
+    {
+      "id": "test-4",
+      "kind": "material",
+      "symbol": "DEMO",
+      "query": "What is Example Alpha's FY2027 EBITDA?",
+      "expected_none": true
+    },
+    {
+      "id": "test-5",
+      "kind": "material",
+      "symbol": "DEMO",
+      "query": "How much cash did Alpha generate from operations in fiscal 2025?",
+      "expected_source": "pub-a",
+      "marker": "USD 8 million",
+      "query_type": "bilingual_paraphrase"
+    },
+    {
+      "id": "test-6",
+      "kind": "material",
+      "symbol": "DEMB",
+      "query": "For ticker DEMB in FY2025 give its reported revenue and unit",
+      "expected_source": "pub-b",
+      "marker": "USD 900 million",
+      "query_type": "ticker_year_units"
+    },
+    {
+      "id": "test-7",
+      "kind": "faq",
+      "query": "Is source reliability rating a forecast probability?",
+      "expected_source": "101",
+      "marker": "not the probability",
+      "query_type": "exact_concept"
+    },
+    {
+      "id": "test-8",
+      "kind": "material",
+      "symbol": "DEMO",
+      "owner": "owner-a",
+      "query": "Alder prototype review scheduled date",
+      "expected_source": "priv-a",
+      "marker": "2026-04-15",
+      "query_type": "private_owner_scope"
+    },
+    {
+      "id": "test-9",
+      "kind": "material",
+      "symbol": "DEMO",
+      "owner": "owner-a",
+      "query": "What did owner B write about Birch?",
+      "expected_none": true,
+      "forbidden_source": "priv-b",
+      "query_type": "cross_owner"
+    },
+    {
+      "id": "test-10",
+      "kind": "material",
+      "symbol": "DEMC",
+      "query": "DEMC quarterly sales in 2025",
+      "expected_none": true,
+      "query_type": "zero_evidence"
+    },
+    {
+      "id": "test-11",
+      "kind": "material",
+      "symbol": "DEMO",
+      "query": "What is Alpha FY2024 EBITDA?",
+      "expected_none": true,
+      "query_type": "missing_fact"
+    },
+    {
+      "id": "test-12",
+      "kind": "material",
+      "symbol": "DEMO",
+      "query": "Revenue for a future period FY2028",
+      "expected_none": true,
+      "query_type": "time_version_boundary"
+    }
+  ]
+}

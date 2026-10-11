@@ -15,7 +15,7 @@ def document():
 def client(tmp_path, **env):
     app = FastAPI()
     app.include_router(router)
-    old = {key: os.environ.get(key) for key in ("LOCAL_MODEL_PROFILES_ENABLED", "PUBLIC_API_MODE", "LOCAL_MODEL_PROFILES_PATH")}
+    old = {key: os.environ.get(key) for key in ("LOCAL_MODEL_PROFILES_ENABLED", "PUBLIC_API_MODE", "LOCAL_MODEL_PROFILES_PATH", "PERSONAL_CHAT_LOGIN_PATH")}
     os.environ.update({"LOCAL_MODEL_PROFILES_ENABLED": "true", "PUBLIC_API_MODE": "false", "LOCAL_MODEL_PROFILES_PATH": str(tmp_path / "profiles.json"), **env})
     return TestClient(app, base_url="http://localhost", client=("127.0.0.1", 50000)), old
 
@@ -39,6 +39,22 @@ def test_roundtrip_survives_new_store_and_restricts_permissions(tmp_path):
         assert c2.get("/agent-chat/local-model-profiles").headers["cache-control"] == "no-store"
         c2.close()
     finally: restore(old)
+
+
+def test_configured_owner_is_required_for_local_profile_reads_and_writes(tmp_path, monkeypatch):
+    import base64, hashlib
+    salt, code, credential = b"s" * 32, "generated-test-code", "o" * 72
+    login = tmp_path / "generated-login.json"
+    login.write_text(json.dumps({"salt": base64.b64encode(salt).decode(), "hash": base64.b64encode(hashlib.pbkdf2_hmac("sha256", code.encode(), salt, 100000)).decode(), "iterations": 100000, "chat_credential": credential}))
+    monkeypatch.setenv("PERSONAL_CHAT_LOGIN_PATH", str(login))
+    c, old = client(tmp_path)
+    try:
+        assert c.get("/agent-chat/local-model-profiles").status_code == 401
+        assert c.put("/agent-chat/local-model-profiles", json=document()).status_code == 401
+        assert c.get("/agent-chat/local-model-profiles", headers={"X-Chat-Session": credential}).status_code == 200
+        assert c.put("/agent-chat/local-model-profiles", json=document(), headers={"X-Chat-Session": credential}).status_code == 200
+    finally:
+        c.close(); restore(old)
 
 
 def test_disabled_and_public_mode_deny(tmp_path):

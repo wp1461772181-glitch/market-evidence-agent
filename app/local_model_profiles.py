@@ -75,6 +75,11 @@ def _guard(request: Request) -> None:
             raise HTTPException(403, "local_profile_request_denied") from None
     if any(name.lower() == "forwarded" or name.lower() == "x-real-ip" or name.lower().startswith("x-forwarded-") for name, _ in request.headers.items()):
         raise HTTPException(403, "local_profile_request_denied")
+    # In an installation with owner login configured, the local file contains
+    # owner secrets and every read/write must prove that identity.
+    from .agent_chat_identity import _load_config, owner_credential_matches
+    if _load_config() is not None and not owner_credential_matches(request.headers.get("X-Chat-Session")):
+        raise HTTPException(401, "owner_login_required")
 
 
 def _validate(value: object) -> dict:

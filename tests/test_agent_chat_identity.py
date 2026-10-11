@@ -51,6 +51,13 @@ def test_conversation_list_requires_credential_and_is_bounded(monkeypatch):
     assert invalid.status_code==422
 
 
+def test_owner_header_with_non_ascii_is_rejected_without_server_error(tmp_path, monkeypatch):
+    salt=b"s"*32;credential="o"*72;path=tmp_path/"generated-login.json"
+    path.write_text(json.dumps({"salt":base64.b64encode(salt).decode(),"hash":base64.b64encode(b"h"*32).decode(),"iterations":100000,"chat_credential":credential}))
+    monkeypatch.setenv("PERSONAL_CHAT_LOGIN_PATH",str(path))
+    assert identity.owner_credential_matches("访客"+"x"*64) is False
+
+
 def test_message_restore_rejects_missing_and_cross_owner(monkeypatch):
     from app import agent_chat_stream
     from app.agent_chat_middleware import create_agent_chat_access_middleware

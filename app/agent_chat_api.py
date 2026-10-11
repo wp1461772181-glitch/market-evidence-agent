@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Literal
 from urllib.parse import urlsplit, urlunsplit
 import ipaddress, socket
+import os
 import json
 import re
 from datetime import datetime
@@ -77,6 +78,29 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     content: str
     model: str
+
+def _ch34_simulated_hello(request: Request, payload: ChatRequest) -> ChatResponse | None:
+    """Return a clearly labelled, non-provider hello only in the isolated demo."""
+    if os.getenv('CH34_ENABLE_SIMULATED_PROVIDER','false').lower() not in {'1','true','yes'}:
+        return None
+    if (payload.provider,payload.base_url,payload.model,payload.api_key.get_secret_value()) != (
+        'custom','https://provider.invalid/v1','ch34-simulated','fake-test-key-not-a-credential'):
+        return None
+    peer=request.client.host if request.client else ''
+    try:
+        if not ipaddress.ip_address(peer.split('%',1)[0]).is_loopback:return None
+    except ValueError:return None
+    authority=urlsplit('//'+request.headers.get('host',''))
+    host=(authority.hostname or '').lower()
+    if host not in {'127.0.0.1','localhost','::1'} or any(name.lower() in {'forwarded','x-real-ip'} or name.lower().startswith('x-forwarded-') for name in request.headers):
+        return None
+    try:
+        from sqlalchemy.engine import make_url
+        database=make_url(os.getenv('DATABASE_URL',''))
+    except Exception:return None
+    if database.get_backend_name()!='postgresql' or not database.database or not __import__('re').fullmatch(r'test_[a-z0-9_]+',database.database) or database.host not in {'127.0.0.1','localhost','::1'} or database.port!=55432:
+        return None
+    return ChatResponse(content='SIMULATED local demo provider: hello check passed. No external model was called.',model=payload.model)
 
 def _validated_base_url(value):
     if value is None: return value
@@ -209,7 +233,9 @@ async def _limited_call(payload: ChatRequest, messages: list[dict[str, str]], ma
         REQUEST_SLOTS.release()
 
 @router.post("/hello", response_model=ChatResponse)
-async def hello(payload: ChatRequest):
+async def hello(payload: ChatRequest, request: Request):
+    simulated=_ch34_simulated_hello(request,payload)
+    if simulated:return simulated
     return await _limited_call(payload, [{"role": "user", "content": "hello. Reply briefly."}], 64)
 
 @router.post("/messages", response_model=ChatResponse)

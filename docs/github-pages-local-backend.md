@@ -22,33 +22,34 @@ details](https://tailscale.com/pricing).
 GitHub Pages is public. With `PUBLIC_API_MODE=true`, GET/HEAD reads, OPTIONS,
 health, and the two BYOK chat endpoints are public. `POST /agent-chat/hello`
 and `POST /agent-chat/messages` accept a user supplied provider key for that
-request and do not use the site owner key. All other write operations still
-require `X-App-Access-Key`; the browser no longer blocks public browsing with a
-site-wide key prompt. Keep the owner key strong and private. CORS restricts
+request and do not use an owner credential. The single configured personal
+login authorizes owner write operations through its private browser session;
+chat guests keep their own browser-session keys for private conversations. There
+is no frontend `X-App-Access-Key` prompt or separate operation key. CORS restricts
 browser origins but is not authentication.
 
-Agent chat supports DeepSeek and OpenRouter through fixed HTTPS endpoints. The
-user enters a model ID and key in the Agent panel. The key stays in browser
-component memory and is not persisted; provider/model preferences may be saved.
-A real hello completion with a non-empty assistant response must succeed before
-chat is enabled. No server-side provider key fallback is used. The general chat
-cannot access the project's material library, forecasts, or tools.
+The Agent panel supports preset and custom OpenAI-compatible model profiles.
+Guest profiles persist in the browser through OPFS when available, with IndexedDB
+as the fallback. An optional owner loopback file mode stores profiles in a local
+file. The public server never exposes local profile keys. A real hello verification
+with a non-empty assistant response must succeed before chat is enabled. Chat can
+use read tools to inspect saved research data. Retrieval-augmented generation
+(RAG) is optional and is currently disabled on the public deployment.
 
-Keep DeepSeek/OpenRouter keys and database credentials in the ignored local
+Keep provider keys and database credentials in the ignored local
 `.env`. Never place them in `VITE_*`, GitHub Pages files, or the frontend bundle.
 Do not replace the existing `.env`; add these settings alongside its current
 database/provider settings:
 
 ```dotenv
 PUBLIC_API_MODE=true
-APP_API_ACCESS_KEY=<a locally generated random value of at least 32 characters>
 CORS_ALLOWED_ORIGINS=https://wp1461772181-glitch.github.io
 ```
 
-Generate the access key locally with `./.venv/bin/python -c 'import secrets;
-print(secrets.token_urlsafe(32))'`. Keep that terminal output private. FastAPI
-refuses to start in public mode if the key is too short or the exact CORS origin
-is missing or wildcarded.
+The existing private personal-login configuration must be available to the API
+process (by default under the ignored local `data/` directory). FastAPI refuses
+to start in public mode if that configuration is unavailable or the exact CORS
+origin is missing or wildcarded. No operation key is required by the frontend.
 
 ## Local services
 
@@ -73,6 +74,13 @@ the existing database container, binds only to loopback, and loads the ignored
 ./.venv/bin/python scripts/install_api_launchagent.py --print
 ./.venv/bin/python scripts/install_api_launchagent.py
 ```
+
+The launcher defaults to `${PROJECT_ROOT}/.venv/bin/python`; set
+`MARKET_EVIDENCE_API_PYTHON` to the absolute `.venv-rag/bin/python` path in the
+LaunchAgent `EnvironmentVariables` dictionary to select the optional RAG
+runtime. The same dictionary can carry explicit RAG flags and absolute model
+paths; see [RAG runtime prerequisites](knowledge-rag.md#runtime-prerequisites).
+The checked-in installer does not enable RAG automatically.
 
 Confirm `http://127.0.0.1:8000/health` returns `{"status":"ok"}`. Logs are
 written to `logs/api-server.*.log`. Keep the forecast worker active as well; its
@@ -109,7 +117,7 @@ the local services return.
    `https://<machine>.<tailnet>.ts.net` (no path; trailing slash is optional).
 4. Run **Actions → Deploy frontend to GitHub Pages → Run workflow**.
 5. Open `https://wp1461772181-glitch.github.io/market-evidence-agent/` and confirm
-   public read views load. Owner-only write actions require the owner access key;
+   public read views load. Owner-only write actions require the personal owner login;
    BYOK chat is configured independently in the Agent panel.
 
 The workflow sets the correct `/<repository-name>/` base path, builds with

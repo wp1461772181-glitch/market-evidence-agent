@@ -49,6 +49,20 @@ def _load_config():
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
         return None
 
+def owner_credential_matches(value: str | None) -> bool:
+    """Return whether a session header is the configured site-owner credential."""
+    config = _load_config()
+    if config is None or not isinstance(value, str) or not 64 <= len(value) <= 256:
+        return False
+    try:
+        return hmac.compare_digest(value.encode("ascii"), config[3].encode("ascii"))
+    except UnicodeEncodeError:
+        return False
+
+@router.get("/session-status")
+async def session_status(x_chat_session: str | None = Header(default=None)):
+    return {"owner": owner_credential_matches(x_chat_session)}
+
 @router.post("/personal-login")
 async def personal_login(body: LoginBody, request: Request):
     if not _allowed(request.client.host if request.client else "unknown"):

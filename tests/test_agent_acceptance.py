@@ -102,23 +102,21 @@ def test_real_sec_query_without_form():
     assert result['ok'] and result['data'][0]['form']=='10-Q'
 
 
-def test_material_query_includes_sec_and_keeps_literal_wildcards():
+def test_material_search_without_dense_runtime_is_explicitly_unavailable():
     filing('TSTM')
     result=run(tools.query_materials.ainvoke({'symbol':'TSTM','keyword':'UniqueParentKeyword'}))
-    assert result['ok'] and result['data'], 'existing SEC material must be searchable'
-    miss=run(tools.query_materials.ainvoke({'symbol':'TSTM','keyword':'%'}))
-    assert miss['data']==[]
+    assert result=={'ok':False,'data':None,'error_code':'knowledge_unavailable','source':'knowledge_chunks','as_of':None}
 
 
-def test_faq_expected_keyword_miss_and_empty_prices():
-    hit=run(tools.query_research_faq.ainvoke({'keyword':'费用'}))
-    miss=run(tools.query_research_faq.ainvoke({'keyword':'价钱'}))
+def test_faq_without_dense_runtime_is_explicitly_unavailable():
+    result=run(tools.query_research_faq.ainvoke({'keyword':'费用'}))
     empty=run(tools.query_stock_prices.ainvoke({'symbol':'TSTE'}))
-    assert hit['data'] and not miss['data'] and not empty['data']
+    assert result['error_code']=='knowledge_unavailable' and result['data'] is None
+    assert empty['ok'] and empty['data']==[]
 
 
 def test_stream_ownership_persistence_and_tool_disable(monkeypatch):
-    requests=provider_fixture(monkeypatch)
+    requests=provider_fixture(monkeypatch,decision={'role':'assistant','content':None,'tool_calls':[call('query_stock_prices',{'symbol':'AAPL'})]})
     with TestClient(main.app) as client:
         response=send(client); events=frames(response)
         assert response.status_code==200 and events[-1][0]=='done'
@@ -139,7 +137,7 @@ def test_stream_ownership_persistence_and_tool_disable(monkeypatch):
 
 def test_reasoning_round_trip_is_complete(monkeypatch):
     thought='r'*8100
-    decision={'role':'assistant','content':None,'tool_calls':[call()], 'reasoning_content':thought}
+    decision={'role':'assistant','content':None,'tool_calls':[call('query_stock_prices',{'symbol':'AAPL'})], 'reasoning_content':thought}
     requests=provider_fixture(monkeypatch,decision)
     with TestClient(main.app) as client:
         events=frames(send(client))
@@ -153,7 +151,7 @@ def test_reasoning_round_trip_is_complete(monkeypatch):
 
 
 def test_incomplete_provider_stream_cannot_report_success(monkeypatch):
-    provider_fixture(monkeypatch,chunks=[b'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'])
+    provider_fixture(monkeypatch,decision={'role':'assistant','content':None,'tool_calls':[call('query_stock_prices',{'symbol':'AAPL'})]},chunks=[b'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'])
     with TestClient(main.app) as client:
         events=frames(send(client))
     assert not any(e[0]=='done' for e in events)
@@ -161,7 +159,7 @@ def test_incomplete_provider_stream_cannot_report_success(monkeypatch):
 
 
 def test_failed_turn_remains_visible_on_restore(monkeypatch):
-    provider_fixture(monkeypatch,chunks=[b'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n',b'data: {"error":{"message":"provider failure"}}\n\n'])
+    provider_fixture(monkeypatch,decision={'role':'assistant','content':None,'tool_calls':[call('query_stock_prices',{'symbol':'AAPL'})]},chunks=[b'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n',b'data: {"error":{"message":"provider failure"}}\n\n'])
     with TestClient(main.app) as client:
         events=frames(send(client));cid=events[0][1]['conversation_id']
         assert events[-1][0]=='error'
@@ -190,19 +188,19 @@ def test_current_message_is_sent_and_no_tool_path_streams(monkeypatch):
     assert not any(e[0]=='tool_start' for e in events)
 
 
-def test_multiple_tool_requests_are_all_closed_without_execution(monkeypatch):
+def test_multiple_tool_requests_execute_only_first_call(monkeypatch):
     import app.agent_chat_stream as stream
     from unittest.mock import AsyncMock
-    execute=AsyncMock()
+    execute=AsyncMock(return_value={'ok':True,'data':[],'source':'fixture','as_of':None})
     monkeypatch.setattr(stream,'execute_tool',execute)
-    requests=provider_fixture(monkeypatch,decision={'role':'assistant','content':None,'tool_calls':[call(ident='call-1'),call(ident='call-2')]})
+    requests=provider_fixture(monkeypatch,decision={'role':'assistant','content':None,'tool_calls':[call('query_stock_prices',{'symbol':'AAPL'},ident='call-1'),call('query_stock_prices',{'symbol':'AAPL'},ident='call-2')]})
     with TestClient(main.app) as client:
         events=frames(send(client))
-    assert events[-1][0]=='done' and execute.await_count==0
+    assert events[-1][0]=='done' and execute.await_count==1
     msgs=requests[1]['messages']
     proposed=[m for m in msgs if m.get('tool_calls')][0]['tool_calls']
     results=[m['tool_call_id'] for m in msgs if m['role']=='tool']
-    assert {c['id'] for c in proposed}==set(results)=={'call-1','call-2'}
+    assert [c['id'] for c in proposed]==results==['call-1']
 
 
 def test_chat_capacity_applies_to_entire_stream(monkeypatch):

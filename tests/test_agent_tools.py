@@ -32,15 +32,18 @@ def test_sec_without_form_omits_nullable_parameter(monkeypatch):
     assert "form" not in seen[0][1]
 
 
-def test_material_search_uses_postgres_escape_and_escapes_literal_pattern(monkeypatch):
+def test_material_search_delegates_natural_language_to_dense_retrieval(monkeypatch):
     import app.agent_tools as tools
     seen=[]
-    async def query(sql,params): seen.append((sql,params)); return []
-    monkeypatch.setattr(tools,"_query",query)
-    asyncio.run(tools.query_materials.ainvoke({"symbol":"AAPL","keyword":"%_\\"}))
-    assert len(seen)==2
-    assert all("ESCAPE E'\\\\'" in sql for sql,_ in seen)
-    assert seen[0][1]["pattern"]=="%\\%\\_\\\\%"
+    async def retrieve(symbol,query,limit):
+        seen.append((symbol,query,limit))
+        return {"ok":True,"data":[],"source":"knowledge_documents","as_of":None}
+    monkeypatch.setattr(tools,"retrieve_materials",retrieve)
+    result=asyncio.run(tools.query_materials.ainvoke({"symbol":"AAPL","keyword":"查FY2025收入"}))
+    assert seen==[("AAPL","查FY2025收入",5)]
+    assert result=={"ok":True,"data":[],"source":"knowledge_documents","as_of":None}
+    schema=tools.query_materials.args_schema.model_json_schema()
+    assert set(schema["properties"])=={"symbol","keyword","limit"}
 
 
 def test_forecast_jsonb_null_falls_through_to_baseline(monkeypatch):

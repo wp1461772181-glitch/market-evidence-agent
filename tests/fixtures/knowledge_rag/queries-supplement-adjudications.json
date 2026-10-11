@@ -1,0 +1,8 @@
+{
+  "purpose": "Explicit corrections to the first supplemental annotation; the original queries-supplement.json remains unchanged.",
+  "adjudications": [
+    {"id":"sc08","original_label":"expected_none","corrected_label":"relevant_source_missing_fact","expected_source":"00000000-0000-4000-8000-000000000001","reason":"The DEMO passage is relevant to FY2025 dividend yield, but does not contain that value. Retrieval relevance and answerability are separate; the answer must refuse the missing numeric fact."},
+    {"id":"sc09","original_label":"expected_none","corrected_label":"relevant_source_missing_fact","expected_source":"00000000-0000-4000-8000-000000000001","reason":"The DEMO passage is relevant to company facts but contains no employee count. Retrieval relevance and answerability are separate; the answer must refuse the missing fact."},
+    {"id":"sc11","original_label":"expected_none","corrected_label":"forbidden_source_absence","forbidden_source":"00000000-0000-4000-8000-000000000003","reason":"Owner A's request for Owner B private information must exclude B's private source. It does not require an empty response if authorized public material is relevant."}
+  ]
+}

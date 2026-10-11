@@ -30,13 +30,12 @@ export function changeChatMode(localStorage, sessionStorage, mode, credential) {
   }
   sessionStorage.removeItem(chatIdentityKeys.conversation);
   sessionStorage.removeItem(chatIdentityKeys.conversationCreatedAt);
+  sessionStorage.removeItem("market-evidence-agent-api-access-key");
   if (mode === "personal" && credential) {
     localStorage.setItem(chatIdentityKeys.personal, credential);
     localStorage.setItem(chatIdentityKeys.mode, "personal");
-    sessionStorage.removeItem("market-evidence-agent-api-access-key");
   } else {
     localStorage.removeItem(chatIdentityKeys.personal);
-    sessionStorage.removeItem("market-evidence-agent-api-access-key");
     localStorage.setItem(chatIdentityKeys.mode, "guest");
   }
 }
@@ -69,4 +68,11 @@ export function activeChatCredential(localStorage, sessionStorage, randomCredent
     sessionStorage.removeItem(chatIdentityKeys.legacySession);
   }
   return value;
+}
+
+export function applyChatIdentity(headers, credential) {
+  const result = new Headers(headers);
+  if (!result.has("X-Chat-Session")) result.set("X-Chat-Session", credential);
+  result.delete("X-App-Access-Key");
+  return result;
 }

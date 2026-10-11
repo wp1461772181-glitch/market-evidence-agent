@@ -5,7 +5,7 @@ from typing import Annotated
 from uuid import UUID
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile, status
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, Response, UploadFile, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.middleware.cors import CORSMiddleware
@@ -33,6 +33,7 @@ from .manual_evidence import (
 from .local_model_profiles import router as local_model_profiles_router
 from .agent_chat_api import router as agent_chat_router
 from .agent_chat_stream import router as agent_chat_stream_router
+from .knowledge.api import router as knowledge_router
 from .agent_chat_identity import router as agent_chat_identity_router
 from .agent_chat_models import AgentConversation, AgentMessage, AgentFAQ
 from .agent_faq_seed import seed_faq
@@ -88,6 +89,10 @@ from .services import MODEL_VERSION, is_valid_symbol, mock_forecast, normalize_s
 from .agent_chat_middleware import AgentChatBodyLimitMiddleware, create_agent_chat_access_middleware
 
 
+# FastAPI 应用入口：创建 app、挂载 V2/材料/本地化路由，并保留旧版研究、行情、上传与预测端点。
+# V3 主链从 forecast_v2_router 进入；startup 只创建指定旧表，V2 schema 由显式迁移管理。
+# app 在此创建；V2、材料分析和本地化路由在这里注册。
+# 旧接口与 V3 router 并存；startup 自动建表范围刻意排除了 V2 与可选材料表。
 PUBLIC_API_MODE = os.getenv("PUBLIC_API_MODE", "false").strip().lower() in {"1", "true", "yes"}
 APP_API_ACCESS_KEY = os.getenv("APP_API_ACCESS_KEY", "")
 
@@ -113,17 +118,22 @@ else:
 app.include_router(agent_chat_router)
 app.include_router(local_model_profiles_router)
 app.include_router(agent_chat_stream_router)
+app.include_router(knowledge_router)
 app.include_router(agent_chat_identity_router)
 app.include_router(forecast_v2_router)
 app.include_router(material_analysis_router)
 app.include_router(localization_router)
 
 
+# 公开模式下对业务请求校验访问头并禁缓存；健康检查和预检请求放行。
+# Resolve the active application configuration when a request arrives. This
+# keeps middleware policy aligned with lifespan/config overrides in tests and
+# embedded deployments; production still reads the same fail-closed settings.
 app.middleware("http")(create_agent_chat_access_middleware(lambda: PUBLIC_API_MODE, lambda: APP_API_ACCESS_KEY))
 
 
 # Register CORS after the authentication middleware so browser clients receive
-# CORS headers even on the 401 response that triggers the access-key prompt.
+# CORS headers even on the 401 response that triggers the personal-login prompt.
 if cors_middleware_enabled:
     app.add_middleware(
         CORSMiddleware,
@@ -136,11 +146,13 @@ if cors_middleware_enabled:
 app.add_middleware(AgentChatBodyLimitMiddleware, allowed_origins=allowed_origins)
 
 
+# 启动时检查公开模式配置并创建允许自动创建的旧表，不自动迁移 V2 表。
 @app.on_event("startup")
 def create_tables() -> None:
     if PUBLIC_API_MODE:
-        if len(APP_API_ACCESS_KEY) < 32:
-            raise RuntimeError("PUBLIC_API_MODE requires an APP_API_ACCESS_KEY of at least 32 characters")
+        from .agent_chat_identity import _load_config
+        if _load_config() is None:
+            raise RuntimeError("PUBLIC_API_MODE requires a valid personal chat login configuration")
         if not allowed_origins or "*" in allowed_origins:
             raise RuntimeError("PUBLIC_API_MODE requires exact CORS_ALLOWED_ORIGINS; wildcard origins are not allowed")
     # V2 schema changes are applied only by its explicit, locked migration.
@@ -149,6 +161,7 @@ def create_tables() -> None:
         bind=engine,
         tables=[table for table in Base.metadata.tables.values()
                 if not table.name.endswith("_v2")
+                and not table.name.startswith("knowledge_")
                 and table.name not in {"material_analysis_jobs", "material_analysis_versions", "ai_content_translations"}],
     )
     create_sec_filing_inventory_table()
@@ -157,8 +170,17 @@ def create_tables() -> None:
     with SessionLocal() as session:
         seed_faq(session)
         session.commit()
+    if os.getenv("RAG_ENABLED", "false").strip().lower() in {"1", "true", "yes"}:
+        from .knowledge.runtime import start_runtime
+        start_runtime()
+
+@app.on_event("shutdown")
+def stop_knowledge_runtime() -> None:
+    from .knowledge.runtime import stop_runtime
+    stop_runtime()
 
 
+# 为旧版 API 依赖提供一次请求范围的 SQLAlchemy 会话。
 def get_db():
     db = SessionLocal()
     try:
@@ -167,11 +189,23 @@ def get_db():
         db.close()
 
 
+# 返回轻量存活状态，不访问数据库。
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/health/knowledge")
+def knowledge_health() -> dict[str, object]:
+    from .knowledge.runtime import get_runtime
+    runtime=get_runtime()
+    if runtime is None:
+        return {"enabled":os.getenv("RAG_ENABLED","false").strip().lower() in {"1","true","yes"},"ready":False}
+    health=runtime.health()
+    return {"enabled":True,"ready":bool(health.get("ready")),"generation":health.get("generation"),"milvus":health.get("milvus")}
+
+
+# 调用旧研究工作流并保存研究运行结果，不会自动生成 V3 预测版本。
 @app.post("/research-runs", response_model=ResearchRunResponse, status_code=status.HTTP_201_CREATED)
 def create_research_run(payload: ResearchRunRequest, db: Session = Depends(get_db)) -> ResearchRun:
     try:
@@ -189,6 +223,7 @@ def create_research_run(payload: ResearchRunRequest, db: Session = Depends(get_d
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+# 按 UUID 读取旧研究任务结果。
 @app.get("/research-runs/{run_id}", response_model=ResearchRunResponse)
 def get_research_run(run_id: UUID, db: Session = Depends(get_db)) -> ResearchRun:
     run = db.get(ResearchRun, run_id)
@@ -197,6 +232,7 @@ def get_research_run(run_id: UUID, db: Session = Depends(get_db)) -> ResearchRun
     return run
 
 
+# 运行旧 Week 8 滚动刷新流程并返回修订报告。
 @app.post("/forecast-refresh-runs", response_model=ForecastRefreshResponse, status_code=status.HTTP_201_CREATED)
 def create_forecast_refresh_run(
     payload: ForecastRefreshRequest, db: Session = Depends(get_db)
@@ -219,6 +255,7 @@ def create_forecast_refresh_run(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+# 读取旧刷新运行报告。
 @app.get("/forecast-refresh-runs/{snapshot_id}", response_model=ForecastRefreshResponse)
 def get_forecast_refresh_run(snapshot_id: UUID, db: Session = Depends(get_db)) -> dict:
     try:
@@ -227,6 +264,7 @@ def get_forecast_refresh_run(snapshot_id: UUID, db: Session = Depends(get_db)) -
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+# 组合旧版离线快照、评估及行情数据供工作台展示。
 @app.get("/dashboard/{symbol}", response_model=DashboardResponse)
 def get_dashboard(symbol: str, db: Session = Depends(get_db)) -> dict:
     """Read saved forecast evidence for the simple Week 9 dashboard.
@@ -267,6 +305,7 @@ def get_dashboard(symbol: str, db: Session = Depends(get_db)) -> dict:
     }
 
 
+# 扫描 SEC 申报并更新旧库存，不等同于冻结进预测的证据版本。
 @app.post(
     "/filing-inventories/{symbol}/scan",
     response_model=SecFilingScanResponse,
@@ -298,6 +337,7 @@ def scan_filing_inventory(symbol: str, db: Session = Depends(get_db)) -> dict:
     }
 
 
+# 读取指定股票的 SEC 申报库存。
 @app.get("/filing-inventories/{symbol}", response_model=SecFilingInventoryResponse)
 def get_filing_inventory(symbol: str, db: Session = Depends(get_db)) -> dict:
     try:
@@ -307,6 +347,7 @@ def get_filing_inventory(symbol: str, db: Session = Depends(get_db)) -> dict:
     return {"symbol": normalize_symbol(symbol), "filings": filings}
 
 
+# 抓取/读取申报正文并返回覆盖状态。
 @app.post("/market-data/{symbol}/initialize")
 def initialize_market_data(symbol: str) -> dict:
     """Explicitly seed at most one year of daily prices for one valid ticker."""
@@ -356,6 +397,7 @@ def fetch_filing_content(
     return {**item, "content_excerpt": filing.content_excerpt, "cache_hit": cache_hit}
 
 
+# 记录人工来源相关性审核；审核不验证申报事实或预测方向。
 @app.post(
     "/filing-inventories/{symbol}/{accession_number}/review",
     response_model=SecFilingInventoryItem,
@@ -382,6 +424,7 @@ def review_filing_inventory(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+# 接收并保存用户上传材料及元数据，返回上传证据响应。
 @app.post(
     "/uploaded-evidence/{symbol}",
     response_model=UploadedEvidenceItem,
@@ -397,6 +440,7 @@ async def upload_manual_evidence(
     credibility_stars: Annotated[int, Form(...)],
     credibility_reason: Annotated[str, Form(...)],
     impact_severity: Annotated[str, Form(...)],
+    x_chat_session: Annotated[str | None, Header()] = None,
     db: Session = Depends(get_db),
 ) -> dict:
     """Store user-selected media material as unconfirmed review evidence only."""
@@ -420,9 +464,18 @@ async def upload_manual_evidence(
         await file.close()
     if not created:
         response.status_code = status.HTTP_200_OK
+    elif x_chat_session and 32 <= len(x_chat_session) <= 256 and not any(ord(c) < 32 for c in x_chat_session):
+        # Bind only a newly created upload to the requesting opaque chat session. A duplicate UUID never proves ownership.
+        from sqlalchemy import inspect
+        if inspect(db.get_bind()).has_table("knowledge_upload_owners"):
+            from .agent_chat_store import owner_hash
+            from .knowledge.models import KnowledgeUploadOwner
+            db.add(KnowledgeUploadOwner(upload_id=evidence.id, owner_hash=owner_hash(x_chat_session)))
+            db.commit()
     return _uploaded_evidence_item(evidence)
 
 
+# 列出指定股票的人工上传来源。
 @app.get("/uploaded-evidence/{symbol}", response_model=UploadedEvidenceResponse)
 def get_uploaded_evidence(symbol: str, db: Session = Depends(get_db)) -> dict:
     try:
@@ -438,6 +491,7 @@ def _uploaded_evidence_item(evidence: object) -> dict:
     return item
 
 
+# 按显式选中的旧版证据路径生成修订记录。
 @app.post(
     "/evidence-revisions/{symbol}",
     response_model=EvidenceRevisionResponse,
@@ -473,6 +527,7 @@ def create_selected_evidence_revision(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+# 读取旧版证据修订历史。
 @app.get("/evidence-revisions/{symbol}", response_model=EvidenceRevisionInventoryResponse)
 def get_evidence_revisions(symbol: str, db: Session = Depends(get_db)) -> dict:
     try:
@@ -485,6 +540,7 @@ def get_evidence_revisions(symbol: str, db: Session = Depends(get_db)) -> dict:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+# 保留的 Week 1 确定性 mock-v1 接口，写入旧 forecasts 表。
 @app.post("/forecasts", response_model=ForecastResponse, status_code=status.HTTP_201_CREATED)
 def create_forecast(payload: ForecastRequest, db: Session = Depends(get_db)) -> Forecast:
     symbol = normalize_symbol(payload.symbol)
@@ -504,6 +560,7 @@ def create_forecast(payload: ForecastRequest, db: Session = Depends(get_db)) -> 
     return forecast
 
 
+# 调用离线数值模型并保存带输入指纹的快照；这是历史实验路径，不是 V3 Agent。
 @app.post("/forecast-runs", response_model=ForecastRunResponse, status_code=status.HTTP_201_CREATED)
 def create_forecast_run(payload: ForecastRunRequest, db: Session = Depends(get_db)) -> dict:
     """Refresh observed daily bars and append one real numeric forecast snapshot."""
@@ -523,6 +580,7 @@ def create_forecast_run(payload: ForecastRunRequest, db: Session = Depends(get_d
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+# 读取一条离线数值预测快照。
 @app.get("/forecast-snapshots/{snapshot_id}", response_model=ForecastSnapshotResponse)
 def get_forecast_snapshot(snapshot_id: UUID, db: Session = Depends(get_db)) -> ForecastSnapshot:
     snapshot = db.get(ForecastSnapshot, snapshot_id)
@@ -531,6 +589,7 @@ def get_forecast_snapshot(snapshot_id: UUID, db: Session = Depends(get_db)) -> F
     return snapshot
 
 
+# 读取旧快照及其修订链。
 @app.get("/forecast-snapshots/{snapshot_id}/timeline", response_model=ForecastSnapshotTimelineResponse)
 def get_forecast_snapshot_timeline(
     snapshot_id: UUID, db: Session = Depends(get_db)
@@ -543,6 +602,7 @@ def get_forecast_snapshot_timeline(
     return ForecastSnapshotTimelineResponse(root_snapshot_id=root_snapshot_id, snapshots=entries)
 
 
+# 将旧版快照与父子修订行组装为带版本序号的响应条目。
 def _forecast_timeline(
     snapshot: ForecastSnapshot, db: Session
 ) -> tuple[list[ForecastSnapshotTimelineEntry], UUID]:

@@ -1,0 +1,15 @@
+{
+  "faq": [
+    {"id": 1, "question": "研究材料可信度星级是什么？", "answer": "可信度星级是人工对来源可靠性的 1 至 5 星记录；它是审阅判断，不是统计概率。", "category": "可信度"},
+    {"id": 2, "question": "市场研究数据的费用是多少？", "answer": "费用取决于所使用的数据与模型服务；本地已保存材料查询不会触发外部抓取。", "category": "费用"},
+    {"id": 3, "question": "系统中的预测代表什么？", "answer": "预测是带时间和模型状态的研究记录，不是确定收益或投资建议。", "category": "预测"}
+  ],
+  "uploads": [
+    {"id":"00000000-0000-4000-8000-000000000001","symbol":"DEMO","title":"Synthetic DEMO FY2025 annual report","source_url":"https://example.test/synthetic-demo-fy2025","published_at":"2026-02-01T00:00:00Z","text":"# Income statement FY2025\n| Metric | FY2025 (USD million) |\n| Revenue | 123 |\n| Gross profit | 62 |\n| Operating income | 18 |\n\n# Cash flow FY2025\n| Metric | FY2025 (USD million) |\n| Net cash provided by operating activities | 8 |","visibility":"public"},
+    {"id":"00000000-0000-4000-8000-000000000002","symbol":"DEMO","title":"Private owner A synthetic project note","source_url":"https://example.test/private-a","published_at":"2026-03-01T00:00:00Z","text":"Owner A private note: Project Aurora has a confidential prototype review on 2026-04-15.","visibility":"private","owner":"A"},
+    {"id":"00000000-0000-4000-8000-000000000003","symbol":"DEMO","title":"Private owner B synthetic acquisition note","source_url":"https://example.test/private-b","published_at":"2026-03-02T00:00:00Z","text":"Owner B private note: Project Cedar acquisition rumor concerns an internal merger plan.","visibility":"private","owner":"B"}
+  ],
+  "sec": [
+    {"id":"00000000-0000-4000-8000-000000000004","symbol":"DEMO","form":"10-K","primary_document":"demo.htm","source_url":"https://example.test/filing","content_source_url":"https://example.test/ex99.htm","content_document_name":"ex99.htm","content_kind":"exhibit","filed_at":"2026-03-01","text":"Synthetic truncated excerpt: this passage explains reporting methodology and contains no EBITDA amount.","truncated":true}
+  ]
+}

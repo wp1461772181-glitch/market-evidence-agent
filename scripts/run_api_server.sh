@@ -8,6 +8,8 @@ CONTAINER_NAME="market-evidence-postgres"
 DATABASE_NAME="market_evidence"
 DATABASE_USER="market_evidence"
 MAX_WAIT_SECONDS="${MARKET_EVIDENCE_API_WAIT_SECONDS:-90}"
+API_PYTHON="${MARKET_EVIDENCE_API_PYTHON:-${PROJECT_ROOT}/.venv/bin/python}"
+case "$API_PYTHON" in /*) ;; *) API_PYTHON="${PROJECT_ROOT}/${API_PYTHON#./}" ;; esac
 RUNTIME_ROOT="${PROJECT_ROOT}/data/releases/current"
 if [ ! -d "$RUNTIME_ROOT" ]; then RUNTIME_ROOT="$PROJECT_ROOT"; fi
 if [ -z "${LOCAL_MODEL_PROFILES_PATH:-}" ]; then LOCAL_MODEL_PROFILES_PATH="$PROJECT_ROOT/data/model-profiles.json"; fi
@@ -18,7 +20,11 @@ PATH="${HOME:-}/.orbstack/bin:/opt/homebrew/bin:/usr/local/bin:/Applications/Orb
 export PATH
 
 if [ "${1:-}" = "--print" ]; then
-    printf '%s\n' "API server: ${PROJECT_ROOT}/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000"
+    if [ -n "${MARKET_EVIDENCE_API_PYTHON:-}" ] && [ ! -x "$API_PYTHON" ]; then
+        printf '%s\n' "Configured API Python is not executable: ${API_PYTHON}" >&2
+        exit 1
+    fi
+    printf '%s\n' "API server: ${API_PYTHON} -m uvicorn app.main:app --host 127.0.0.1 --port 8000"
     printf '%s\n' "Runtime source: ${RUNTIME_ROOT}; env file: ${PROJECT_ROOT}/.env"
     printf '%s\n' "Required existing container: ${CONTAINER_NAME} (${DATABASE_USER}/${DATABASE_NAME})"
     printf '%s\n' "Database binding must remain on 127.0.0.1:55432."
@@ -30,8 +36,8 @@ if [ "$#" -ne 0 ]; then
     printf '%s\n' "Usage: $0 [--print]" >&2
     exit 2
 fi
-if [ ! -x "${PROJECT_ROOT}/.venv/bin/python" ]; then
-    printf '%s\n' "Project virtualenv Python is missing: ${PROJECT_ROOT}/.venv/bin/python" >&2
+if [ ! -x "$API_PYTHON" ]; then
+    printf '%s\n' "Configured API Python is not executable: ${API_PYTHON}" >&2
     exit 1
 fi
 if ! command -v docker >/dev/null 2>&1; then
@@ -73,4 +79,4 @@ until "$DOCKER_BIN" exec "$CONTAINER_NAME" pg_isready -U "$DATABASE_USER" -d "$D
 done
 
 printf '%s\n' "PostgreSQL is ready; starting the loopback-only API."
-exec "${PROJECT_ROOT}/.venv/bin/python" -m uvicorn app.main:app --app-dir "$RUNTIME_ROOT" --env-file "$PROJECT_ROOT/.env" --host 127.0.0.1 --port 8000
+exec "$API_PYTHON" -m uvicorn app.main:app --app-dir "$RUNTIME_ROOT" --env-file "$PROJECT_ROOT/.env" --host 127.0.0.1 --port 8000

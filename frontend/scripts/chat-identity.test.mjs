@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { activeChatCredential, changeChatMode, chatIdentityKeys, currentChatMode, conversationCreatedAtForMode, conversationForMode, selectConversationForMode } from '../src/chat-identity.mjs';
+import { activeChatCredential, applyChatIdentity, changeChatMode, chatIdentityKeys, currentChatMode, conversationCreatedAtForMode, conversationForMode, selectConversationForMode } from '../src/chat-identity.mjs';
 function storage(seed={}) { const data=new Map(Object.entries(seed)); return {getItem:k=>data.get(k)??null,setItem:(k,v)=>data.set(k,String(v)),removeItem:k=>data.delete(k),data}; }
 test('guest credential migrates from session storage once and persists across reloads',()=>{
  const local=storage(),session=storage({[chatIdentityKeys.legacySession]:'legacy-guest'});
@@ -42,4 +42,17 @@ test('selected conversation IDs remain isolated by mode across remounts',()=>{
  assert.equal(conversationForMode(local,'personal'),'personal-id');
  assert.equal(conversationCreatedAtForMode(local,'guest'),'2026-10-01T00:00:00Z');
  assert.equal(conversationCreatedAtForMode(local,'personal'),'2026-10-02T00:00:00Z');
+});
+
+
+test('business request identity follows selected mode and keeps explicit identity',()=>{
+ const local=storage({[chatIdentityKeys.guest]:'guest-session'}),session=storage({'market-evidence-agent-api-access-key':'obsolete'});
+ const guest=applyChatIdentity({},activeChatCredential(local,session,()=> 'random-guest'));
+ assert.equal(guest.get('X-Chat-Session'),'guest-session');assert.equal(guest.has('X-App-Access-Key'),false);
+ changeChatMode(local,session,'personal','owner-login-session');
+ const owner=applyChatIdentity({},activeChatCredential(local,session,()=> 'unused'));
+ assert.equal(owner.get('X-Chat-Session'),'owner-login-session');assert.equal(session.getItem('market-evidence-agent-api-access-key'),null);
+ assert.equal(applyChatIdentity({'X-Chat-Session':'explicit'},'owner-login-session').get('X-Chat-Session'),'explicit');
+ changeChatMode(local,session,'guest');
+ assert.equal(applyChatIdentity({},activeChatCredential(local,session,()=> 'unused')).get('X-Chat-Session'),'guest-session');
 });

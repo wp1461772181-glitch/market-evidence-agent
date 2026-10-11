@@ -7,6 +7,7 @@ from langchain_core.tools import tool
 from sqlalchemy import text
 from .config import DATABASE_URL
 from .symbols import normalize_market_symbol
+from .knowledge.retrieval import KnowledgeUnavailable, retrieve_faq, retrieve_materials
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 ASYNC_URL = DATABASE_URL.replace("postgresql+psycopg://", "postgresql+psycopg://")
@@ -74,13 +75,11 @@ async def query_latest_forecast(symbol: str) -> dict:
 
 @tool(args_schema=MaterialArgs)
 async def query_materials(symbol: str, keyword: str, limit: int = 5) -> dict:
-    """Search saved uploaded and official research materials by literal keyword."""
-    pattern=f"%{_like(keyword)}%"
-    params={"symbol":symbol,"pattern":pattern,"limit":limit}
-    uploaded=await _query("SELECT id, title, source_url, published_at, observed_at, left(content_text,1200) AS excerpt, 'uploaded_media' AS material_type FROM uploaded_evidence WHERE symbol=:symbol AND (title ILIKE :pattern ESCAPE E'\\\\' OR content_text ILIKE :pattern ESCAPE E'\\\\') ORDER BY published_at DESC LIMIT :limit",params)
-    filings=await _query("SELECT id, primary_document AS title, source_url, filed_at AS published_at, observed_at, left(content_excerpt,1200) AS excerpt, 'official_filing' AS material_type FROM sec_filing_inventory WHERE symbol=:symbol AND (primary_document ILIKE :pattern ESCAPE E'\\\\' OR COALESCE(content_excerpt,'') ILIKE :pattern ESCAPE E'\\\\') ORDER BY filed_at DESC LIMIT :limit",params)
-    rows=sorted(uploaded+filings,key=lambda r:str(r.get("published_at") or ""),reverse=True)[:limit]
-    return {"ok":True,"data":[{k:_json(v) for k,v in r.items()} for r in rows],"source":"uploaded_evidence + sec_filing_inventory","as_of":_json(max((r["observed_at"] for r in rows if r.get("observed_at")),default=None))}
+    """Find saved uploaded and official research material using a natural language question."""
+    try:
+        return await retrieve_materials(symbol, keyword, limit)
+    except KnowledgeUnavailable as exc:
+        return {"ok":False,"data":None,"error_code":exc.code,"source":"knowledge_chunks","as_of":None}
 
 @tool(args_schema=FilingArgs)
 async def query_sec_filings(symbol: str, form: str | None = None, limit: int = 5) -> dict:
@@ -93,10 +92,11 @@ async def query_sec_filings(symbol: str, form: str | None = None, limit: int = 5
 
 @tool(args_schema=FAQArgs)
 async def query_research_faq(keyword: str) -> dict:
-    """Search fixed research FAQ questions and categories by literal keyword."""
-    pattern=f"%{_like(keyword)}%"
-    rows=await _query("SELECT question, answer, category FROM agent_faq WHERE question ILIKE :pattern ESCAPE E'\\\\' OR category ILIKE :pattern ESCAPE E'\\\\' ORDER BY id LIMIT 5",{"pattern":pattern})
-    return {"ok":True,"data":rows,"source":"agent_faq","as_of":None}
+    """Answer a natural language question from the approved research FAQ."""
+    try:
+        return await retrieve_faq(keyword)
+    except KnowledgeUnavailable as exc:
+        return {"ok":False,"data":None,"error_code":exc.code,"source":"knowledge_chunks:research_faq","as_of":None}
 
 TOOL_REGISTRY={item.name:item for item in [query_stock_prices,query_latest_forecast,query_materials,query_sec_filings,query_research_faq]}
 def tool_schemas():
