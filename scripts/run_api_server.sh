@@ -16,7 +16,8 @@ PATH="${HOME:-}/.orbstack/bin:/opt/homebrew/bin:/usr/local/bin:/Applications/Orb
 export PATH
 
 if [ "${1:-}" = "--print" ]; then
-    printf '%s\n' "API server: ${PROJECT_ROOT}/.venv/bin/python -m uvicorn app.main:app --app-dir ${RUNTIME_ROOT} --env-file ${PROJECT_ROOT}/.env --host 127.0.0.1 --port 8000"
+    printf '%s\n' "API server: ${PROJECT_ROOT}/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000"
+    printf '%s\n' "Runtime source: ${RUNTIME_ROOT}; env file: ${PROJECT_ROOT}/.env"
     printf '%s\n' "Required existing container: ${CONTAINER_NAME} (${DATABASE_USER}/${DATABASE_NAME})"
     printf '%s\n' "Database binding must remain on 127.0.0.1:55432."
     printf '%s\n' "Dry run only: Docker and service state were not changed."
