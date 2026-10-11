@@ -74,3 +74,9 @@ Start the fixture only on loopback with `./.venv/bin/uvicorn scripts.chat_ux_fix
 - CUA validated tick navigation without visible numbering, plain question/answer preview on keyboard focus, smoothjump alignment, and scroll-based active tick. On390px viewport documentwidth390; table width303px with520px internal scroll; mobileclick open/close, itemselectionclose, and olddesktoppin resizing passed. Temporary viewport override reset after acceptance.
 - Actual local API through Viteproxy returned401 without an owner key and with an intentionally invalid fixture key: distinct recoverydialogs appeared, input autofocus, Tab containment and Escapeclose passed. The fixture key was cleared afterward. Both writes were rejected; no SECscan, analysis, realprovidercall, or database mutation occurred during these auth checks. Personal chat login and operation authorization remain separate.
 - Scopecheck preserved all60 unrelated existing trackeddiffs. This frontend release excludes uncommitted RAG/backend work.
+
+## User bubble alignment clarification (2026-10-11)
+
+- Direct clarification: “居中是用户的提问右对齐，然后 X轴长度不超过一半”. The assistant reading column and conversation remain centered; user questions align to the right within that column, remain fit-content, and are capped at 50% at every viewport width. Removed the mobile 80%/92% exceptions.
+- Updated `.agent-message.is-user` with right-side grid placement and right anchoring. Existing assistant and composer layout rules are unchanged.
+- Primary acceptance after clarification: all 63 frontend tests and production build passed. At1440px, user.right=thread.right=1360px and bubblewidth222.59px within779px column; at390px, each bubblewidth164.5px within329px column, rightaligned374px, documentwidth390px. Saved current simulated-data screenshot to data/chat-ux-refined.jpg.
