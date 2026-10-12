@@ -20,7 +20,7 @@ async function fetchApi(path: string, init: RequestInit = {}): Promise<Response>
 
 export type AgentChatProvider = "deepseek" | "kimi" | "minimax" | "qwen" | "zhipu" | "doubao" | "hunyuan" | "baidu" | "siliconflow" | "openrouter" | "custom";
 export type AgentChatConfig = { provider: AgentChatProvider; base_url?: string; model: string; api_key: string };
-export type AgentCitation = { ordinal?:number; chunk_id: string; document_id: string; title: string; section: string; source_url?: string | null; observed_at?: string | null; source_type: string; truncated: boolean };
+export type AgentCitation = { ordinal?:number; chunk_id: string; document_id: string; title: string; section: string; source_url?: string | null; observed_at?: string | null; source_type: string; truncated: boolean; derived?:boolean };
 export type KnowledgeDocumentSummary = { id:string; title:string; symbol:string|null; source_type:string; observed_at:string|null; available_at:string|null; status:string; active:boolean; owner_scope:string; chunks:number };
 export type KnowledgeChunkDetail = { id:string; ordinal:number; section:string; answer:string; status:string; needs_review:boolean };
 export type AgentChatMessage = { role: "user" | "assistant" | "tool"; content: string; status?: string; turn_id?: string; citations?: AgentCitation[]; tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }>; tool_call_id?: string; tool_trace?: Array<{ call_id?: string; name: string; arguments?: unknown; result?: unknown; status: string }> };
@@ -365,13 +365,13 @@ export async function getKnowledgeDocuments(): Promise<KnowledgeDocumentSummary[
 export async function getKnowledgeChunks(documentId:string):Promise<{document:{id:string;title:string;source_text:string;source_url:string|null;status:string};chunks:KnowledgeChunkDetail[]}> {
   return requestJson(`/api/knowledge/documents/${encodeURIComponent(documentId)}/chunks`,{headers:{'X-Chat-Session':chatCredential()}});
 }
-export async function importKnowledge(source_type:'faq'|'upload'|'sec',source_ids:string[]):Promise<{ok:boolean;accepted_sources:number;chunks:number;needs_review:number}> {
+export async function importKnowledge(source_type:'faq'|'upload'|'sec'|'analysis',source_ids:string[]):Promise<{ok:boolean;accepted_sources:number;chunks:number;needs_review:number}> {
   return requestJson('/api/knowledge/import',{method:'POST',headers:{'X-Chat-Session':chatCredential(),'Content-Type':'application/json'},body:JSON.stringify({source_type,source_ids})});
 }
 export async function runKnowledgeIndex():Promise<{ok:boolean;indexed:number;failed:number;idle:number}> {
   return requestJson('/api/knowledge/index',{method:'POST',headers:{'X-Chat-Session':chatCredential(),'Content-Type':'application/json'},body:JSON.stringify({max_tasks:100})});
 }
-export async function testKnowledgeRetrieval(kind:'faq'|'material',keyword:string,symbol?:string):Promise<{result:{ok:boolean;data:unknown[]|null;error_code?:string};citations:AgentCitation[]}> {
+export async function testKnowledgeRetrieval(kind:'faq'|'material'|'analysis',keyword:string,symbol?:string):Promise<{result:{ok:boolean;data:unknown[]|null;error_code?:string};citations:AgentCitation[]}> {
   return requestJson('/api/knowledge/retrieval-test',{method:'POST',headers:{'X-Chat-Session':chatCredential(),'Content-Type':'application/json'},body:JSON.stringify({kind,keyword,...(symbol?{symbol}:{})})});
 }
 export async function retryKnowledgeDocument(documentId:string):Promise<{ok:boolean;queued_chunks:number}> {
@@ -386,8 +386,8 @@ export async function getKnowledgeCandidates():Promise<Array<{id:string;question
 export async function reviewKnowledgeCandidate(id:string,approved:boolean,reviewer:string):Promise<void> {
   await requestJson(`/api/knowledge/candidates/${encodeURIComponent(id)}/review`,{method:'POST',headers:{'X-Chat-Session':chatCredential(),'Content-Type':'application/json'},body:JSON.stringify({approved,reviewer})});
 }
-export async function getKnowledgeImportable(source:'faq'|'upload'|'sec',symbol:string):Promise<Array<{id:string;title:string;symbol:string|null;source_type:string}>> {
+export async function getKnowledgeImportable(source:'faq'|'upload'|'sec'|'analysis',symbol:string):Promise<Array<{id:string;title:string;symbol:string|null;source_type:string}>> {
   const result=await requestJson<{items:Array<{id:string;title:string;symbol:string|null;source_type:string}>}>(`/api/knowledge/importable/${source}?symbol=${encodeURIComponent(symbol)}`,{headers:{'X-Chat-Session':chatCredential()}});return result.items;
 }
-export type KnowledgeCitationDetail={title:string;section:string;excerpt:string;source_url:string|null;observed_at:string|null;coverage:string;start_offset:number;end_offset:number};
+export type KnowledgeCitationDetail={title:string;section:string;excerpt:string;source_url:string|null;observed_at:string|null;coverage:string;start_offset:number;end_offset:number;derived?:boolean;analysis_version?:string;version_no?:number|null;model?:string;classification?:string;original_source_type?:string;original_quotes?:string[]};
 export async function getKnowledgeCitation(chunkId:string):Promise<KnowledgeCitationDetail>{return requestJson(`/api/knowledge/citations/${encodeURIComponent(chunkId)}`,{headers:{'X-Chat-Session':chatCredential()}})}

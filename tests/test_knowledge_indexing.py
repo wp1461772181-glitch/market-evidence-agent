@@ -61,6 +61,30 @@ def test_vector_receipt_metadata_must_match(indexed_source):
       assert not ack_task(s,lease,VectorReceipt('other',lease.source_hash,lease.content_hash,'g'*64))
 
 
+def test_index_pending_chunk_whitelist_leaves_unrelated_global_queue_untouched(indexed_source):
+    from app.knowledge.indexing import index_pending
+    from sqlalchemy import select
+    store=Store()
+    selected=SourceDocument('fixture','selected-analysis','analysis-v2','b'*64,'ai_analysis','AMD','public','public',None,
+      'saved analysis','https://example.test/analysis',None,datetime.now(UTC),datetime.now(UTC),False,'test','Revenue rose 8%.')
+    with Session(engine) as session,session.begin():
+        ingest_documents(session,[selected],Tok(),'g'*64)
+        selected_ids=set(session.scalars(select(KnowledgeChunk.id).join(KnowledgeDocument).where(KnowledgeDocument.source_id=='selected-analysis')).all())
+        old_ids=set(session.scalars(select(KnowledgeChunk.id).join(KnowledgeDocument).where(KnowledgeDocument.source_id=='index-fixture')).all())
+    result=index_pending(lambda:Session(engine),Embed(),store,'g'*64,max_tasks=10,chunk_ids=selected_ids)
+    assert result['indexed']==len(selected_ids)
+    with Session(engine) as session:
+        assert set(session.scalars(select(KnowledgeChunk.id).where(KnowledgeChunk.status=='ready')))==selected_ids
+        assert set(session.scalars(select(KnowledgeIndexTask.chunk_id).where(KnowledgeIndexTask.status=='pending')))==old_ids
+
+
+def test_empty_chunk_whitelist_has_no_vector_store_side_effects():
+    from app.knowledge.indexing import index_pending
+    class ForbiddenStore:
+        def ensure_collection(self,generation=None): raise AssertionError('must not create collection')
+    assert index_pending(lambda:None,None,ForbiddenStore(),'g'*64,chunk_ids=set())=={'indexed':0,'failed':0,'idle':0}
+
+
 def test_reconcile_repair_requeues_missing_vector_without_deleting(disposable_database,indexed_source):
     from sqlalchemy.orm import Session
     from app.database import engine

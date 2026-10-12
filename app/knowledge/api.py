@@ -11,6 +11,7 @@ from ..agent_chat_store import owner_hash
 from .models import KnowledgeCandidate, KnowledgeChunk, KnowledgeDocument, KnowledgeIndexTask
 from .repository import document_integrity, ingest_documents
 from .sources import adapt_faq, adapt_sec, adapt_uploaded
+from .analysis_sources import load_analysis_document
 
 router=APIRouter(prefix='/knowledge',tags=['knowledge'])
 
@@ -39,19 +40,31 @@ def _write_access(key:str|None,identity:str|None):
     legacy=bool(expected and key and hmac.compare_digest(key.encode('utf-8'),expected.encode('utf-8')))
     if not owner_credential_matches(identity) and not legacy:raise HTTPException(401,'owner_login_required')
 
+def _analysis_citation_metadata(doc):
+    import re
+    match=re.search(r"模型：([^；\n]+)；分析版本：v(\d+)",doc.source_text or "")
+    original_type=doc.source_id.split(":",1)[0] if ":" in doc.source_id else None
+    return {'derived':True,'analysis_version':doc.source_version,
+        'version_no':int(match.group(2)) if match else None,'model':match.group(1) if match else 'unknown',
+        'classification':'saved_ai_analysis_not_official_source_text','original_source_type':original_type}
+
+def _analysis_original_quotes(doc):
+    prefix='> 原文引文：'
+    return [line[len(prefix):].strip() for line in (doc.source_text or '').splitlines() if line.startswith(prefix) and line[len(prefix):].strip()]
+
 class ReviewRequest(BaseModel):
     approved:bool
     reviewer:str=Field(min_length=1,max_length=120)
 
 class ImportRequest(BaseModel):
-    source_type:str=Field(pattern='^(faq|upload|sec)$')
+    source_type:str=Field(pattern='^(faq|upload|sec|analysis)$')
     source_ids:list[str]=Field(min_length=1,max_length=20)
 
 class IndexRequest(BaseModel):
     max_tasks:int=Field(default=100,ge=1,le=200)
 
 class RetrievalTestRequest(BaseModel):
-    kind:str=Field(pattern='^(faq|material)$')
+    kind:str=Field(pattern='^(faq|material|analysis)$')
     keyword:str=Field(min_length=1,max_length=800)
     symbol:str|None=Field(default=None,min_length=1,max_length=16)
 
@@ -59,12 +72,12 @@ class RetrievalTestRequest(BaseModel):
 async def retrieval_test(payload:RetrievalTestRequest,x_chat_session:str|None=Header(default=None)):
     identity=_identity(x_chat_session)
     from .runtime import get_runtime,research_context
-    from .retrieval import KnowledgeUnavailable,retrieve_faq,retrieve_materials
+    from .retrieval import KnowledgeUnavailable,retrieve_faq,retrieve_materials,retrieve_analysis
     if get_runtime() is None:raise HTTPException(503,'knowledge_unavailable')
-    if payload.kind=='material' and not payload.symbol:raise HTTPException(422,'symbol_required_for_material_retrieval')
+    if payload.kind in {'material','analysis'} and not payload.symbol:raise HTTPException(422,'symbol_required_for_material_retrieval')
     try:
         with research_context(owner_hash(identity)) as context:
-            result=await retrieve_faq(payload.keyword) if payload.kind=='faq' else await retrieve_materials(payload.symbol.upper(),payload.keyword)
+            result=await retrieve_faq(payload.keyword) if payload.kind=='faq' else (await retrieve_analysis(payload.symbol.upper(),payload.keyword) if payload.kind=='analysis' else await retrieve_materials(payload.symbol.upper(),payload.keyword))
         return {'result':result,'citations':context.citations or []}
     except KnowledgeUnavailable as exc:
         raise HTTPException(503,exc.code) from exc
@@ -85,6 +98,16 @@ def importable(source_type:str,symbol:str|None=Query(default=None,max_length=16)
             query=select(UploadedEvidence).join(KnowledgeUploadOwner,KnowledgeUploadOwner.upload_id==UploadedEvidence.id).where(KnowledgeUploadOwner.owner_hash==owner_hash(identity))
             if symbol:query=query.where(UploadedEvidence.symbol==symbol.upper())
             rows=session.scalars(query.order_by(UploadedEvidence.observed_at.desc()).limit(300)).all();items=[{'id':str(r.id),'title':r.title,'symbol':r.symbol,'source_type':'uploaded_media'} for r in rows]
+        elif source_type=='analysis':
+            from ..material_analysis_models import MaterialAnalysisVersion
+            query=select(MaterialAnalysisVersion).order_by(MaterialAnalysisVersion.created_at.desc(),MaterialAnalysisVersion.version_no.desc(),MaterialAnalysisVersion.id.desc())
+            rows=session.scalars(query.limit(1000)).all();items=[];seen=set()
+            for r in rows:
+                key=(r.source_type,str(r.source_id))
+                if key in seen:continue
+                seen.add(key);doc=load_analysis_document(session,r.id)
+                if doc and (not symbol or doc.symbol==symbol.upper()) and (doc.scope!='private' or doc.owner_hash==owner_hash(identity)):
+                    items.append({'id':str(r.id),'title':doc.title,'symbol':doc.symbol,'source_type':'ai_analysis','status':'latest saved analysis'})
         else:raise HTTPException(404,'knowledge_source_type_not_found')
         return {'items':items}
 
@@ -127,6 +150,9 @@ def import_existing(payload:ImportRequest,x_chat_session:str|None=Header(default
                     if ownership and ownership.owner_hash==identity_hash:
                         doc=adapt_uploaded({'id':row.id,'symbol':row.symbol,'title':row.title,'source_url':row.source_url,'published_at':row.published_at,'observed_at':row.observed_at,'content_sha256':row.content_sha256,'content_text':row.content_text},owner_hash=identity_hash,allowlist=set())
                         if doc:docs.append(doc)
+            elif payload.source_type=='analysis':
+                doc=load_analysis_document(session,source_id)
+                if doc and (doc.scope=='public' or doc.owner_hash==identity_hash):docs.append(doc)
             else:
                 try:row=session.get(SecFilingInventory,UUID(source_id))
                 except ValueError:row=None
@@ -191,7 +217,10 @@ def read_citation(chunk_id:str,x_chat_session:str|None=Header(default=None)):
         permitted=(chunk.scope=='public' and doc.scope=='public' and chunk.visibility=='public' and doc.visibility=='public' and doc.owner_hash is None) or (chunk.scope=='private' and doc.scope=='private' and chunk.visibility=='private' and doc.visibility=='private' and chunk.owner_hash==owner_hash(identity) and doc.owner_hash==owner_hash(identity))
         valid=permitted and _chunk_valid(session,doc,chunk)
         if not valid:raise HTTPException(404,'citation_unavailable')
-        return {'title':doc.title,'section':chunk.section_path,'excerpt':chunk.answer,'source_url':doc.source_url,'observed_at':(doc.content_observed_at or doc.observed_at or doc.available_at).isoformat() if (doc.content_observed_at or doc.observed_at or doc.available_at) else None,'coverage':'excerpt_only' if doc.truncated or doc.source_type=='official_filing' else 'stored_source','start_offset':chunk.start_offset,'end_offset':chunk.end_offset}
+        detail={'title':doc.title,'section':chunk.section_path,'excerpt':chunk.answer,'source_url':doc.source_url,'observed_at':(doc.content_observed_at or doc.observed_at or doc.available_at).isoformat() if (doc.content_observed_at or doc.observed_at or doc.available_at) else None,'coverage':'derived_analysis' if doc.source_type=='ai_analysis' else ('excerpt_only' if doc.truncated or doc.source_type=='official_filing' else 'stored_source'),'start_offset':chunk.start_offset,'end_offset':chunk.end_offset}
+        if doc.source_type=='ai_analysis':
+            detail.update(_analysis_citation_metadata(doc));detail['original_quotes']=_analysis_original_quotes(doc)
+        return detail
 
 @router.post('/documents/{document_id}/withdraw')
 def withdraw_document(document_id:str,x_chat_session:str|None=Header(default=None),x_app_access_key:str|None=Header(default=None)):

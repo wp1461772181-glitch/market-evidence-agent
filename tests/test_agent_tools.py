@@ -3,7 +3,7 @@ import asyncio
 
 
 def test_fixed_read_only_registry_and_provider_schemas():
-    assert set(TOOL_REGISTRY) == {"query_stock_prices", "query_latest_forecast", "query_materials", "query_sec_filings", "query_research_faq", "query_material_analysis"}
+    assert set(TOOL_REGISTRY) == {"query_stock_prices", "query_latest_forecast", "query_materials", "query_sec_filings", "query_research_faq", "query_material_analysis", "search_material_analysis"}
     assert {x["function"]["name"] for x in tool_schemas()} == set(TOOL_REGISTRY)
     assert normalize_agent_symbol(" brk-b ") == "BRK.B"
     assert normalize_agent_symbol("amd") == "AMD"
@@ -51,6 +51,9 @@ def test_sec_filing_tool_preserves_source_and_selects_item_text(monkeypatch):
 def test_latest_saved_analysis_tool_schema_is_registered_and_bounded():
     import app.agent_tools as tools
     assert 'query_material_analysis' in tools.TOOL_REGISTRY
+    assert 'search_material_analysis' in tools.TOOL_REGISTRY
+    schema=tools.TOOL_REGISTRY['search_material_analysis'].args_schema.model_json_schema()
+    assert schema['properties']['symbol']['maxLength']==12 and schema['properties']['limit']['maximum']==10
     schema=tools.query_material_analysis.args_schema.model_json_schema()
     assert {'symbol','accession_number','source_id'}==set(schema['properties'])
     assert 'source_id' not in schema.get('required',[])

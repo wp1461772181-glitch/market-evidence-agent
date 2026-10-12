@@ -9,7 +9,7 @@ from langchain_core.tools import tool
 from sqlalchemy import text
 from .config import DATABASE_URL
 from .symbols import normalize_market_symbol
-from .knowledge.retrieval import KnowledgeUnavailable, retrieve_faq, retrieve_materials
+from .knowledge.retrieval import KnowledgeUnavailable, retrieve_faq, retrieve_materials, retrieve_analysis
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 def _rag_enabled() -> bool:
@@ -147,6 +147,15 @@ async def query_materials(symbol: str, keyword: str, limit: int = 5) -> dict:
     except KnowledgeUnavailable as exc:
         return {"ok":False,"data":None,"error_code":exc.code,"source":"knowledge_chunks","as_of":None}
 
+
+@tool(args_schema=MaterialArgs)
+async def search_material_analysis(symbol: str, keyword: str, limit: int = 5) -> dict:
+    """Search saved AI analysis as derived material; verify claims against original sources when asked."""
+    if not _rag_enabled():
+        return {"ok":False,"data":None,"error_code":"knowledge_unavailable","source":"material_analysis_versions","as_of":None}
+    try: return await retrieve_analysis(symbol, keyword, limit)
+    except KnowledgeUnavailable as exc: return {"ok":False,"data":None,"error_code":exc.code,"source":"material_analysis_versions","as_of":None}
+
 @tool(args_schema=FilingArgs)
 async def query_sec_filings(symbol: str, form: str | None = None, limit: int = 5) -> dict:
     """Read saved SEC filing inventory without contacting SEC."""
@@ -188,13 +197,16 @@ def _substantive_excerpt(body: str, limit: int=1200) -> str:
 def _safe_source_url(value: str | None) -> str | None:
     if not value:return None
     from urllib.parse import parse_qsl,urlsplit,urlunsplit,urlencode
-    parts=urlsplit(value)
+    try:parts=urlsplit(value)
+    except ValueError:return None
     if parts.scheme not in {'https','http'} or not parts.hostname:return None
     try:host=parts.hostname.encode('idna').decode('ascii')
     except UnicodeError:return None
     try:port=parts.port
     except ValueError:return None
-    if port:host=f'{host}:{port}'
+    if port is not None:
+        if not 1<=port<=65535:return None
+        host=f'{host}:{port}'
     query=[(key,val) for key,val in parse_qsl(parts.query,keep_blank_values=True)
       if not re.search(r'(?:password|secret|token|credential|api.?key)',key,re.I)]
     return urlunsplit((parts.scheme,host,parts.path,urlencode(query,doseq=True),''))
@@ -291,6 +303,6 @@ async def query_material_analysis(symbol: str, accession_number: str | None = No
     # One requested analysis keeps the complete tool response safely below the 8KB tool budget.
     return {"ok":True,"data":latest[:1],"source":"material_analysis_versions joined to frozen evidence and current source","as_of":latest[0]['created_at'] if latest else None}
 
-TOOL_REGISTRY={item.name:item for item in [query_stock_prices,query_latest_forecast,query_materials,query_sec_filings,query_research_faq,query_material_analysis]}
+TOOL_REGISTRY={item.name:item for item in [query_stock_prices,query_latest_forecast,query_materials,query_sec_filings,query_research_faq,query_material_analysis,search_material_analysis]}
 def tool_schemas():
     return [{"type":"function","function":{"name":name,"description":item.description,"parameters":item.args_schema.model_json_schema()}} for name,item in TOOL_REGISTRY.items()]

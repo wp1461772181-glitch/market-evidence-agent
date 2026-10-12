@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
@@ -103,6 +103,137 @@ def test_schema_rejects_out_of_bounds_quotes_and_unknown_fact_ids_but_allows_emp
         validate_material_analysis(wrong_quote, "Revenue grew by 8% this quarter.")
     valid = locate_material_analysis_citations(_payload(), "Revenue grew by 8% this quarter.")
     assert validate_material_analysis(valid, "Revenue grew by 8% this quarter.").supporting == []
+
+
+def test_saved_analysis_adapter_accepts_owner_mapped_pdf_raw_bytes_distinct_from_parsed_text():
+    from app.knowledge.analysis_sources import load_analysis_document
+    from app.knowledge.models import KnowledgeUploadOwner,KnowledgeDocument,KnowledgeChunk,KnowledgeIndexTask
+    from app.knowledge.repository import ingest_documents,document_integrity
+    from app.knowledge.settings import KnowledgeSettings
+    from app.agent_chat_store import owner_hash
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    raw=b"%PDF-1.7\x00binary fixture bytes, deliberately unlike extracted text"
+    parsed="Revenue grew by 8% this quarter."
+    source_id=_upload("PDFX",parsed)
+    credential="C"*40
+    with SessionLocal() as db,db.begin():
+        upload=db.get(UploadedEvidence,source_id);upload.raw_content=raw;upload.content_sha256=hashlib.sha256(raw).hexdigest()
+        db.add(KnowledgeUploadOwner(upload_id=source_id,owner_hash=owner_hash(credential)))
+    result=_request(source_id,key="pdf-source-analysis")
+    assert run_material_analysis_once(session_factory=SessionLocal,provider=FakeProvider(),job_id=UUID(result["job_id"]))["status"]=="succeeded"
+    analysis_id=UUID(first_result_id(source_id))
+    with SessionLocal() as db:
+        doc=load_analysis_document(db,analysis_id)
+        assert doc is not None and doc.scope=="private" and doc.owner_hash==owner_hash(credential)
+        original_hash=doc.source_hash
+    class Tok:
+        def encode(self,text,**kwargs): return text.split()
+    settings=KnowledgeSettings.from_env()
+    with SessionLocal() as db,db.begin():
+        ingest_documents(db,[doc],Tok(),settings.generation)
+        saved=db.query(KnowledgeDocument).filter_by(source_version=str(analysis_id)).one();saved.status="active";saved.snapshot_integrity=document_integrity(saved)
+        chunks=db.query(KnowledgeChunk).filter_by(document_id=saved.id).all()
+        for chunk in chunks:chunk.status="ready"
+        chunk_id=next(chunk.id for chunk in chunks if "原文引文：Revenue grew by 8%" in chunk.answer)
+    app=FastAPI();from app.knowledge.api import router;app.include_router(router)
+    with TestClient(app) as client:
+        citation=client.get(f"/knowledge/citations/{chunk_id}",headers={"X-Chat-Session":credential})
+        assert citation.status_code==200,citation.text
+        assert citation.json()["derived"] is True and citation.json()["version_no"]==1
+        assert citation.json()["original_source_type"]=="uploaded_media" and "Revenue grew by 8%" in citation.json()["original_quotes"][0]
+    forced=_request(source_id,key="pdf-source-analysis-v2",force=True)
+    assert run_material_analysis_once(session_factory=SessionLocal,provider=FakeProvider(),job_id=UUID(forced["job_id"]))["status"]=="succeeded"
+    with SessionLocal() as db:
+        newest=db.scalar(select(MaterialAnalysisVersion).where(MaterialAnalysisVersion.source_id==source_id).order_by(MaterialAnalysisVersion.version_no.desc()).limit(1))
+        assert newest and newest.version_no==2
+        newest_doc=load_analysis_document(db,newest.id)
+        assert newest_doc is not None and load_analysis_document(db,analysis_id) is None
+        latest_id=newest.id;latest_hash=newest_doc.source_hash
+    from app.knowledge.source_sync import sync_source_batch
+    with SessionLocal() as db:
+        cycle=sync_source_batch(lambda:SessionLocal(),Tok(),settings.generation,source_type="analysis",batch_size=5)
+    assert cycle["accepted"]==1 and cycle["documents"]==1
+    with SessionLocal() as db:
+        active=db.query(KnowledgeDocument).filter_by(source_id=f"uploaded_media:{source_id}",active=True).one()
+        assert active.source_version==str(latest_id)
+        assert load_analysis_document(db,analysis_id) is None
+    sync_source_batch(lambda:SessionLocal(),Tok(),settings.generation,source_type="analysis",batch_size=5)
+    replay=sync_source_batch(lambda:SessionLocal(),Tok(),settings.generation,source_type="analysis",batch_size=5)
+    assert replay["skipped"]==1
+    with SessionLocal() as db,db.begin():
+        active=db.query(KnowledgeDocument).filter_by(source_id=f"uploaded_media:{source_id}",active=True).one()
+        active.status="active";active.snapshot_integrity=document_integrity(active)
+        current_chunks=db.query(KnowledgeChunk).filter_by(document_id=active.id).all()
+        for chunk in current_chunks:chunk.status="ready"
+        latest_chunk=next(chunk for chunk in current_chunks if "原文引文：Revenue grew by 8%" in chunk.answer)
+        latest_chunk_id=latest_chunk.id
+        citation_sidecar=[{"ordinal":1,"chunk_id":str(latest_chunk.id),"document_id":str(active.id),
+            "source_hash":active.source_hash,"content_hash":latest_chunk.content_hash,"generation":latest_chunk.generation,
+            "title":active.title[:180],"section":latest_chunk.section_path[:180],"source_url":active.source_url,
+            "analysis_version":active.source_version,"derived":True,"source_type":active.source_type,"truncated":False}]
+    with TestClient(app) as client:
+        current_citation=client.get(f"/knowledge/citations/{latest_chunk_id}",headers={"X-Chat-Session":credential})
+        assert current_citation.status_code==200 and current_citation.json()["version_no"]==2
+    # A current publication-date edit must invalidate old analysis citations,
+    # even when parsed/raw content, frozen evidence, and observations are unchanged.
+    from app.agent_chat_stream import _restore_citations
+    old_publication_cutoff=datetime.now(UTC)-timedelta(seconds=10)
+    with SessionLocal() as db,db.begin():
+        upload=db.get(UploadedEvidence,source_id)
+        before_publication=upload.published_at
+        upload.published_at=old_publication_cutoff+timedelta(seconds=1)
+    with SessionLocal() as db:
+        published_changed=load_analysis_document(db,latest_id)
+        assert published_changed is not None
+        assert published_changed.source_hash!=latest_hash
+        assert published_changed.published_at==old_publication_cutoff+timedelta(seconds=1)
+        assert published_changed.available_at>=published_changed.published_at
+        assert load_analysis_document(db,latest_id,cutoff=old_publication_cutoff) is None
+    assert _restore_citations(citation_sidecar,credential)[0]["source_type"]=="unavailable"
+    with TestClient(app) as client:
+        assert client.get(f"/knowledge/citations/{latest_chunk_id}",headers={"X-Chat-Session":credential}).status_code==404
+    with SessionLocal() as db,db.begin():
+        db.get(UploadedEvidence,source_id).published_at=before_publication
+    with TestClient(app) as client:
+        restored_citation=client.get(f"/knowledge/citations/{latest_chunk_id}",headers={"X-Chat-Session":credential})
+        assert restored_citation.status_code==200 and restored_citation.json()["version_no"]==2
+    with SessionLocal() as db,db.begin():
+        db.delete(db.scalar(select(KnowledgeUploadOwner).where(KnowledgeUploadOwner.upload_id==source_id)))
+    with SessionLocal() as db: assert load_analysis_document(db,latest_id) is None
+    with TestClient(app) as client:
+        assert client.get(f"/knowledge/citations/{latest_chunk_id}",headers={"X-Chat-Session":credential}).status_code==404
+    with SessionLocal() as db,db.begin(): db.add(KnowledgeUploadOwner(upload_id=source_id,owner_hash=owner_hash(credential)))
+    with TestClient(app) as client:
+        assert client.get(f"/knowledge/citations/{latest_chunk_id}",headers={"X-Chat-Session":credential}).status_code==200
+    with TestClient(app) as client:
+        assert client.get(f"/knowledge/citations/{chunk_id}",headers={"X-Chat-Session":credential}).status_code==404
+    with SessionLocal() as db,db.begin():
+        upload=db.get(UploadedEvidence,source_id);upload.observed_at=datetime(2026,9,1,tzinfo=UTC)
+    with SessionLocal() as db:
+        changed=load_analysis_document(db,latest_id)
+        assert changed is not None and changed.source_hash!=latest_hash
+    with SessionLocal() as db,db.begin():
+        version=db.get(MaterialAnalysisVersion,latest_id);version.payload={**version.payload,"summary":"Tampered saved analysis summary."}
+    with SessionLocal() as db:
+        payload_changed=load_analysis_document(db,latest_id)
+        assert payload_changed is not None and payload_changed.source_hash!=changed.source_hash
+    with TestClient(app) as client:
+        stale=client.get(f"/knowledge/citations/{latest_chunk_id}",headers={"X-Chat-Session":credential})
+        assert stale.status_code==404
+    with SessionLocal() as db,db.begin():
+        db.delete(db.scalar(select(KnowledgeUploadOwner).where(KnowledgeUploadOwner.upload_id==source_id)))
+        upload=db.get(UploadedEvidence,source_id);upload.content_text="Changed parser output with original raw PDF hash."
+    with SessionLocal() as db:
+        assert load_analysis_document(db,analysis_id) is None
+    with SessionLocal() as db,db.begin():
+        version=db.get(MaterialAnalysisVersion,latest_id);version.input_fingerprint="a"*64
+    with SessionLocal() as db: assert load_analysis_document(db,latest_id) is None
+    with SessionLocal() as db,db.begin():
+        doc_ids=select(KnowledgeDocument.id).where(KnowledgeDocument.source_id==f"uploaded_media:{source_id}")
+        db.query(KnowledgeIndexTask).filter(KnowledgeIndexTask.chunk_id.in_(select(KnowledgeChunk.id).where(KnowledgeChunk.document_id.in_(doc_ids)))).delete(synchronize_session=False)
+        db.query(KnowledgeChunk).filter(KnowledgeChunk.document_id.in_(doc_ids)).delete(synchronize_session=False)
+        db.query(KnowledgeDocument).filter(KnowledgeDocument.source_id==f"uploaded_media:{source_id}").delete(synchronize_session=False)
 
 
 def test_material_analysis_cache_force_new_version_failure_preserves_previous():

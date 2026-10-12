@@ -12,6 +12,7 @@ from sqlalchemy import and_, exists, select
 from .models import KnowledgeDocument, KnowledgeExtractionRun, KnowledgeUploadOwner
 from .repository import ingest_documents
 from .sources import adapt_faq, adapt_sec, adapt_uploaded
+from .analysis_sources import load_analysis_document
 
 log = logging.getLogger(__name__)
 _stop = threading.Event()
@@ -22,8 +23,9 @@ def sync_source_batch(session_factory, tokenizer, generation: str, *, source_typ
     """Process one durable keyset page; unmapped uploads are never selected."""
     from ..agent_chat_models import AgentFAQ
     from ..models import SecFilingInventory, UploadedEvidence
+    from ..material_analysis_models import MaterialAnalysisVersion
 
-    if source_type not in {"sec", "faq", "upload"}:
+    if source_type not in {"sec", "faq", "upload", "analysis"}:
         raise ValueError("unsupported source type")
     batch_size = max(1, min(10, int(batch_size)))
     scope_key = f"material_sync.{source_type}"
@@ -55,6 +57,18 @@ def sync_source_batch(session_factory, tokenizer, generation: str, *, source_typ
                     SecFilingInventory.content_excerpt.is_not(None)).order_by(SecFilingInventory.id).limit(batch_size)).all()
             docs = [doc for r in rows if (doc := adapt_sec({c.key: getattr(r, c.key) for c in r.__table__.columns}))]
             next_cursor = str(rows[-1].id) if rows else None
+        elif source_type == "analysis":
+            last = UUID(cursor) if cursor else UUID(int=0)
+            rows = session.scalars(__import__("sqlalchemy").text("""
+              SELECT v.id FROM material_analysis_versions v
+              WHERE v.id > CAST(:cursor AS uuid) AND NOT EXISTS (
+                SELECT 1 FROM material_analysis_versions n WHERE n.source_type=v.source_type AND n.source_id=v.source_id
+                  AND (n.created_at,n.version_no,n.id)>(v.created_at,v.version_no,v.id))
+              ORDER BY v.id LIMIT :limit
+            """), {"cursor": str(last), "limit": batch_size}).all()
+            rows = [session.get(MaterialAnalysisVersion, value) for value in rows]
+            docs = [doc for r in rows if (doc := load_analysis_document(session, r.id))]
+            next_cursor = str(rows[-1].id) if rows else None
         else:
             last = UUID(cursor) if cursor else UUID(int=0)
             rows = session.execute(select(UploadedEvidence, KnowledgeUploadOwner.owner_hash)
@@ -80,7 +94,7 @@ def sync_source_batch(session_factory, tokenizer, generation: str, *, source_typ
 def sync_sources_once(session_factory, runtime, tokenizer) -> None:
     """Advance each source cursor, then optionally index one leased task."""
     settings = runtime.settings
-    for kind in ("faq", "sec", "upload"):
+    for kind in ("faq", "sec", "upload", "analysis"):
         sync_source_batch(session_factory, tokenizer, settings.generation, source_type=kind, batch_size=5)
     if os.getenv("RAG_INDEXING_ENABLED", "false").strip().lower() in {"1", "true", "yes"}:
         from .indexing import index_pending

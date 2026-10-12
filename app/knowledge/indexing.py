@@ -7,12 +7,14 @@ from .repository import IndexLease, VectorReceipt, ack_task, claim_task
 
 class InjectedIndexCrash(RuntimeError): pass
 
-def index_pending(session_factory, embedder, vector_store, generation: str, *, max_tasks: int=100, crash_at: str|None=None, worker_id: str='indexer') -> dict[str,int]:
+def index_pending(session_factory, embedder, vector_store, generation: str, *, max_tasks: int=100, crash_at: str|None=None, worker_id: str='indexer', chunk_ids: set|None=None) -> dict[str,int]:
     counts={'indexed':0,'failed':0,'idle':0}
+    if chunk_ids is not None and not chunk_ids:
+        return counts
     vector_store.ensure_collection(generation)
     for _ in range(max_tasks):
         with session_factory() as session:
-            lease=claim_task(session,generation,datetime.now(UTC),worker_id=worker_id)
+            lease=claim_task(session,generation,datetime.now(UTC),worker_id=worker_id,chunk_ids=chunk_ids)
             if lease is None:
                 session.commit(); counts['idle']+=1; break
             session.commit()

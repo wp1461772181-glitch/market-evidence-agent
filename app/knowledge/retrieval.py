@@ -6,6 +6,7 @@ from sqlalchemy import and_,or_,select
 from sqlalchemy.orm import Session
 from ..database import SessionLocal
 from ..models import SecFilingInventory,UploadedEvidence
+from ..material_analysis_models import MaterialAnalysisVersion
 from ..agent_chat_models import AgentFAQ
 from .models import KnowledgeCandidate,KnowledgeChunk,KnowledgeDocument,KnowledgeUploadOwner
 from .sources import adapt_sec,adapt_uploaded
@@ -38,6 +39,13 @@ def _q(value: str) -> str: return value.replace('\\','\\\\').replace('"','\\"')
 def _source_hash(session:Session,doc:KnowledgeDocument,*,historical:bool=False):
     try: identity=UUID(doc.source_id)
     except (ValueError,TypeError): identity=None
+    if doc.source_table=='material_analysis_versions':
+        try: analysis_id=UUID(doc.source_version)
+        except (ValueError,TypeError): return None
+        from .analysis_sources import load_analysis_document
+        current=load_analysis_document(session,analysis_id,require_latest=True)
+        if not current or (current.source_id,current.source_type,current.symbol,current.scope,current.visibility,current.owner_hash)!=(doc.source_id,doc.source_type,doc.symbol,doc.scope,doc.visibility,doc.owner_hash):return None
+        return doc.source_hash if historical and current.source_hash==doc.source_hash else current.source_hash
     if doc.source_table=='uploaded_evidence' and identity:
         row=session.get(UploadedEvidence,identity)
         if not row:return None
@@ -79,7 +87,7 @@ def _source_hash(session:Session,doc:KnowledgeDocument,*,historical:bool=False):
         return hashlib.sha256('\n'.join((row.category,row.question,row.answer)).encode()).hexdigest()
     return None
 
-def _current_rows(ids:list[str],generation:str,scope_context, symbol:str|None, faq:bool, *, historical:bool=False):
+def _current_rows(ids:list[str],generation:str,scope_context, symbol:str|None, faq:bool, *, historical:bool=False, analysis:bool=False):
     try: uuids=[UUID(value) for value in ids]
     except ValueError:return []
     now=datetime.now(UTC); cutoff=scope_context.cutoff if scope_context and scope_context.cutoff else now
@@ -89,7 +97,7 @@ def _current_rows(ids:list[str],generation:str,scope_context, symbol:str|None, f
             ((KnowledgeDocument.active.is_(True)&(KnowledgeDocument.status=='active')) if not historical else
              (KnowledgeDocument.status.in_(['active','superseded']) & (KnowledgeDocument.created_at<=cutoff) & (KnowledgeChunk.created_at<=cutoff))),KnowledgeChunk.needs_review.is_(False),
             KnowledgeChunk.visibility.in_(['public','private']),(KnowledgeChunk.available_at.is_(None) | (KnowledgeChunk.available_at<=cutoff)),
-            (KnowledgeChunk.source_type=='research_faq') if faq else KnowledgeChunk.source_type.in_(['uploaded_media','official_filing']),
+            (KnowledgeChunk.source_type=='research_faq') if faq else (KnowledgeChunk.source_type=='ai_analysis' if analysis else KnowledgeChunk.source_type.in_(['uploaded_media','official_filing'])),
             KnowledgeChunk.symbol.is_(None) if faq else KnowledgeChunk.symbol==symbol)
           .order_by(KnowledgeChunk.available_at.desc().nullslast())).all()
         found=[]
@@ -122,9 +130,9 @@ def _current_rows(ids:list[str],generation:str,scope_context, symbol:str|None, f
             found.append((chunk,doc))
         return found
 
-def _eligible_ann_ids(generation:str,scope_context,symbol:str|None,faq:bool,historical:bool,cutoff):
+def _eligible_ann_ids(generation:str,scope_context,symbol:str|None,faq:bool,historical:bool,cutoff,analysis:bool=False):
     with SessionLocal() as session:
-        source_types=['research_faq'] if faq else ['uploaded_media','official_filing']
+        source_types=['research_faq'] if faq else (['ai_analysis'] if analysis else ['uploaded_media','official_filing'])
         predicates=[KnowledgeChunk.generation==generation,KnowledgeChunk.status=='ready',KnowledgeChunk.needs_review.is_(False),
           KnowledgeChunk.source_type.in_(source_types),KnowledgeChunk.available_at.is_not(None),KnowledgeChunk.available_at<=cutoff]
         if not faq: predicates.append(KnowledgeChunk.symbol==symbol)
@@ -137,10 +145,10 @@ def _eligible_ann_ids(generation:str,scope_context,symbol:str|None,faq:bool,hist
         else: predicates.extend((KnowledgeDocument.active.is_(True),KnowledgeDocument.status=='active'))
         ids=[str(value) for value in session.scalars(select(KnowledgeChunk.id).join(KnowledgeDocument,KnowledgeDocument.id==KnowledgeChunk.document_id).where(*predicates)).all()]
     if len(ids)>5000: raise KnowledgeUnavailable('eligible knowledge set exceeds bounded ANN filter capacity','knowledge_candidate_set_too_large')
-    rows=_current_rows(ids,generation,scope_context,symbol,faq,historical=historical) if ids else []
+    rows=_current_rows(ids,generation,scope_context,symbol,faq,historical=historical,analysis=analysis) if ids else []
     return {str(chunk.id):(chunk,doc) for chunk,doc in rows}
 
-async def _retrieve(query:str, *, faq:bool, symbol:str|None=None, limit:int=5):
+async def _retrieve(query:str, *, faq:bool, symbol:str|None=None, limit:int=5, analysis:bool=False):
     runtime=get_runtime()
     if runtime is None: raise KnowledgeUnavailable('dense knowledge runtime is not enabled or ready')
     context=current_research_context()
@@ -153,12 +161,12 @@ async def _retrieve(query:str, *, faq:bool, symbol:str|None=None, limit:int=5):
     historical=bool(context and context.cutoff and cutoff<now)
     access='(scope == "public" and visibility == "public")'
     if context: access+=' or (scope == "private" and visibility == "private" and owner_hash == "'+_q(context.owner_hash)+'")'
-    try: eligible=_eligible_ann_ids(runtime.settings.generation,context,symbol,faq,historical,cutoff)
+    try: eligible=_eligible_ann_ids(runtime.settings.generation,context,symbol,faq,historical,cutoff,analysis)
     except KnowledgeUnavailable:raise
     except Exception as exc:raise KnowledgeUnavailable('knowledge authority database is unavailable') from exc
-    if not eligible:return {'ok':True,'data':[],'source':'knowledge_chunks:research_faq' if faq else 'knowledge_documents:uploaded_evidence + sec_filing_inventory','as_of':None}
+    if not eligible:return {'ok':True,'data':[],'source':'knowledge_chunks:research_faq' if faq else ('knowledge_documents:material_analysis_versions' if analysis else 'knowledge_documents:uploaded_evidence + sec_filing_inventory'),'as_of':None}
     conditions=['('+access+')']
-    conditions.append('source_type == "research_faq"' if faq else 'source_type in ["uploaded_media", "official_filing"]')
+    conditions.append('source_type == "research_faq"' if faq else ('source_type == "ai_analysis"' if analysis else 'source_type in ["uploaded_media", "official_filing"]'))
     if not faq: conditions.append('symbol == "'+_q(symbol or '')+'"')
     conditions.append(f'available_at <= {int(cutoff.timestamp()*1000)}')
     conditions.append('id in ['+','.join('"'+value+'"' for value in eligible)+']')
@@ -196,12 +204,14 @@ async def _retrieve(query:str, *, faq:bool, symbol:str|None=None, limit:int=5):
             else:
                 observed=doc.content_observed_at if doc.source_type=='official_filing' else doc.observed_at
                 excerpt=chunk.answer
+                if doc.source_type=='ai_analysis':
+                    excerpt=f'[派生 AI 分析；模型/版本见标题与章节；原文引文如下]\n{excerpt}'
                 if doc.source_type=='official_filing':
                     coverage='saved excerpt; partial/truncated coverage' if doc.truncated else 'saved excerpt; coverage limited to the stored content'
                     excerpt=f'[{coverage}; content source: {doc.source_url or "URL unavailable"}; content observed: {observed.isoformat() if observed else "unknown"}]\n{excerpt}'
                 excerpt=f'[{citation_number}] {excerpt}'
-                row={'id':doc.source_id,'title':doc.title,'source_url':doc.source_url,'published_at':doc.published_at.isoformat() if doc.published_at else None,
-                  'observed_at':observed.isoformat() if observed else None,'excerpt':excerpt,'material_type':doc.source_type}
+                row={'id':doc.source_id,'title':doc.title,'source_url':getattr(doc,'source_url',None),'published_at':doc.published_at.isoformat() if doc.published_at else None,
+                  'observed_at':observed.isoformat() if observed else None,'excerpt':excerpt,'material_type':doc.source_type, **({'analysis_version':doc.source_version,'derived':True} if analysis else {})}
             by_source[source_key]=row;documents[source_key]=doc;emitted.append((chunk,doc,citation_number));out.append(row);chunk_counts[source_key]=1
         elif chunk_counts[source_key]<3:
             row=by_source[source_key]
@@ -213,7 +223,7 @@ async def _retrieve(query:str, *, faq:bool, symbol:str|None=None, limit:int=5):
                     row[field]=row[field].rsplit('\n\n['+str(citation_number)+'] ',1)[0]
                     continue
                 emitted.append((chunk,doc,citation_number));chunk_counts[source_key]+=1
-    source='knowledge_chunks:research_faq' if faq else 'knowledge_documents:uploaded_evidence + sec_filing_inventory'
+    source='knowledge_chunks:research_faq' if faq else ('knowledge_documents:material_analysis_versions' if analysis else 'knowledge_documents:uploaded_evidence + sec_filing_inventory')
     result=_fit_tool_budget({'ok':True,'data':out,'source':source,'as_of':None})
     if result.get('ok'):
         result['data']=_head_tail_order(result['data'])
@@ -229,10 +239,12 @@ async def _retrieve(query:str, *, faq:bool, symbol:str|None=None, limit:int=5):
             chunk_id=str(chunk.id)
             if chunk_id in seen:continue
             context.citations.append({'ordinal':ordinal,'chunk_id':chunk_id,'document_id':str(doc.id),'source_hash':doc.source_hash,'content_hash':chunk.content_hash,'generation':chunk.generation,'title':doc.title[:180],
-                'section':chunk.section_path[:180],'source_url':None,'observed_at':(doc.content_observed_at or doc.observed_at or doc.available_at).isoformat() if (doc.content_observed_at or doc.observed_at or doc.available_at) else None,
+                'section':chunk.section_path[:180],'source_url':getattr(doc,'source_url',None) if doc.source_type=='ai_analysis' else None,**({'analysis_version':doc.source_version,'derived':True} if doc.source_type=='ai_analysis' else {}),'observed_at':(doc.content_observed_at or doc.observed_at or doc.available_at).isoformat() if (doc.content_observed_at or doc.observed_at or doc.available_at) else None,
                 'source_type':doc.source_type,'truncated':bool(doc.truncated)})
             seen.add(chunk_id)
     return result
 
 async def retrieve_faq(query:str): return await _retrieve(query,faq=True,limit=5)
 async def retrieve_materials(symbol:str,query:str,limit:int=5): return await _retrieve(query,faq=False,symbol=symbol,limit=limit)
+
+async def retrieve_analysis(symbol:str,query:str,limit:int=5): return await _retrieve(query,faq=False,symbol=symbol,limit=limit,analysis=True)

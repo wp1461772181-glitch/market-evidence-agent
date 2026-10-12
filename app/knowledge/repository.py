@@ -106,12 +106,15 @@ def ingest_documents(session: Session, documents: list[SourceDocument], tokenize
             chunk.next_chunk_id=persisted[index+1].id if index+1<len(persisted) else None
     return counts
 
-def claim_task(session: Session, generation: str, now: datetime | None=None, *, lease_seconds: int=90, worker_id: str='worker') -> IndexLease | None:
+def claim_task(session: Session, generation: str, now: datetime | None=None, *, lease_seconds: int=90, worker_id: str='worker', chunk_ids: set[uuid.UUID] | None=None) -> IndexLease | None:
     now=now or datetime.now(UTC)
-    for task in session.scalars(select(KnowledgeIndexTask).where(KnowledgeIndexTask.generation==generation,
+    if chunk_ids is not None and not chunk_ids:return None
+    predicates=[KnowledgeIndexTask.generation==generation,
       or_(KnowledgeIndexTask.status=='pending',and_(KnowledgeIndexTask.status=='failed',KnowledgeIndexTask.attempts<4,
       or_(KnowledgeIndexTask.next_attempt_at.is_(None),KnowledgeIndexTask.next_attempt_at<=now)),
-      and_(KnowledgeIndexTask.status=='leased',KnowledgeIndexTask.lease_until<=now)))
+      and_(KnowledgeIndexTask.status=='leased',KnowledgeIndexTask.lease_until<=now))]
+    if chunk_ids is not None:predicates.append(KnowledgeIndexTask.chunk_id.in_(chunk_ids))
+    for task in session.scalars(select(KnowledgeIndexTask).where(*predicates)
       .order_by(KnowledgeIndexTask.created_at,KnowledgeIndexTask.id).with_for_update(skip_locked=True).limit(100)).all():
         chunk=session.get(KnowledgeChunk,task.chunk_id)
         doc=session.get(KnowledgeDocument,chunk.document_id) if chunk else None

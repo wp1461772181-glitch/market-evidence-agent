@@ -25,7 +25,7 @@ Financial answer contract:
 - Cite evidence only with the exact [n] ordinals present in the current numbered tool evidence. Never invent, renumber, remap, or reuse a citation number for another source. If no matching numbered evidence exists, do not cite it.
 - Never promise or imply guaranteed returns, and never state a definite future market direction. Stars are source-credibility ratings, not probabilities that a stock will rise.
 - A stored excerpt, including a truncated excerpt, is only the saved passage; never describe it as a complete filing, full report, or full financial statement.
-- Use query_sec_filings for saved fetched filing text; its excerpt coverage flag indicates whether only part of the stored body is shown. Use query_material_analysis only when asked for the latest saved AI analysis, and label its summary as AI analysis rather than an official filing fact. Use query_materials for source-grounded passage search.
+- Use query_sec_filings for saved fetched filing text; its excerpt coverage flag indicates whether only part of the stored body is shown. Use query_material_analysis only when asked for the latest saved AI analysis, and label its summary as AI analysis rather than an official filing fact. Use query_materials for original source text; use search_material_analysis only for clearly labeled derived AI analysis, never as guaranteed original facts, and compare against original sources when asked to verify.
 - State the applicable source and as-of date when supplied. These instructions do not replace checking that each factual claim is actually supported by the cited evidence."""
 def _record_low_confidence(question,conversation_id,turn_id,owner,reason):
  from .database import SessionLocal
@@ -53,7 +53,7 @@ def _restore_citations(items,credential):
     verified.append({'ordinal':ordinal,'chunk_id':str(chunk_id),'title':'来源已失效','section':'','source_url':None,'observed_at':None,'source_type':'unavailable','truncated':False});continue
    chunk,doc=pair
    permitted=chunk.scope=='public' and doc.scope=='public' and chunk.visibility=='public' and doc.visibility=='public' or chunk.scope=='private' and doc.scope=='private' and chunk.visibility=='private' and doc.visibility=='private' and chunk.owner_hash==owner and doc.owner_hash==owner
-   valid=permitted and str(chunk.document_id)==item.get('document_id') and doc.active and doc.status=='active' and chunk.status=='ready' and not chunk.needs_review and chunk.available_at is not None and chunk.available_at<=now and doc.snapshot_integrity and document_integrity(doc)==doc.snapshot_integrity and chunk.source_hash==doc.source_hash and _source_hash(session,doc)==doc.source_hash and hashlib.sha256(chunk.answer.encode()).hexdigest()==chunk.content_hash and chunk.generation==item.get('generation') and chunk.content_hash==item.get('content_hash') and doc.source_hash==item.get('source_hash')
+   valid=permitted and str(chunk.document_id)==item.get('document_id') and doc.active and doc.status=='active' and chunk.status=='ready' and not chunk.needs_review and chunk.available_at is not None and chunk.available_at<=now and doc.snapshot_integrity and document_integrity(doc)==doc.snapshot_integrity and chunk.source_hash==doc.source_hash and _source_hash(session,doc)==doc.source_hash and hashlib.sha256(chunk.answer.encode()).hexdigest()==chunk.content_hash and chunk.generation==item.get('generation') and chunk.content_hash==item.get('content_hash') and doc.source_hash==item.get('source_hash') and doc.title[:180]==item.get('title') and chunk.section_path[:180]==item.get('section') and doc.source_type==item.get('source_type') and (doc.source_url==item.get('source_url') and item.get('analysis_version')==doc.source_version and item.get('derived') is True if doc.source_type=='ai_analysis' else item.get('source_url') is None)
    if valid:verified.append(item)
    else:verified.append({'ordinal':ordinal,'chunk_id':str(chunk.id),'title':'来源已失效','section':'','source_url':None,'observed_at':None,'source_type':'unavailable','truncated':False})
  return verified
@@ -215,7 +215,7 @@ async def stream_chat(payload:StreamRequest,request:Request,x_chat_session:str|N
    else:
     messages.append({"role":"assistant","content":decision.get("content"),**protocol_meta})
    if _protocol_size({"messages":messages})>40000: raise HTTPException(413,"chat_context_too_large")
-   knowledge_call=next((item for item in tool_messages if item.get('name') in {'query_materials','query_research_faq'} and item.get('_retrieval_mode')!='legacy'),None) if calls else None
+   knowledge_call=next((item for item in tool_messages if item.get('name') in {'query_materials','query_research_faq','search_material_analysis'} and item.get('_retrieval_mode')!='legacy'),None) if calls else None
    if knowledge_call:
     result=knowledge_call.get('_result') or {}
     from .knowledge.quality import evidence_state,parse_sufficiency
