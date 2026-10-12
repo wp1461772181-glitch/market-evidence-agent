@@ -52,6 +52,24 @@ def test_weak_initial_knowledge_never_reaches_agent_or_final_model():
     assert events[-1]["event"] == "done" and events[-1]["reason"] == "zero_evidence"
 
 
+def test_web_news_graph_passes_classifier_symbol_to_gate():
+    question = "Search for latest AMD company news. List the source and publication date, and use only verified page content."
+    row = {"url": "https://example.com/news", "title": "Company news today",
+           "excerpt": "The company announced new products. This page lists a source and publication date.",
+           "published_at": "2026-10-11T14:00:00+00:00", "body_provenance": "public_page_fetch",
+           "search_snippet": "AMD latest news"}
+    result = {"ok": True, "source": "public web search and fetched page excerpts", "data": [row]}
+    events, calls = run_graph("web_research", question, results={"web_research": result})
+    assert "answer" not in calls
+    assert events[-1]["reason"] == "requested_entity_missing"
+
+    row = {**row, "title": "AMD announces new products",
+           "excerpt": "AMD announced new products in its company update."}
+    events, calls = run_graph("web_research", question, results={"web_research": {**result, "data": [row]}})
+    assert calls[-1] == "answer"
+    assert events[-1]["event"] == "done"
+
+
 def test_one_initial_knowledge_lookup_is_only_tool_before_answer():
     result = {"ok": True, "data": [{"title": "AMD 2025 revenue", "excerpt": "AMD 2025 revenue $1bn", "source_url": "https://example.com"}]}
     events, calls = run_graph("source_qa", "AMD revenue in 2025", [{"tool_calls": []}], {"query_materials": result})

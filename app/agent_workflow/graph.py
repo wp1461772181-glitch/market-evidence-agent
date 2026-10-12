@@ -69,18 +69,32 @@ def deterministic_confidence_gate(question: str, result: dict, citations: list[d
     period = re.search(r"(?:Q[1-4]|FY\s?\d{2,4}|\d{4}\s*(?:年|财年|年度)?(?:第?[一二三四1-4]季度|Q[1-4])?|本季度|上季度|本财年|上财年)", question, re.I)
     if period and not re.search(re.escape(period.group(0)), text, re.I):
         return False, "requested_period_missing"
+    is_web = result.get("source_type") == "web" or str(result.get("source", "")).startswith("public web")
     for symbol in verified_symbols or []:
         # The executor has validated this stock scope. A scoped record may use a
-        # company name rather than its ticker; never infer scope from raw prose.
-        if not any(isinstance(row, dict) and (str(row.get("symbol", "")).upper() == symbol or
-                   str(row.get("_verified_symbol", "")).upper() == symbol or
-                   re.search(rf"\b{re.escape(symbol.lower())}\b", text)) for row in rows):
+        # company name rather than its ticker; web pages must state the ticker.
+        if not any(isinstance(row, dict) and (
+            (not is_web and (str(row.get("symbol", "")).upper() == symbol or
+                             str(row.get("_verified_symbol", "")).upper() == symbol)) or
+            re.search(rf"\b{re.escape(symbol.lower())}\b",
+                      " ".join(str(row.get(key, "")) for key in ("title", "excerpt", "content", "summary", "text")).lower())
+        ) for row in rows):
             return False, "requested_entity_missing"
-    terms = [term.lower() for term in re.findall(r"[A-Za-z0-9$%.-]{4,}", question)
-             if term.lower() not in {"what", "when", "where", "which", "show", "tell", "about", "from", "with", "does", "have", "latest"}]
+    lexical_question = question
+    if result.get("source") == "public webpage excerpt":
+        direct_url = _web_argument(question)
+        if direct_url and direct_url.lower().startswith("https://"):
+            lexical_question = question.replace(direct_url, " ", 1)
+    generic_terms = {"what", "when", "where", "which", "show", "tell", "about", "from", "with", "does", "have", "latest"}
+    if is_web:
+        generic_terms |= {"search", "list", "source", "sources", "publication", "date", "dates",
+                          "verified", "page", "pages", "content", "company", "news", "only",
+                          "use", "for", "and", "the", "web", "online", "recent", "today", "current"}
+    min_term_length = 3 if is_web else 4
+    terms = [term.lower() for term in re.findall(rf"[A-Za-z0-9$%.-]{{{min_term_length},}}", lexical_question)
+             if term.lower() not in generic_terms]
     if terms and not any(term in text for term in terms):
         return False, "weak_question_coverage"
-    is_web = result.get("source_type") == "web" or str(result.get("source", "")).startswith("public web")
     if is_web and re.search(r"(?:\b(?:latest|today|current|recent)\b|最新|今天|当前|近期)", question, re.I):
         if not all(isinstance(row, dict) and row.get("published_at") for row in rows):
             return False, "publisher_date_unavailable"
@@ -298,6 +312,8 @@ def _after_tool(state: AgentWorkflowState) -> str:
 async def _confidence_gate(state: AgentWorkflowState) -> dict:
     observation = state["observations"][-1]
     symbols = [observation["arguments"]["symbol"]] if observation["arguments"].get("symbol") else []
+    if observation["name"] == "web_research":
+        symbols = state.get("entities", {}).get("symbols") or symbols
     passed, reason = deterministic_confidence_gate(state["question"], observation["result"],
                                                    state.get("citations", [])[observation["citation_start"]:], symbols)
     return {"gate_passed": passed, "gate_reason": reason,
