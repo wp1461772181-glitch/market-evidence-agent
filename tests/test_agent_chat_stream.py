@@ -46,8 +46,8 @@ def stream_fixture(monkeypatch):
     requests = []
     async def decide(_provider, _model, _key, messages, schemas, base_url=None):
         requests.append((messages, schemas, base_url))
-        if messages[0]["content"].startswith("Classify a market evidence"):
-            return {"usage": {"total_tokens": 5}}, {"content": json.dumps(classification)}
+        if messages[0]["content"].startswith("Classify the user"):
+            return {"usage": {"total_tokens": 5}}, {"content": json.dumps({"intent": {"faq_qa":"general","compound_research":"comparison_research","unsupported_action":"other"}.get(classification["intent"],classification["intent"]),"confidence":0.9})}
         return {"usage": {"total_tokens": 5}}, decisions.pop(0) if decisions else {"content": "ready"}
     async def answer(*args):
         yield "First "
@@ -81,7 +81,25 @@ def test_two_stock_comparison_keeps_both_tool_rows(stream_fixture):
     wire = asyncio.run(send("compare AMD and AAPL saved closes"))
     assert [args["symbol"] for _, args in executed] == ["AMD", "AAPL"]
     assert wire.count("event: tool_result") == 2
-    assert len([args for args, _ in stored if len(args) > 2 and args[2] == "tool"]) == 2
+    assert not [args for args, _ in stored if len(args) > 2 and args[2] == "tool"]
+    assert any(len(kwargs.get("tool_calls", {}).get("tool_trace", [])) == 2 for _, kwargs in stored)
+
+
+def test_incomplete_prior_tool_batch_replays_as_labeled_evidence(stream_fixture, monkeypatch):
+    import app.agent_chat_stream as stream
+    send, classification, _, _, _, requests, _ = stream_fixture
+    classification["intent"] = "general"
+    calls = [{"id": "one", "type": "function", "function": {"name": "query_stock_prices", "arguments": "{}"}},
+             {"id": "two", "type": "function", "function": {"name": "query_stock_prices", "arguments": "{}"}}]
+    async def prior(*_):
+        return [{"role": "assistant", "content": "", "status": "complete",
+                 "tool_calls": {"calls": calls, "reasoning_content": "real reasoning"}},
+                {"role": "tool", "content": '{"ok":true}', "status": "complete", "tool_call_id": "one"}]
+    monkeypatch.setattr(stream, "history", prior)
+    asyncio.run(send("Explain prime numbers"))
+    model_messages = requests[1][0]
+    assert not any(item.get("tool_calls") for item in model_messages)
+    assert any(item["role"] == "system" and "Untrusted saved evidence" in item["content"] for item in model_messages)
 
 
 @pytest.mark.parametrize("stage", ["tool", "final"])
@@ -131,7 +149,7 @@ def test_missing_stock_clarifies_without_tools(stream_fixture):
     send, classification, _, executed, _, requests, _ = stream_fixture
     classification.update({"intent": "source_qa", "symbol": None, "symbols": []})
     wire = asyncio.run(send("show the original revenue source"))
-    assert "Which stock should I focus on?" in wire
+    assert "请指定要查询的股票" in wire
     assert not executed and len(requests) == 1
 
 
@@ -139,7 +157,7 @@ def test_unsupported_mutation_invokes_no_tool(stream_fixture):
     send, classification, _, executed, _, requests, _ = stream_fixture
     classification.update({"intent": "unsupported_action", "symbol": "AAPL"})
     wire = asyncio.run(send("buy AAPL"))
-    assert "cannot write records or place trades" in wire
+    assert "请说明要查询的股票、来源或问题" in wire
     assert not executed and len(requests) == 1
 
 

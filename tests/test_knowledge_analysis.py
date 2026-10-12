@@ -124,7 +124,7 @@ def test_analysis_retrieval_uses_analysis_prefilter_and_emits_derived_citation(m
     assert result['ok'] and result['data'][0]['derived'] is True
     assert result['data'][0]['material_type']=='ai_analysis'
     assert 'source_type == "ai_analysis"' in seen['filter']
-    assert seen['eligibility_args'][-1] is True
+    assert seen['eligibility_args'][-2] is True
     assert context.citations[0]['source_type']=='ai_analysis' and context.citations[0]['source_url']==doc.source_url
     assert context.citations[0]['analysis_version']==doc.source_version and context.citations[0]['derived'] is True
 

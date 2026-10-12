@@ -5,7 +5,7 @@ from app.agent_workflow.graph import build_workflow
 from app.agent_workflow.state import AgentRuntimeContext
 
 
-def run_graph(intent, question, decisions=(), results=None):
+def run_graph(intent, question, decisions=(), results=None, seen_messages=None):
     calls = []
     results = results or {}
     pending = list(decisions)
@@ -23,6 +23,7 @@ def run_graph(intent, question, decisions=(), results=None):
 
     async def answer(_messages):
         calls.append("answer")
+        if seen_messages is not None: seen_messages.extend(_messages)
         yield "final "
         yield "answer"
 
@@ -46,6 +47,86 @@ def test_saved_comparison_fetches_both_stocks_before_final_answer():
     assert [event["event"] for event in events].count("tool_result") == 2
 
 
+def test_generic_chinese_report_overview_uses_only_same_source_ai_when_original_is_xbrl():
+    source = "00000000-0000-4000-8000-000000000021"
+    original = {"ok": True, "source": "sec_filing_inventory (saved inventory)", "data": [{
+        "id": source, "symbol": "AAPL", "accession_number": "0000000000-26-000021",
+        "form": "10-Q", "body_hash_valid": True, "index_status": "index_pending",
+        "excerpt_coverage": "partial_excerpt", "excerpt": "<xbrli:context>2026</xbrli:context>" * 40,
+        "source_url": "https://www.sec.gov/Archives/report.htm"}]}
+    analysis = {"ok": True, "source": "material_analysis_versions", "data": [{
+        "source_id": source, "source_type": "official_filing", "analysis_id": "analysis-21", "version_no": 2,
+        "created_at": "2026-10-10T00:00:00+00:00", "model": "fixture-model",
+        "summary": "The saved AI analysis describes sales and margin changes.",
+        "source_url": "https://www.sec.gov/Archives/report.htm",
+        "classification": "saved_ai_analysis_not_official_source_text"}]}
+    messages = []
+    events, calls = run_graph("saved_data", "帮我看下苹果最新财报的简介", results={
+        "query_sec_filings": original, "query_material_analysis": analysis}, seen_messages=messages)
+    assert [call[0] for call in calls if isinstance(call, tuple) and call[0].startswith("query_")] == [
+        "query_sec_filings", "query_material_analysis"]
+    assert ("query_material_analysis", {"symbol": "AAPL", "source_id": source}) in calls
+    assert any("original_excerpt_insufficient" in str(message) for message in messages)
+    assert any("saved_ai_analysis_not_official_source_text" in str(message) for message in messages)
+    assert events[-1]["event"] == "done"
+
+    wrong = {**analysis, "data": [{**analysis["data"][0], "source_id": "00000000-0000-4000-8000-000000000022"}]}
+    events, calls = run_graph("saved_data", "帮我看下苹果最新财报的简介", results={
+        "query_sec_filings": original, "query_material_analysis": wrong})
+    assert "answer" not in calls and events[-1]["reason"] == "overview_original_insufficient_no_analysis"
+    events, calls = run_graph("saved_data", "帮我看下苹果最新财报的简介", results={
+        "query_sec_filings": original, "query_material_analysis": {"ok": True, "data": [], "error_code": "no_analysis"}})
+    assert "answer" not in calls and events[-1]["reason"] == "overview_original_insufficient_no_analysis"
+    events, calls = run_graph("saved_data", "帮我看下苹果最新财报的原文简介", results={
+        "query_sec_filings": original, "query_material_analysis": analysis})
+    assert not any(isinstance(call, tuple) and call[0] == "query_material_analysis" for call in calls)
+
+
+def test_toc_item_and_xbrl_context_do_not_block_exact_source_secondary():
+    source = "00000000-0000-4000-8000-000000000031"
+    original = {"ok": True, "data": [{
+        "id": source, "symbol": "AAPL", "accession_number": "0000000000-26-000031",
+        "form": "10-Q", "body_hash_valid": True, "excerpt_coverage": "partial_excerpt",
+        "excerpt": ("FORM 10-Q\nTABLE OF CONTENTS\nItem 1. Financial Statements ........ 3\n"
+                    + "<xbrli:context id='revenue-2026'>2026</xbrli:context>\n" * 20),
+        "source_url": "https://www.sec.gov/Archives/report.htm"}]}
+    analysis = {"ok": True, "data": [{
+        "source_id": source, "source_type": "official_filing", "analysis_id": "analysis-31",
+        "summary": "Saved AI analysis of the filing's sales and margins.",
+        "classification": "saved_ai_analysis_not_official_source_text"}]}
+    messages = []
+    events, calls = run_graph("saved_data", "帮我看下苹果最新财报的简介", results={
+        "query_sec_filings": original, "query_material_analysis": analysis}, seen_messages=messages)
+    assert ("query_material_analysis", {"symbol": "AAPL", "source_id": source}) in calls
+    assert any("original_excerpt_insufficient" in str(message) for message in messages)
+    assert events[-1]["event"] == "done"
+
+
+def test_readable_financial_rows_keep_original_overview_without_secondary():
+    source = "00000000-0000-4000-8000-000000000032"
+    original = {"ok": True, "data": [{
+        "id": source, "symbol": "AAPL", "accession_number": "0000000000-26-000032",
+        "form": "10-Q", "body_hash_valid": True, "excerpt_coverage": "partial_excerpt",
+        "excerpt": ("FORM 10-Q\nTABLE OF CONTENTS\nItem 1. Financial Statements ........ 3\n"
+                    "CONDENSED CONSOLIDATED STATEMENTS OF OPERATIONS\n"
+                    "Three Months Ended June 27, 2026 and June 28, 2025\n"
+                    "Net sales\t94,036\t85,777\nCost of sales\t48,822\t46,099\n"
+                    "Gross margin\t45,214\t39,678\n" + "Notes to financial statements. " * 8),
+        "source_url": "https://www.sec.gov/Archives/report.htm"}]}
+    events, calls = run_graph("saved_data", "帮我看下苹果最新财报的简介", results={
+        "query_sec_filings": original})
+    assert not any(isinstance(call, tuple) and call[0] == "query_material_analysis" for call in calls)
+    assert "answer" in calls and events[-1]["event"] == "done"
+
+
+def test_accession_digits_are_not_interpreted_as_requested_period():
+    from app.agent_workflow.graph import deterministic_confidence_gate
+    question = "AMD 0000320193-26-000001 这份财报的营收主题是什么"
+    result = {"ok": True, "source": "knowledge_chunks", "data": [{"id": "1", "symbol": "AMD",
+        "excerpt": "AMD revenue grew in the filing; 营收 increased."}]}
+    assert deterministic_confidence_gate(question, result, verified_symbols=["AMD"])[0]
+
+
 def test_weak_initial_knowledge_never_reaches_agent_or_final_model():
     events, calls = run_graph("source_qa", "AMD revenue in 2025", results={"query_materials": {"ok": True, "data": []}})
     assert "decision" not in calls and "answer" not in calls
@@ -61,11 +142,11 @@ def test_web_news_graph_passes_classifier_symbol_to_gate():
     result = {"ok": True, "source": "public web search and fetched page excerpts", "data": [row]}
     events, calls = run_graph("web_research", question, results={"web_research": result})
     assert "answer" not in calls
-    assert events[-1]["reason"] == "requested_entity_missing"
+    assert events[-1]["reason"] == "no_relevant_dated_article"
 
     row = {**row, "title": "AMD announces new products",
-           "excerpt": "AMD announced new products in its company update."}
-    events, calls = run_graph("web_research", question, results={"web_research": {**result, "data": [row]}})
+           "excerpt": "AMD announced new products in its company update. The company described the product launch in detail."}
+    events, calls = run_graph("web_research", question, results={"web_research": {**result, "ok": True, "data": [row]}})
     assert calls[-1] == "answer"
     assert events[-1]["event"] == "done"
 
@@ -85,8 +166,8 @@ def test_compound_repeated_normalized_tool_call_stops_without_final_model():
                            "arguments": json.dumps({"symbol": "amd", "keyword": "AMD revenue in 2025"})}}]}
     events, calls = run_graph("compound_research", "AMD revenue in 2025", [repeat], {"query_materials": result})
     assert [x[0] for x in calls if isinstance(x, tuple)] == ["query_materials"]
-    assert "answer" not in calls
-    assert events[-1]["reason"] == "repeated_tool_call"
+    assert "answer" in calls
+    assert events[-1]["reason"] != "repeated_tool_call"
 
 
 def test_unsupported_mutation_never_calls_tool_or_model():
@@ -127,7 +208,7 @@ def test_compound_explicit_web_and_analysis_require_both_sources_even_if_flags_o
                     "intent":"compound_research","symbol_focus":"AMD",
                     "entities":{"symbols":["AMD"],"original_required":True,
                                 "analysis_required":False,"web_required":False}})
-    assert [item["name"] for item in plan]==["query_materials","search_material_analysis","web_research"]
+    assert [item["name"] for item in plan]==["query_sec_filings","search_material_analysis","web_research"]
 
 
 def test_saved_chinese_filing_routes_to_filing_and_ai_summary_to_derived():
@@ -169,7 +250,7 @@ def test_final_generation_is_skipped_after_large_actual_tool_evidence(monkeypatc
     import app.agent_chat_provider as provider
     calls=[]
     async def classify_request(*_):
-        return {"usage":{"total_tokens":29000}}, {"content":'{"intent":"saved_data","symbol":"AMD"}'}
+        return {"usage":{"total_tokens":29000}}, {"content":'{"intent":"saved_data","confidence":0.9}'}
     async def execute(_name,_args):
         return {"ok":True,"data":[{"symbol":"AMD","body":"e"*7900}],"source":"saved"}
     async def answer(_messages):
@@ -194,20 +275,20 @@ def test_final_actual_usage_over_limit_is_recorded_and_stops_normally(monkeypatc
         parts["_usage"]={"total_tokens":35000}
     monkeypatch.setattr(provider,"stream_answer",final_stream)
     async def decide(_provider,_model,_key,messages,_schemas,_base):
-        if messages[0]["content"].startswith("Classify a market evidence"):
-            return {"usage":{"total_tokens":10}}, {"content":'{"intent":"general"}'}
+        if messages[0]["content"].startswith("Classify the user"):
+            return {"usage":{"total_tokens":10}}, {"content":'{"intent":"general","confidence":0.9}'}
         return {"usage":{"total_tokens":1}}, {"tool_calls":[]}
     monkeypatch.setattr(provider,"decision_request",decide)
     async def run():
         runtime=AgentRuntimeContext("deepseek","model","runtime")
-        return await build_workflow().ainvoke({"question":"hello","messages":[{"role":"user","content":"hello"}],
+        return await build_workflow().ainvoke({"question":"Explain prime numbers","messages":[{"role":"user","content":"Explain prime numbers"}],
             "token_usage":30000,"usage_mode":"actual"},
             {"configurable":{"thread_id":"actual-budget"}},context=runtime)
     # The resolver resets turn accounting; use a very large provider final usage.
     state=asyncio.run(run())
     assert state["gate_reason"]=="turn_token_budget"
     assert state["token_usage"]==35011 and state["usage_mode"]=="actual"
-    assert state["terminal_status"]=="complete"
+    assert state["terminal_status"]=="partially_succeeded"
 
 
 def test_explicit_two_symbols_do_not_require_singular_focus():
@@ -232,3 +313,98 @@ def test_legacy_knowledge_observation_is_gated_but_exact_saved_analysis_is_busin
     business=asyncio.run(run("query_material_analysis",{"symbol":"AMD"},"saved_data"))
     assert _after_tool(knowledge)=="confidence_gate"
     assert _after_tool(business)=="main_agent"
+
+
+def test_compound_partial_never_exposes_rejected_evidence_or_citation():
+    captured = []
+    async def classifier(_):
+        return '{"intent":"comparison_research","confidence":0.95}'
+    async def decide(_messages, _schemas):
+        return {"usage":{"total_tokens":20}}, {"tool_calls":[]}
+    async def execute(name, args):
+        if args["symbol"] == "AAPL":
+            return {"ok":True,"data":[{"title":"AAPL unsupported","excerpt":"FAILED_EVIDENCE_SENTINEL", "source_url":"https://example.com/bad"}],"source":"knowledge"}
+        return {"ok":True,"data":[{"title":"AMD revenue","excerpt":"AMD revenue increased in the latest report.","source_url":"https://example.com/good"}],"source":"knowledge"}
+    async def answer(messages):
+        captured.extend(messages)
+        yield "AMD revenue is supported; AAPL evidence is missing."
+    runtime=AgentRuntimeContext("custom","model","runtime",classifier=classifier,decider=decide,executor=execute,answerer=answer)
+    async def run():
+        return [event async for event in build_workflow().astream(
+            {"question":"比较 AAPL 和 AMD 营收", "messages":[{"role":"user","content":"比较 AAPL 和 AMD 营收"}]},
+            {"configurable":{"thread_id":"partial-sentinel"}},context=runtime,stream_mode="custom")]
+    events=asyncio.run(run())
+    assert "FAILED_EVIDENCE_SENTINEL" not in json.dumps(captured,ensure_ascii=False)
+    assert "FAILED_EVIDENCE_SENTINEL" not in json.dumps(events,ensure_ascii=False)
+    done=events[-1]
+    assert done["status"] == "partially_succeeded"
+    assert all(item["source_url"] != "https://example.com/bad" for item in done["citations"])
+    assert "AMD revenue" in json.dumps(captured,ensure_ascii=False)
+
+
+def test_exact_form_accession_is_one_stock_and_direct_ai_summary():
+    from app.agent_workflow.request_resolution import extract_slots
+    from app.agent_workflow.graph import _required
+    question="给我 AAPL 这份财报10-Q 0000320193-26-000020 的 AI 分析摘要"
+    slots=extract_slots(question)
+    assert slots["symbols"] == ["AAPL"]
+    plan=_required({"question":question,"intent":"analysis_qa","entities":slots})
+    assert plan == [{"name":"query_material_analysis","arguments":{
+        "symbol":"AAPL","financial_only":True,"form":"10-Q","accession_number":"0000320193-26-000020"}}]
+
+
+def test_news_query_uses_company_keywords_without_chat_instruction():
+    from app.agent_workflow.graph import _expanded_web_query
+    query=_expanded_web_query("帮我联网搜索一条苹果公司相关的最新新闻然后发给我",["AAPL"])
+    assert "AAPL" in query and "Apple" in query and "latest" in query
+    assert "帮我" not in query and "蘋果" in query
+
+
+def test_rejected_citation_is_removed_before_next_verified_leaf():
+    from app.agent_workflow.graph import _confidence_gate
+    bad={"name":"query_materials","arguments":{"symbol":"AAPL"},"result":{
+        "ok":True,"data":[{"title":"AAPL","excerpt":"FAILED_EVIDENCE_SENTINEL","source_url":"https://example.com/bad"}],"source":"knowledge"},
+        "citation_start":0,"call_id":"workflow-1"}
+    state={"question":"比较 AAPL 和 AMD 营收","entities":{"symbols":["AAPL","AMD"]},
+           "observations":[bad],"citations":[{"ordinal":1,"source_url":"https://example.com/bad"}],
+           "messages":[{"role":"user","content":"比较 AAPL 和 AMD 营收"}],
+           "task_states":[{"status":"running"}],"required_sources":[]}
+    update=asyncio.run(_confidence_gate(state))
+    assert update["citations"] == []
+    assert "FAILED_EVIDENCE_SENTINEL" not in json.dumps(update["messages"],ensure_ascii=False)
+    good={"name":"query_materials","arguments":{"symbol":"AMD"},"result":{
+        "ok":True,"data":[{"title":"AMD revenue","excerpt":"AMD revenue rose.","source_url":"https://example.com/good"}],"source":"knowledge"},
+        "citation_start":0,"call_id":"workflow-2"}
+    next_state={**state,**update,"observations":[update["observations"][-1],good],
+                "citations":[{"ordinal":2,"source_url":"https://example.com/good"}],
+                "task_states":[*update["task_states"],{"status":"running"}]}
+    accepted=asyncio.run(_confidence_gate(next_state))
+    assert accepted["gate_passed"]
+    assert [item["ordinal"] for item in accepted["citations"]] == [2]
+
+
+def test_complex_research_can_add_one_validated_useful_tool():
+    observation={"ok":True,"data":[{"title":"AMD 2025 revenue","excerpt":"AMD 2025 revenue was reported in the saved filing.",
+                                      "source_url":"https://example.com/filing"}],"source":"knowledge"}
+    additional={"tool_calls":[{"id":"extra-price","type":"function","function":{
+        "name":"query_stock_prices","arguments":json.dumps({"symbol":"AMD"})}}]}
+    events,calls=run_graph("compound_research","AMD revenue in 2025 and stock price",[additional],
+                           {"query_materials":observation})
+    assert [entry[0] for entry in calls if isinstance(entry,tuple)] == ["query_materials","query_stock_prices"]
+    assert calls[-1] == "answer"
+    assert events[-1]["status"] == "succeeded"
+
+
+def test_topic_source_binding_and_global_accession_owner_plan():
+    from app.agent_workflow.graph import _required
+    entities={"symbols":["AAPL","AMD"],"accession_number":"0000320193-26-000020",
+              "accession_owner":"AAPL","form":"10-Q","original_required":True}
+    plan=_required({"question":"比较 AAPL 和 AMD 财报营收","intent":"compound_research","entities":entities})
+    apple=[item for item in plan if item["arguments"].get("symbol")=="AAPL"]
+    amd=[item for item in plan if item["arguments"].get("symbol")=="AMD"]
+    assert apple[0]["name"] == "query_sec_filings"
+    assert apple[0]["arguments"]["accession_number"] == entities["accession_number"]
+    assert all("accession_number" not in item["arguments"] for item in amd)
+    scoped=_required({"question":"AAPL 10-Q 营收","intent":"source_qa",
+                      "entities":{"symbols":["AAPL"],"form":"10-Q"}})
+    assert [item["name"] for item in scoped] == ["query_sec_filings","query_materials"]

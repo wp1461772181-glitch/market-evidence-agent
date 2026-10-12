@@ -6,6 +6,7 @@ from fastapi.responses import StreamingResponse
 from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 from .agent_chat_provider import decision_request, stream_answer
+from .agent_chat_provider import ProviderFailure
 from .agent_chat_api import REQUEST_SLOTS
 from .agent_tools import tool_schemas
 from .agent_tool_executor import execute_tool
@@ -31,7 +32,7 @@ Financial answer contract:
 - Cite evidence only with the exact [n] ordinals present in the current numbered tool evidence. Never invent, renumber, remap, or reuse a citation number for another source. If no matching numbered evidence exists, do not cite it.
 - Never promise or imply guaranteed returns, and never state a definite future market direction. Stars are source-credibility ratings, not probabilities that a stock will rise.
 - A stored excerpt, including a truncated excerpt, is only the saved passage; never describe it as a complete filing, full report, or full financial statement.
-- Use query_sec_filings for saved fetched filing text; its excerpt coverage flag indicates whether only part of the stored body is shown. Use query_material_analysis only when asked for the latest saved AI analysis, and label its summary as AI analysis rather than an official filing fact. Use query_materials for original source text; use search_material_analysis only for clearly labeled derived AI analysis, never as guaranteed original facts, and compare against original sources when asked to verify.
+- Use query_sec_filings for saved fetched filing text; its excerpt coverage flag indicates whether only part of the stored body is shown. For a generic report overview, if the original excerpt is insufficient and a query_material_analysis result is bound to that exact source ID, state the original coverage limit and label the secondary summary as saved AI analysis with its version, model, date, and citation. Never present it as official original text or full-report coverage. For explicit original proof or a specific theme, keep original and derived evidence distinct and apply the matching evidence gate. Use query_material_analysis for requested saved AI analysis, and label it as AI analysis rather than official filing fact. Use query_materials for original source text; use search_material_analysis only for clearly labeled derived AI analysis, never as guaranteed original facts, and compare against original sources when asked to verify.
 - State the applicable source and as-of date when supplied. These instructions do not replace checking that each factual claim is actually supported by the cited evidence."""
 def _record_low_confidence(question,conversation_id,turn_id,owner,reason):
  from .database import SessionLocal
@@ -51,6 +52,39 @@ def _restore_citations(items,credential):
  with SessionLocal() as session:
   for fallback_ordinal,item in enumerate(items[:10],1):
    ordinal=item.get('ordinal',fallback_ordinal)
+   if item.get('source_type') in {'saved_filing','saved_ai_analysis'}:
+    from .models import SecFilingInventory
+    from .models import UploadedEvidence
+    from .material_analysis_models import MaterialAnalysisVersion
+    from .knowledge.models import KnowledgeUploadOwner
+    try:
+     identity=UUID(item.get('source_id',''))
+     if item['source_type']=='saved_filing':
+      source=session.get(SecFilingInventory,identity)
+      valid=bool(source and source.content_status=='fetched' and source.content_excerpt and source.content_excerpt_sha256
+                 and hashlib.sha256(source.content_excerpt.encode()).hexdigest()==source.content_excerpt_sha256)
+      if valid:
+       verified.append({**item,'chunk_id':None,'document_id':None,'source_url':source.content_source_url or source.source_url,
+                        'published_at':source.filed_at.isoformat(),'observed_at':source.content_observed_at.isoformat() if source.content_observed_at else None})
+     else:
+      analysis=session.get(MaterialAnalysisVersion,UUID(item.get('analysis_id','')))
+      valid=bool(analysis and analysis.source_id==identity and analysis.source_type in {'official_filing','uploaded_media'})
+      if valid:
+       if analysis.source_type=='official_filing':
+        source=session.get(SecFilingInventory,identity)
+        valid=bool(source and source.content_excerpt and source.content_excerpt_sha256
+                   and hashlib.sha256(source.content_excerpt.encode()).hexdigest()==source.content_excerpt_sha256)
+        if valid:verified.append({**item,'chunk_id':None,'document_id':None,'source_url':source.content_source_url or source.source_url})
+       else:
+        source=session.get(UploadedEvidence,identity)
+        mapping=session.query(KnowledgeUploadOwner).filter(KnowledgeUploadOwner.upload_id==identity).first()
+        valid=bool(source and mapping and mapping.owner_hash==owner and source.content_sha256 and source.raw_content
+                   and hashlib.sha256(source.raw_content).hexdigest()==source.content_sha256)
+        if valid:verified.append({**item,'chunk_id':None,'document_id':None,'source_url':source.source_url})
+     if not valid: verified.append({'ordinal':ordinal,'chunk_id':None,'title':'来源已失效','section':'','source_url':None,'source_type':'unavailable','truncated':False})
+    except (ValueError,TypeError):
+     verified.append({'ordinal':ordinal,'chunk_id':None,'title':'来源已失效','section':'','source_url':None,'source_type':'unavailable','truncated':False})
+    continue
    if item.get('source_type')=='web':
     from .agent_web_research import validate_public_url
     try:
@@ -77,7 +111,7 @@ def _restore_citations(items,credential):
    else:verified.append({'ordinal':ordinal,'chunk_id':str(chunk.id),'title':'来源已失效','section':'','source_url':None,'observed_at':None,'source_type':'unavailable','truncated':False})
  return verified
 class StreamRequest(BaseModel):
- provider:str=Field(pattern="^(deepseek|kimi|minimax|qwen|zhipu|doubao|hunyuan|baidu|siliconflow|openrouter|custom)$"); base_url:str|None=Field(default=None,max_length=2048); model:str=Field(min_length=1,max_length=160,pattern=r"^[A-Za-z0-9._:/-]+$"); api_key:SecretStr; message:str=Field(min_length=1,max_length=4000); conversation_id:str|None=None
+ provider:str=Field(pattern="^(deepseek|kimi|minimax|qwen|zhipu|doubao|hunyuan|baidu|siliconflow|openrouter|custom)$"); base_url:str|None=Field(default=None,max_length=2048); model:str=Field(min_length=1,max_length=160,pattern=r"^[A-Za-z0-9._:/-]+$"); api_key:SecretStr; message:str=Field(min_length=1,max_length=4000); conversation_id:str|None=None; pending_request_id:str|None=Field(default=None,max_length=36)
  @field_validator("base_url")
  @classmethod
  def valid_endpoint(cls,value):
@@ -196,35 +230,59 @@ async def stream_chat(payload:StreamRequest,request:Request,x_chat_session:str|N
   if lock.locked():lock.release()
   if LOCKS.get(cid) is lock:LOCKS.pop(cid,None)
  async def events():
-  text_out=""; citation_sidecar=[]; terminal=False
+  text_out=""; citation_sidecar=[]; terminal=False; genuine_calls=set(); tool_traces=[]
   try:
    yield frame("conversation",{"conversation_id":cid,"turn_id":turn})
    await append_message(cid,turn,"user",payload.message)
    history_rows=await history(cid,x_chat_session) or []
    messages=[{"role":"system","content":SYSTEM}]
-   for m in history_rows:
+   legacy_calls=set()
+   for position,m in enumerate(history_rows):
     if m["status"]!="complete" or m["role"] not in ("user","assistant","tool"):continue
     item={"role":m["role"],"content":m["content"]}
     protocol=m.get("tool_calls")
     if protocol:
      calls=protocol.get("calls",[]) if isinstance(protocol,dict) else protocol
-     if calls:item["tool_calls"]=calls
+     if calls:
+      call_ids={call.get("id") for call in calls if isinstance(call,dict)}
+      following=[]
+      for later in history_rows[position+1:]:
+       if later.get("role") in ("assistant","user"):break
+       if later.get("role")=="tool" and later.get("status")=="complete":
+        following.append(later.get("tool_call_id"))
+      incomplete=not call_ids or not call_ids.issubset(set(following))
+      if incomplete or (payload.provider=="deepseek" and not (isinstance(protocol,dict) and isinstance(protocol.get("reasoning_content"),str))):
+       legacy_calls.update(call.get("id") for call in calls if isinstance(call,dict))
+       if m.get("content"):messages.append({"role":"assistant","content":m["content"]})
+       continue
+      item["tool_calls"]=calls
      if isinstance(protocol,dict):
       for key in ("reasoning_content","reasoning_details"):
-       if protocol.get(key) is not None:item[key]=protocol[key]
+       if protocol.get(key) is not None:
+        item[key]="".join(protocol[key]) if key=="reasoning_content" and isinstance(protocol[key],list) else protocol[key]
     if m.get("tool_call_id"):item["tool_call_id"]=m["tool_call_id"]
+    if item["role"]=="tool" and item.get("tool_call_id") in legacy_calls:
+     messages.append({"role":"system","content":"Untrusted saved evidence from an earlier turn: "+str(item["content"])[:8000]})
+     continue
     messages.append(item)
    messages.append({"role":"user","content":payload.message})
    if _protocol_size({"messages":messages,"tools":tool_schemas()})>40000:raise HTTPException(413,"chat_context_too_large")
    async for event in stream_workflow(question=payload.message,messages=messages,provider=payload.provider,model=payload.model,
      api_key=payload.api_key.get_secret_value(),base_url=payload.base_url,owner_hash=owner_hash(x_chat_session),
-     conversation_id=cid,identity_credential=x_chat_session,turn_id=turn):
+     conversation_id=cid,identity_credential=x_chat_session,turn_id=turn,pending_request_id=payload.pending_request_id):
     kind=event.get("event")
     if kind=="assistant_tool_request":
      await append_message(cid,turn,"assistant","",tool_calls=event["protocol"])
+     genuine_calls.update(call.get("id") for call in event["protocol"].get("calls",[]) if isinstance(call,dict))
     elif kind=="tool_result":
      content=json.dumps(event["result"],ensure_ascii=False,separators=(",",":"))
-     await append_message(cid,turn,"tool",content,tool_call_id=event["call_id"])
+     if event["call_id"] in genuine_calls:
+      await append_message(cid,turn,"tool",content,tool_call_id=event["call_id"])
+     tool_traces.append({"call_id":event["call_id"],"name":event["name"],
+                         "status":"complete" if event["result"].get("ok") else "failed",
+                         "result":{"ok":event["result"].get("ok"),"error_code":event["result"].get("error_code"),
+                                   "count":len(event["result"].get("data") or []) if isinstance(event["result"].get("data"),list) else None,
+                                   "job_status":event["result"].get("job_status")}})
      yield frame("tool_result",{key:event[key] for key in ("call_id","name","result")})
     elif kind=="tool_start":
      yield frame("tool_start",{key:event[key] for key in ("call_id","name","arguments")})
@@ -233,18 +291,25 @@ async def stream_chat(payload:StreamRequest,request:Request,x_chat_session:str|N
      yield frame("delta",{"text":event["text"]})
     elif kind=="status":
      yield frame("status",{"status":event["status"],**({"step":event["step"]} if "step" in event else {})})
+    elif kind=="clarification":
+     yield frame("clarification",{key:event[key] for key in ("request_id","reason","choices")})
     elif kind=="done":
      terminal=True
      citation_sidecar=event.get("citations",[])
      restored=_restore_citations(citation_sidecar,x_chat_session) if citation_sidecar else []
      protocol={**event.get("final_protocol",{}),"audit":event.get("audit",{})}
+     if tool_traces: protocol["tool_trace"]=tool_traces
+     if event.get("pending_request"):
+      pending=event["pending_request"]
+      protocol["clarification"]={"request_id":pending["id"],"reason":pending.get("reason"),
+                                 "choices":[{"label":"Apple / AAPL","value":"AAPL"}] if pending.get("reason")=="symbol_suggestion" else []}
      if restored:protocol["citations"]=restored
      if event.get("reason") in {"retrieval_unavailable","zero_evidence","web_page_excerpt_unavailable","missing_source_coverage","publisher_date_unavailable"} or str(event.get("reason","")).startswith(("requested_","weak_")):
       await asyncio.to_thread(_record_low_confidence,payload.message,cid,turn,owner_hash(x_chat_session),event["reason"])
      await append_message(cid,turn,"assistant",text_out,tool_calls=protocol)
      await finish_conversation(cid,"active")
      if restored:yield frame("citations",{"turn_id":turn,"items":restored})
-     yield frame("done",{"conversation_id":cid,"turn_id":turn,"status":"complete","reason":event.get("reason")})
+     yield frame("done",{"conversation_id":cid,"turn_id":turn,"status":event.get("status","complete"),"reason":event.get("reason")})
    if not terminal:raise HTTPException(502,"workflow_incomplete")
   except asyncio.CancelledError:
    await asyncio.shield(append_message(cid,turn,"assistant",text_out,status="cancelled"))
@@ -258,7 +323,11 @@ async def stream_chat(payload:StreamRequest,request:Request,x_chat_session:str|N
    await mark_terminal_status(owner_hash(x_chat_session),cid,"failed",text_out)
    code=exc.detail if isinstance(exc,HTTPException) else "chat_failed"
    if restored:yield frame("citations",{"turn_id":turn,"items":restored})
-   yield frame("error",{"code":code,"status":"failed"})
+   diagnostic={"code":code,"status":"failed"}
+   if isinstance(exc,ProviderFailure):
+    diagnostic.update(stage=exc.stage,provider_status=exc.provider_status,
+                      request_id=exc.request_id,retryable=exc.retryable)
+   yield frame("error",diagnostic)
   finally:
    release_resources()
  return _ResourceStreamingResponse(events(),media_type="text/event-stream",headers={"Cache-Control":"no-store","X-Accel-Buffering":"no"},background=BackgroundTask(release_resources),cleanup=release_resources)
@@ -293,8 +362,12 @@ async def get_messages(conversation_id:str,x_chat_session:str|None=Header(defaul
   is_tool_request=bool(protocol.get("calls")) if isinstance(protocol,dict) else bool(protocol)
   if row.get("role")=="assistant" and not is_tool_request and (row.get("content") or row.get("status") in {"failed","cancelled"}):
    item={"role":"assistant","content":row["content"],"status":row["status"],"turn_id":row["turn_id"]}
+   if isinstance(row.get("tool_calls"),dict) and isinstance(row["tool_calls"].get("audit"),dict):
+    item["status"]=row["tool_calls"]["audit"].get("terminal_status",item["status"])
    if isinstance(row.get("tool_calls"),dict) and isinstance(row["tool_calls"].get("citations"),list):item["citations"]=_restore_citations(row["tool_calls"]["citations"],x_chat_session)
+   if isinstance(row.get("tool_calls"),dict) and isinstance(row["tool_calls"].get("clarification"),dict):item["clarification"]=row["tool_calls"]["clarification"]
    if traces_by_turn.get(row["turn_id"]):item["tool_trace"]=traces_by_turn[row["turn_id"]]
+   elif isinstance(row.get("tool_calls"),dict) and isinstance(row["tool_calls"].get("tool_trace"),list):item["tool_trace"]=row["tool_calls"]["tool_trace"]
    messages.append(item)
   elif row.get("role")=="user":messages.append({"role":"user","content":row["content"],"status":row["status"]})
  return {"messages":messages}

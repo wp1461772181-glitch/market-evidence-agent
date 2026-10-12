@@ -13,3 +13,16 @@ def retrieval_query(query: str) -> str:
 
 def protected_terms(query: str) -> tuple[str,...]:
     return tuple(re.findall(r'(?<![\w])[A-Z]{1,5}(?:\.[A-Z])?|\b(?:19|20)\d{2}\b|\b\d+(?:\.\d+)?%?\b',query))
+
+
+def expanded_queries(query: str) -> list[str]:
+    """Expand only a bounded two-topic financial question; never alter ingestion."""
+    groups = (("营收", "现金流"), ("revenue", "cash flow"),
+              ("利润", "营收"), ("profit", "revenue"))
+    lower = query.lower()
+    for first, second in groups:
+        if first in lower and second in lower:
+            left = query.replace(second, "").strip(" 和及,，")
+            right = query.replace(first, "").strip(" 和及,，")
+            return list(dict.fromkeys((query, left, right)))[:3]
+    return [query]

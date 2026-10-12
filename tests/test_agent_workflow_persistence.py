@@ -24,7 +24,7 @@ def test_postgres_checkpoint_reopens_state_and_never_persists_model_secret(dispo
         async with open_postgres_checkpointer(database_url) as first:
             await first.setup()
             graph=build_workflow(first)
-            await graph.ainvoke({"question":"saved prices","messages":[{"role":"user","content":"saved prices"}],
+            await graph.ainvoke({"question":"AAPL saved prices","messages":[{"role":"user","content":"AAPL saved prices"}],
                                  "observations":[],"citations":[],"tool_calls":0,"decision_steps":0,
                                  "token_usage":0,"seen_tool_signatures":[],"node_log":[]},
                                 {"configurable":{"thread_id":thread}},context=runtime)
@@ -39,7 +39,7 @@ def test_postgres_checkpoint_reopens_state_and_never_persists_model_secret(dispo
     assert sentinel not in thread
     assert values["tool_calls"] == 1
     assert values["observations"][0]["name"] == "query_stock_prices"
-    assert values["terminal_status"] == "complete"
+    assert values["terminal_status"] == "succeeded"
     assert values["audit"]["tool_calls"] == 1
 
     connection=psycopg.connect(postgres_saver_url(database_url))

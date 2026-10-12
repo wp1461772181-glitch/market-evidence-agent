@@ -28,6 +28,9 @@ def setup(disposable_database, monkeypatch):
     Base.metadata.create_all(engine)
     with SessionLocal() as s:
         seed_faq(s)
+        if not s.query(MarketPrice).filter(MarketPrice.symbol == 'AAPL', MarketPrice.source == 'agent-fixture').first():
+            s.add(MarketPrice(symbol='AAPL',trading_date=date(2026,10,9),open=100,high=102,low=99,
+                              close=101,volume=1000,source='agent-fixture',fetched_at=datetime.now(UTC)))
         s.commit()
     async_engine = create_async_engine(engine.url, poolclass=NullPool)
     factory = async_sessionmaker(async_engine, expire_on_commit=False)
@@ -77,10 +80,10 @@ def provider_fixture(monkeypatch, decision=None, chunks=None):
         body=json.loads(request.content); requests.append(body)
         if body.get('stream'):
             return httpx.Response(200, headers={'content-type':'text/event-stream'}, stream=ByteStream(chunks))
-        if body.get('messages', [{}])[0].get('content', '').startswith('Classify a market evidence'):
+        if body.get('messages', [{}])[0].get('content', '').startswith('Classify the user'):
             question=body['messages'][-1]['content'].lower()
-            intent='faq_qa' if 'credibility' in question else 'saved_data' if 'aapl' in question else 'general'
-            classified={'role':'assistant','content':json.dumps({'intent':intent,'symbol':'AAPL' if 'aapl' in question else None})}
+            intent='saved_data' if 'aapl' in question else 'general'
+            classified={'role':'assistant','content':json.dumps({'intent':intent,'confidence':0.9})}
             return httpx.Response(200, json={'model':'test','choices':[{'message':classified}]})
         return httpx.Response(200, json={'model':'test', 'choices':[{'message':decision}]})
     original=httpx.AsyncClient
@@ -200,11 +203,11 @@ def test_stream_ownership_persistence_and_tool_disable(monkeypatch):
         assert client.get(f'/agent-chat/conversations/{cid}/messages',headers={'X-Chat-Session':'other-browser-'+'d'*48}).status_code==404
         assert send(client,message='show AAPL prices',cid=cid).status_code==200
         assert len(requests)==4
-        assert requests[1].get('tool_choice')=='none', 'second request explicitly disables tools'
+        assert 'tools' not in requests[1] and 'tool_choice' not in requests[1]
     with SessionLocal() as s:
         rows=s.query(AgentMessage).filter(AgentMessage.conversation_id == cid).all()
         assert KEY not in json.dumps([{'content':r.content,'tools':r.tool_calls} for r in rows])
-        assert {r.role for r in rows}=={'user','assistant','tool'}
+        assert {r.role for r in rows}=={'user','assistant'}
 
 
 def test_bounded_provider_reasoning_is_persisted_for_continuation_but_not_streamed(monkeypatch):
@@ -303,7 +306,7 @@ def test_final_reasoning_preserved_for_next_turn_but_hidden_from_browser(monkeyp
         assert 'private-final-reasoning' not in restored.text
         assert send(client,message='show AAPL prices',cid=cid).status_code==200
     previous=next(m for body in requests[2:] for m in body['messages'] if m['role']=='assistant' and m.get('content')=='public answer')
-    assert previous['reasoning_content'] == ['private-final-reasoning']
+    assert previous['reasoning_content'] == 'private-final-reasoning'
 
 
 def test_forecast_uses_current_workspace_version_and_structured_probabilities():

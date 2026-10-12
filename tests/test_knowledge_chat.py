@@ -7,7 +7,7 @@ def test_tool_contract_and_enabled_runtime_failure(monkeypatch):
     import asyncio
     material=TOOL_REGISTRY['query_materials'].args_schema.model_json_schema()
     faq=TOOL_REGISTRY['query_research_faq'].args_schema.model_json_schema()
-    assert set(material['properties'])=={'symbol','keyword','limit'}
+    assert set(material['properties'])=={'symbol','keyword','source_id','limit'}
     assert material['properties']['limit']['default']==5
     assert set(faq['properties'])=={'keyword'}
     assert [x['function']['name'] for x in tool_schemas()]==list(TOOL_REGISTRY)

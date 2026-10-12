@@ -130,12 +130,13 @@ def _current_rows(ids:list[str],generation:str,scope_context, symbol:str|None, f
             found.append((chunk,doc))
         return found
 
-def _eligible_ann_ids(generation:str,scope_context,symbol:str|None,faq:bool,historical:bool,cutoff,analysis:bool=False):
+def _eligible_ann_ids(generation:str,scope_context,symbol:str|None,faq:bool,historical:bool,cutoff,analysis:bool=False,source_id:str|None=None):
     with SessionLocal() as session:
         source_types=['research_faq'] if faq else (['ai_analysis'] if analysis else ['uploaded_media','official_filing'])
         predicates=[KnowledgeChunk.generation==generation,KnowledgeChunk.status=='ready',KnowledgeChunk.needs_review.is_(False),
           KnowledgeChunk.source_type.in_(source_types),KnowledgeChunk.available_at.is_not(None),KnowledgeChunk.available_at<=cutoff]
         if not faq: predicates.append(KnowledgeChunk.symbol==symbol)
+        if source_id is not None: predicates.append(KnowledgeDocument.source_id==source_id)
         if scope_context:
             predicates.append(or_(and_(KnowledgeChunk.scope=='public',KnowledgeChunk.visibility=='public',KnowledgeChunk.owner_hash.is_(None)),
               and_(KnowledgeChunk.scope=='private',KnowledgeChunk.visibility=='private',KnowledgeChunk.owner_hash==scope_context.owner_hash)))
@@ -148,7 +149,7 @@ def _eligible_ann_ids(generation:str,scope_context,symbol:str|None,faq:bool,hist
     rows=_current_rows(ids,generation,scope_context,symbol,faq,historical=historical,analysis=analysis) if ids else []
     return {str(chunk.id):(chunk,doc) for chunk,doc in rows}
 
-async def _retrieve(query:str, *, faq:bool, symbol:str|None=None, limit:int=5, analysis:bool=False):
+async def _retrieve(query:str, *, faq:bool, symbol:str|None=None, limit:int=5, analysis:bool=False, source_id:str|None=None):
     research_cap=getattr(current_research_context(),'max_citations_per_observation',None)
     if research_cap is not None:
         limit=min(limit,research_cap)
@@ -164,7 +165,7 @@ async def _retrieve(query:str, *, faq:bool, symbol:str|None=None, limit:int=5, a
     historical=bool(context and context.cutoff and cutoff<now)
     access='(scope == "public" and visibility == "public")'
     if context: access+=' or (scope == "private" and visibility == "private" and owner_hash == "'+_q(context.owner_hash)+'")'
-    try: eligible=_eligible_ann_ids(runtime.settings.generation,context,symbol,faq,historical,cutoff,analysis)
+    try: eligible=_eligible_ann_ids(runtime.settings.generation,context,symbol,faq,historical,cutoff,analysis,source_id)
     except KnowledgeUnavailable:raise
     except Exception as exc:raise KnowledgeUnavailable('knowledge authority database is unavailable') from exc
     if not eligible:return {'ok':True,'data':[],'source':'knowledge_chunks:research_faq' if faq else ('knowledge_documents:material_analysis_versions' if analysis else 'knowledge_documents:uploaded_evidence + sec_filing_inventory'),'as_of':None}
@@ -264,6 +265,6 @@ async def _retrieve(query:str, *, faq:bool, symbol:str|None=None, limit:int=5, a
     return result
 
 async def retrieve_faq(query:str): return await _retrieve(query,faq=True,limit=5)
-async def retrieve_materials(symbol:str,query:str,limit:int=5): return await _retrieve(query,faq=False,symbol=symbol,limit=limit)
+async def retrieve_materials(symbol:str,query:str,limit:int=5,source_id:str|None=None): return await _retrieve(query,faq=False,symbol=symbol,limit=limit,source_id=source_id)
 
-async def retrieve_analysis(symbol:str,query:str,limit:int=5): return await _retrieve(query,faq=False,symbol=symbol,limit=limit,analysis=True)
+async def retrieve_analysis(symbol:str,query:str,limit:int=5,source_id:str|None=None): return await _retrieve(query,faq=False,symbol=symbol,limit=limit,analysis=True,source_id=source_id)

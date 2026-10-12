@@ -99,9 +99,14 @@ class PriceArgs(SymbolArgs):
     limit: int = Field(default=5, ge=1, le=30)
 class MaterialArgs(SymbolArgs):
     keyword: str = Field(min_length=1, max_length=80)
+    source_id: str | None = Field(default=None, max_length=36)
     limit: int = Field(default=5, ge=1, le=10)
 class FilingArgs(SymbolArgs):
     form: Literal["10-K", "10-Q", "8-K"] | None = None
+    accession_number: str | None = Field(default=None, pattern=r"^\d{10}-\d{2}-\d{6}$")
+    source_id: str | None = Field(default=None, max_length=36)
+    filed_year: int | None = Field(default=None, ge=1990, le=2100)
+    financial_only: bool = False
     limit: int = Field(default=5, ge=1, le=10)
 class FAQArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -113,6 +118,30 @@ async def _query(sql, params):
             await session.execute(text("SET LOCAL statement_timeout = '4000ms'"))
             result = await session.execute(text(sql), params)
             return [dict(row) for row in result.mappings().all()]
+
+async def _index_state(source_id: str) -> str:
+    present=await _query("SELECT to_regclass('public.knowledge_documents') IS NOT NULL AS present",{})
+    if not present or not present[0]["present"]: return "not_imported"
+    rows=await _query("""SELECT d.status, count(c.id) FILTER (WHERE c.status='ready') AS ready_chunks
+      FROM knowledge_documents d LEFT JOIN knowledge_chunks c ON c.document_id=d.id
+      WHERE d.source_id=:id GROUP BY d.id,d.status ORDER BY d.created_at DESC LIMIT 1""",{"id":source_id})
+    if not rows:return "not_imported"
+    return "ready" if rows[0]["ready_chunks"] else "index_pending"
+
+async def _expanded_retrieval(function, symbol: str, keyword: str, limit: int, source_id: str | None):
+    from .knowledge.query_understanding import expanded_queries
+    queries = [keyword] if source_id else expanded_queries(keyword)
+    rows=[];seen=set();first=None
+    for query in queries[:3]:
+        found = await function(symbol, query, limit, source_id=source_id) if source_id else await function(symbol, query, limit)
+        if first is None:first=found
+        for row in found.get("data") or []:
+            key=(row.get("id"),row.get("analysis_version"),row.get("material_type")) if isinstance(row,dict) else None
+            if key not in seen:
+                seen.add(key);rows.append(row)
+            if len(rows)>=limit:break
+        if len(rows)>=limit:break
+    return {**first,"data":rows[:limit],"as_of":max((str(row.get("observed_at")) for row in rows if isinstance(row,dict) and row.get("observed_at")),default=first.get("as_of"))}
 
 @tool(args_schema=PriceArgs)
 async def query_stock_prices(symbol: str, limit: int = 5) -> dict:
@@ -138,31 +167,62 @@ async def query_latest_forecast(symbol: str) -> dict:
         raise
 
 @tool(args_schema=MaterialArgs)
-async def query_materials(symbol: str, keyword: str, limit: int = 5) -> dict:
+async def query_materials(symbol: str, keyword: str, source_id: str | None = None, limit: int = 5) -> dict:
     """Find saved uploaded and official research material using a natural language question."""
-    if not _rag_enabled():
+    if source_id and not _rag_enabled():
+        direct = await query_sec_filings.coroutine(symbol=symbol, source_id=source_id, limit=1)
+        if direct.get("data"):
+            return {**direct, "_retrieval_mode": "direct_original_index_pending"}
+    if not _rag_enabled() and source_id is None:
         return await _legacy_materials(symbol, keyword, limit)
     try:
-        return await retrieve_materials(symbol, keyword, limit)
+        found = await _expanded_retrieval(retrieve_materials, symbol, keyword, limit, source_id)
+        if found.get("data") or not source_id: return found
     except KnowledgeUnavailable as exc:
-        return {"ok":False,"data":None,"error_code":exc.code,"source":"knowledge_chunks","as_of":None}
+        if not source_id:
+            return {"ok":False,"data":None,"error_code":exc.code,"source":"knowledge_chunks","as_of":None}
+    direct = await query_sec_filings.coroutine(symbol=symbol, source_id=source_id, limit=1)
+    return {**direct, "_retrieval_mode": "direct_original_index_pending"} if direct.get("data") else {
+        "ok": False, "data": None, "error_code": "no_source", "source": "knowledge_chunks", "as_of": None}
 
 
 @tool(args_schema=MaterialArgs)
-async def search_material_analysis(symbol: str, keyword: str, limit: int = 5) -> dict:
+async def search_material_analysis(symbol: str, keyword: str, source_id: str | None = None, limit: int = 5) -> dict:
     """Search saved AI analysis as derived material; verify claims against original sources when asked."""
+    if source_id and not _rag_enabled():
+        direct = await query_material_analysis.coroutine(symbol=symbol, source_id=source_id)
+        return {**direct, "_retrieval_mode": "direct_derived_index_pending"} if direct.get("data") else {
+            "ok": False, "data": None, "error_code": "no_analysis", "source": "material_analysis_versions", "as_of": None}
     if not _rag_enabled():
         return {"ok":False,"data":None,"error_code":"knowledge_unavailable","source":"material_analysis_versions","as_of":None}
-    try: return await retrieve_analysis(symbol, keyword, limit)
-    except KnowledgeUnavailable as exc: return {"ok":False,"data":None,"error_code":exc.code,"source":"material_analysis_versions","as_of":None}
+    try:
+        found = await _expanded_retrieval(retrieve_analysis, symbol, keyword, limit, source_id)
+        if found.get("data") or not source_id: return found
+    except KnowledgeUnavailable as exc:
+        if not source_id: return {"ok":False,"data":None,"error_code":exc.code,"source":"material_analysis_versions","as_of":None}
+    direct = await query_material_analysis.coroutine(symbol=symbol, source_id=source_id)
+    return {**direct, "_retrieval_mode": "direct_derived_index_pending"} if direct.get("data") else {
+        "ok":False,"data":None,"error_code":"no_analysis","source":"material_analysis_versions","as_of":None}
 
 @tool(args_schema=FilingArgs)
-async def query_sec_filings(symbol: str, form: str | None = None, limit: int = 5) -> dict:
+async def query_sec_filings(symbol: str, form: str | None = None, accession_number: str | None = None,
+                            source_id: str | None = None, filed_year: int | None = None,
+                            financial_only: bool = False, limit: int = 5) -> dict:
     """Read saved SEC filing inventory without contacting SEC."""
-    filters=" AND form=:form" if form is not None else ""
-    params={"symbol":symbol,"limit":limit}
-    if form is not None: params["form"]=form
-    rows=await _query("SELECT id, accession_number, form, filed_at, source_url, content_source_url, content_status, content_truncated, content_excerpt_sha256, content_excerpt, observed_at FROM sec_filing_inventory WHERE symbol=:symbol AND content_status='fetched'"+filters+" ORDER BY filed_at DESC LIMIT :limit",params)
+    from .knowledge.runtime import current_research_context
+    context=current_research_context()
+    cutoff=context.cutoff if context and context.cutoff else datetime.now(UTC)
+    filters=""
+    params={"symbol":symbol,"limit":min(50,max(20,limit*5)),"cutoff":cutoff}
+    if form is not None: filters+=" AND form=:form";params["form"]=form
+    if accession_number is not None: filters+=" AND accession_number=:accession";params["accession"]=accession_number
+    if source_id is not None:
+        try: source_id=str(__import__('uuid').UUID(source_id))
+        except ValueError:return {"ok":False,"data":None,"error_code":"invalid_source_id","source":"sec_filing_inventory","as_of":None}
+        filters+=" AND id=CAST(:source_id AS uuid)";params["source_id"]=source_id
+    if filed_year is not None: filters+=" AND EXTRACT(YEAR FROM filed_at)=:year";params["year"]=filed_year
+    if financial_only: filters+=" AND form IN ('10-K','10-Q')"
+    rows=await _query("SELECT id, accession_number, form, filed_at, source_url, content_source_url, content_status, content_truncated, content_excerpt_sha256, content_excerpt, observed_at FROM sec_filing_inventory WHERE symbol=:symbol AND content_status='fetched' AND observed_at<=:cutoff AND content_observed_at<=:cutoff AND filed_at<=CAST(:cutoff AS date)"+filters+" ORDER BY filed_at DESC, accession_number DESC LIMIT :limit",params)
     import hashlib
     for row in rows:
         body=row.get("content_excerpt") or ""
@@ -172,7 +232,15 @@ async def query_sec_filings(symbol: str, form: str | None = None, limit: int = 5
         row["excerpt_coverage"]="partial_excerpt" if row.get("content_truncated") or len(row["excerpt"])<len(body) else "complete_saved_body"
         row.pop("content_excerpt",None);row.pop("content_excerpt_sha256",None)
     rows=[row for row in rows if row.get('body_hash_valid')]
-    return {"ok":True,"data":[{k:_json(v) for k,v in r.items()} for r in rows],"source":"sec_filing_inventory (saved inventory)","as_of":_json(rows[0]["observed_at"]) if rows else None}
+    if limit == 1 and rows:
+        from .agent_workflow.source_selection import choose_filing
+        selected = choose_filing(rows, accession_number=accession_number, form=form,
+                                 year=filed_year, financial_only=financial_only)
+        rows = [selected] if selected else []
+    rows = rows[:limit]
+    for row in rows: row["index_status"] = await _index_state(str(row["id"]))
+    return {"ok":True,"data":[{k:_json(v) for k,v in r.items()} for r in rows],"source":"sec_filing_inventory (saved inventory)","as_of":_json(rows[0]["observed_at"]) if rows else None,
+            "error_code":"no_source" if not rows else None}
 
 @tool(args_schema=FAQArgs)
 async def query_research_faq(keyword: str) -> dict:
@@ -184,15 +252,21 @@ async def query_research_faq(keyword: str) -> dict:
     except KnowledgeUnavailable as exc:
         return {"ok":False,"data":None,"error_code":exc.code,"source":"knowledge_chunks:research_faq","as_of":None}
 
-def _substantive_excerpt(body: str, limit: int=1200) -> str:
+def _substantive_excerpt(body: str, limit: int=3000) -> str:
     """Select substantive filing text while reporting that it is only an excerpt."""
     text=body or ""
-    if len(text)<=limit:return text
-    matches=list(re.finditer(r"(?im)^\s*item\s+\d+(?:\.\d+)?\b[^\n]*",text))
-    if matches:
-        start=matches[0].start()
-        return text[start:start+limit]
-    return text[:limit]
+    # SEC HTML extraction can start with thousands of XBRL contexts. Prefer an
+    # actual statement heading to a cover or a table-of-contents Item entry.
+    statement=re.search(r"(?im)^[ \t]*(?:[A-Z][A-Z &'(),.-]+ )?(?:CONDENSED |CONSOLIDATED |COMBINED )*(?:BALANCE SHEETS|STATEMENTS OF (?:OPERATIONS|INCOME|CASH FLOWS|COMPREHENSIVE INCOME|SHAREHOLDERS.? EQUITY))\b[^\n]*",text)
+    item=re.search(r"(?im)^[ \t]*item\s+\d+(?:\.\d+)?\b[^\n]*",text)
+    start=statement.start() if statement else item.start() if item else 0
+    passage=text[start:]
+    # The limit applies to the UTF-8 tool payload, including multibyte text.
+    clipped=passage.encode('utf-8')[:limit].decode('utf-8','ignore')
+    if len(clipped)<len(passage):
+        boundary=clipped.rfind('\n')
+        if boundary>=limit//2: clipped=clipped[:boundary]
+    return clipped
 
 def _safe_source_url(value: str | None) -> str | None:
     if not value:return None
@@ -214,9 +288,12 @@ def _safe_source_url(value: str | None) -> str | None:
 class AnalysisArgs(SymbolArgs):
     accession_number: str | None = Field(default=None,min_length=10,max_length=24)
     source_id: str | None = Field(default=None,min_length=1,max_length=36)
+    form: str | None = Field(default=None,pattern=r"^(10-Q|10-K|8-K)$")
+    financial_only: bool = False
 
 @tool(args_schema=AnalysisArgs)
-async def query_material_analysis(symbol: str, accession_number: str | None = None, source_id: str | None = None) -> dict:
+async def query_material_analysis(symbol: str, accession_number: str | None = None, source_id: str | None = None,
+                                  form: str | None = None, financial_only: bool = False) -> dict:
     """Read the latest saved AI analysis of a material; this is an AI summary, not original filing text or an official fact record."""
     from .knowledge.runtime import current_research_context
     context=current_research_context()
@@ -228,7 +305,8 @@ async def query_material_analysis(symbol: str, accession_number: str | None = No
     if not isinstance(cutoff,datetime) or cutoff.tzinfo is None or cutoff.utcoffset() is None:
         return {"ok":False,"data":None,"error_code":"invalid_material_analysis_cutoff","source":"material_analysis_versions","as_of":None}
     cutoff=cutoff.astimezone(UTC)
-    params={"symbol":symbol,"accession":accession_number,"source_id":source_id,"cutoff":cutoff,"now":now}
+    params={"symbol":symbol,"accession":accession_number,"source_id":source_id,"form":form,
+            "financial_only":financial_only,"cutoff":cutoff,"now":now}
     rows=await _query("""SELECT v.id,v.evidence_version_id,v.source_type,v.source_id,v.version_no,v.created_at,v.actual_model,v.payload,v.source_manifest,
       e.content_sha256,e.source_snapshot,e.citations,e.symbol,e.published_at,e.observed_at,
       s.accession_number,s.filed_at AS filing_filed_at,s.source_url AS filing_url,s.content_source_url,s.content_excerpt_sha256 AS filing_body_hash,s.content_excerpt AS filing_text,s.content_observed_at AS filing_content_observed_at,s.observed_at AS filing_observed_at,
@@ -238,9 +316,12 @@ async def query_material_analysis(symbol: str, accession_number: str | None = No
       LEFT JOIN uploaded_evidence u ON v.source_type='uploaded_media' AND u.id=v.source_id AND u.symbol=e.symbol
       WHERE e.symbol=:symbol AND (CAST(:accession AS text) IS NULL OR s.accession_number=CAST(:accession AS text))
       AND (CAST(:source_id AS text) IS NULL OR CAST(v.source_id AS text)=CAST(:source_id AS text))
+      AND (CAST(:form AS text) IS NULL OR s.form=CAST(:form AS text))
+      AND (:financial_only=false OR s.form IN ('10-Q','10-K'))
       AND e.published_at<=:cutoff AND e.observed_at<=:cutoff AND e.published_at<=:now AND e.observed_at<=:now
       AND v.created_at<=:cutoff AND v.created_at<=:now
-      ORDER BY v.created_at DESC,v.version_no DESC,v.id DESC LIMIT 1""",params)
+      ORDER BY COALESCE(s.filed_at,CAST(u.published_at AS date)) DESC NULLS LAST,
+        v.version_no DESC,v.created_at DESC,v.id DESC LIMIT 100""",params)
     if source_id: rows=[row for row in rows if str(row.get('source_id'))==source_id]
     verified=[]
     for row in rows:
@@ -300,8 +381,10 @@ async def query_material_analysis(symbol: str, accession_number: str | None = No
     for row in verified:
         key=row['source_id']
         if key not in seen:latest.append(row);seen.add(key)
+    for row in latest[:1]: row["index_status"] = await _index_state(row["source_id"])
     # One requested analysis keeps the complete tool response safely below the 8KB tool budget.
-    return {"ok":True,"data":latest[:1],"source":"material_analysis_versions joined to frozen evidence and current source","as_of":latest[0]['created_at'] if latest else None}
+    return {"ok":True,"data":latest[:1],"source":"material_analysis_versions joined to frozen evidence and current source","as_of":latest[0]['created_at'] if latest else None,
+            "error_code":"no_analysis" if not latest else None}
 
 from .agent_web_research import web_research
 

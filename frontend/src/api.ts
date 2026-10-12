@@ -23,7 +23,7 @@ export type AgentChatConfig = { provider: AgentChatProvider; base_url?: string; 
 export type AgentCitation = { ordinal?:number; chunk_id?: string | null; document_id?: string | null; title: string; section: string; source_url?: string | null; observed_at?: string | null; published_at?:string|null; quote?:string; source_type: string; truncated: boolean; derived?:boolean };
 export type KnowledgeDocumentSummary = { id:string; title:string; symbol:string|null; source_type:string; observed_at:string|null; available_at:string|null; status:string; active:boolean; owner_scope:string; chunks:number };
 export type KnowledgeChunkDetail = { id:string; ordinal:number; section:string; answer:string; status:string; needs_review:boolean };
-export type AgentChatMessage = { role: "user" | "assistant" | "tool"; content: string; status?: string; turn_id?: string; citations?: AgentCitation[]; tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }>; tool_call_id?: string; tool_trace?: Array<{ call_id?: string; name: string; arguments?: unknown; result?: unknown; status: string }> };
+export type AgentChatMessage = { role: "user" | "assistant" | "tool"; content: string; status?: string; turn_id?: string; citations?: AgentCitation[]; clarification?: {request_id:string;reason:string;choices:Array<{label:string;value:string}>}; tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }>; tool_call_id?: string; tool_trace?: Array<{ call_id?: string; name: string; arguments?: unknown; result?: unknown; status: string }> };
 export type AgentChatEvent = { event: string; data: Record<string, unknown> };
 const chatConversationKey = "market-evidence-agent:chat-conversation:v1";
 export type ChatMode = "guest" | "personal";
@@ -61,8 +61,8 @@ export async function restoreAgentChat(selectedId?: string | null, signal?: Abor
 }
 export function clearAgentConversation(): void { selectConversationForMode(window.localStorage,window.sessionStorage,null); }
 export function selectAgentConversation(id:string|null,createdAt?:string|null):void { selectConversationForMode(window.localStorage,window.sessionStorage,id,undefined,createdAt); }
-export async function agentChatStream(config: AgentChatConfig, message: string, conversationId: string | null, signal: AbortSignal, onEvent: (event: AgentChatEvent) => boolean | void): Promise<string> {
-  const response = await fetch(agentChatUrl("stream", configuredApiBaseUrl), { method: "POST", signal, cache: "no-store", headers: { Accept: "text/event-stream", "Content-Type": "application/json", "X-Chat-Session": chatCredential() }, body: JSON.stringify({ ...config, message, conversation_id: conversationId }) });
+export async function agentChatStream(config: AgentChatConfig, message: string, conversationId: string | null, signal: AbortSignal, onEvent: (event: AgentChatEvent) => boolean | void, pendingRequestId?:string): Promise<string> {
+  const response = await fetch(agentChatUrl("stream", configuredApiBaseUrl), { method: "POST", signal, cache: "no-store", headers: { Accept: "text/event-stream", "Content-Type": "application/json", "X-Chat-Session": chatCredential() }, body: JSON.stringify({ ...config, message, conversation_id: conversationId, ...(pendingRequestId?{pending_request_id:pendingRequestId}:{}) }) });
   if (!response.ok) { const payload = await response.json().catch(() => null); throw apiErrorFromPayload(payload, response.status); }
   const reader = response.body?.getReader(); if (!reader) throw new ApiError("服务未返回流式响应。");
   const decoder = new TextDecoder(); let buffer = "", answer = "", eventName = "message", receivedDone = false;
@@ -76,7 +76,7 @@ export async function agentChatStream(config: AgentChatConfig, message: string, 
       const receivedEvent = eventName;
       const accepted = onEvent({ event: receivedEvent, data });
       if (accepted !== false && receivedEvent === "conversation" && typeof data.conversation_id === "string") window.sessionStorage.setItem(chatConversationKey, data.conversation_id);
-      if (receivedEvent === "done" && data.status === "complete") receivedDone = true;
+      if (receivedEvent === "done" && ["complete","succeeded","partially_succeeded","waiting_for_input","running","failed"].includes(String(data.status))) receivedDone = true;
       eventName = "message";
       if (receivedEvent === "error") throw new ApiError(String(data.code ?? "chat_failed"));
     }

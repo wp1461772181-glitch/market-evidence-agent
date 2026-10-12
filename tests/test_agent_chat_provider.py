@@ -70,3 +70,24 @@ def test_nonstream_maps_redirect_and_friendly_bad_request(monkeypatch):
     transport(monkeypatch,httpx.Response(422,json={"error":"invalid"}))
     with pytest.raises(HTTPException) as error: asyncio.run(provider._post("deepseek","test-key",{}))
     assert error.value.detail=="provider_model_unavailable_or_invalid_request"
+
+
+def test_classifier_request_has_no_empty_tool_protocol_and_enough_thinking_budget(monkeypatch):
+    captured = {}
+    async def fake_post(provider_name, key, body, base_url):
+        captured.update(body)
+        return {}, {"content": '{"intent":"general","confidence":0.9}'}
+    monkeypatch.setattr(provider, "_post", fake_post)
+    asyncio.run(provider.decision_request("deepseek", "deepseek-flash", "test-key", [{"role":"user","content":"hi"}], []))
+    assert "tools" not in captured and "tool_choice" not in captured
+    assert captured["max_tokens"] >= 4096
+
+
+def test_usage_on_last_choice_frame_is_collected(monkeypatch):
+    chunks=[b'data: {"choices":[{"delta":{"content":"answer"},"finish_reason":"stop"}],"usage":{"total_tokens":42}}\n\n',b'data: [DONE]\n\n']
+    transport(monkeypatch,httpx.Response(200,headers={"content-type":"text/event-stream"},stream=Chunks(chunks)))
+    async def run():
+        collected={}
+        async for _ in provider.stream_answer("deepseek","deepseek-flash","test-key",[],collected): pass
+        return collected
+    assert asyncio.run(run())["_usage"]["total_tokens"]==42

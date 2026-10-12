@@ -5,12 +5,43 @@ import httpx
 from fastapi import HTTPException
 from .agent_chat_api import PROVIDERS, BASE_URLS, PinnedPublicTransport
 
+class ProviderFailure(HTTPException):
+    def __init__(self, code: str, *, stage: str, provider_status: int | None = None,
+                 request_id: str | None = None, retryable: bool = False):
+        super().__init__(429 if provider_status == 429 else 502, code)
+        self.stage = stage
+        self.provider_status = provider_status
+        self.request_id = request_id
+        self.retryable = retryable
+
+
+async def _provider_error(response, stage: str) -> ProviderFailure:
+    status = response.status_code
+    request_id = next((response.headers.get(name) for name in ("x-request-id", "x-ds-request-id", "cf-ray")
+                       if response.headers.get(name)), None)
+    if request_id and not __import__("re").fullmatch(r"[A-Za-z0-9_.:-]{1,100}", request_id):
+        request_id = None
+    code = {400: "provider_model_unavailable_or_invalid_request", 401: "provider_invalid_key",
+            403: "provider_model_access_denied", 404: "provider_model_unavailable_or_invalid_request",
+            422: "provider_model_unavailable_or_invalid_request", 429: "provider_rate_or_quota_error"}.get(status, "provider_error")
+    if status == 400:
+        raw = (await response.aread())[:4096]
+        # Only classify a known protocol phrase; never return arbitrary provider
+        # text because it can echo private prompts or headers.
+        if b"reasoning_content" in raw or b"tool_call_id" in raw:
+            code = "provider_protocol_incompatible"
+    return ProviderFailure(code, stage=stage, provider_status=status,
+                           request_id=request_id, retryable=status in {429, 500, 502, 503, 504})
+
 def endpoint(provider, base_url=None):
     if base_url is None: return PROVIDERS[provider]
     base=base_url.rstrip("/")
     return base if base.endswith("/chat/completions") else base+"/chat/completions"
 async def decision_request(provider, model, api_key, messages, schemas, base_url=None):
-    body={"model":model,"messages":messages,"tools":schemas,"tool_choice":"auto","max_tokens":1200,"stream":False}
+    # Thinking output counts against max_tokens; a 1200-token JSON classifier
+    # can exhaust its budget before producing any visible JSON.
+    body={"model":model,"messages":messages,"max_tokens":8192 if not schemas else 4096,"stream":False}
+    if schemas: body.update(tools=schemas,tool_choice="auto")
     if provider=="minimax":body["reasoning_split"]=True
     return await _post(provider,api_key,body,base_url)
 async def _post(provider,key,body,base_url=None):
@@ -24,8 +55,7 @@ async def _post(provider,key,body,base_url=None):
             async with client.stream("POST",endpoint(provider,base_url),headers=headers,json=body) as r:
                 if 300 <= r.status_code < 400: raise HTTPException(502,"provider_redirect_rejected")
                 if r.status_code>=400:
-                    codes={400:"provider_model_unavailable_or_invalid_request",401:"provider_invalid_key",403:"provider_model_access_denied",404:"provider_model_unavailable_or_invalid_request",422:"provider_model_unavailable_or_invalid_request",429:"provider_rate_or_quota_error"}
-                    raise HTTPException(429 if r.status_code==429 else 502,codes.get(r.status_code,"provider_error"))
+                    raise await _provider_error(r, "tool_decision" if body.get("tools") else "classification")
                 chunks=[]; total=0
                 async for chunk in r.aiter_bytes(chunk_size=16_384):
                     total+=len(chunk)
@@ -42,7 +72,7 @@ async def _post(provider,key,body,base_url=None):
     return data,msg
 
 async def stream_answer(provider,model,api_key,messages,reasoning_collector=None,base_url=None):
-    body={"model":model,"messages":messages,"max_tokens":1800,"stream":True,"tools":[],"tool_choice":"none"}
+    body={"model":model,"messages":messages,"max_tokens":8192,"stream":True}
     if provider=="minimax":body["reasoning_split"]=True
     headers={"Authorization":f"Bearer {api_key}","Content-Type":"application/json"}
     if provider=="openrouter":headers["X-Title"]="Market Evidence Agent"
@@ -54,8 +84,7 @@ async def stream_answer(provider,model,api_key,messages,reasoning_collector=None
                 async with client.stream("POST",endpoint(provider,base_url),headers=headers,json=body) as r:
                     if 300 <= r.status_code < 400: raise HTTPException(502,"provider_redirect_rejected")
                     if r.status_code>=400:
-                        codes={400:"provider_model_unavailable_or_invalid_request",401:"provider_invalid_key",403:"provider_model_access_denied",404:"provider_model_unavailable_or_invalid_request",422:"provider_model_unavailable_or_invalid_request",429:"provider_rate_or_quota_error"}
-                        raise HTTPException(429 if r.status_code==429 else 502,codes.get(r.status_code,"provider_error"))
+                        raise await _provider_error(r, "final_answer")
                     completed=False; buffer=b""; finished=False; raw_total=0
                     async for chunk in r.aiter_bytes():
                       raw_total += len(chunk)
@@ -78,6 +107,8 @@ async def stream_answer(provider,model,api_key,messages,reasoning_collector=None
                             if not isinstance(event,dict): raise ValueError()
                             if "error" in event:raise HTTPException(502,"provider_error")
                             choices=event.get("choices")
+                            if isinstance(reasoning_collector,dict) and isinstance(event.get("usage"),dict):
+                                reasoning_collector["_usage"]=event["usage"]
                             if choices == [] and "usage" in event:
                                 if isinstance(reasoning_collector,dict) and isinstance(event["usage"],dict):
                                     reasoning_collector["_usage"]=event["usage"]

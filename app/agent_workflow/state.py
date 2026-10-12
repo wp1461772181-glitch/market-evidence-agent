@@ -6,12 +6,18 @@ from typing import Any, TypedDict
 
 class AgentWorkflowState(TypedDict, total=False):
     question: str
+    original_question: str
+    canonical_question: str
+    resume_slots: dict[str, Any] | None
+    pending_request: dict[str, Any] | None
+    action_request_id: str | None
     intent: str
     entities: dict[str, Any]
     symbol_focus: str | None
     material_focus: str | None
     messages: list[dict[str, Any]]
     observations: list[dict[str, Any]]
+    task_states: list[dict[str, Any]]
     citations: list[dict[str, Any]]
     gate_passed: bool
     gate_reason: str | None
@@ -26,6 +32,8 @@ class AgentWorkflowState(TypedDict, total=False):
     node_log: list[dict[str, Any]]
     required_sources: list[dict[str, Any]]
     pending_tool: dict[str, Any] | None
+    pending_tool_queue: list[dict[str, Any]]
+    web_alternative_attempted: bool
     answer: str
     final_protocol: dict[str, Any]
     turn_id: str
