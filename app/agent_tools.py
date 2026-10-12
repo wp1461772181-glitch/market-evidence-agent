@@ -303,6 +303,8 @@ async def query_material_analysis(symbol: str, accession_number: str | None = No
     # One requested analysis keeps the complete tool response safely below the 8KB tool budget.
     return {"ok":True,"data":latest[:1],"source":"material_analysis_versions joined to frozen evidence and current source","as_of":latest[0]['created_at'] if latest else None}
 
-TOOL_REGISTRY={item.name:item for item in [query_stock_prices,query_latest_forecast,query_materials,query_sec_filings,query_research_faq,query_material_analysis,search_material_analysis]}
+from .agent_web_research import web_research
+
+TOOL_REGISTRY={item.name:item for item in [query_stock_prices,query_latest_forecast,query_materials,query_sec_filings,query_research_faq,query_material_analysis,search_material_analysis,web_research]}
 def tool_schemas():
     return [{"type":"function","function":{"name":name,"description":item.description,"parameters":item.args_schema.model_json_schema()}} for name,item in TOOL_REGISTRY.items()]

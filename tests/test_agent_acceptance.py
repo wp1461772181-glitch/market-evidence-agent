@@ -33,6 +33,12 @@ def setup(disposable_database, monkeypatch):
     factory = async_sessionmaker(async_engine, expire_on_commit=False)
     monkeypatch.setattr(tools, '_async_session', factory)
     monkeypatch.setattr(store, 'Session', factory)
+    from app.agent_workflow.checkpoints import open_postgres_checkpointer
+    from app.agent_workflow.settings import checkpoint_database_url
+    async def setup_saver():
+        async with open_postgres_checkpointer(checkpoint_database_url()) as saver:
+            await saver.setup()
+    asyncio.run(setup_saver())
     yield
     asyncio.run(async_engine.dispose())
 
@@ -71,6 +77,11 @@ def provider_fixture(monkeypatch, decision=None, chunks=None):
         body=json.loads(request.content); requests.append(body)
         if body.get('stream'):
             return httpx.Response(200, headers={'content-type':'text/event-stream'}, stream=ByteStream(chunks))
+        if body.get('messages', [{}])[0].get('content', '').startswith('Classify a market evidence'):
+            question=body['messages'][-1]['content'].lower()
+            intent='faq_qa' if 'credibility' in question else 'saved_data' if 'aapl' in question else 'general'
+            classified={'role':'assistant','content':json.dumps({'intent':intent,'symbol':'AAPL' if 'aapl' in question else None})}
+            return httpx.Response(200, json={'model':'test','choices':[{'message':classified}]})
         return httpx.Response(200, json={'model':'test', 'choices':[{'message':decision}]})
     original=httpx.AsyncClient
     monkeypatch.setattr(provider.httpx, 'AsyncClient', lambda **kw: original(transport=httpx.MockTransport(handler), **kw))
@@ -179,7 +190,7 @@ def test_legacy_unmapped_upload_is_visible_only_to_configured_site_owner(monkeyp
 def test_stream_ownership_persistence_and_tool_disable(monkeypatch):
     requests=provider_fixture(monkeypatch,decision={'role':'assistant','content':None,'tool_calls':[call('query_stock_prices',{'symbol':'AAPL'})]})
     with TestClient(main.app) as client:
-        response=send(client); events=frames(response)
+        response=send(client,message='show AAPL prices'); events=frames(response)
         assert response.status_code==200 and events[-1][0]=='done'
         assert [e[1]['text'] for e in events if e[0]=='delta']==['first',' second']
         assert [e[0] for e in events].index('tool_result')<[e[0] for e in events].index('delta')
@@ -187,7 +198,7 @@ def test_stream_ownership_persistence_and_tool_disable(monkeypatch):
         owned=client.get(f'/agent-chat/conversations/{cid}/messages',headers={'X-Chat-Session':SESSION})
         assert owned.status_code==200
         assert client.get(f'/agent-chat/conversations/{cid}/messages',headers={'X-Chat-Session':'other-browser-'+'d'*48}).status_code==404
-        assert send(client,cid=cid).status_code==200
+        assert send(client,message='show AAPL prices',cid=cid).status_code==200
         assert len(requests)==4
         assert requests[1].get('tool_choice')=='none', 'second request explicitly disables tools'
     with SessionLocal() as s:
@@ -196,25 +207,23 @@ def test_stream_ownership_persistence_and_tool_disable(monkeypatch):
         assert {r.role for r in rows}=={'user','assistant','tool'}
 
 
-def test_reasoning_round_trip_is_complete(monkeypatch):
+def test_bounded_provider_reasoning_is_persisted_for_continuation_but_not_streamed(monkeypatch):
     thought='r'*8100
-    decision={'role':'assistant','content':None,'tool_calls':[call('query_stock_prices',{'symbol':'AAPL'})], 'reasoning_content':thought}
+    decision={'role':'assistant','content':'ready', 'reasoning_content':thought}
     requests=provider_fixture(monkeypatch,decision)
     with TestClient(main.app) as client:
-        events=frames(send(client))
+        events=frames(send(client,message='explain this concept'))
         assert events[-1][0]=='done'
         cid=events[0][1]['conversation_id']
-        send(client,cid=cid)
-    tool_decision=next(m for m in requests[1]['messages'] if m.get('tool_calls'))
-    assert tool_decision.get('reasoning_content')==thought
-    historic=next(m for m in requests[2]['messages'] if m.get('tool_calls'))
-    assert historic.get('reasoning_content')==thought
+        send(client,message='and explain further',cid=cid)
+    assert any(message.get('reasoning_content') == thought for body in requests for message in body['messages'])
+    assert all(len(json.dumps(body).encode()) < 100_000 for body in requests)
 
 
 def test_incomplete_provider_stream_cannot_report_success(monkeypatch):
     provider_fixture(monkeypatch,decision={'role':'assistant','content':None,'tool_calls':[call('query_stock_prices',{'symbol':'AAPL'})]},chunks=[b'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'])
     with TestClient(main.app) as client:
-        events=frames(send(client))
+        events=frames(send(client,message='show AAPL prices'))
     assert not any(e[0]=='done' for e in events)
     assert events[-1][0]=='error'
 
@@ -222,7 +231,7 @@ def test_incomplete_provider_stream_cannot_report_success(monkeypatch):
 def test_failed_turn_remains_visible_on_restore(monkeypatch):
     provider_fixture(monkeypatch,decision={'role':'assistant','content':None,'tool_calls':[call('query_stock_prices',{'symbol':'AAPL'})]},chunks=[b'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n',b'data: {"error":{"message":"provider failure"}}\n\n'])
     with TestClient(main.app) as client:
-        events=frames(send(client));cid=events[0][1]['conversation_id']
+        events=frames(send(client,message='show AAPL prices'));cid=events[0][1]['conversation_id']
         assert events[-1][0]=='error'
         rows=client.get(f'/agent-chat/conversations/{cid}/messages',headers={'X-Chat-Session':SESSION}).json()['messages']
         assert any(r.get('status')=='failed' for r in rows)
@@ -243,25 +252,23 @@ def test_current_message_is_sent_and_no_tool_path_streams(monkeypatch):
     with TestClient(main.app) as client:
         events=frames(send(client,message='parent-current-message'))
     assert events[-1][0]=='done'
-    assert len(requests)==2
+    assert len(requests)==3
     assert requests[0]['messages'][-1]['role']=='user'
-    assert requests[0]['messages'][-1]['content']=='parent-current-message'
+    assert json.loads(requests[0]['messages'][-1]['content'])['question']=='parent-current-message'
     assert not any(e[0]=='tool_start' for e in events)
 
 
 def test_multiple_tool_requests_execute_only_first_call(monkeypatch):
-    import app.agent_chat_stream as stream
+    import app.agent_tool_executor as executor
     from unittest.mock import AsyncMock
     execute=AsyncMock(return_value={'ok':True,'data':[],'source':'fixture','as_of':None})
-    monkeypatch.setattr(stream,'execute_tool',execute)
+    monkeypatch.setattr(executor,'execute_tool',execute)
     requests=provider_fixture(monkeypatch,decision={'role':'assistant','content':None,'tool_calls':[call('query_stock_prices',{'symbol':'AAPL'},ident='call-1'),call('query_stock_prices',{'symbol':'AAPL'},ident='call-2')]})
     with TestClient(main.app) as client:
-        events=frames(send(client))
+        events=frames(send(client,message='show AAPL prices'))
     assert events[-1][0]=='done' and execute.await_count==1
-    msgs=requests[1]['messages']
-    proposed=[m for m in msgs if m.get('tool_calls')][0]['tool_calls']
-    results=[m['tool_call_id'] for m in msgs if m['role']=='tool']
-    assert [c['id'] for c in proposed]==results==['call-1']
+    assert [event[1]['name'] for event in events if event[0]=='tool_result']==['query_stock_prices']
+    assert [event[1]['call_id'] for event in events if event[0]=='tool_result']==['workflow-1']
 
 
 def test_chat_capacity_applies_to_entire_stream(monkeypatch):
@@ -289,14 +296,14 @@ def test_final_reasoning_preserved_for_next_turn_but_hidden_from_browser(monkeyp
     chunks=[b'data: {"choices":[{"delta":{"reasoning_content":"private-final-reasoning"}}]}\n\n',b'data: {"choices":[{"delta":{"content":"public answer"},"finish_reason":"stop"}]}\n\n',b'data: [DONE]\n\n']
     requests=provider_fixture(monkeypatch,decision={'role':'assistant','content':'direct decision'},chunks=chunks)
     with TestClient(main.app) as client:
-        response=send(client);events=frames(response);cid=events[0][1]['conversation_id']
+        response=send(client,message='show AAPL prices');events=frames(response);cid=events[0][1]['conversation_id']
         assert events[-1][0]=='done'
         assert 'private-final-reasoning' not in response.text
         restored=client.get(f'/agent-chat/conversations/{cid}/messages',headers={'X-Chat-Session':SESSION})
         assert 'private-final-reasoning' not in restored.text
-        assert send(client,cid=cid).status_code==200
-    previous=next(m for m in requests[2]['messages'] if m['role']=='assistant' and m.get('content')=='public answer')
-    assert previous.get('reasoning_content')=='private-final-reasoning'
+        assert send(client,message='show AAPL prices',cid=cid).status_code==200
+    previous=next(m for body in requests[2:] for m in body['messages'] if m['role']=='assistant' and m.get('content')=='public answer')
+    assert previous['reasoning_content'] == ['private-final-reasoning']
 
 
 def test_forecast_uses_current_workspace_version_and_structured_probabilities():
@@ -319,7 +326,7 @@ def test_forecast_uses_current_workspace_version_and_structured_probabilities():
 def test_provider_truncation_finish_cannot_be_marked_success(monkeypatch):
     provider_fixture(monkeypatch,chunks=[b'data: {"choices":[{"delta":{"content":"truncated"},"finish_reason":"length"}]}\n\n',b'data: [DONE]\n\n'])
     with TestClient(main.app) as client:
-        events=frames(send(client))
+        events=frames(send(client,message='show AAPL prices'))
     assert not any(e[0]=='done' for e in events)
     assert events[-1][0]=='error'
 
@@ -347,9 +354,9 @@ def test_final_openrouter_reasoning_details_round_trip_without_exposure(monkeypa
     chunks=[b'data: '+piece+b'\n\n',b'data: {"choices":[{"delta":{"content":"public answer"},"finish_reason":"stop"}]}\n\n',b'data: [DONE]\n\n']
     requests=provider_fixture(monkeypatch,decision={'role':'assistant','content':'direct decision'},chunks=chunks)
     with TestClient(main.app) as client:
-        events=frames(send(client));cid=events[0][1]['conversation_id']
+        events=frames(send(client,message='show AAPL prices'));cid=events[0][1]['conversation_id']
         assert events[-1][0]=='done'
         assert 'encrypted-fixture' not in client.get(f'/agent-chat/conversations/{cid}/messages',headers={'X-Chat-Session':SESSION}).text
-        send(client,cid=cid)
-    previous=next(m for m in requests[2]['messages'] if m['role']=='assistant' and m.get('content')=='public answer')
-    assert previous.get('reasoning_details')==details
+        send(client,message='show AAPL prices',cid=cid)
+    previous=next(m for body in requests[2:] for m in body['messages'] if m['role']=='assistant' and m.get('content')=='public answer')
+    assert previous['reasoning_details'] == details

@@ -149,6 +149,9 @@ def _eligible_ann_ids(generation:str,scope_context,symbol:str|None,faq:bool,hist
     return {str(chunk.id):(chunk,doc) for chunk,doc in rows}
 
 async def _retrieve(query:str, *, faq:bool, symbol:str|None=None, limit:int=5, analysis:bool=False):
+    research_cap=getattr(current_research_context(),'max_citations_per_observation',None)
+    if research_cap is not None:
+        limit=min(limit,research_cap)
     runtime=get_runtime()
     if runtime is None: raise KnowledgeUnavailable('dense knowledge runtime is not enabled or ready')
     context=current_research_context()
@@ -190,15 +193,31 @@ async def _retrieve(query:str, *, faq:bool, symbol:str|None=None, limit:int=5, a
             pairs=await runtime.rerank(query,[chunk.answer for chunk,_doc in ordered])
             ordered=[ordered[index] for index,_score in pairs[:10]]
         except Exception as exc: raise KnowledgeUnavailable('reranker backend is unavailable','knowledge_reranker_unavailable') from exc
-    # Select, number, and budget in relevance order so truncation keeps the
-    # strongest complete evidence and the citation manifest matches the tool rows.
+    # Number citations against the shared turn manifest before rendering evidence.
+    # Existing chunks retain their original number when retrieved again.
+    context=current_research_context()
+    existing=context.citations if context is not None and context.citations is not None else []
+    def citation_key(chunk_id, source_hash, content_hash, generation):
+        return (str(chunk_id), str(source_hash or ""), str(content_hash or ""), str(generation or ""))
+    ordinal_by_chunk={citation_key(item['chunk_id'],item.get('source_hash'),item.get('content_hash'),item.get('generation')):item['ordinal']
+                      for item in existing if item.get('chunk_id') and item.get('ordinal')}
+    next_ordinal=max((int(item.get('ordinal',0)) for item in existing),default=0)+1
     out=[]; by_source={}; chunk_counts={};emitted=[];documents={}
     for chunk,doc in ordered:
-        if len(emitted)>=10:break
+        if len(emitted)>=(research_cap or 10):break
         source_key=doc.source_id
-        citation_number=len(emitted)+1
+        existing_row=by_source.get(source_key)
+        if existing_row is None and len(out)>=limit:continue
+        if existing_row is not None:
+            field='answer' if faq else 'excerpt'
+            if chunk_counts[source_key]>=3 or chunk.answer in existing_row[field]:continue
+        chunk_id=str(chunk.id)
+        source_snapshot_key=citation_key(chunk_id,doc.source_hash,chunk.content_hash,chunk.generation)
+        citation_number=ordinal_by_chunk.get(source_snapshot_key)
+        if citation_number is None:
+            if next_ordinal>10:break
+            citation_number=next_ordinal;ordinal_by_chunk[source_snapshot_key]=citation_number;next_ordinal+=1
         if source_key not in by_source:
-            if len(out)>=limit:continue
             if faq:
                 row={'question':doc.title,'answer':f'[{citation_number}] {chunk.answer}','category':chunk.category}
             else:
@@ -213,35 +232,35 @@ async def _retrieve(query:str, *, faq:bool, symbol:str|None=None, limit:int=5, a
                 row={'id':doc.source_id,'title':doc.title,'source_url':getattr(doc,'source_url',None),'published_at':doc.published_at.isoformat() if doc.published_at else None,
                   'observed_at':observed.isoformat() if observed else None,'excerpt':excerpt,'material_type':doc.source_type, **({'analysis_version':doc.source_version,'derived':True} if analysis else {})}
             by_source[source_key]=row;documents[source_key]=doc;emitted.append((chunk,doc,citation_number));out.append(row);chunk_counts[source_key]=1
-        elif chunk_counts[source_key]<3:
+        else:
             row=by_source[source_key]
             field='answer' if faq else 'excerpt'
-            if chunk.answer not in row[field]:
-                row[field]+='\n\n['+str(citation_number)+'] '+chunk.answer
-                candidate={'ok':True,'data':out,'source':'knowledge','as_of':None}
-                if _json_bytes(candidate)>8000:
-                    row[field]=row[field].rsplit('\n\n['+str(citation_number)+'] ',1)[0]
-                    continue
-                emitted.append((chunk,doc,citation_number));chunk_counts[source_key]+=1
+            row[field]+='\n\n['+str(citation_number)+'] '+chunk.answer
+            candidate={'ok':True,'data':out,'source':'knowledge','as_of':None}
+            if _json_bytes(candidate)>8000:
+                row[field]=row[field].rsplit('\n\n['+str(citation_number)+'] ',1)[0]
+                continue
+            emitted.append((chunk,doc,citation_number));chunk_counts[source_key]+=1
     source='knowledge_chunks:research_faq' if faq else ('knowledge_documents:material_analysis_versions' if analysis else 'knowledge_documents:uploaded_evidence + sec_filing_inventory')
     result=_fit_tool_budget({'ok':True,'data':out,'source':source,'as_of':None})
     if result.get('ok'):
         result['data']=_head_tail_order(result['data'])
-    context=current_research_context()
     if context is not None and context.citations is not None and result.get('ok'):
         retained_sources={row.get('id') for row in result.get('data',[])} if not faq else {
             emitted_item[1].source_id for emitted_item in emitted
             if any(f'[{emitted_item[2]}]' in row.get('answer','') for row in result.get('data',[]))
         }
-        seen={item['chunk_id'] for item in context.citations}
+        seen={citation_key(item['chunk_id'],item.get('source_hash'),item.get('content_hash'),item.get('generation'))
+              for item in context.citations if item.get('chunk_id')}
         for chunk,doc,ordinal in emitted:
             if doc.source_id not in retained_sources:continue
             chunk_id=str(chunk.id)
-            if chunk_id in seen:continue
+            snapshot_key=citation_key(chunk_id,doc.source_hash,chunk.content_hash,chunk.generation)
+            if snapshot_key in seen:continue
             context.citations.append({'ordinal':ordinal,'chunk_id':chunk_id,'document_id':str(doc.id),'source_hash':doc.source_hash,'content_hash':chunk.content_hash,'generation':chunk.generation,'title':doc.title[:180],
                 'section':chunk.section_path[:180],'source_url':getattr(doc,'source_url',None) if doc.source_type=='ai_analysis' else None,**({'analysis_version':doc.source_version,'derived':True} if doc.source_type=='ai_analysis' else {}),'observed_at':(doc.content_observed_at or doc.observed_at or doc.available_at).isoformat() if (doc.content_observed_at or doc.observed_at or doc.available_at) else None,
                 'source_type':doc.source_type,'truncated':bool(doc.truncated)})
-            seen.add(chunk_id)
+            seen.add(snapshot_key)
     return result
 
 async def retrieve_faq(query:str): return await _retrieve(query,faq=True,limit=5)

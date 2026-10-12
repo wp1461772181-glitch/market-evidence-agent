@@ -14,6 +14,7 @@ class ResearchContext:
     owner_hash: str
     cutoff: object|None=None
     citations: list[dict]|None=None
+    max_citations_per_observation: int|None=None
 _context: contextvars.ContextVar[ResearchContext|None]=contextvars.ContextVar('knowledge_research_context',default=None)
 _runtime=None
 _recovery_thread=None
@@ -22,8 +23,8 @@ _recovery_lock=threading.Lock()
 _runtime_lock=threading.RLock()
 
 @contextmanager
-def research_context(owner_hash: str, cutoff=None):
-    value=ResearchContext(owner_hash,cutoff,[])
+def research_context(owner_hash: str, cutoff=None, citations=None, max_citations_per_observation=None):
+    value=ResearchContext(owner_hash,cutoff,citations if citations is not None else [],max_citations_per_observation)
     token=_context.set(value)
     try: yield value
     finally: _context.reset(token)

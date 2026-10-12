@@ -78,7 +78,10 @@ async def stream_answer(provider,model,api_key,messages,reasoning_collector=None
                             if not isinstance(event,dict): raise ValueError()
                             if "error" in event:raise HTTPException(502,"provider_error")
                             choices=event.get("choices")
-                            if choices == [] and "usage" in event: continue
+                            if choices == [] and "usage" in event:
+                                if isinstance(reasoning_collector,dict) and isinstance(event["usage"],dict):
+                                    reasoning_collector["_usage"]=event["usage"]
+                                continue
                             choice=choices[0]; delta_obj=choice["delta"]
                             if not isinstance(delta_obj,dict): raise ValueError()
                             reason=choice.get("finish_reason")

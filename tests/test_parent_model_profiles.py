@@ -12,6 +12,14 @@ from app.agent_chat_stream import StreamRequest
 
 FAKE='parent-demo-key-not-real'
 
+@pytest.fixture(autouse=True)
+def setup_agent_checkpoint(disposable_database):
+ import os
+ from app.agent_workflow.checkpoints import open_postgres_checkpointer
+ async def setup():
+  async with open_postgres_checkpointer(os.environ["DATABASE_URL"]) as saver: await saver.setup()
+ asyncio.run(setup())
+
 def body(url,stream=False,provider='custom'):
  d={'provider':provider,'model':'user-model','api_key':FAKE,'base_url':url}
  d['message' if stream else 'messages']='hello' if stream else []
@@ -134,17 +142,20 @@ def test_custom_endpoint_and_model_reach_both_sse_requests(monkeypatch):
   if b.get('stream'):
    raw=b'data: {"choices":[{"delta":{"content":"DEMO CUSTOM ANSWER"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'
    return httpx.Response(200,headers={'Content-Type':'text/event-stream'},content=raw)
+  if 'Classify a market evidence chat request' in b['messages'][0]['content']:
+   return httpx.Response(200,json={'choices':[{'message':{'role':'assistant','content':'{"intent":"general","symbol":null}'}}]})
   return httpx.Response(200,json={'choices':[{'message':{'role':'assistant','content':'ready'}}]})
  monkeypatch.setattr('app.agent_chat_provider.httpx.AsyncClient',lambda **kwargs:real_client(transport=httpx.MockTransport(capture)))
  with TestClient(app) as client:
   r=client.post('/agent-chat/stream',json=body('https://provider.example/custom/v1/chat/completions',True),headers={'X-Chat-Session':'parent-config-'+'c'*48})
  assert r.status_code==200,r.text
  assert 'event: done' in r.text,r.text
- assert len(seen)==2
+ assert len(seen)==3
  assert all(url=='https://provider.example/custom/v1/chat/completions' for url,_,_ in seen)
  assert all(b['model']=='user-model' and auth=='Bearer '+FAKE for _,b,auth in seen)
  assert FAKE not in r.text
- assert seen[1][1]['tool_choice']=='none'
+ assert seen[0][1]['tool_choice']=='auto' and 'Classify a market evidence chat request' in seen[0][1]['messages'][0]['content']
+ assert seen[1][1]['tool_choice']=='auto' and seen[2][1]['tool_choice']=='none'
 
 @pytest.mark.parametrize('path,expect',[('/agent-chat/hello',200),('/agent-chat/messages',502)])
 def test_reasoning_only_response_can_verify_connection_but_is_not_a_chat_answer(monkeypatch,path,expect):

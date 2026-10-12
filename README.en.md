@@ -11,7 +11,8 @@ The product focuses on an inspectable research process, traceable evidence, and 
 ## Agent chat
 
 - Full-page SSE chat streams status, tool calls, results, and answers, with readable badges for tool activity.
-- On each turn, the model selects one of seven read-only Function Calling tools. The server runs that tool, then asks the model to synthesize an answer. Multiple tool calls are rejected. The Agent does not run an autonomous loop, browse the web, fetch SEC data online, or perform write operations.
+- In this development worktree, a LangGraph workflow retrieves required sources, gates their evidence, then runs bounded read-only tool steps and answer synthesis. It does not fetch SEC filings online or perform writes. This version is not yet deployed to the public demo.
+- `web_research` can search public pages through Tavily or read a public HTTPS URL. Search defaults to a separately configured server-side `TAVILY_API_KEY`; without it, search reports unavailable and never silently falls back to Bing. Public URL reads do not need a Tavily key. Page excerpts are bounded and search snippets are not treated as page bodies.
 - Answers support Markdown, tables, source citations, and quoted excerpts. Users can copy answers, navigate to questions, and inspect cited sources.
 - Conversations and tool traces are stored server-side by identity, with guest and personal identities separated. Users can export a local JSON conversation archive as a backup.
 
@@ -60,7 +61,7 @@ Public validation so far includes two saved AMD analyses that produced 66 chunks
 - **Material analysis:** Generate and cache AI analyses with versions, original quotes, and citation navigation. Reopening a saved analysis does not call a model again.
 - **Research workflow:** Reusable material analyses can produce a ResearchBrief, which can then be evaluated by the experimental Jev three-class decision model as bullish, neutral, or bearish. Jev consumes a research brief; it does not generate one. Fixed targets and expiry assessments are retained with immutable versions.
 - **Evaluation and run status:** Inspect expiry assessments, historical replay, background queues, and monitoring status. A four-strategy Recall@K/MRR evaluation harness exists; synthetic results do not represent production accuracy.
-- **News leads:** News discovery is a separate saved-lead workflow, not live web retrieval by the chat Agent.
+- **News leads:** Saved news leads and public web retrieval in chat are separate read-only paths; chat does not automatically save webpages as research materials.
 
 Jev forecasts retain the original probabilities. A local calibration pipeline uses matured observed samples and enables a candidate only after chronological holdout validation; historical calibration research is kept separate from live samples. Outputs remain experimental research results, not forward-validated investment success rates.
 
@@ -88,9 +89,9 @@ PostgreSQL stores business records, originals, chunks, jobs, and conversations; 
 
 ## Current boundaries
 
-The Agent reads saved records only. It does not trade, browse the web, retrieve live news or prices, or fetch SEC filings online. Evidence-sufficiency checks and controls for insufficient evidence are implemented, but provider failures may not degrade perfectly, and answers can still be wrong. Citations and evaluation tools help inspect the evidence chain; they do not prove every answer is fully faithful.
+The Agent reads saved records; explicit web research can read bounded excerpts from public pages. It does not trade, retrieve live prices, or fetch SEC filings online. In this development worktree, orchestration runs in durable LangGraph; the public demo still serves the published version. Evidence gating uses heuristics, answers can still be wrong, and citations do not prove every answer is faithful.
 
-Forecasts, material analyses, and retrieval results require researcher review against original sources and timestamps. Forecast evaluation is meaningful only for matured samples with available outcomes; historical replay and synthetic retrieval metrics do not establish future performance. High-concurrency guarantees, end-to-end atomic writes, and autonomous Agent loops are outside current capability claims.
+Forecasts, material analyses, and retrieval results require researcher review against original sources and timestamps. Forecast evaluation is meaningful only for matured samples with available outcomes; historical replay and synthetic retrieval metrics do not establish future performance. High-concurrency guarantees and end-to-end atomic writes remain unverified. Real model, authenticated Tavily search, and public deployment await independent acceptance.
 
 ## Documentation
 
@@ -102,4 +103,4 @@ Forecasts, material analyses, and retrieval results require researcher review ag
 
 ## Future direction
 
-Possible next steps include improving workflow orchestration, reference resolution and contextual memory, web/news workflows callable by the Agent, and runtime observability. These remain future directions; they are not claims that multi-Agent autonomy or model fine-tuning is complete.
+Next work is real-model and Tavily acceptance of this development worktree, followed by independent review and publication. The system does not implement multi-Agent autonomy or model fine-tuning.

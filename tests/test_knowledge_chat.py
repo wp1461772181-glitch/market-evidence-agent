@@ -109,3 +109,18 @@ def test_retrieved_faq_evidence_numbering_matches_retained_chunks_and_duplicate_
     assert [item['ordinal'] for item in context.citations]==list(range(1,10))
     assert sum(item['chunk_id'].startswith('source-0-') for item in context.citations)==3
     assert all(f'[{item["ordinal"]}] {eligible[item["chunk_id"]][0].answer}' in '\n'.join(row['answer'] for row in result['data']) for item in context.citations)
+    chunk=SimpleNamespace(id='source-7-0',answer='Newly retrieved source eight',category='fixture',generation=generation,content_hash='d'*64,section_path='section')
+    doc=SimpleNamespace(id='doc-source-7',source_id='source-7',source_table='agent_faq',title='Question 7',source_hash='t'*64,content_observed_at=None,observed_at=None,available_at=None,source_type='research_faq',truncated=False)
+    eligible['source-7-0']=(chunk,doc);hits.clear();hits.append({'id':'source-7-0','distance':2.0})
+    second=asyncio.run(retrieval._retrieve('new source',faq=True,limit=1))
+    assert '[10] Newly retrieved source eight' in second['data'][0]['answer']
+    assert context.citations[-1]['ordinal']==10
+
+
+def test_research_context_reuses_turn_citation_manifest_across_tool_observations():
+    from app.knowledge.runtime import research_context
+    manifest=[{"ordinal": 4, "chunk_id": "first-source"}]
+    with research_context("owner-hash", citations=manifest) as context:
+        assert context.citations is manifest
+        context.citations.append({"ordinal": 5, "chunk_id": "second-source"})
+    assert [item["ordinal"] for item in manifest]==[4,5]

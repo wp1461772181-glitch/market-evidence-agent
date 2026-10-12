@@ -149,6 +149,12 @@ app.add_middleware(AgentChatBodyLimitMiddleware, allowed_origins=allowed_origins
 # 启动时检查公开模式配置并创建允许自动创建的旧表，不自动迁移 V2 表。
 @app.on_event("startup")
 def create_tables() -> None:
+    from .agent_workflow.checkpoints import checkpoint_ready
+    from .agent_workflow.settings import checkpoint_database_url
+    try:
+        app.state.agent_checkpoint_ready = checkpoint_ready(checkpoint_database_url())
+    except RuntimeError:
+        app.state.agent_checkpoint_ready = False
     if PUBLIC_API_MODE:
         from .agent_chat_identity import _load_config
         if _load_config() is None:
@@ -197,6 +203,19 @@ def get_db():
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/health/agent-workflow")
+def agent_workflow_health() -> dict[str, object]:
+    from .agent_workflow.checkpoints import checkpoint_ready
+    from .agent_workflow.settings import checkpoint_database_url
+    try:
+        ready = checkpoint_ready(checkpoint_database_url())
+    except RuntimeError:
+        ready = False
+    app.state.agent_checkpoint_ready = ready
+    return {"checkpoint_ready": ready, "tavily_configured": bool(os.getenv("TAVILY_API_KEY")),
+            "web_backend": os.getenv("WEB_RESEARCH_BACKEND", "tavily")}
 
 
 @app.get("/health/knowledge")

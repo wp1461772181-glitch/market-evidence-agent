@@ -20,7 +20,7 @@ async function fetchApi(path: string, init: RequestInit = {}): Promise<Response>
 
 export type AgentChatProvider = "deepseek" | "kimi" | "minimax" | "qwen" | "zhipu" | "doubao" | "hunyuan" | "baidu" | "siliconflow" | "openrouter" | "custom";
 export type AgentChatConfig = { provider: AgentChatProvider; base_url?: string; model: string; api_key: string };
-export type AgentCitation = { ordinal?:number; chunk_id: string; document_id: string; title: string; section: string; source_url?: string | null; observed_at?: string | null; source_type: string; truncated: boolean; derived?:boolean };
+export type AgentCitation = { ordinal?:number; chunk_id?: string | null; document_id?: string | null; title: string; section: string; source_url?: string | null; observed_at?: string | null; published_at?:string|null; quote?:string; source_type: string; truncated: boolean; derived?:boolean };
 export type KnowledgeDocumentSummary = { id:string; title:string; symbol:string|null; source_type:string; observed_at:string|null; available_at:string|null; status:string; active:boolean; owner_scope:string; chunks:number };
 export type KnowledgeChunkDetail = { id:string; ordinal:number; section:string; answer:string; status:string; needs_review:boolean };
 export type AgentChatMessage = { role: "user" | "assistant" | "tool"; content: string; status?: string; turn_id?: string; citations?: AgentCitation[]; tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }>; tool_call_id?: string; tool_trace?: Array<{ call_id?: string; name: string; arguments?: unknown; result?: unknown; status: string }> };
