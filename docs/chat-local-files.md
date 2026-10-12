@@ -1,4 +1,6 @@
-# Chat archive files
+# Conversation archive files
+
+This guide covers local conversation archives only. Model profiles and credential storage are documented separately in [Model profile storage](model-profile-storage.md).
 
 The chat page continues to save live conversations to the application server. To keep a user-controlled copy, use **Export JSON** for a UTF-8 archive download or **Import and view** to open one in a read-only view. Import validates the file before changing the displayed archive; use **Return to current conversation** to get back to the server-backed live chat. Imported messages and tool traces are never sent as model context and are not verified evidence.
 
