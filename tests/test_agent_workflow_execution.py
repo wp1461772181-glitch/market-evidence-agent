@@ -408,3 +408,149 @@ def test_topic_source_binding_and_global_accession_owner_plan():
     scoped=_required({"question":"AAPL 10-Q 营收","intent":"source_qa",
                       "entities":{"symbols":["AAPL"],"form":"10-Q"}})
     assert [item["name"] for item in scoped] == ["query_sec_filings","query_materials"]
+
+
+def test_latest_saved_library_binds_verified_sec_source_without_old_material_fallback():
+    old = "00000000-0000-4000-8000-000000000031"
+    latest = "00000000-0000-4000-8000-000000000032"
+    calls = []
+    messages = []
+    async def classify(_): return '{"intent":"source_qa","confidence":0.9}'
+    async def execute(name, args):
+        calls.append((name, args))
+        if name == "query_sec_filings":
+            return {"ok":True,"data":[{"id":latest,"symbol":"AAPL","body_hash_valid":True,
+                "excerpt":"Latest saved SEC filing", "source_url":"https://www.sec.gov/latest"}],"source":"saved SEC"}
+        assert name == "query_materials"
+        row = {"id":latest if args.get("source_id")==latest else old,
+               "excerpt":"Latest saved SEC filing facts" if args.get("source_id")==latest else "Old unrelated material",
+               "source_url":"https://www.sec.gov/latest" if args.get("source_id")==latest else "https://example.test/old"}
+        return {"ok":True,"data":[row],"source":"saved material"}
+    async def answer(items):
+        messages.extend(items)
+        yield "Latest saved SEC filing facts."
+    async def run():
+        graph=build_workflow()
+        return await graph.ainvoke({"question":"苹果资料库最新资料说了什么","messages":[]},
+            {"configurable":{"thread_id":"latest-saved-binding"}},
+            context=AgentRuntimeContext("custom","model","synthetic",classifier=classify,executor=execute,answerer=answer))
+    state=asyncio.run(run())
+    assert calls[0]==("query_sec_filings",{"symbol":"AAPL","limit":1})
+    assert calls[1][0]=="query_materials" and calls[1][1]["source_id"]==latest
+    assert state["observations"][0]["source_resolution_only"] is True
+    assert state["observations"][1]["verified"] is True
+    assert state["observations"][1]["result"]["selected_saved_source"] == {
+        "source_id":latest,"source_type":"saved SEC filing"}
+    assert old not in str(messages)
+    assert all(item["source_id"]==latest for item in state["citations"] if item.get("source_id"))
+
+
+def test_saved_ai_summary_keeps_analysis_route_with_in_memory_checkpoint():
+    from langgraph.checkpoint.memory import InMemorySaver
+    calls = []
+    async def classify(_): return '{"intent":"analysis_qa","confidence":0.9}'
+    async def execute(name, args):
+        calls.append((name, args))
+        return {"ok": True, "data": [{"source_id": "source-a", "symbol": "AAPL",
+                "summary": "Saved AI analysis", "source_url": "https://example.test/aapl"}], "source": "fixture"}
+    async def answer(_): yield "Saved AI analysis."
+    async def run():
+        return await build_workflow(InMemorySaver()).ainvoke(
+            {"question": "查看 AAPL 已保存的 AI 分析摘要", "messages": []},
+            {"configurable": {"thread_id": "saved-ai-summary"}},
+            context=AgentRuntimeContext("custom", "model", "synthetic", classifier=classify,
+                                        executor=execute, answerer=answer))
+    state = asyncio.run(run())
+    assert state["intent"] == "analysis_qa"
+    assert [name for name, _ in calls] == ["query_material_analysis"]
+
+
+def test_saved_original_and_analysis_keeps_compound_plan_with_in_memory_checkpoint():
+    from langgraph.checkpoint.memory import InMemorySaver
+    calls = []
+    async def classify(_): return '{"intent":"comparison_research","confidence":0.9}'
+    async def execute(name, args):
+        calls.append((name, args))
+        return {"ok": True, "data": [{"id": "source-a", "symbol": "AAPL",
+                "excerpt": "AAPL original filing and AI analysis", "source_url": "https://example.test/aapl"}], "source": "fixture"}
+    async def answer(_): yield "Original and analysis."
+    async def run():
+        return await build_workflow(InMemorySaver()).ainvoke(
+            {"question": "查看资料库中 AAPL 原文和 AI 分析", "messages": []},
+            {"configurable": {"thread_id": "saved-original-analysis"}},
+            context=AgentRuntimeContext("custom", "model", "synthetic", classifier=classify,
+                                        executor=execute, answerer=answer))
+    state = asyncio.run(run())
+    assert state["intent"] == "compound_research"
+    assert [name for name, _ in calls] == ["query_materials", "search_material_analysis"]
+
+
+def test_document_reference_keeps_same_source_only_for_same_goal():
+    from langgraph.checkpoint.memory import InMemorySaver
+    source = "00000000-0000-4000-8000-000000000044"
+    calls = []
+    async def classify(question):
+        return '{"intent":"saved_data","confidence":0.9}' if "价格" in question else '{"intent":"source_qa","confidence":0.9}'
+    async def execute(name, args):
+        calls.append((name, args))
+        return {"ok": True, "data": [{"id": source, "symbol": args["symbol"],
+                "excerpt": "Saved AAPL material", "source_url": "https://example.test/aapl"}], "source": "fixture"}
+    async def answer(_): yield "Saved material."
+    async def run():
+        graph = build_workflow(InMemorySaver())
+        config = {"configurable": {"thread_id": "document-reference"}}
+        context = AgentRuntimeContext("custom", "model", "synthetic", classifier=classify,
+                                      executor=execute, answerer=answer)
+        await graph.aupdate_state(config, {"symbol_focus": "AAPL", "material_focus": source})
+        same = await graph.ainvoke({"question": "这份资料说了什么", "messages": []}, config, context=context)
+        await graph.aupdate_state(config, {"symbol_focus": "AAPL", "material_focus": source})
+        action = await graph.ainvoke({"question": "生成 MSFT AI 分析", "messages": []}, config, context=context)
+        await graph.aupdate_state(config, {"symbol_focus": "AAPL", "material_focus": source})
+        other = await graph.ainvoke({"question": "Apple 最新价格", "messages": []}, config, context=context)
+        await graph.aupdate_state(config, {"symbol_focus": "AAPL", "material_focus": source})
+        different = await graph.ainvoke({"question": "查看 MSFT 资料库里的材料", "messages": []}, config, context=context)
+        return same, action, other, different
+    same, action, other, different = asyncio.run(run())
+    assert same["symbol_focus"] == "AAPL" and same["material_focus"] == source
+    assert same["entities"]["source_id"] == source
+    assert any(name == "query_materials" and args.get("source_id") == source for name, args in calls)
+    assert action["material_focus"] is None
+    assert other["material_focus"] is None
+    assert different["symbol_focus"] == "MSFT" and different["material_focus"] is None
+
+
+def test_latest_saved_library_without_verified_source_never_queries_unscoped_materials():
+    calls=[]
+    async def classify(_): return '{"intent":"source_qa","confidence":0.9}'
+    async def execute(name,args):
+        calls.append((name,args))
+        return {"ok":True,"data":[{"id":"00000000-0000-4000-8000-000000000032",
+             "symbol":"AAPL","body_hash_valid":False}],"source":"saved SEC"}
+    async def run():
+        return await build_workflow().ainvoke({"question":"苹果资料库最新资料说了什么","messages":[]},
+            {"configurable":{"thread_id":"latest-invalid-source"}},
+            context=AgentRuntimeContext("custom","model","synthetic",classifier=classify,executor=execute))
+    state=asyncio.run(run())
+    assert [name for name,_ in calls]==["query_sec_filings"]
+    assert any(task.get("error")=="no_source" for task in state["task_states"])
+
+
+def test_latest_saved_library_rejects_other_source_result_even_after_scoped_call():
+    latest="00000000-0000-4000-8000-000000000032"
+    old="00000000-0000-4000-8000-000000000031"
+    calls=[]
+    async def classify(_): return '{"intent":"source_qa","confidence":0.9}'
+    async def execute(name,args):
+        calls.append((name,args))
+        if name=="query_sec_filings":
+            return {"ok":True,"data":[{"id":latest,"symbol":"AAPL","body_hash_valid":True}],"source":"saved SEC"}
+        return {"ok":True,"data":[{"id":old,"excerpt":"Old unrelated material",
+            "source_url":"https://example.test/old"}],"source":"saved material"}
+    async def run():
+        return await build_workflow().ainvoke({"question":"苹果资料库最新资料说了什么","messages":[]},
+            {"configurable":{"thread_id":"latest-wrong-source"}},
+            context=AgentRuntimeContext("custom","model","synthetic",classifier=classify,executor=execute))
+    state=asyncio.run(run())
+    assert calls[1][1]["source_id"]==latest
+    assert state["observations"][1]["verified"] is False
+    assert old not in str(state["citations"])

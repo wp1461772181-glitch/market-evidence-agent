@@ -18,6 +18,9 @@ SOURCE_ID = re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA
 TASK_ID = re.compile(r"\b[0-9a-fA-F]{64}\b")
 PERIOD = re.compile(r"\b(?:20\d{2}\s*(?:Q[1-4]|FY)|FY\s*20\d{2}|Q[1-4]\s*20\d{2})\b|20\d{2}年(?:第?[一二三四1-4]季度|年报)", re.I)
 TICKER = re.compile(r"(?<![A-Za-z])[A-Z][A-Z0-9.-]{0,11}(?![A-Za-z])")
+ACTION_CHOICES = {"fetch_sec": "抓取 SEC 原文", "analyze": "生成 AI 分析",
+                  "import": "导入已保存资料", "index": "建立索引",
+                  "forecast": "创建预测", "status": "查询任务状态", "refresh_sec": "刷新 SEC 原文"}
 
 
 def parse_classification(raw: str) -> dict[str, Any]:
@@ -86,7 +89,9 @@ def resume_request(pending: dict[str, Any], reply: str) -> dict[str, Any]:
         for symbol in slots["symbols"]:
             if symbol not in old:
                 old.append(symbol)
+    selected = action_reply(reply) if pending.get("reason") == "missing_action_type" else None
     return {**pending, "symbols": old[:5], "reply": reply,
+            "selected_action": selected or pending.get("selected_action"),
             "accession_number": slots.get("accession_number") or pending.get("accession_number"),
             "source_id": slots.get("source_id") or pending.get("source_id"),
             "form": slots.get("form") or pending.get("form")}
@@ -95,3 +100,51 @@ def resume_request(pending: dict[str, Any], reply: str) -> dict[str, Any]:
 def is_explicit_new_request(reply: str) -> bool:
     return bool(re.search(r"(?:^|\s)(?:new question|instead|forget that)\b|换个问题|另一个问题|不用比较|改问", reply, re.I)
                 or re.search(r"(?:总结|概括|比较|对比|搜索|查询|生成|抓取|分析|创建).{2,}(?:财报|新闻|股票|营收|预测|资料|原文|报告)", reply, re.I))
+
+
+def action_reply(reply: str) -> str | None:
+    value = reply.strip().lower()
+    if value in ACTION_CHOICES:
+        return value
+    aliases = {"抓取sec原文": "fetch_sec", "生成ai分析": "analyze", "导入已保存资料": "import",
+               "建立索引": "index", "创建预测": "forecast", "查询任务状态": "status", "刷新sec原文": "refresh_sec"}
+    return aliases.get(re.sub(r"\s+", "", value))
+
+
+def _standalone_symbol(reply: str) -> bool:
+    candidate = re.sub(r"^(?:就是|是|选|选用|用|it's|it is)\s*", "", reply, flags=re.I).strip(" 。.!！")
+    if candidate.lower() in ALIASES:
+        return True
+    if candidate != candidate.upper() or not re.fullmatch(r"[A-Z][A-Z.-]{0,7}", candidate):
+        return False
+    slots = extract_slots(candidate)
+    return bool(slots["symbols"] or slots["suggestion"])
+
+
+def is_pending_reply(pending: dict[str, Any], reply: str) -> bool:
+    """Only a bounded slot value may inherit an earlier question or action."""
+    text = reply.strip()
+    if not text:
+        return False
+    reason = pending.get("reason")
+    if reason == "missing_action_type":
+        return action_reply(text) is not None
+    if is_explicit_new_request(text):
+        return False
+    if reason in {"missing_stock_focus", "missing_comparison_symbol", "missing_action_symbol", "symbol_suggestion"}:
+        return _standalone_symbol(text)
+    if reason == "missing_action_source":
+        stripped = SOURCE_ID.sub("", ACCESSION.sub("", text)).strip(" ,，。:：")
+        if re.fullmatch(r"(?:10-[KQ]|8-K)", text, re.I):
+            return True
+        if _standalone_symbol(text):
+            return True
+        return bool(SOURCE_ID.search(text) or ACCESSION.search(text)) and (not stripped or
+            _standalone_symbol(stripped))
+    if reason == "missing_task_id":
+        return bool(re.fullmatch(r"(?:[0-9a-f]{64}|[0-9a-f]{8}-[0-9a-f-]{27})", text, re.I))
+    if reason == "period_requires_accession":
+        return bool(ACCESSION.fullmatch(text))
+    if reason == "ambiguous_web_url":
+        return bool(re.fullmatch(r"https://[^\s]{4,2048}", text, re.I))
+    return False

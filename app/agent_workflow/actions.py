@@ -21,6 +21,10 @@ class ActionError(ValueError):
         self.code = code
 
 
+def is_unsupported_news_upload(question: str) -> bool:
+    return bool(re.search(r"(?:上传|导入|保存|upload|import|save).{0,40}(?:新闻|网页|web\s*news|web\s*url)|(?:新闻|网页|web\s*news).{0,40}(?:上传|导入|保存|upload|import|save)", question, re.I))
+
+
 def requested_action(question: str) -> str | None:
     lower = question.lower()
     if re.search(r"(?:查看|查询|read|check).{0,12}(?:任务状态|job status|进度)", lower): return "status"

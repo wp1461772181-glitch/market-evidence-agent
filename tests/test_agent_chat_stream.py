@@ -11,6 +11,24 @@ from starlette.requests import Request
 from app.agent_chat_stream import StreamRequest
 
 
+def test_action_clarification_choices_survive_sse_and_history(stream_fixture, monkeypatch):
+    import app.agent_chat_stream as stream
+    send, classification, _, _, stored, _, _ = stream_fixture
+    classification["intent"]="system_action"
+    wire=asyncio.run(send("请帮我处理这份资料"))
+    assert 'event: clarification' in wire and '"value":"import"' in wire
+    saved=next(kwargs["tool_calls"] for _,kwargs in stored if kwargs.get("tool_calls",{}).get("clarification"))
+    assert any(choice["value"]=="import" for choice in saved["clarification"]["choices"])
+    async def rows(*_): return [{"role":"assistant","content":"请说明操作","status":"complete","turn_id":"turn-1","tool_calls":saved}]
+    monkeypatch.setattr(stream,"owned_messages",rows)
+    restored=asyncio.run(stream.get_messages("conversation","owner"))["messages"][0]
+    assert restored["clarification"]["choices"]==saved["clarification"]["choices"]
+    legacy={**saved,"clarification":{**saved["clarification"],"choices":[]}}
+    async def old_rows(*_): return [{"role":"assistant","content":"请说明操作","status":"complete","turn_id":"turn-1","tool_calls":legacy}]
+    monkeypatch.setattr(stream,"owned_messages",old_rows)
+    assert any(choice["value"]=="import" for choice in asyncio.run(stream.get_messages("conversation","owner"))["messages"][0]["clarification"]["choices"])
+
+
 @pytest.fixture
 def stream_fixture(monkeypatch):
     import app.agent_chat_stream as stream

@@ -20,6 +20,11 @@ MAX_DECISION_STEPS=6
 MAX_TURN_TOKENS=32000
 MAX_TURN_SECONDS=120
 TOOL_REGISTRY_NAMES={"query_stock_prices","query_latest_forecast","query_materials","query_sec_filings","query_research_faq","query_material_analysis","search_material_analysis","web_research"}
+def _legacy_clarification_choices(reason):
+ from .agent_workflow.request_resolution import ACTION_CHOICES
+ if reason=="missing_action_type": return [{"label":label,"value":value} for value,label in ACTION_CHOICES.items()]
+ if reason=="symbol_suggestion": return [{"label":"Apple / AAPL","value":"AAPL"}]
+ return []
 def _protocol_size(value): return len(json.dumps(value,ensure_ascii=False,separators=(",",":")).encode("utf-8"))
 class _ResourceStreamingResponse(StreamingResponse):
  def __init__(self,*args,cleanup,**kwargs): super().__init__(*args,**kwargs); self._cleanup=cleanup
@@ -302,7 +307,7 @@ async def stream_chat(payload:StreamRequest,request:Request,x_chat_session:str|N
      if event.get("pending_request"):
       pending=event["pending_request"]
       protocol["clarification"]={"request_id":pending["id"],"reason":pending.get("reason"),
-                                 "choices":[{"label":"Apple / AAPL","value":"AAPL"}] if pending.get("reason")=="symbol_suggestion" else []}
+                                 "choices":pending.get("choices") or _legacy_clarification_choices(pending.get("reason"))}
      if restored:protocol["citations"]=restored
      if event.get("reason") in {"retrieval_unavailable","zero_evidence","web_page_excerpt_unavailable","missing_source_coverage","publisher_date_unavailable"} or str(event.get("reason","")).startswith(("requested_","weak_")):
       await asyncio.to_thread(_record_low_confidence,payload.message,cid,turn,owner_hash(x_chat_session),event["reason"])
@@ -365,7 +370,9 @@ async def get_messages(conversation_id:str,x_chat_session:str|None=Header(defaul
    if isinstance(row.get("tool_calls"),dict) and isinstance(row["tool_calls"].get("audit"),dict):
     item["status"]=row["tool_calls"]["audit"].get("terminal_status",item["status"])
    if isinstance(row.get("tool_calls"),dict) and isinstance(row["tool_calls"].get("citations"),list):item["citations"]=_restore_citations(row["tool_calls"]["citations"],x_chat_session)
-   if isinstance(row.get("tool_calls"),dict) and isinstance(row["tool_calls"].get("clarification"),dict):item["clarification"]=row["tool_calls"]["clarification"]
+   if isinstance(row.get("tool_calls"),dict) and isinstance(row["tool_calls"].get("clarification"),dict):
+    clarification=row["tool_calls"]["clarification"]
+    item["clarification"]={**clarification,"choices":clarification.get("choices") or _legacy_clarification_choices(clarification.get("reason"))}
    if traces_by_turn.get(row["turn_id"]):item["tool_trace"]=traces_by_turn[row["turn_id"]]
    elif isinstance(row.get("tool_calls"),dict) and isinstance(row["tool_calls"].get("tool_trace"),list):item["tool_trace"]=row["tool_calls"]["tool_trace"]
    messages.append(item)
