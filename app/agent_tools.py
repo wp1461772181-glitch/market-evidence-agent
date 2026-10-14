@@ -146,7 +146,7 @@ async def _expanded_retrieval(function, symbol: str, keyword: str, limit: int, s
 @tool(args_schema=PriceArgs)
 async def query_stock_prices(symbol: str, limit: int = 5) -> dict:
     """Read saved daily stock prices; this is not a live quote."""
-    rows = await _query("SELECT trading_date, open, high, low, close, volume, source, fetched_at FROM market_prices WHERE symbol=:symbol ORDER BY trading_date DESC LIMIT :limit", {"symbol":symbol,"limit":limit})
+    rows = await _query("SELECT symbol, trading_date, open, high, low, close, volume, source, fetched_at FROM market_prices WHERE symbol=:symbol ORDER BY trading_date DESC LIMIT :limit", {"symbol":symbol,"limit":limit})
     return {"ok":True,"data":[{k:_json(v) for k,v in r.items()} for r in rows],"source":"market_prices","as_of":_json(rows[0]["fetched_at"]) if rows else None}
 
 @tool(args_schema=SymbolArgs)

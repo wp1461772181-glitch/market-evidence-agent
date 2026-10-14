@@ -73,6 +73,8 @@ class ByteStream(httpx.AsyncByteStream):
 
 
 def provider_fixture(monkeypatch, decision=None, chunks=None):
+    import app.agent_chat_stream as stream
+    from app.agent_workflow.graph import CLASSIFIER_SYSTEM
     requests = []
     decision = decision or {'role':'assistant', 'content':None, 'tool_calls':[call()]}
     chunks = chunks or [b'data: {"choices":[{"delta":{"content":"first"}}]}\n\n', b'data: {"choices":[{"delta":{"content":" second"},"finish_reason":"stop"}]}\n\n', b'data: [DONE]\n\n']
@@ -88,6 +90,17 @@ def provider_fixture(monkeypatch, decision=None, chunks=None):
         return httpx.Response(200, json={'model':'test', 'choices':[{'message':decision}]})
     original=httpx.AsyncClient
     monkeypatch.setattr(provider.httpx, 'AsyncClient', lambda **kw: original(transport=httpx.MockTransport(handler), **kw))
+    # These transport tests pin the old classifier/tool protocol explicitly;
+    # the production endpoint uses the semantic-stage path without injection.
+    actual_stream_workflow=stream.stream_workflow
+    async def classifier(question):
+        _, selected=await provider.decision_request('deepseek','deepseek-chat',KEY,
+            [{'role':'system','content':CLASSIFIER_SYSTEM},{'role':'user','content':json.dumps({'question':question})}],[])
+        return selected['content']
+    async def injected_stream_workflow(**kwargs):
+        async for event in actual_stream_workflow(**kwargs,classifier=classifier):
+            yield event
+    monkeypatch.setattr(stream,'stream_workflow',injected_stream_workflow)
     return requests
 
 
@@ -111,6 +124,20 @@ def test_real_saved_prices_keep_numeric_values():
     assert result['ok'] and result['data']
     assert result['data'][0]['close'] == 102.5
     assert result['data'][0]['volume'] == 1200
+
+
+def test_saved_price_rows_name_the_symbol_they_belong_to():
+    """S5 live: the rows had no symbol, so the model wrote that it could not confirm the data was
+    about the requested company.  Every row now names its symbol; no citation item is added."""
+    with SessionLocal() as s:
+        for day, close in ((date(2026,10,9), 102.5), (date(2026,10,8), 101.0)):
+            s.add(MarketPrice(symbol='TSYM', trading_date=day, open=101, high=104, low=99, close=close,
+                              volume=1200, source='parent-fixture', fetched_at=datetime.now(UTC)))
+        s.commit()
+    result = run(tools.query_stock_prices.ainvoke({'symbol': 'TSYM', 'limit': 5}))
+    assert result['ok'] and len(result['data']) == 2
+    assert [row.get('symbol') for row in result['data']] == ['TSYM', 'TSYM']
+    assert result['data'][0]['close'] == 102.5 and set(result) == {'ok', 'data', 'source', 'as_of'}
 
 
 def test_real_sec_query_without_form():

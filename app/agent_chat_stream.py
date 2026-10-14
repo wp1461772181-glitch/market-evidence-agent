@@ -272,9 +272,13 @@ async def stream_chat(payload:StreamRequest,request:Request,x_chat_session:str|N
     messages.append(item)
    messages.append({"role":"user","content":payload.message})
    if _protocol_size({"messages":messages,"tools":tool_schemas()})>40000:raise HTTPException(413,"chat_context_too_large")
+   from .agent_workflow.semantic import hydrate_legacy_web_sets, legacy_web_source_choices
+   legacy_result_sets=hydrate_legacy_web_sets(history_rows,owner=owner_hash(x_chat_session),conversation=cid)
+   legacy_source_choices=legacy_web_source_choices(history_rows)
    async for event in stream_workflow(question=payload.message,messages=messages,provider=payload.provider,model=payload.model,
      api_key=payload.api_key.get_secret_value(),base_url=payload.base_url,owner_hash=owner_hash(x_chat_session),
-     conversation_id=cid,identity_credential=x_chat_session,turn_id=turn,pending_request_id=payload.pending_request_id):
+     conversation_id=cid,identity_credential=x_chat_session,turn_id=turn,pending_request_id=payload.pending_request_id,
+     legacy_result_sets=legacy_result_sets,legacy_source_choices=legacy_source_choices):
     kind=event.get("event")
     if kind=="assistant_tool_request":
      await append_message(cid,turn,"assistant","",tool_calls=event["protocol"])
@@ -369,6 +373,7 @@ async def get_messages(conversation_id:str,x_chat_session:str|None=Header(defaul
    item={"role":"assistant","content":row["content"],"status":row["status"],"turn_id":row["turn_id"]}
    if isinstance(row.get("tool_calls"),dict) and isinstance(row["tool_calls"].get("audit"),dict):
     item["status"]=row["tool_calls"]["audit"].get("terminal_status",item["status"])
+    item["reused_sources"]=row["tool_calls"]["audit"].get("reused_sources") is True
    if isinstance(row.get("tool_calls"),dict) and isinstance(row["tool_calls"].get("citations"),list):item["citations"]=_restore_citations(row["tool_calls"]["citations"],x_chat_session)
    if isinstance(row.get("tool_calls"),dict) and isinstance(row["tool_calls"].get("clarification"),dict):
     clarification=row["tool_calls"]["clarification"]

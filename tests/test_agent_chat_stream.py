@@ -72,6 +72,19 @@ def stream_fixture(monkeypatch):
         yield "increment"
     monkeypatch.setattr(provider, "decision_request", decide)
     monkeypatch.setattr(provider, "stream_answer", answer)
+    # This fixture exercises the pre-upgrade classifier contract explicitly.
+    # Production requests do not inject a classifier and use semantic stages.
+    actual_stream_workflow = stream.stream_workflow
+    async def legacy_classifier(question):
+        from app.agent_workflow.graph import CLASSIFIER_SYSTEM
+        _, decision = await decide("deepseek", "deepseek-chat", "fixture",
+                                   [{"role": "system", "content": CLASSIFIER_SYSTEM},
+                                    {"role": "user", "content": question}], [])
+        return decision["content"]
+    async def injected_stream_workflow(**kwargs):
+        async for event in actual_stream_workflow(**kwargs, classifier=legacy_classifier):
+            yield event
+    monkeypatch.setattr(stream, "stream_workflow", injected_stream_workflow)
 
     async def send(message="show AAPL prices", cid=None):
         payload = StreamRequest(provider="deepseek", model="deepseek-chat", api_key="abcdefgh",
@@ -90,6 +103,28 @@ def test_saved_lookup_streams_one_tool_and_incremental_answer(stream_fixture):
     assert len(executed) == 1 and executed[0][0] == "query_stock_prices"
     assert "event: done" in wire and "event: error" not in wire
     assert any(kwargs.get("tool_calls", {}).get("audit", {}).get("tool_calls") == 1 for _, kwargs in stored)
+
+
+def test_the_stored_audit_lists_the_citation_markers_that_match_no_card(stream_fixture, monkeypatch):
+    """Round C: the audit saved with the turn lists the [n] markers of the answer that match no citation
+    card of the turn (a price row has no card, so [7] matches nothing).  The answer that was streamed
+    and stored is the model's text, untouched."""
+    import app.agent_chat_provider as provider
+    send, _, _, _, stored, _, _ = stream_fixture
+
+    async def answer(*args):
+        yield "AAPL closed at 250 ["
+        yield "7]."
+    monkeypatch.setattr(provider, "stream_answer", answer)
+    wire = asyncio.run(send())
+    assert "event: done" in wire and "event: error" not in wire
+    finals = [(args, kwargs["tool_calls"]) for args, kwargs in stored
+              if len(args) > 2 and args[2] == "assistant" and isinstance(kwargs.get("tool_calls"), dict)
+              and "audit" in kwargs["tool_calls"]]
+    assert len(finals) == 1
+    args, protocol = finals[0]
+    assert protocol["audit"]["unmatched_citation_markers"] == [7]
+    assert args[3] == "AAPL closed at 250 [7]." and not protocol.get("citations")
 
 
 def test_two_stock_comparison_keeps_both_tool_rows(stream_fixture):

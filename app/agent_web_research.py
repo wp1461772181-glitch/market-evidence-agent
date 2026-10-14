@@ -118,6 +118,245 @@ def _valid_timestamp(value: str) -> str | None:
         return None
 
 
+# --- relevance-based excerpt ---------------------------------------------------------------
+# bounded_tool_result (agent_chat_stream) cuts every string field of an oversized tool result to
+# its first 700 characters by position, and a page's leading text rarely holds the sentence that
+# names the metric the user asked about.  Search rows therefore carry the passages of the page
+# text that match the query, within that same bound.  This only chooses which fetched text is
+# shown; the evidence gate still decides what counts as evidence, and nothing here adds text.
+FOCUS_LIMIT = 700
+_GAP = " … "
+# The tables of deterministic_confidence_gate (agent_workflow/graph.py); a test reads that source
+# and fails when either side drifts.
+METRIC_GROUPS = {
+    "revenue": ("revenue", "sales", "营收", "收入", "营业收入"),
+    "profit": ("profit", "earnings", "net income", "利润", "净利润"),
+    "eps": ("eps", "earnings per share", "每股收益"),
+    "cash_flow": ("cash flow", "现金流"),
+    "debt": ("debt", "借款", "负债"),
+}
+ENTITY_ALIASES = {"AAPL": ("apple", "苹果", "蘋果"), "AMD": ("advanced micro devices", "超微", "amd"),
+                  "MSFT": ("microsoft", "微软"), "NVDA": ("nvidia", "英伟达"),
+                  "GOOGL": ("google", "alphabet", "谷歌"), "AMZN": ("amazon", "亚马逊"),
+                  "TSLA": ("tesla", "特斯拉"), "META": ("meta", "脸书")}
+_GENERIC_LATIN = frozenset((
+    "a an the and or of in on at to by for with from about into over than then that this these those is are was "
+    "were be been has have had do does did can will would not no but its it as if so up what when where which "
+    "who whom how why also please news report reports article articles latest recent recently today current "
+    "update updates related search list source sources web online page pages content company companies only "
+    "use show tell find give").split())
+_GENERIC_CJK = re.compile("新闻|报道|消息|资讯|最新|最近|近期|近日|今天|当前|相关|有关|关于|文章|公司|集团|查找|搜索|寻找"
+                          "|帮我|一下|一些|几条|两条|三条|几篇|两篇|怎么样|怎样|如何|多少|哪些|什么|是否|的|跟|和|与|及|或|在|是"
+                          "|对|请|给|把|找|查|搜|条|篇")
+_LATIN_TOKEN = re.compile(r"[a-z0-9][a-z0-9$%&.'’-]*")
+_CJK_RUN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]+")
+_SENTENCE_BREAK = re.compile(r"[。！？；]+[\"'”’」』）)\]]*|[.!?]+[\"'”’)\]]*(?=\s+(?![a-z])|$)")
+_CLAUSE_BREAK = re.compile(r"[\s,，、;；:：]")
+_MAX_GROUPS = 12
+
+
+# A company the sentence names that the query did not ask for: its figures are not the asked company's,
+# whatever sentence or headline comes before them.
+_OTHER_COMPANY = re.compile(
+    r"\b(?:samsung|huawei|xiaomi|intel|qualcomm|sony|toyota|tsmc|oracle|ibm|netflix|uber|alibaba|tencent|baidu"
+    r"|bytedance|byd|nokia|ericsson|cisco|adobe|salesforce|paypal|mastercard|disney|walmart|boeing|pfizer"
+    r"|moderna|nike|starbucks|honda|nissan|asml|broadcom|micron|spacex|openai|anthropic|shopify|airbnb)\b"
+    r"|三星|华为|小米|英特尔|高通|索尼|丰田|台积电|甲骨文|奈飞|优步|阿里巴巴|阿里|腾讯|百度|字节跳动|比亚迪|诺基亚"
+    r"|思科|沃尔玛|波音|辉瑞|耐克|星巴克|本田|日产|博通|美光|英飞凌"
+    + "|" + "|".join(r"\b" + re.escape(alias) + r"\b" if alias.isascii() else re.escape(alias)
+                     for aliases in ENTITY_ALIASES.values() for alias in aliases), re.I)
+
+
+def _member_pattern(member: str, *, whole_word: bool = False) -> str:
+    escaped = re.escape(member)
+    if not member.isascii():
+        return escaped                       # CJK terms have no word boundaries
+    end = r"(?![A-Za-z0-9])" if whole_word or len(member) <= 3 else ""
+    return r"(?<![A-Za-z0-9])" + escaped + end
+
+
+def _term_regex(term: str) -> re.Pattern:
+    return re.compile(re.escape(term) if not term.isascii()
+                      else r"(?<![a-z0-9])" + re.escape(term) + r"(?![a-z0-9])")
+
+
+def _query_groups(query: str) -> tuple[list[re.Pattern], list[str]]:
+    """One pattern per distinct thing the query asks for, with its role: a "metric" group, an
+    "entity" group (a company the gate knows) or a plain "term"."""
+    lowered = query.lower()
+    groups: dict[tuple[str, ...], str] = {}
+    asked: list[str] = []
+    # Metric groups are recognised exactly like the gate does it: a synonym anywhere in the question.
+    for members in METRIC_GROUPS.values():
+        found = [member for member in members if member in lowered]
+        if found:
+            groups[members] = "metric"
+            asked += found
+    for symbol, aliases in ENTITY_ALIASES.items():
+        members = (symbol.lower(), *aliases)
+        found = [member for member in members if _term_regex(member).search(lowered)]
+        if found:
+            groups[members] = "entity"
+            asked += found
+    working = lowered
+    for member in sorted(set(asked), key=len, reverse=True):
+        working = _term_regex(member).sub(" ", working)
+    for token in _LATIN_TOKEN.findall(working):
+        token = token.strip(".'’-&$%")
+        if token.endswith(("'s", "’s")):
+            token = token[:-2]
+        if len(token) >= 2 and token not in _GENERIC_LATIN:
+            groups.setdefault((token,), "term")
+    for run in _CJK_RUN.findall(working):
+        for piece in _GENERIC_CJK.split(run):
+            if len(piece) >= 2:
+                groups.setdefault((piece,), "term")
+    kept = list(groups.items())[:_MAX_GROUPS]
+    return ([re.compile("|".join(_member_pattern(member, whole_word=role == "entity") for member in members), re.I)
+             for members, role in kept], [role for _, role in kept])
+
+
+def _passage_spans(text: str, cap: int, guard: re.Pattern) -> list[tuple[int, int]]:
+    """Sentences and lines as (start, end) offsets into text; none longer than cap characters."""
+    spans: list[tuple[int, int]] = []
+
+    def emit(start: int, end: int) -> None:
+        while start < end and text[start].isspace():
+            start += 1
+        while end > start and text[end - 1].isspace():
+            end -= 1
+        while end - start > cap:
+            lo, hi = start + cap // 2, start + cap
+            breaks = list(_CLAUSE_BREAK.finditer(text, lo, hi + 1))
+            cut = breaks[-1].end() if breaks else hi
+            for term in guard.finditer(text, start, min(end, hi + 64)):
+                if term.start() < cut < term.end():          # never cut a requested term in two
+                    cut = max(term.start(), start + 1)
+                    break
+            spans.append((start, cut))
+            start = cut
+            while start < end and text[start].isspace():
+                start += 1
+        if start < end:
+            spans.append((start, end))
+
+    for line in re.finditer(r"[^\n]+", text):
+        position = line.start()
+        for sentence in _SENTENCE_BREAK.finditer(text, line.start(), line.end()):
+            emit(position, sentence.end())
+            position = sentence.end()
+        emit(position, line.end())
+    return spans
+
+
+def focus_excerpt(text: str, query: str, limit: int = FOCUS_LIMIT, heading: str = "") -> str:
+    """The passages of text that best match query, in original order, within limit characters.
+
+    Sentences and lines are scored by the distinct query terms they hold (case-insensitive; CJK
+    terms; the metric groups and company aliases the evidence gate knows).  Selection first covers
+    every requested term, then keeps the first sentence, then fills the remaining budget by score
+    and position.  Every piece is a verbatim substring of text; non-adjacent pieces are joined by
+    an ellipsis.  text comes back unchanged when it already fits, when the query holds no usable
+    term, or when nothing in it matches, so the caller keeps today's leading characters.
+
+    When the query names a company the gate knows AND a metric, a sentence that holds the metric
+    is shown only if it names the company itself or the sentence right before it (in the original
+    text) does, and then together with that sentence.  The gate pools the text of all rows, so a
+    revenue sentence of another company's paragraph beside an Apple headline would otherwise be
+    accepted as Apple's revenue.  When nothing eligible is left (a page of revenue statements that
+    never name the company) the result is empty and the row is dropped for lack of an excerpt.
+
+    A text that already fits is held to the same rule: it comes back unchanged unless the query
+    asks for a company and a metric and a metric sentence of it has no company beside it, and then
+    only that sentence is left out.  ``heading`` (the page's title, which is no part of the text)
+    counts as the sentence before the first one for that rule."""
+    if not isinstance(text, str) or not isinstance(query, str):
+        return text
+    fits = len(text) <= limit
+    groups, roles = _query_groups(query)
+    if not groups:
+        return text
+    entity = frozenset(n for n, role in enumerate(roles) if role == "entity")
+    metric = frozenset(n for n, role in enumerate(roles) if role == "metric")
+    strict = bool(entity and metric)
+    if fits and not strict:
+        return text
+    spans = _passage_spans(text, max(1, (limit - len(_GAP)) // 2),
+                           re.compile("|".join(group.pattern for group in groups), re.I))
+    hits = [frozenset(n for n, group in enumerate(groups) if group.search(text, start, end)) for start, end in spans]
+    if not any(hits):
+        return text
+    titled = bool(entity and isinstance(heading, str) and heading
+                  and any(groups[n].search(heading) for n in entity))
+
+    def needs_neighbour(index: int) -> bool:
+        """A metric sentence that does not name the company itself."""
+        return strict and bool(hits[index] & metric) and not hits[index] & entity
+
+    def other_company(index: int) -> bool:
+        """The sentence names a company the query did not ask for (and not the asked one)."""
+        start, end = spans[index]
+        return bool(_OTHER_COMPANY.search(text, start, end))
+
+    def eligible(index: int) -> bool:
+        if not needs_neighbour(index):
+            return True
+        if other_company(index):   # its own subject is another company: nothing before it can change that
+            return False
+        return (index > 0 and bool(hits[index - 1] & entity)) or (index == 0 and titled)
+
+    def render(indices: list[int]) -> str:
+        parts: list[str] = []
+        previous = None
+        for index in indices:
+            start, end = spans[index]
+            if previous is not None:
+                parts.append(text[spans[previous][1]:start] if index == previous + 1 else _GAP)
+            parts.append(text[start:end])
+            previous = index
+        return "".join(parts)
+
+    if fits:  # nothing is chosen from it: only a metric sentence with no company beside it is left out
+        left = [index for index in range(len(spans)) if eligible(index)]
+        return text if len(left) == len(spans) else render(left)
+
+    chosen: set[int] = set()
+
+    def add(index: int) -> bool:
+        if index in chosen or not eligible(index):
+            return False
+        # The neighbour that makes a metric sentence eligible travels with it (both or neither).
+        needed = {index, index - 1} if needs_neighbour(index) and index > 0 else {index}
+        if len(render(sorted(chosen | needed))) > limit:
+            return False
+        chosen.update(needed)
+        return True
+
+    covered: set[int] = set()
+    while True:
+        candidates = sorted((index for index in range(len(spans)) if index not in chosen and hits[index] - covered),
+                            key=lambda index: (-len(hits[index] - covered), index))
+        picked = next((index for index in candidates if add(index)), None)
+        if picked is None:
+            break
+        covered |= hits[picked]
+    add(0)
+    for index in sorted(range(len(spans)), key=lambda index: (-len(hits[index]), index)):
+        add(index)
+    return render(sorted(chosen))
+
+
+def _focus_source(source: dict, query: str | None) -> None:
+    """Replace a search row's leading-characters excerpt by the passages that match the query."""
+    text = source.get("excerpt")
+    if not query or not isinstance(text, str):
+        return
+    focused = focus_excerpt(text, query, heading=str(source.get("title") or ""))
+    if focused != text:
+        source["excerpt"] = focused
+        source["truncated"] = True            # a selection: the page text is no longer complete
+
+
 def is_challenge_page(text: str) -> bool:
     lowered=text.lower()
     markers=("captcha", "verify you are human", "unusual traffic", "robot check",
@@ -184,7 +423,7 @@ async def _get_public(url: str, *, limit: int) -> tuple[str, str, bytes]:
     raise ValueError("upstream_unavailable")
 
 
-async def _search(query: str) -> list[dict]:
+async def _search(query: str, include_raw_content: bool = True) -> list[dict]:
     backend = os.getenv("WEB_RESEARCH_BACKEND", "tavily").strip().lower()
     if backend == "tavily":
         key = os.getenv("TAVILY_API_KEY")
@@ -196,7 +435,7 @@ async def _search(query: str) -> list[dict]:
             async with client.stream("POST", "https://api.tavily.com/search",
                                      headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
                                      json={"query": query[:300], "max_results": 3, "search_depth": "basic",
-                                           "include_raw_content": True, "topic": "news",
+                                           "include_raw_content": include_raw_content, "topic": "news",
                                            **({"time_range": "week"} if re.search(r"(?:\b(?:latest|today|recent|this week)\b|最新|今天|近期)", query, re.I) else {})}) as response:
                 if response.status_code >= 400:
                     raise ValueError("search_backend_unavailable")
@@ -206,10 +445,13 @@ async def _search(query: str) -> list[dict]:
         def text_field(row, name, limit):
             value = row.get(name)
             return value[:limit] if isinstance(value, str) else ""
+        # The cut is made here, so whether anything was cut can only be told here.
         return [{"url": text_field(row, "url", 2048), "title": text_field(row, "title", 300),
                  "snippet": text_field(row, "content", 1000),
                  "raw_content": text_field(row, "raw_content", MAX_EXCERPT),
-                 "published_at": _valid_timestamp(row.get("published_date") or "")}
+                 "published_at": _valid_timestamp(row.get("published_date") or ""),
+                 **({"raw_content_truncated": True} if isinstance(row.get("raw_content"), str)
+                    and len(row["raw_content"]) > MAX_EXCERPT else {})}
                 for row in rows[:3] if isinstance(row, dict)]
     if backend != "bing_rss":
         raise ValueError("search_backend_unavailable")
@@ -233,8 +475,19 @@ async def _search(query: str) -> list[dict]:
 async def _research(query_or_url: str) -> dict:
     fetched_at = datetime.now(UTC)
     is_url = query_or_url.lower().startswith("https://")
-    candidates = [{"url": validate_public_url(query_or_url), "title": "", "snippet": ""}] if is_url else await _search(query_or_url)
+    if is_url:
+        candidates = [{"url": validate_public_url(query_or_url), "title": "", "snippet": ""}]
+    else:
+        try:
+            candidates = await _search(query_or_url)
+        except ValueError as exc:
+            if str(exc) != "response_too_large":
+                raise
+            # One long article can push Tavily's raw_content past the response cap; ask for
+            # snippets only and read each page through the normal bounded public fetch.
+            candidates = await _search(query_or_url, include_raw_content=False)
     sources = []
+    focus_query = None if is_url else query_or_url      # an exact URL read keeps its leading text
     for result in candidates[:3]:
         try:
             _url, content_type, raw = await _get_public(result["url"], limit=MAX_PAGE_BYTES)
@@ -250,6 +503,7 @@ async def _research(query_or_url: str) -> dict:
                 page["truncated"] = len(result["raw_content"]) >= MAX_EXCERPT
                 page["body_provenance"] = "tavily_extracted_content"
             page["published_at"] = page.get("published_at") or result.get("published_at")
+            _focus_source(page, focus_query)
             sources.append(page)
         except asyncio.CancelledError:
             raise
@@ -258,11 +512,13 @@ async def _research(query_or_url: str) -> dict:
                 return {"ok":False,"data":[],"source":"public webpage excerpt","as_of":fetched_at.isoformat(),"error_code":"web_page_unavailable"}
             raw_content = result.get("raw_content")
             if isinstance(raw_content, str) and raw_content.strip():
-                sources.append({"title": result.get("title") or result["url"], "url": result["url"],
-                                "excerpt": raw_content[:MAX_EXCERPT], "search_snippet": result.get("snippet") or None,
-                                "fetched_at": fetched_at.isoformat(), "published_at": result.get("published_at"),
-                                "truncated": len(raw_content) > MAX_EXCERPT,
-                                "body_provenance": "tavily_extracted_content"})
+                fallback = {"title": result.get("title") or result["url"], "url": result["url"],
+                            "excerpt": raw_content[:MAX_EXCERPT], "search_snippet": result.get("snippet") or None,
+                            "fetched_at": fetched_at.isoformat(), "published_at": result.get("published_at"),
+                            "truncated": bool(result.get("raw_content_truncated")) or len(raw_content) > MAX_EXCERPT,
+                            "body_provenance": "tavily_extracted_content"}
+                _focus_source(fallback, focus_query)
+                sources.append(fallback)
                 continue
             failure=str(exc) if str(exc)=="challenge_page" else "page_unavailable"
             sources.append({"title": result.get("title") or result["url"], "url": result["url"],

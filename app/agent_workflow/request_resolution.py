@@ -113,6 +113,7 @@ def action_reply(reply: str) -> str | None:
 
 def _standalone_symbol(reply: str) -> bool:
     candidate = re.sub(r"^(?:就是|是|选|选用|用|it's|it is)\s*", "", reply, flags=re.I).strip(" 。.!！")
+    candidate = re.sub(r"(?:公司|集团|股份|股票)$", "", candidate).strip()  # "苹果公司" names the company too
     if candidate.lower() in ALIASES:
         return True
     if candidate != candidate.upper() or not re.fullmatch(r"[A-Z][A-Z.-]{0,7}", candidate):
@@ -131,7 +132,8 @@ def is_pending_reply(pending: dict[str, Any], reply: str) -> bool:
         return action_reply(text) is not None
     if is_explicit_new_request(text):
         return False
-    if reason in {"missing_stock_focus", "missing_comparison_symbol", "missing_action_symbol", "symbol_suggestion"}:
+    if reason in {"missing_stock_focus", "missing_comparison_symbol", "missing_action_symbol", "symbol_suggestion",
+                  "reference_company_required"}:
         return _standalone_symbol(text)
     if reason == "missing_action_source":
         stripped = SOURCE_ID.sub("", ACCESSION.sub("", text)).strip(" ,，。:：")

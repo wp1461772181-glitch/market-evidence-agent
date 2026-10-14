@@ -38,6 +38,27 @@ class AgentWorkflowState(TypedDict, total=False):
     final_protocol: dict[str, Any]
     turn_id: str
     audit: dict[str, Any]
+    result_sets: list[dict[str, Any]]
+    legacy_result_sets: list[dict[str, Any]]
+    legacy_source_choices: list[dict[str, Any]]
+    semantic_reference: dict[str, Any]
+    semantic_catalog: list[dict[str, Any]]
+    semantic_intents: list[str]
+    semantic_plan: list[dict[str, Any]]
+    semantic_index: int
+    semantic_active: dict[str, Any] | None
+    semantic_error: str | None
+    semantic_hint: str | None
+    semantic_conflict: bool
+    semantic_positions: dict[str, Any] | None
+    semantic_owner: str
+    semantic_conversation: str
+    semantic_active_scope: dict[str, Any]
+    semantic_action: str | None
+    semantic_turn: bool
+    semantic_write_targets: dict[str, Any] | None
+    semantic_write_slots: dict[str, Any] | None
+    semantic_question_source: str | None
 
 
 @dataclass(frozen=True)
@@ -54,6 +75,10 @@ class AgentRuntimeContext:
     decider: object | None = field(default=None, repr=False, compare=False)
     executor: object | None = field(default=None, repr=False, compare=False)
     answerer: object | None = field(default=None, repr=False, compare=False)
+    resolver: object | None = field(default=None, repr=False, compare=False)
+    intent_recognizer: object | None = field(default=None, repr=False, compare=False)
+    planner: object | None = field(default=None, repr=False, compare=False)
+    query_expander: object | None = field(default=None, repr=False, compare=False)
 
 
 def checkpoint_thread_id(owner_hash: str, conversation_id: str) -> str:

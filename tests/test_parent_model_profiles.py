@@ -142,19 +142,22 @@ def test_custom_endpoint_and_model_reach_both_sse_requests(monkeypatch):
   if b.get('stream'):
    raw=b'data: {"choices":[{"delta":{"content":"DEMO CUSTOM ANSWER"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'
    return httpx.Response(200,headers={'Content-Type':'text/event-stream'},content=raw)
-  if 'Classify the user' in b['messages'][0]['content']:
-   return httpx.Response(200,json={'choices':[{'message':{'role':'assistant','content':'{"intent":"general","confidence":0.9}'}}]})
+  if b['messages'][0]['content'].startswith('Resolve user references'):
+   return httpx.Response(200,json={'choices':[{'message':{'role':'assistant','content':json.dumps({'relationship':'new','canonical_question':'hello','result_set_id':None,'item_ids':[]})}}]})
+  if b['messages'][0]['content'].startswith('Recognize purposes'):
+   return httpx.Response(200,json={'choices':[{'message':{'role':'assistant','content':'{"purposes":["general"]}'}}]})
   return httpx.Response(200,json={'choices':[{'message':{'role':'assistant','content':'ready'}}]})
  monkeypatch.setattr('app.agent_chat_provider.httpx.AsyncClient',lambda **kwargs:real_client(transport=httpx.MockTransport(capture)))
  with TestClient(app) as client:
   r=client.post('/agent-chat/stream',json=body('https://provider.example/custom/v1/chat/completions',True),headers={'X-Chat-Session':'parent-config-'+'c'*48})
  assert r.status_code==200,r.text
  assert 'event: done' in r.text,r.text
- assert len(seen)==1  # A greeting uses the deterministic general shortcut after classification.
+ assert len(seen)==2  # Resolver and intent use separate selected-model calls; greeting needs no tool.
  assert all(url=='https://provider.example/custom/v1/chat/completions' for url,_,_ in seen)
  assert all(b['model']=='user-model' and auth=='Bearer '+FAKE for _,b,auth in seen)
  assert FAKE not in r.text
- assert 'tool_choice' not in seen[0][1] and 'Classify the user' in seen[0][1]['messages'][0]['content']
+ assert 'tool_choice' not in seen[0][1] and 'Resolve user references' in seen[0][1]['messages'][0]['content']
+ assert 'Recognize purposes' in seen[1][1]['messages'][0]['content']
  assert all('tool_choice' not in body and 'tools' not in body for _,body,_ in seen)
 
 @pytest.mark.parametrize('path,expect',[('/agent-chat/hello',200),('/agent-chat/messages',502)])

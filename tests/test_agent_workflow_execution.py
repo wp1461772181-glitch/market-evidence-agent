@@ -280,14 +280,16 @@ def test_final_actual_usage_over_limit_is_recorded_and_stops_normally(monkeypatc
         return {"usage":{"total_tokens":1}}, {"tool_calls":[]}
     monkeypatch.setattr(provider,"decision_request",decide)
     async def run():
-        runtime=AgentRuntimeContext("deepseek","model","runtime")
+        async def injected_classifier(_question):
+            return '{"intent":"general","confidence":0.9}'
+        runtime=AgentRuntimeContext("deepseek","model","runtime",classifier=injected_classifier)
         return await build_workflow().ainvoke({"question":"Explain prime numbers","messages":[{"role":"user","content":"Explain prime numbers"}],
             "token_usage":30000,"usage_mode":"actual"},
             {"configurable":{"thread_id":"actual-budget"}},context=runtime)
     # The resolver resets turn accounting; use a very large provider final usage.
     state=asyncio.run(run())
     assert state["gate_reason"]=="turn_token_budget"
-    assert state["token_usage"]==35011 and state["usage_mode"]=="actual"
+    assert state["token_usage"]==35001 and state["usage_mode"]=="estimated"
     assert state["terminal_status"]=="partially_succeeded"
 
 
