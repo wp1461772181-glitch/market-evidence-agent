@@ -36,6 +36,22 @@ def _runtime(conversation=CHAT, **callbacks):
                                conversation_id=conversation, **callbacks)
 
 
+def _press(graph, runtime, shown, button, turn):
+    """The user presses one button of the write card the server showed (the button's own value)."""
+    pending = shown.get("pending_request") or {}
+    assert pending.get("reason") == "confirm_write", pending
+    value = next(choice["value"] for choice in pending["choices"] if choice["value"].startswith(button + ":"))
+    return _turn(graph, runtime, value, turn, shown)
+
+
+def _turn_confirmed(graph, runtime, question, turn, previous=None, **extra):
+    """A write the way the user lives it: ask, then press 同意 on the card the server shows."""
+    shown = _turn(graph, runtime, question, turn, previous, **extra)
+    if (shown.get("pending_request") or {}).get("reason") != "confirm_write":
+        return shown
+    return _press(graph, runtime, shown, "confirm", turn + "-confirm")
+
+
 def _turn(graph, runtime, question, turn, previous=None, **extra):
     state = {**(previous or {}), "question": question, "turn_id": turn, **extra}
     state.setdefault("messages", [])
@@ -276,6 +292,8 @@ def _import_runtime(conversation=CHAT, rewrite="{source}"):
 
 def _record_actions(monkeypatch):
     executed = []
+    # The write card is the owner's: these tests drive an owner's session (the guest cases patch it back).
+    monkeypatch.setattr("app.agent_workflow.graph.owner_credential_matches", lambda _credential: True)
 
     def fake_execute_action(*, credential, request_key, action, payload):
         executed.append((action, payload))
@@ -298,6 +316,10 @@ def test_pending_import_resumes_with_the_users_own_action(monkeypatch, rewrite):
     assert first["pending_request"]["reason"] == "missing_action_source"
     second = _turn(graph, runtime, SOURCE, "two", first)
     assert second.get("gate_reason") != "implicit_write_rejected"
+    assert executed == []  # the slot reply completes the target; running it is the user's press on the card
+    assert second["pending_request"]["reason"] == "confirm_write"
+    assert second["pending_request"]["proposal"]["action"] == "import"
+    _press(graph, runtime, second, "confirm", "three")
     assert executed == [("import", {"symbol": "AAPL", "source_id": SOURCE})]
 
 
@@ -307,7 +329,8 @@ def test_resolved_import_is_not_executed_again_by_a_repeated_reply(monkeypatch):
     executed = _record_actions(monkeypatch)
     graph, runtime = build_workflow(), _import_runtime()
     first = _turn(graph, runtime, "导入 AAPL 的资料", "one")
-    second = _turn(graph, runtime, SOURCE, "two", first)
+    shown = _turn(graph, runtime, SOURCE, "two", first)
+    second = _press(graph, runtime, shown, "confirm", "two-confirm")
     assert len(executed) == 1
     third = _turn(graph, runtime, SOURCE, "three", second)
     assert len(executed) == 1
@@ -421,13 +444,18 @@ def test_pending_import_survives_checkpoint_reopen_for_its_own_conversation_only
                 {"question": SOURCE, "messages": [], "turn_id": "elsewhere"}, config(theirs), context=theirs)
             resumed = await graph.ainvoke(
                 {"question": SOURCE, "messages": [], "turn_id": "two"}, config(mine), context=mine)
-        return first, elsewhere, resumed
+            value = next(choice["value"] for choice in resumed["pending_request"]["choices"]
+                         if choice["value"].startswith("confirm:"))
+            confirmed = await graph.ainvoke(
+                {"question": value, "messages": [], "turn_id": "three"}, config(mine), context=mine)
+        return first, elsewhere, resumed, confirmed
 
-    first, elsewhere, resumed = asyncio.run(exercise())
+    first, elsewhere, resumed, confirmed = asyncio.run(exercise())
     assert first["pending_request"]["reason"] == "missing_action_source"
     assert elsewhere["terminal_status"] not in {"succeeded", "running"}
+    assert resumed["pending_request"]["reason"] == "confirm_write"
     assert executed == [("import", {"symbol": "AAPL", "source_id": SOURCE})]
-    assert resumed["terminal_status"] in {"running", "succeeded"}
+    assert confirmed["terminal_status"] in {"running", "succeeded"}
 
 
 def test_import_rejects_a_source_that_belongs_to_another_symbol(disposable_database, monkeypatch):
@@ -1006,7 +1034,8 @@ def test_resumed_import_uses_the_source_id_the_user_typed(monkeypatch):
     executed = _record_actions(monkeypatch)
     graph, runtime = build_workflow(), _import_runtime(rewrite=f"导入 AAPL 的资料 {OTHER_SOURCE}")
     first = _turn(graph, runtime, "导入 AAPL 的资料", "one")
-    _turn(graph, runtime, SOURCE, "two", first)
+    shown = _turn(graph, runtime, SOURCE, "two", first)
+    _press(graph, runtime, shown, "confirm", "three")
     assert executed == [("import", {"symbol": "AAPL", "source_id": SOURCE})]
 
 
@@ -1863,7 +1892,8 @@ def test_forecast_after_a_news_search_does_not_take_the_company_from_the_catalog
     assert second["terminal_status"] == "waiting_for_input"
     assert second["pending_request"]["reason"] == "missing_action_symbol"
     assert second["pending_request"]["symbols"] == []
-    third = _turn(graph, runtime, "NVDA", "three", second)
+    shown = _turn(graph, runtime, "NVDA", "three", second)
+    third = _press(graph, runtime, shown, "confirm", "four")
     assert executed == [("forecast", {"symbol": "NVDA"})]
     assert third["terminal_status"] in {"running", "succeeded"}
 
@@ -1876,7 +1906,9 @@ def test_the_clarified_target_is_completed_by_the_users_own_reply(monkeypatch):
     runtime = _acting_runtime({"为 AAPL 创建预测": "为 AAPL NVDA 创建预测"})
     first = _turn(graph, runtime, "为 AAPL 创建预测", "one", messages=_EARLIER_USER_TURNS)
     assert executed == [] and first["pending_request"]["symbols"] == ["AAPL"]
-    second = _turn(graph, runtime, "AAPL", "two", first)
+    shown = _turn(graph, runtime, "AAPL", "two", first)
+    assert executed == []
+    second = _press(graph, runtime, shown, "confirm", "three")
     assert executed == [("forecast", {"symbol": "AAPL"})]
     assert second["terminal_status"] in {"running", "succeeded"}
 
@@ -1891,7 +1923,10 @@ def test_the_clarified_target_is_completed_by_the_users_own_reply(monkeypatch):
 def test_a_target_the_user_typed_still_executes(monkeypatch, original, expected):
     """GUARD: a company or id written in the user's own message is the user's target."""
     executed = _record_actions(monkeypatch)
-    result = _turn(build_workflow(), _acting_runtime(), original, "one")
+    graph, runtime = build_workflow(), _acting_runtime()
+    shown = _turn(graph, runtime, original, "one")
+    assert executed == [] and shown["pending_request"]["reason"] == "confirm_write"
+    result = _press(graph, runtime, shown, "confirm", "two")
     assert executed == [expected]
     assert result["terminal_status"] in {"running", "succeeded"}
 
@@ -1901,7 +1936,7 @@ def test_a_financial_acronym_the_resolver_wrote_is_not_another_target(monkeypatc
     out does not turn the user's own complete request into a clarification."""
     executed = _record_actions(monkeypatch)
     runtime = _acting_runtime({"为 AAPL 创建预测": "为 AAPL 创建 EPS GAAP 预测"})
-    result = _turn(build_workflow(), runtime, "为 AAPL 创建预测", "one")
+    result = _turn_confirmed(build_workflow(), runtime, "为 AAPL 创建预测", "one")
     assert executed == [("forecast", {"symbol": "AAPL"})]
     assert result["terminal_status"] in {"running", "succeeded"}
 
@@ -1939,7 +1974,8 @@ def test_a_guest_who_names_the_target_still_ends_at_owner_login_required(monkeyp
     monkeypatch.setattr(actions, "execute_action", spy)
     runtime = replace(_acting_runtime(), identity_credential="g" * 64)
     result = _turn(build_workflow(), runtime, original, "one")
-    assert seen == [expected]
+    assert seen == []                      # a guest is shown no card: nothing they could press would run
+    assert result.get("pending_request") is None
     assert "owner_login_required" in result["answer"]
     assert result["terminal_status"] == "failed"
 
@@ -2149,9 +2185,9 @@ def test_general_requires_evidence_has_its_own_friendly_message():
     result = asyncio.run(_fallback({"gate_reason": "semantic_general_requires_evidence", "task_states": [],
                                     "node_log": []}))
     assert result["answer"] == FINANCE_REFUSAL
-    for code in ("semantic_stage_invalid", "semantic_intent_invalid"):
+    for code in ("semantic_stage_invalid", "semantic_intent_invalid", "semantic_intent_reference_mismatch"):
         other = asyncio.run(_fallback({"gate_reason": code, "task_states": [], "node_log": []}))
-        assert code in other["answer"] and other["answer"] != FINANCE_REFUSAL
+        assert code not in other["answer"] and other["answer"] != FINANCE_REFUSAL  # the code stays in the audit
 
 
 # --- G2-B1: the period, numbers and negation the user wrote must survive in the search query ----
@@ -3213,8 +3249,8 @@ def test_a_write_request_with_a_pronoun_is_worked_on_in_the_users_words(monkeypa
     the write runs once on it.  (test_agent_semantic_deixis covers the ambiguous cases.)"""
     executed = _record_actions(monkeypatch)
     history = [{"role": "user", "content": "英伟达 NVDA 的新闻"}, {"role": "assistant", "content": "好的。"}]
-    result = _turn(build_workflow(), _acting_runtime({"给它创建预测": "为 NVDA 创建预测"}),
-                   "给它创建预测", "one", messages=history)
+    result = _turn_confirmed(build_workflow(), _acting_runtime({"给它创建预测": "为 NVDA 创建预测"}),
+                             "给它创建预测", "one", messages=history)
     assert executed == [("forecast", {"symbol": "NVDA"})]
     assert result["question"] == "给它创建预测"
     assert result["terminal_status"] in {"running", "succeeded"}
@@ -3753,7 +3789,8 @@ def test_a_write_request_the_resolver_calls_a_followup_is_clarified_not_failed(m
     assert first["pending_request"]["reason"] == "missing_action_symbol"
     assert first["pending_request"]["selected_action"] == "forecast"
     assert first["pending_request"]["symbols"] == []
-    second = _turn(graph, runtime, "NVDA", "two", first)
+    shown = _turn(graph, runtime, "NVDA", "two", first)
+    second = _press(graph, runtime, shown, "confirm", "three")
     assert executed == [("forecast", {"symbol": "NVDA"})]
     assert second["terminal_status"] in {"running", "succeeded"}
 
@@ -3773,8 +3810,11 @@ def test_a_followup_that_points_at_records_and_is_no_write_must_still_summarise(
     runtime = _runtime(resolver=resolve, intent_recognizer=_purposes("saved_data"),
                        planner=_plan(_task("p", "saved_data", "query_stock_prices", ["AAPL"], "AAPL 股价")),
                        query_expander=_no_variants, answerer=_answer("never"))
-    refused = _turn(build_workflow(), runtime, "刚刚那组新闻对应的苹果最新股价", "turn", result_sets=saved)
-    assert refused["gate_reason"] == "semantic_intent_reference_mismatch"
+    handled = _turn(build_workflow(), runtime, "刚刚那组新闻对应的苹果最新股价", "turn", result_sets=saved)
+    # 2026-10-14 (G4): the turn is no longer refused with an internal code; the set the user points
+    # at is read besides whatever else the intent stage named.
+    assert handled["gate_reason"] != "semantic_intent_reference_mismatch"
+    assert "summarize_existing" in handled["semantic_intents"]
 
 
 def _pronoun_followup_turn(words, purposes, planned):
@@ -3820,7 +3860,9 @@ def test_a_followup_that_points_at_records_must_still_summarise_them():
     for words in ("把刚刚那组新闻的最新情况再搜一下", "它那两条里最新的新闻再找一遍"):
         result, calls, _ = _pronoun_followup_turn(
             words, ["web_research"], _task("news", "web_research", "web_research", ["AAPL"], "Apple latest news"))
-        assert result["gate_reason"] == "semantic_intent_reference_mismatch" and calls == []
+        # G4: not an internal-code failure any more; the set the words point at is read besides the search
+        assert result["gate_reason"] != "semantic_intent_reference_mismatch"
+        assert "summarize_existing" in result["semantic_intents"]
 
 
 def test_a_complete_request_that_holds_a_demonstrative_is_not_sent_back_for_a_company():
@@ -3908,7 +3950,7 @@ def test_a_keyword_query_is_checked_against_the_words_of_this_turn_not_the_conti
     assert [(name, args["keyword"]) for name, args in calls] == [("search_material_analysis", "AAPL revenue")]
 
 
-def test_a_non_write_sentence_the_intent_stage_calls_an_action_is_still_a_reference_mismatch():
+def test_a_non_write_sentence_the_intent_stage_calls_an_action_is_still_a_reference_mismatch(monkeypatch):
     """RED-by-probe: the write relaxation is for an explicit write; a sentence that merely points at
     the set and is called 'system_action' by the intent stage is not one."""
     saved = _saved_web_set([], ["AAPL"], "apple-news")
@@ -3920,8 +3962,13 @@ def test_a_non_write_sentence_the_intent_stage_calls_an_action_is_still_a_refere
     runtime = _runtime(resolver=resolve, intent_recognizer=_purposes("system_action"),
                        planner=_plan(_task("act", "system_action", "system_action", ["AAPL"], "x")),
                        query_expander=_no_variants, answerer=_answer("never"))
+    executed = _record_actions(monkeypatch)
     result = _turn(build_workflow(), runtime, "总结一下刚刚那两条新闻", "turn", result_sets=saved)
-    assert result["gate_reason"] == "semantic_intent_reference_mismatch"
+    # G4: a sentence that holds no write but that the intent stage called one runs nothing: the user is
+    # asked which write they mean (or to cancel) -- a card, never an execution.
+    assert executed == []
+    assert result["terminal_status"] == "waiting_for_input"
+    assert result["pending_request"]["reason"] in {"choose_write_action", "missing_action_source"}
 
 
 # --- Round C: a place in an earlier list is not a citation number --------------------------------

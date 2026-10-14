@@ -77,7 +77,7 @@ def test_list_store_query_is_owner_scoped_stable_and_bounded(monkeypatch):
     from app import agent_chat_store
     captured={}
     class Rows:
-        def all(self): return [("conversation-a",datetime(2026,1,2,tzinfo=timezone.utc),datetime(2026,1,3,tzinfo=timezone.utc),"Q"*140)]
+        def all(self): return [("conversation-a",datetime(2026,1,2,tzinfo=timezone.utc),datetime(2026,1,3,tzinfo=timezone.utc),"Q"*140,None)]
     class SessionStub:
         async def __aenter__(self): return self
         async def __aexit__(self,*args): pass

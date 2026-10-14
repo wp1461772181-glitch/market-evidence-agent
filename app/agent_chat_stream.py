@@ -38,7 +38,8 @@ Financial answer contract:
 - Never promise or imply guaranteed returns, and never state a definite future market direction. Stars are source-credibility ratings, not probabilities that a stock will rise.
 - A stored excerpt, including a truncated excerpt, is only the saved passage; never describe it as a complete filing, full report, or full financial statement.
 - Use query_sec_filings for saved fetched filing text; its excerpt coverage flag indicates whether only part of the stored body is shown. For a generic report overview, if the original excerpt is insufficient and a query_material_analysis result is bound to that exact source ID, state the original coverage limit and label the secondary summary as saved AI analysis with its version, model, date, and citation. Never present it as official original text or full-report coverage. For explicit original proof or a specific theme, keep original and derived evidence distinct and apply the matching evidence gate. Use query_material_analysis for requested saved AI analysis, and label it as AI analysis rather than official filing fact. Use query_materials for original source text; use search_material_analysis only for clearly labeled derived AI analysis, never as guaranteed original facts, and compare against original sources when asked to verify.
-- State the applicable source and as-of date when supplied. These instructions do not replace checking that each factual claim is actually supported by the cited evidence."""
+- State the applicable source and as-of date when supplied. These instructions do not replace checking that each factual claim is actually supported by the cited evidence.
+- You cannot save, import, record or modify anything yourself. Such actions run only after the user confirms a card the system shows; never say that you did one."""
 def _record_low_confidence(question,conversation_id,turn_id,owner,reason):
  from .database import SessionLocal
  from .knowledge.models import LowConfidenceQuestion
@@ -116,7 +117,7 @@ def _restore_citations(items,credential):
    else:verified.append({'ordinal':ordinal,'chunk_id':str(chunk.id),'title':'来源已失效','section':'','source_url':None,'observed_at':None,'source_type':'unavailable','truncated':False})
  return verified
 class StreamRequest(BaseModel):
- provider:str=Field(pattern="^(deepseek|kimi|minimax|qwen|zhipu|doubao|hunyuan|baidu|siliconflow|openrouter|custom)$"); base_url:str|None=Field(default=None,max_length=2048); model:str=Field(min_length=1,max_length=160,pattern=r"^[A-Za-z0-9._:/-]+$"); api_key:SecretStr; message:str=Field(min_length=1,max_length=4000); conversation_id:str|None=None; pending_request_id:str|None=Field(default=None,max_length=36)
+ provider:str=Field(pattern="^(deepseek|kimi|minimax|qwen|zhipu|doubao|hunyuan|baidu|siliconflow|openrouter|custom)$"); base_url:str|None=Field(default=None,max_length=2048); model:str=Field(min_length=1,max_length=160,pattern=r"^[A-Za-z0-9._:/-]+$"); api_key:SecretStr; message:str=Field(min_length=1,max_length=4000); conversation_id:str|None=None; pending_request_id:str|None=Field(default=None,max_length=36); display_message:str|None=Field(default=None,max_length=120)
  @field_validator("base_url")
  @classmethod
  def valid_endpoint(cls,value):
@@ -201,6 +202,16 @@ def bounded_tool_result(value, limit=8000):
  while _protocol_size(result)>limit and isinstance(result.get("data"),str): result["data"]=result["data"][:-100]
  if _protocol_size(result)>limit: return {"ok":False,"data":None,"error_code":"tool_result_truncated","source":None,"as_of":None}
  return result
+_FAILURE_NOTICES={
+ "provider_timeout":"模型服务这次响应超时，本轮没有完成。请再发一次。",
+ "provider_rate_or_quota_error":"模型服务额度不足或请求被限流，本轮没有完成。请稍后再试。",
+ "provider_invalid_key":"模型服务拒绝了这次请求：API key 无效。请到设置里检查后重试。",
+ "provider_model_access_denied":"模型服务拒绝了这次请求：模型不可用或当前 key 无权访问。请到设置里检查后重试。",
+ "provider_network_error":"连接模型服务失败，本轮没有完成。请稍后再试。",
+}
+def _failure_notice(exc:Exception)->str:
+ code=exc.detail if isinstance(exc,HTTPException) and isinstance(exc.detail,str) else ""
+ return _FAILURE_NOTICES.get(code,"这一轮没有完成，没有生成回答。请再发一次。")
 @router.post("/stream")
 async def stream_chat(payload:StreamRequest,request:Request,x_chat_session:str|None=Header(default=None)):
  if not x_chat_session or len(x_chat_session)<32 or len(x_chat_session)>256: raise HTTPException(401,"chat_session_required")
@@ -238,7 +249,10 @@ async def stream_chat(payload:StreamRequest,request:Request,x_chat_session:str|N
   text_out=""; citation_sidecar=[]; terminal=False; genuine_calls=set(); tool_traces=[]
   try:
    yield frame("conversation",{"conversation_id":cid,"turn_id":turn})
-   await append_message(cid,turn,"user",payload.message)
+   # A press on a card button sends the button's own value (the server's words for it); the history shows what
+   # the user saw on the button.
+   shown=payload.display_message.strip() if payload.pending_request_id and payload.display_message else ""
+   await append_message(cid,turn,"user",shown or payload.message)
    history_rows=await history(cid,x_chat_session) or []
    messages=[{"role":"system","content":SYSTEM}]
    legacy_calls=set()
@@ -327,6 +341,10 @@ async def stream_chat(payload:StreamRequest,request:Request,x_chat_session:str|N
    raise
   except Exception as exc:
    restored=_restore_citations(citation_sidecar,x_chat_session) if citation_sidecar else []
+   if not text_out.strip():
+    # Nothing was written for the user: say what happened (and keep it in the history), not a blank bubble.
+    text_out=_failure_notice(exc)
+    yield frame("delta",{"text":text_out})
    await append_message(cid,turn,"assistant",text_out,status="failed",tool_calls={"citations":restored} if restored else None)
    await finish_conversation(cid,"failed")
    await mark_terminal_status(owner_hash(x_chat_session),cid,"failed",text_out)

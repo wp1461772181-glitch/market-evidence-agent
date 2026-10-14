@@ -6,6 +6,7 @@ import ipaddress
 import json
 import os
 import re
+import time
 import xml.etree.ElementTree as ET
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
@@ -364,6 +365,26 @@ def is_challenge_page(text: str) -> bool:
     return any(marker in lowered for marker in markers)
 
 
+_MARKDOWN_LINK = re.compile(r"!?\[[^\]]*\]\([^)]*\)|https?://\S+")
+BOILERPLATE_MARKERS = ("oops, something went wrong", "access denied", "403 forbidden", "404 not found",
+                       "page not found", "enable javascript", "please enable cookies", "sign in to continue",
+                       "are you a robot", "just a moment", "request blocked", "this page isn't available",
+                       "页面不存在", "访问被拒绝", "请开启 javascript", "请启用 javascript")
+
+
+def is_boilerplate_page(text: object) -> bool:
+    """True for the text of an error, block or navigation page: it opens with an error phrase and holds
+    hardly any prose once links are taken out, or it is mostly links.  Such text is not what a page says
+    and must not be listed as a source (a news page that merely mentions an error is not touched)."""
+    if not isinstance(text, str) or not text.strip():
+        return False
+    prose = re.sub(r"[\s#*_>|\-–—•·]+", " ", _MARKDOWN_LINK.sub(" ", text)).strip()
+    if any(marker in text[:400].lower() for marker in BOILERPLATE_MARKERS) and len(prose) < 600:
+        return True
+    link_chars = len(text) - len(_MARKDOWN_LINK.sub("", text))
+    return len(text) >= 300 and link_chars / len(text) >= 0.6 and len(prose) < 300
+
+
 def extract_page(body: str, url: str, fetched_at: datetime) -> dict:
     parser = _ReadableHTML()
     parser.feed(body[:MAX_PAGE_BYTES])
@@ -434,7 +455,7 @@ async def _search(query: str, include_raw_content: bool = True) -> list[dict]:
                                      trust_env=False, transport=PinnedPublicTransport(allow_internal_query=True)) as client:
             async with client.stream("POST", "https://api.tavily.com/search",
                                      headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                                     json={"query": query[:300], "max_results": 3, "search_depth": "basic",
+                                     json={"query": query[:300], "max_results": 5, "search_depth": "basic",
                                            "include_raw_content": include_raw_content, "topic": "news",
                                            **({"time_range": "week"} if re.search(r"(?:\b(?:latest|today|recent|this week)\b|最新|今天|近期)", query, re.I) else {})}) as response:
                 if response.status_code >= 400:
@@ -452,7 +473,7 @@ async def _search(query: str, include_raw_content: bool = True) -> list[dict]:
                  "published_at": _valid_timestamp(row.get("published_date") or ""),
                  **({"raw_content_truncated": True} if isinstance(row.get("raw_content"), str)
                     and len(row["raw_content"]) > MAX_EXCERPT else {})}
-                for row in rows[:3] if isinstance(row, dict)]
+                for row in rows[:5] if isinstance(row, dict)]
     if backend != "bing_rss":
         raise ValueError("search_backend_unavailable")
     url = "https://www.bing.com/search?q=" + quote_plus(query[:300]) + "&format=rss"
@@ -461,7 +482,7 @@ async def _search(query: str, include_raw_content: bool = True) -> list[dict]:
         raise ValueError("search_response_invalid")
     root = ET.fromstring(raw)
     rows = []
-    for item in root.findall(".//item")[:3]:
+    for item in root.findall(".//item")[:5]:
         link = (item.findtext("link") or "").strip()
         try:
             validate_public_url(link)
@@ -488,7 +509,11 @@ async def _research(query_or_url: str) -> dict:
             candidates = await _search(query_or_url, include_raw_content=False)
     sources = []
     focus_query = None if is_url else query_or_url      # an exact URL read keeps its leading text
-    for result in candidates[:3]:
+    started = time.monotonic()
+    for result in candidates[:5]:
+        usable = sum(1 for source in sources if not source.get("fetch_error"))
+        if usable >= 3 or (usable and len(sources) >= 3 and time.monotonic() - started > 24):
+            break
         try:
             _url, content_type, raw = await _get_public(result["url"], limit=MAX_PAGE_BYTES)
             if "html" not in content_type:
@@ -502,6 +527,8 @@ async def _research(query_or_url: str) -> dict:
                 page["excerpt"] = result["raw_content"][:MAX_EXCERPT]
                 page["truncated"] = len(result["raw_content"]) >= MAX_EXCERPT
                 page["body_provenance"] = "tavily_extracted_content"
+            if is_boilerplate_page(page["excerpt"]):
+                raise ValueError("boilerplate_page")
             page["published_at"] = page.get("published_at") or result.get("published_at")
             _focus_source(page, focus_query)
             sources.append(page)
@@ -511,7 +538,7 @@ async def _research(query_or_url: str) -> dict:
             if is_url:
                 return {"ok":False,"data":[],"source":"public webpage excerpt","as_of":fetched_at.isoformat(),"error_code":"web_page_unavailable"}
             raw_content = result.get("raw_content")
-            if isinstance(raw_content, str) and raw_content.strip():
+            if isinstance(raw_content, str) and raw_content.strip() and not is_boilerplate_page(raw_content):
                 fallback = {"title": result.get("title") or result["url"], "url": result["url"],
                             "excerpt": raw_content[:MAX_EXCERPT], "search_snippet": result.get("snippet") or None,
                             "fetched_at": fetched_at.isoformat(), "published_at": result.get("published_at"),
@@ -520,10 +547,13 @@ async def _research(query_or_url: str) -> dict:
                 _focus_source(fallback, focus_query)
                 sources.append(fallback)
                 continue
-            failure=str(exc) if str(exc)=="challenge_page" else "page_unavailable"
+            failure=str(exc) if str(exc) in {"challenge_page", "boilerplate_page"} else "page_unavailable"
             sources.append({"title": result.get("title") or result["url"], "url": result["url"],
                             "excerpt": "", "search_snippet": result.get("snippet") or None,
                             "fetched_at": fetched_at.isoformat(), "published_at": result.get("published_at"), "fetch_error": failure})
+    # Pages that gave text come first (at most three); a failed one is reported only to fill the list.
+    sources = ([source for source in sources if not source.get("fetch_error")][:3]
+               + [source for source in sources if source.get("fetch_error")])[:3]
     return {"ok": bool(sources), "data": sources,
             "source": "public web search and fetched page excerpts" if not is_url else "public webpage excerpt",
             "as_of": fetched_at.isoformat(), "error_code": None if sources else "web_research_unavailable"}

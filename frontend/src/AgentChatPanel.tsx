@@ -1,5 +1,5 @@
-import { createContext, useContext, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { agentChatRequest, agentChatModels, agentChatStream, configuredApiBaseUrl, restoreAgentChat, clearAgentConversation, getChatMode, setChatMode, listAgentConversations, selectAgentConversation, personalChatLogin, getKnowledgeCitation, type KnowledgeCitationDetail, type ConversationSummary, type AgentChatConfig, type AgentChatMessage, type AgentChatProvider, type AgentChatEvent } from "./api";
+import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { agentChatRequest, agentChatModels, agentChatStream, configuredApiBaseUrl, restoreAgentChat, clearAgentConversation, getChatMode, setChatMode, listAgentConversations, renameAgentConversation, selectAgentConversation, personalChatLogin, getKnowledgeCitation, type KnowledgeCitationDetail, type ConversationSummary, type AgentChatConfig, type AgentChatMessage, type AgentChatProvider, type AgentChatEvent } from "./api";
 import { chatTurnPreviews, plainChatPreview } from "./chat-thread.mjs";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -24,15 +24,68 @@ function toolResultSummary(value:unknown):string {
 type FileHandle = { name: string; getFile: () => Promise<File>; createWritable: () => Promise<{ write: (value: string) => Promise<void>; close: () => Promise<void> }> };
 type ChatSession = { loadingProfiles:boolean; mutationPending:boolean; profilePath:string; importProfiles:(file:File)=>Promise<void>; exportProfiles:()=>void; provider: AgentChatProvider; model: string; key: string; baseUrl: string; displayName: string; profiles: ModelProfile[]; selectedId: string | null; storage: string; storageError: string; selectProfile: (id: string) => void; saveProfile: (p: ModelProfile) => Promise<void>; verified: boolean; state: State; status: string; restoring:boolean; messages: AgentChatMessage[]; draft: string; setDraft: (v: string) => void; send: (e: FormEvent) => Promise<void>; choose:(value:string,requestId:string)=>Promise<void>; replyToCard:(value:string,requestId:string)=>Promise<void>; cancel: () => void; clear: () => void; openConversation:(id:string,created?:string)=>Promise<void>; archive: ChatArchive | null; archiveView: ArchiveConversation | null; fileName: string; archiveStatus: string; connectFile: () => Promise<void>; disconnectFile: () => void; exportArchive: () => void; importArchive: (file: File) => Promise<void>; selectArchive: (id:string) => void; returnLive: () => void };
 const Context = createContext<ChatSession | null>(null);
+const WRITE_CARDS = new Set(["confirm_write", "choose_write_action"]);
+function Icon({ children }: { children: ReactNode }) {
+  return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{children}</svg>;
+}
+const CopyIcon = () => <Icon><rect x="9" y="9" width="11" height="11" rx="2.5" /><path d="M5 15V6.5A2.5 2.5 0 0 1 7.5 4H15" /></Icon>;
+const CheckIcon = () => <Icon><path d="M5 12.5l4.5 4.5L19 7.5" /></Icon>;
+const ThumbUpIcon = () => <Icon><path d="M7 11v9H4a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h3z" /><path d="M7 11l4-7a2 2 0 0 1 2 2v3h5.2a2 2 0 0 1 2 2.3l-1.1 7A2 2 0 0 1 17.1 20H7" /></Icon>;
+const ThumbDownIcon = () => <Icon><path d="M17 13V4h3a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1h-3z" /><path d="M17 13l-4 7a2 2 0 0 1-2-2v-3H5.8a2 2 0 0 1-2-2.3l1.1-7A2 2 0 0 1 6.9 4H17" /></Icon>;
+const PencilIcon = () => <Icon><path d="M4 20h4l10.5-10.5a2.1 2.1 0 0 0-3-3L5 17v3z" /><path d="M13.5 6.5l3 3" /></Icon>;
+const SendIcon = () => <Icon><path d="M12 19V5" /><path d="M5.5 11.5L12 5l6.5 6.5" /></Icon>;
+
 function ClarificationCard({clarification,active,onChoose,onReply}:{clarification:NonNullable<AgentChatMessage["clarification"]>;active:boolean;onChoose:(value:string)=>Promise<void>;onReply:(value:string)=>Promise<void>}) {
+  const { t } = useLocale();
   const [reply,setReply]=useState("");
-  return <div className={`agent-clarification-card${active?"":" is-locked"}`} role="group" aria-label={clarificationTitle(clarification)}>
-    <strong>{clarificationTitle(clarification)}</strong>
-    <div className="agent-clarification-options">{clarification.choices.map(choice=><button type="button" key={choice.value} disabled={!active} onClick={()=>void onChoose(choice.value)}>{choice.label}</button>)}</div>
-    <form className="agent-clarification-reply" onSubmit={event=>{event.preventDefault();if(active&&reply.trim())void onReply(reply)}}>
-      <label>手动输入<input value={reply} onChange={event=>setReply(event.target.value)} maxLength={4000} disabled={!active} placeholder="也可以输入自己的回答" /></label>
-      <button type="submit" disabled={!active||!reply.trim()}>发送</button>
-    </form>
+  const write=WRITE_CARDS.has(clarification.reason), confirm=clarification.reason==="confirm_write";
+  const title=t(clarificationTitle(clarification));
+  return <div className={`agent-clarification-card${write?" is-write":""}${active?"":" is-locked"}`} role="group" aria-label={title}>
+    <strong>{title}</strong>
+    <div className="agent-clarification-options">{clarification.choices.map((choice,index)=>{
+      const cancel=/^cancel:/.test(choice.value);
+      const kind=write&&confirm&&index===0?"is-primary":write&&(cancel||(confirm&&index===clarification.choices.length-1))?"is-quiet":"";
+      return <button type="button" className={kind} key={choice.value} disabled={!active} onClick={()=>void onChoose(choice.value)}>{t(choice.label)}</button>;
+    })}</div>
+    {!write&&<form className="agent-clarification-reply" onSubmit={event=>{event.preventDefault();if(active&&reply.trim())void onReply(reply)}}>
+      <label>{t("手动输入")}<input value={reply} onChange={event=>setReply(event.target.value)} maxLength={4000} disabled={!active} placeholder={t("也可以输入自己的回答")} /></label>
+      <button type="submit" disabled={!active||!reply.trim()}>{t("发送")}</button>
+    </form>}
+  </div>;
+}
+
+function shortDate(value:string, locale:string):string {
+  const date=new Date(value); if(Number.isNaN(date.valueOf())) return "";
+  const today=new Date(), same=date.toDateString()===today.toDateString();
+  return same?date.toLocaleTimeString(locale,{hour:"2-digit",minute:"2-digit"}):date.toLocaleDateString(locale,{month:"numeric",day:"numeric"});
+}
+
+function HistoryRow({item,current,onOpen,onRename}:{item:ConversationSummary;current:boolean;onOpen:()=>void;onRename:(title:string)=>Promise<void>}) {
+  const { t, locale } = useLocale();
+  const [editing,setEditing]=useState(false),[value,setValue]=useState(item.title),[error,setError]=useState(""),[saving,setSaving]=useState(false);
+  const input=useRef<HTMLInputElement>(null);
+  useEffect(()=>{if(editing){input.current?.focus();input.current?.select()}},[editing]);
+  async function commit(){
+    if(saving)return;
+    const next=value.replace(/\s+/g," ").trim();
+    if(next===item.title.trim()){setEditing(false);setError("");return}
+    setSaving(true);setError("");
+    try{await onRename(next);setEditing(false)}
+    catch(e){setError(e instanceof Error?e.message:t("重命名失败，请重试"))}
+    finally{setSaving(false)}
+  }
+  if(editing)return <div className="agent-history-row is-current"><div className="agent-history-edit">
+    <input ref={input} value={value} maxLength={80} disabled={saving} aria-label={t("对话名称")} placeholder={t("对话名称（留空恢复默认）")}
+      onChange={e=>setValue(e.target.value)} onBlur={()=>void commit()}
+      onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();void commit()}else if(e.key==="Escape"){e.preventDefault();setValue(item.title);setError("");setEditing(false)}}} />
+    <small className={error?"is-error":""}>{error||t("Enter 保存，Esc 取消")}</small>
+  </div></div>;
+  return <div className={`agent-history-row${current?" is-current":""}`}>
+    <button type="button" className="agent-history-item" aria-current={current?"true":undefined} title={item.title} onClick={onOpen} onDoubleClick={()=>{setValue(item.title);setEditing(true)}}>
+      <span className="agent-history-title">{item.title||t("新建对话")}</span>
+      <span className="agent-history-time">{shortDate(item.updated_at,locale)}</span>
+    </button>
+    <button type="button" className="agent-history-rename" aria-label={t("重命名对话")} title={t("重命名")} onClick={()=>{setValue(item.title);setEditing(true)}}><span style={{display:"inline-flex",width:14,height:14}}><PencilIcon /></span></button>
   </div>;
 }
 export function AgentChatProviderRoot({ children }: { children: ReactNode }) {
@@ -90,7 +143,7 @@ export function AgentChatProviderRoot({ children }: { children: ReactNode }) {
     const card=messages.at(-1)?.clarification;
     if (!card || card.request_id!==requestId) return;
     const selection=selectedClarification(card,value);
-    await sendContent(selection.message,selection.pendingRequestId);
+    await sendContent(selection.message,selection.pendingRequestId,card.choices.find(choice=>choice.value===value)?.label);
   }
   async function replyToCard(value:string,requestId:string) {
     const card=messages.at(-1)?.clarification;
@@ -98,10 +151,10 @@ export function AgentChatProviderRoot({ children }: { children: ReactNode }) {
     const reply=manualClarification(card,value);
     await sendContent(reply.message,reply.pendingRequestId);
   }
-  async function sendContent(content:string,pendingRequestId?:string) {
+  async function sendContent(content:string,pendingRequestId?:string,label?:string) {
     if(loadingProfiles||mutationPending)return; if (!verified || loadingProfiles || mutationPending || !content || state === "sending" || state === "testing") return;
     let context: AgentChatMessage[]; try { context = chatContext(messages, { role: "user", content }); } catch (error) { setStatus(t(error instanceof Error ? error.message : "消息过长，请缩短后重试。")); return; }
-    const next = [...messages, { role: "user" as const, content }]; setMessages(next); setDraft(""); setState("sending"); setStatus(""); const tested = { ...config }, controller = new AbortController(), id = lifecycle.current.begin(controller);
+    const next = [...messages, { role: "user" as const, content: label||content }]; setMessages(next); setDraft(""); setState("sending"); setStatus(""); const tested = { ...config }, controller = new AbortController(), id = lifecycle.current.begin(controller);
     let accumulated = ""; let turnId: string|undefined; let citations: NonNullable<AgentChatMessage["citations"]> = []; let clarification:AgentChatMessage["clarification"]; let terminalStatus="complete"; let reusedSources=false; const tools: NonNullable<AgentChatMessage["tool_trace"]> = [];
     try {
       await agentChatStream(tested, content, conversationId, controller.signal, (event: AgentChatEvent) => {
@@ -118,7 +171,7 @@ export function AgentChatProviderRoot({ children }: { children: ReactNode }) {
         if (event.event === "error") throw new Error(String(event.data.code ?? "chat_failed"));
         setMessages([...next, { role: "assistant", content: accumulated, turn_id:turnId, tool_trace: [...tools], citations, clarification, status:terminalStatus, reused_sources:reusedSources }]);
         return true;
-      },pendingRequestId);
+      },pendingRequestId,label);
       if (!lifecycle.current.isCurrent(id)) return; setMessages([...next, { role: "assistant", content: accumulated, turn_id:turnId, tool_trace: [...tools], citations, clarification, status:terminalStatus, reused_sources:reusedSources }]); setStatus(""); setState("ready");
     }
     catch (error) { if (!lifecycle.current.isCurrent(id)) return; const stopped=error instanceof DOMException && error.name==="AbortError"; const stoppedTools=tools.map(x => x.status === "running" ? { ...x, status: "cancelled" } : x); setMessages([...next, { role:"assistant",content:accumulated,status:stopped?"cancelled":"failed",tool_trace:stoppedTools }]); setState(stopped?"ready":"error"); setStatus(stopped?translate("请求已取消；供应商可能仍会计费。"):error instanceof Error ? friendlyError(error.message, translate) : translate("发送失败，请重试")); }
@@ -145,39 +198,105 @@ export function AgentChatPanel({ onSettings,onModeChange }: { onSettings: () => 
   const turnPreviews=chatTurnPreviews(c.messages);
   const followTranscript=useRef(true);
   useEffect(()=>{const el=transcriptRef.current;if(!el)return;const update=()=>{followTranscript.current=el.scrollHeight-el.scrollTop-el.clientHeight<90};el.addEventListener("scroll",update,{passive:true});return()=>el.removeEventListener("scroll",update)},[]);
-  const [modelChoice, setModelChoice] = useState(c.model);
-  const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [history,setHistory]=useState<ConversationSummary[]>([]),[historyHasMore,setHistoryHasMore]=useState(false),[historyError,setHistoryError]=useState(""),[historyLoading,setHistoryLoading]=useState(false),[mode,setMode]=useState(getChatMode());
   const [copied,setCopied]=useState<number|null>(null),[copyStatus,setCopyStatus]=useState(""),[,setFeedbackTick]=useState(0),[citationDetails,setCitationDetails]=useState<Record<string,KnowledgeCitationDetail>>({});
   const [openCitationTurn,setOpenCitationTurn]=useState<number|null>(null);
   const [historyOpen,setHistoryOpen]=useState(false);
+  // On a narrow screen the history drawer covers the header toggle, so Esc and a tap outside close it.
+  useEffect(()=>{if(!historyOpen)return;const onKey=(e:KeyboardEvent)=>{if(e.key==="Escape")setHistoryOpen(false)};window.addEventListener("keydown",onKey);return()=>window.removeEventListener("keydown",onKey)},[historyOpen]);
   const [loginOpen,setLoginOpen]=useState(false),[loginCode,setLoginCode]=useState(""),[loginError,setLoginError]=useState("");
   const [activeTurn,setActiveTurn]=useState(0),[preview,setPreview]=useState<{index:number;left:number;top:number}|null>(null);const previewTimer=useRef<number|undefined>(undefined);
+  const composerForm=useRef<HTMLFormElement>(null),draftBox=useRef<HTMLTextAreaElement>(null);
   useEffect(()=>{const el=transcriptRef.current;if(!el)return;const update=()=>{const top=el.getBoundingClientRect().top;const turns=el.querySelectorAll<HTMLElement>(".agent-message.is-user");let active=0;turns.forEach((item,i)=>{if(item.getBoundingClientRect().top<=top+100)active=i});setActiveTurn(active)};el.addEventListener("scroll",update,{passive:true});update();return()=>el.removeEventListener("scroll",update)},[c.messages]);
+  // The composer grows with what is typed (up to its own cap) and shrinks back after sending.
+  useLayoutEffect(()=>{const box=draftBox.current;if(!box)return;box.style.height="auto";box.style.height=`${Math.min(box.scrollHeight,220)}px`},[c.draft]);
   async function refreshHistory(){setHistoryLoading(true);setHistoryError("");try{const result=await listAgentConversations();setHistory(result.conversations);setHistoryHasMore(result.hasMore)}catch(e){setHistoryError(e instanceof Error?e.message:t("历史对话暂时无法加载。"))}finally{setHistoryLoading(false)}}
   useEffect(()=>{void refreshHistory()},[c.state,mode]);
   async function loadMoreHistory(){try{const result=await listAgentConversations(history.length);setHistory(items=>[...items,...result.conversations]);setHistoryHasMore(result.hasMore)}catch(e){setHistoryError(e instanceof Error?e.message:t("历史对话暂时无法加载。"))}}
   async function openHistory(item:ConversationSummary){await c.openConversation(item.id,item.created_at);setHistoryOpen(false)}
+  async function renameHistory(item:ConversationSummary,title:string){
+    const saved=await renameAgentConversation(item.id,title);
+    if(saved===null)await refreshHistory();   // an empty name restores the default (the first question)
+    else setHistory(items=>items.map(entry=>entry.id===item.id?{...entry,title:saved,custom_title:true}:entry));
+  }
   function switchMode(){if(mode==="personal"){setChatMode("guest");setMode("guest");onModeChange("guest");window.location.hash="#agent"}else{setLoginOpen(true);setLoginError("")}}
   async function submitPersonalLogin(){try{const credential=await personalChatLogin(loginCode);setChatMode("personal",credential);setLoginCode("");setMode("personal");onModeChange("personal");setLoginOpen(false)}catch{setLoginError(t("个人登录失败，请稍后重试。"))}}
   async function copyAnswer(text:string,index:number){setCopied(null);setCopyStatus(t("正在复制…"));let timer:number|undefined;try{const clipboard=navigator.clipboard?.writeText(text);if(!clipboard)throw Error("clipboard_unavailable");await Promise.race([clipboard,new Promise<never>((_,reject)=>{timer=window.setTimeout(()=>reject(Error("clipboard_timeout")),1800)})]);setCopied(index);setCopyStatus(t("已复制"));}catch{setCopied(-index-1);setCopyStatus(t("复制失败；请选中回答后手动复制。"));const article=document.getElementById(`chat-message-${index}`);const range=document.createRange();if(article){range.selectNodeContents(article.querySelector(".markdown-body")??article);window.getSelection()?.removeAllRanges();window.getSelection()?.addRange(range);}}finally{if(timer)window.clearTimeout(timer);window.setTimeout(()=>{setCopied(null);setCopyStatus("")},3500)}}
   async function showCitation(chunkId:string, unavailable:boolean){if(unavailable)return;try{const value=await getKnowledgeCitation(chunkId);setCitationDetails(x=>({...x,[chunkId]:value}))}catch{setCitationDetails(x=>({...x,[chunkId]:{title:t("来源已撤回或不可访问"),section:"",excerpt:"",source_url:null,observed_at:null,coverage:"unavailable",start_offset:0,end_offset:0}}))}}
-  useEffect(() => setModelChoice(c.model), [c.model]);
+  function feedbackOf(turnId:string):string{try{return localStorage.getItem(`market-evidence-agent:feedback:${turnId}`)??""}catch{return ""}}
+  function giveFeedback(turnId:string,value:"up"|"down"){const key=`market-evidence-agent:feedback:${turnId}`;try{if(localStorage.getItem(key)===value)localStorage.removeItem(key);else localStorage.setItem(key,value)}catch{}setFeedbackTick(x=>x+1)}
+  function onComposerKey(event:ReactKeyboardEvent<HTMLTextAreaElement>){
+    // Enter sends, Shift+Enter breaks the line; a key that confirms an IME composition is left alone.
+    if(event.key!=="Enter"||event.shiftKey||event.nativeEvent.isComposing||event.keyCode===229)return;
+    event.preventDefault();
+    if(c.draft.trim())composerForm.current?.requestSubmit();
+  }
   useEffect(() => {
     const transcript = transcriptRef.current;
     if (transcript&&followTranscript.current) transcript.scrollTop = transcript.scrollHeight;
   }, [c.messages, c.state]);
+  const lastIndex=c.messages.length-1;
+  const sendDisabled=Boolean(c.archiveView)||c.restoring||!c.verified||!c.draft.trim()||c.state==="sending"||c.state==="testing"||c.loadingProfiles||c.mutationPending;
+  const busy=c.state==="sending"||c.state==="testing"||c.restoring||c.loadingProfiles||c.mutationPending;
+  const currentConversation=window.sessionStorage.getItem("market-evidence-agent:chat-conversation:v1");
   return <main className="workspace agent-page" aria-labelledby="agent-chat-title">
-    <header className="workspace-heading agent-page-heading"><div className="agent-title-row"><button type="button" className="mobile-history-toggle secondary-action" aria-expanded={historyOpen} onClick={()=>setHistoryOpen(x=>!x)}>{t("历史对话")}</button><h1 id="agent-chat-title">模型对话</h1></div><div className="agent-header-actions"><span>{mode==="personal"?t("个人模式"):t("访客模式")}</span><button className="secondary-action" onClick={switchMode} type="button">{t("切换模式")}</button><button className="secondary-action" onClick={onSettings} type="button">{t("设置")}</button></div></header>
+    <header className="workspace-heading agent-page-heading">
+      <div className="agent-title-row"><button type="button" className="mobile-history-toggle secondary-action" aria-expanded={historyOpen} onClick={()=>setHistoryOpen(x=>!x)}>{t("历史对话")}</button><h1 id="agent-chat-title">模型对话</h1></div>
+      <div className="agent-header-actions"><span>{mode==="personal"?t("个人模式"):t("访客模式")}</span><button className="secondary-action" onClick={switchMode} type="button">{t("切换模式")}</button><button className="secondary-action" onClick={onSettings} type="button">{t("设置")}</button></div>
+    </header>
     {loginOpen&&<div className="personal-login-panel"><label>{t("个人聊天登录码")}<input type="password" value={loginCode} onChange={e=>setLoginCode(e.target.value)} autoComplete="current-password" maxLength={256}/></label><button className="primary-action" onClick={()=>void submitPersonalLogin()} disabled={!loginCode}>{t("登录个人聊天")}</button><button className="secondary-action" onClick={()=>setLoginOpen(false)}>{t("取消")}</button>{loginError&&<p role="alert">{loginError}</p>}</div>}
-    <div className="agent-layout"><aside className={`agent-history${historyOpen?" is-open":""}`} aria-label={t("历史对话")}><button className="primary-action" type="button" onClick={()=>{c.clear();setHistoryOpen(false)}}>＋ {t("新建对话")}</button><h2>{t("历史对话")}</h2>{historyLoading&&<p role="status">{t("正在读取…")}</p>}{historyError&&<p role="alert">{historyError} <button className="secondary-action" onClick={()=>void refreshHistory()}>{t("重试")}</button></p>}{!historyLoading&&!historyError&&!history.length&&<p>{t("还没有保存的对话")}</p>}{history.map(item=><button key={item.id} aria-current={c.messages.length&&item.id===window.sessionStorage.getItem("market-evidence-agent:chat-conversation:v1")?"true":undefined} className="agent-history-item" onClick={()=>void openHistory(item)} title={item.title}>{item.title||t("新建对话")}</button>)}{historyHasMore&&<button className="secondary-action" onClick={()=>void loadMoreHistory()}>{t("加载更多")}</button>}</aside><div className="agent-main-column">
-    {c.archiveView&&<div className="chat-archive-banner"><span>{t("本地归档只读查看")}</span><button className="secondary-action" onClick={c.returnLive}>{t("返回当前对话")}</button><button className="secondary-action" onClick={()=>{c.returnLive();c.clear()}}>{t("新建对话")}</button></div>}
-
-    <div className="agent-capability"><span aria-hidden="true">✳</span><p>{t("消息和研究工具轨迹会保存到服务端；工具按权限读取资料并执行明确请求的系统任务。")}</p><span className={`agent-connection ${c.verified ? "is-ready" : ""}`}>{c.verified ? `${c.provider} · ${c.model}` : t("尚未验证模型")}</span></div>
-    <section ref={transcriptRef} className="agent-transcript" aria-live="polite">{c.restoring&&<p role="status">{t("正在恢复对话…")}</p>}{copyStatus&&<p className="copy-status" role="status">{copyStatus}</p>}{c.messages.length === 0 ? <div className="agent-welcome"><h2>{t("从一个问题开始")}</h2><p>{t(c.verified ? "连接已就绪，可以输入问题或选择下方建议。" : "请先在模型设置中填写自己的 API key 并完成连接测试。")}</p><div>{["查看 AAPL 最近行情", "AAPL 已保存的最新财报有哪些", "可信度星级是什么"].map(x => <button type="button" key={x} onClick={() => c.setDraft(t(x))}>{t(x)} <span aria-hidden="true">↗</span></button>)}</div></div> : <div className="agent-thread-grid"><nav className="agent-question-rail" aria-label={t("问题导航")}>{turnPreviews.map((turn,i)=><button key={turn.userIndex} type="button" aria-label={`${t("问题导航")}: ${turn.question}`} aria-current={i===activeTurn?"location":undefined} onClick={()=>document.getElementById(`chat-message-${turn.userIndex}`)?.scrollIntoView({behavior:"smooth",block:"start"})} onFocus={e=>{const r=e.currentTarget.getBoundingClientRect();setPreview({index:i,left:r.right+10,top:r.top})}} onBlur={()=>setPreview(null)} onPointerEnter={e=>{if(previewTimer.current)window.clearTimeout(previewTimer.current);const r=e.currentTarget.getBoundingClientRect();setPreview({index:i,left:r.right+10,top:r.top})}} onPointerLeave={()=>{previewTimer.current=window.setTimeout(()=>setPreview(null),140)}} />)}</nav><div className="agent-thread">{c.messages.map((m, i) => <article data-turn-index={m.role==="user"?turnPreviews.findIndex(turn=>turn.userIndex===i):undefined} id={`chat-message-${i}`} className={`agent-message is-${m.role}`} key={i}>{m.role !== "user"&&<div className="agent-tool-badges">{m.reused_sources&&<span className="tool-badge status-complete">{t("复用已核实来源")}</span>}{m.tool_trace?.map((tool,j)=><span key={`${tool.name}-${j}`} className={`tool-badge status-${tool.status}`}>{tool.name === "query_material_analysis" ? t("已保存的 AI 分析") : tool.name.replaceAll("_"," ")} · {t(tool.status === "complete" ? "已完成" : tool.status === "not_found" ? "没有匹配记录" : tool.status === "failed" ? "查询失败" : tool.status === "cancelled" ? "已取消" : "执行中")}{toolResultSummary(tool.result)&&` · ${toolResultSummary(tool.result)}`}</span>)}</div>}{m.role==="assistant"&&m.clarification&&<ClarificationCard clarification={m.clarification} active={isActiveClarification(c.messages,i,Boolean(c.archiveView))&&!c.restoring&&c.verified&&c.state!=="sending"&&c.state!=="testing"} onChoose={value=>c.choose(value,m.clarification!.request_id)} onReply={value=>c.replyToCard(value,m.clarification!.request_id)} />}{m.role==="user"?<p>{m.content}</p>:<div className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{table:({node,...props})=><div className="markdown-table-wrap"><table {...props}/></div>,a:({node,...props})=>{const href=String(props.href??"");const match=href.match(/^#citation-(\d+)$/);const citation=match?m.citations?.find(item=>(item.ordinal??m.citations!.indexOf(item)+1)===Number(match[1])):undefined;return <a {...props} href={citation?href:props.href} onClick={event=>{if(!citation)return;event.preventDefault();setOpenCitationTurn(i);["web","saved_filing","saved_ai_analysis"].includes(citation.source_type)&&citation.source_url?window.open(citation.source_url,"_blank","noopener,noreferrer"):void showCitation(citation.chunk_id??"",citation.source_type==="unavailable")}} target={citation?undefined:"_blank"} rel={citation?undefined:"noopener noreferrer"}/>} }}>{m.content.replace(/\[(\d+)\]/g,"[$1](#citation-$1)")}</ReactMarkdown></div>}{m.role === "assistant" && m.status && m.status !== "complete" && m.status !== "succeeded" && <small>{t(m.status === "cancelled" ? "本轮已取消，未生成完整回答。" : m.status === "waiting_for_input" ? "等待选择后继续" : m.status === "running" ? "任务运行中，可稍后查询状态" : m.status === "partially_succeeded" ? "部分来源可用；缺项已标出" : "本轮失败；已保留已生成内容。")}</small>}{m.role === "assistant"&&m.content&&<><div className="agent-answer-actions"><button className="copy-answer" onClick={()=>void copyAnswer(m.content,i)}>{copied===i?t("已复制"):copied===-i-1?t("复制失败"):t("复制回答")}</button>{m.turn_id&&<span className="answer-feedback">{(["up","down"] as const).map(value=>{const key=`market-evidence-agent:feedback:${m.turn_id}`;let saved="";try{saved=localStorage.getItem(key)??""}catch{}return <button type="button" key={value} disabled={Boolean(saved)} aria-label={value==="up"?t("有帮助"):t("没有帮助")} aria-pressed={saved===value} onClick={()=>{try{localStorage.setItem(key,value)}catch{}setFeedbackTick(x=>x+1)}}>{saved===value?"已反馈":value==="up"?"👍":"👎"}</button>})}</span>}</div>{Boolean(m.citations?.length)&&<details className="citation-drawer" open={openCitationTurn===i}><summary>{t("引用来源")} · {m.citations!.length}</summary>{m.citations!.map((citation,j)=><div className="citation-item" key={citation.chunk_id??citation.source_url??citation.ordinal}><button type="button" onClick={()=>['web','saved_filing','saved_ai_analysis'].includes(citation.source_type)&&citation.source_url?window.open(citation.source_url,"_blank","noopener,noreferrer"):void showCitation(citation.chunk_id??"",citation.source_type==='unavailable')}><b>[{citation.ordinal??j+1}]</b><span>{citation.source_type==='ai_analysis'&&<strong>已保存 AI 分析（派生） · </strong>}{citation.title}{citation.section?` · ${citation.section}`:""}</span><small>{citation.source_type==='web'?`网页 · ${citation.published_at||"发布日期未知"} · 抓取 ${citation.observed_at||"时间未知"}`:(citation.observed_at||t("观察时间未知"))}{citation.truncated?` · ${t("保存内容可能不完整")}`:""}</small>{citation.source_type==='web'&&citation.source_url&&<span style={{gridColumn:2}}>打开网页来源 ↗</span>}</button>{citation.chunk_id&&citationDetails[citation.chunk_id]&&<div className="citation-detail"><div className="citation-detail-content"><p>{citationDetails[citation.chunk_id].derived&&<strong>已保存 AI 分析（派生内容） · v{citationDetails[citation.chunk_id].version_no ?? "?"} · {citationDetails[citation.chunk_id].analysis_version} · {citationDetails[citation.chunk_id].model}</strong>}{citationDetails[citation.chunk_id].excerpt||t("来源已撤回或不可访问")}</p>{(citationDetails[citation.chunk_id].original_quotes??[]).length>0&&<><strong>{t("原文引文：")}</strong><ul>{(citationDetails[citation.chunk_id].original_quotes??[]).map((quote,index)=><li key={index}>{quote}</li>)}</ul></>}</div>{citationDetails[citation.chunk_id].source_url&&<a href={citationDetails[citation.chunk_id].source_url!} target="_blank" rel="noreferrer">打开原始来源 ↗</a>}</div>}</div>)}</details>}</>}</article>)}</div>{preview&&turnPreviews[preview.index]&&<div className="agent-turn-preview" style={{left:Math.min(preview.left,window.innerWidth-310),top:Math.min(preview.top,window.innerHeight-170)}} onPointerEnter={()=>{if(previewTimer.current)window.clearTimeout(previewTimer.current)}} onPointerLeave={()=>setPreview(null)}><strong>{plainChatPreview(turnPreviews[preview.index].question,100)}</strong><p>{plainChatPreview(turnPreviews[preview.index].answer,150)||t("尚无回答")}</p></div>}</div>}</section>
-    {c.status && <p className={`agent-chat-status ${c.state === "error" ? "is-error" : ""}`} role={c.state === "error" ? "alert" : "status"}>{c.status}</p>}
-    <form className="agent-composer" onSubmit={c.send}><label htmlFor="agent-draft">{t("输入消息")}</label><textarea id="agent-draft" value={c.draft} onChange={e => c.setDraft(e.target.value)} maxLength={4000} disabled={Boolean(c.archiveView)||c.restoring||!c.verified || c.state === "sending" || c.state === "testing" || c.loadingProfiles || c.mutationPending} placeholder={t("输入消息…")} /><div className="agent-composer-bottom"><small>{t(c.storage==="Local file"?"API key 保存在本机文件中，并随请求发送给所选服务方，不会写入聊天记录。":"API key 保存在当前浏览器的模型配置中，并随请求发送给所选服务方，不会写入聊天记录。")}</small><div className="agent-composer-tools">{(c.state === "sending" || c.state === "testing" || c.restoring || c.loadingProfiles || c.mutationPending) && <button className="secondary-action" type="button" onClick={c.cancel}>{t("取消请求")}</button>}<div className="agent-model-switch"><select aria-label={t("选择模型")} value={c.selectedId??""} onChange={e=>c.selectProfile(e.target.value)}><option value="" disabled>{t("选择模型")}</option>{c.profiles.map(p=><option key={p.id} value={p.id}>{p.display_name}</option>)}</select></div><button className="primary-action" type="submit" disabled={Boolean(c.archiveView)||c.restoring||!c.verified || !c.draft.trim() || c.state === "sending" || c.state === "testing" || c.loadingProfiles || c.mutationPending}>{c.state === "sending" ? t("等待回复…") : t("发送")}</button></div></div></form>
-    </div></div>
+    <div className="agent-layout">
+      {historyOpen&&<div className="agent-history-scrim" aria-hidden="true" onClick={()=>setHistoryOpen(false)}/>}
+      <aside className={`agent-history${historyOpen?" is-open":""}`} aria-label={t("历史对话")}>
+        <button className="primary-action" type="button" onClick={()=>{c.clear();setHistoryOpen(false)}}>＋ {t("新建对话")}</button>
+        <h2>{t("历史对话")}</h2>
+        {historyLoading&&<p role="status">{t("正在读取…")}</p>}
+        {historyError&&<p role="alert">{historyError} <button className="secondary-action" onClick={()=>void refreshHistory()}>{t("重试")}</button></p>}
+        {!historyLoading&&!historyError&&!history.length&&<p>{t("还没有保存的对话")}</p>}
+        {history.map(item=><HistoryRow key={item.id} item={item} current={Boolean(c.messages.length)&&item.id===currentConversation} onOpen={()=>void openHistory(item)} onRename={title=>renameHistory(item,title)} />)}
+        {historyHasMore&&<button className="secondary-action" onClick={()=>void loadMoreHistory()}>{t("加载更多")}</button>}
+      </aside>
+      <div className="agent-main-column">
+        {c.archiveView&&<div className="chat-archive-banner"><span>{t("本地归档只读查看")}</span><button className="secondary-action" onClick={c.returnLive}>{t("返回当前对话")}</button><button className="secondary-action" onClick={()=>{c.returnLive();c.clear()}}>{t("新建对话")}</button></div>}
+        <div className="agent-capability"><span aria-hidden="true">✳</span><p>{t("消息和研究工具轨迹会保存到服务端；工具按权限读取资料并执行明确请求的系统任务。")}</p><span className={`agent-connection ${c.verified ? "is-ready" : ""}`}>{c.verified ? `${c.provider} · ${c.model}` : t("尚未验证模型")}</span></div>
+        <section ref={transcriptRef} className="agent-transcript" aria-live="polite">
+          {c.restoring&&<p role="status">{t("正在恢复对话…")}</p>}
+          {copyStatus&&<p className="copy-status" role="status">{copyStatus}</p>}
+          {c.messages.length === 0 ? <div className="agent-welcome"><h2>{t("从一个问题开始")}</h2><p>{t(c.verified ? "连接已就绪，可以输入问题或选择下方建议。" : "请先在模型设置中填写自己的 API key 并完成连接测试。")}</p><div>{["查看 AAPL 最近行情", "AAPL 已保存的最新财报有哪些", "可信度星级是什么"].map(x => <button type="button" key={x} onClick={() => c.setDraft(t(x))}>{t(x)} <span aria-hidden="true">↗</span></button>)}</div></div> :
+          <div className="agent-thread-grid">
+            <nav className="agent-question-rail" aria-label={t("问题导航")}>{turnPreviews.map((turn,i)=><button key={turn.userIndex} type="button" aria-label={`${t("问题导航")}: ${turn.question}`} aria-current={i===activeTurn?"location":undefined} onClick={()=>document.getElementById(`chat-message-${turn.userIndex}`)?.scrollIntoView({behavior:"smooth",block:"start"})} onFocus={e=>{const r=e.currentTarget.getBoundingClientRect();setPreview({index:i,left:r.right+10,top:r.top})}} onBlur={()=>setPreview(null)} onPointerEnter={e=>{if(previewTimer.current)window.clearTimeout(previewTimer.current);const r=e.currentTarget.getBoundingClientRect();setPreview({index:i,left:r.right+10,top:r.top})}} onPointerLeave={()=>{previewTimer.current=window.setTimeout(()=>setPreview(null),140)}} />)}</nav>
+            <div className="agent-thread">{c.messages.map((m, i) => <article data-turn-index={m.role==="user"?turnPreviews.findIndex(turn=>turn.userIndex===i):undefined} id={`chat-message-${i}`} className={`agent-message is-${m.role}${i===lastIndex?" is-last":""}`} key={i}>
+              {m.role !== "user"&&<div className="agent-tool-badges">{m.reused_sources&&<span className="tool-badge status-complete">{t("复用已核实来源")}</span>}{m.tool_trace?.map((tool,j)=><span key={`${tool.name}-${j}`} className={`tool-badge status-${tool.status}`}>{tool.name === "query_material_analysis" ? t("已保存的 AI 分析") : tool.name.replaceAll("_"," ")} · {t(tool.status === "complete" ? "已完成" : tool.status === "not_found" ? "没有匹配记录" : tool.status === "failed" ? "查询失败" : tool.status === "cancelled" ? "已取消" : "执行中")}{toolResultSummary(tool.result)&&` · ${toolResultSummary(tool.result)}`}</span>)}</div>}
+              {m.role==="user"?<p>{m.content}</p>:<div className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{table:({node,...props})=><div className="markdown-table-wrap"><table {...props}/></div>,a:({node,...props})=>{const href=String(props.href??"");const match=href.match(/^#citation-(\d+)$/);const citation=match?m.citations?.find(item=>(item.ordinal??m.citations!.indexOf(item)+1)===Number(match[1])):undefined;return <a {...props} href={citation?href:props.href} onClick={event=>{if(!citation)return;event.preventDefault();setOpenCitationTurn(i);["web","saved_filing","saved_ai_analysis"].includes(citation.source_type)&&citation.source_url?window.open(citation.source_url,"_blank","noopener,noreferrer"):void showCitation(citation.chunk_id??"",citation.source_type==="unavailable")}} target={citation?undefined:"_blank"} rel={citation?undefined:"noopener noreferrer"}/>} }}>{m.content.replace(/\[(\d+)\]/g,"[$1](#citation-$1)")}</ReactMarkdown></div>}
+              {m.role==="assistant"&&m.clarification&&<ClarificationCard clarification={m.clarification} active={isActiveClarification(c.messages,i,Boolean(c.archiveView))&&!c.restoring&&c.verified&&c.state!=="sending"&&c.state!=="testing"} onChoose={value=>c.choose(value,m.clarification!.request_id)} onReply={value=>c.replyToCard(value,m.clarification!.request_id)} />}
+              {m.role === "assistant" && m.status && m.status !== "complete" && m.status !== "succeeded" && <small>{t(m.status === "cancelled" ? "本轮已取消，未生成完整回答。" : m.status === "waiting_for_input" ? "等待选择后继续" : m.status === "running" ? "任务运行中，可稍后查询状态" : m.status === "partially_succeeded" ? "部分来源可用；缺项已标出" : "本轮失败；已保留已生成内容。")}</small>}
+              {m.role === "assistant"&&m.content&&<>
+                <div className="agent-answer-actions">
+                  <button type="button" className="agent-action-button" aria-label={copied===i?t("已复制"):copied===-i-1?t("复制失败"):t("复制回答")} title={t("复制回答")} onClick={()=>void copyAnswer(m.content,i)}>{copied===i?<CheckIcon />:<CopyIcon />}</button>
+                  {m.turn_id&&(["up","down"] as const).map(value=>{const saved=feedbackOf(m.turn_id!);return <button type="button" key={value} className="agent-action-button" aria-pressed={saved===value} aria-label={value==="up"?t("有帮助"):t("没有帮助")} title={value==="up"?t("有帮助"):t("没有帮助")} onClick={()=>giveFeedback(m.turn_id!,value)}>{value==="up"?<ThumbUpIcon />:<ThumbDownIcon />}</button>})}
+                  {copied===i&&<span className="agent-action-note" role="status">{t("已复制")}</span>}
+                </div>
+                {Boolean(m.citations?.length)&&<details className="citation-drawer" open={openCitationTurn===i}><summary>{t("引用来源")} · {m.citations!.length}</summary>{m.citations!.map((citation,j)=><div className="citation-item" key={citation.chunk_id??citation.source_url??citation.ordinal}><button type="button" onClick={()=>['web','saved_filing','saved_ai_analysis'].includes(citation.source_type)&&citation.source_url?window.open(citation.source_url,"_blank","noopener,noreferrer"):void showCitation(citation.chunk_id??"",citation.source_type==='unavailable')}><b>[{citation.ordinal??j+1}]</b><span>{citation.source_type==='ai_analysis'&&<strong>已保存 AI 分析（派生） · </strong>}{citation.title}{citation.section?` · ${citation.section}`:""}</span><small>{citation.source_type==='web'?`网页 · ${citation.published_at||"发布日期未知"} · 抓取 ${citation.observed_at||"时间未知"}`:(citation.observed_at||t("观察时间未知"))}{citation.truncated?` · ${t("保存内容可能不完整")}`:""}</small>{citation.source_type==='web'&&citation.source_url&&<span style={{gridColumn:2}}>打开网页来源 ↗</span>}</button>{citation.chunk_id&&citationDetails[citation.chunk_id]&&<div className="citation-detail"><div className="citation-detail-content"><p>{citationDetails[citation.chunk_id].derived&&<strong>已保存 AI 分析（派生内容） · v{citationDetails[citation.chunk_id].version_no ?? "?"} · {citationDetails[citation.chunk_id].analysis_version} · {citationDetails[citation.chunk_id].model}</strong>}{citationDetails[citation.chunk_id].excerpt||t("来源已撤回或不可访问")}</p>{(citationDetails[citation.chunk_id].original_quotes??[]).length>0&&<><strong>{t("原文引文：")}</strong><ul>{(citationDetails[citation.chunk_id].original_quotes??[]).map((quote,index)=><li key={index}>{quote}</li>)}</ul></>}</div>{citationDetails[citation.chunk_id].source_url&&<a href={citationDetails[citation.chunk_id].source_url!} target="_blank" rel="noreferrer">打开原始来源 ↗</a>}</div>}</div>)}</details>}
+              </>}
+            </article>)}</div>
+            {preview&&turnPreviews[preview.index]&&<div className="agent-turn-preview" style={{left:Math.min(preview.left,window.innerWidth-310),top:Math.min(preview.top,window.innerHeight-170)}} onPointerEnter={()=>{if(previewTimer.current)window.clearTimeout(previewTimer.current)}} onPointerLeave={()=>setPreview(null)}><strong>{plainChatPreview(turnPreviews[preview.index].question,100)}</strong><p>{plainChatPreview(turnPreviews[preview.index].answer,150)||t("尚无回答")}</p></div>}
+          </div>}
+        </section>
+        {c.status && <p className={`agent-chat-status ${c.state === "error" ? "is-error" : ""}`} role={c.state === "error" ? "alert" : "status"}>{c.status}</p>}
+        <form ref={composerForm} className="agent-composer" onSubmit={c.send}>
+          <label htmlFor="agent-draft">{t("输入消息")}</label>
+          <textarea id="agent-draft" ref={draftBox} rows={1} value={c.draft} onChange={e => c.setDraft(e.target.value)} onKeyDown={onComposerKey} maxLength={4000} disabled={Boolean(c.archiveView)||c.restoring||!c.verified || c.state === "sending" || c.state === "testing" || c.loadingProfiles || c.mutationPending} placeholder={t(c.verified?"给 Agent 发消息…":"请先在设置里填写并测试模型")} />
+          <div className="agent-composer-bottom">
+            <span className="agent-composer-hint" title={t(c.storage==="Local file"?"API key 保存在本机文件中，并随请求发送给所选服务方，不会写入聊天记录。":"API key 保存在当前浏览器的模型配置中，并随请求发送给所选服务方，不会写入聊天记录。")}>{t("Enter 发送，Shift+Enter 换行")} · {t(c.storage==="Local file"?"API key 保存在本机文件中，并随请求发送给所选服务方，不会写入聊天记录。":"API key 保存在当前浏览器的模型配置中，并随请求发送给所选服务方，不会写入聊天记录。")}</span>
+            <div className="agent-composer-tools">
+              <div className="agent-model-switch"><select aria-label={t("选择模型")} value={c.selectedId??""} onChange={e=>c.selectProfile(e.target.value)}><option value="" disabled>{t("选择模型")}</option>{c.profiles.map(p=><option key={p.id} value={p.id}>{p.display_name}</option>)}</select></div>
+              {busy&&<button className="agent-stop" type="button" onClick={c.cancel}>{t("取消请求")}</button>}
+              <button className="agent-send" type="submit" aria-label={c.state === "sending" ? t("等待回复…") : t("发送")} title={t("发送")} disabled={sendDisabled}><SendIcon /></button>
+            </div>
+          </div>
+        </form>
+      </div>
+    </div>
   </main>;
 }
 function ChatArchiveSettings(){

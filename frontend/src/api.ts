@@ -40,7 +40,15 @@ export async function personalChatLogin(code: string, signal?: AbortSignal): Pro
   if (!response.ok || typeof payload?.credential !== "string") throw new ApiError("个人登录暂不可用。", response.status);
   return payload.credential;
 }
-export type ConversationSummary = { id:string; title:string; created_at:string; updated_at:string };
+export type ConversationSummary = { id:string; title:string; created_at:string; updated_at:string; custom_title?:boolean };
+/** Name one of the caller's conversations; resolves to the saved name, or null when it was cleared. */
+export async function renameAgentConversation(id:string,title:string,signal?:AbortSignal): Promise<string|null> {
+  const url = agentChatUrl("stream", configuredApiBaseUrl).replace(/stream$/, `conversations/${encodeURIComponent(id)}`);
+  const response = await fetch(url,{method:"PATCH",signal,cache:"no-store",headers:{Accept:"application/json","Content-Type":"application/json","X-Chat-Session":chatCredential()},body:JSON.stringify({title})});
+  if(!response.ok) throw new ApiError(response.status===404?"找不到这个对话。":response.status===422?"名称无效或超过 80 个字。":"重命名失败，请重试。",response.status);
+  const data=await response.json().catch(()=>null) as {title?:unknown}|null;
+  return typeof data?.title==="string"&&data.title?data.title:null;
+}
 export async function listAgentConversations(offset=0,signal?:AbortSignal): Promise<{conversations:ConversationSummary[];hasMore:boolean}> {
   const url = agentChatUrl("stream", configuredApiBaseUrl).replace(/stream$/, `conversations?limit=30&offset=${offset}`);
   const response = await fetch(url,{signal,cache:"no-store",headers:{Accept:"application/json","X-Chat-Session":chatCredential()}});
@@ -61,8 +69,8 @@ export async function restoreAgentChat(selectedId?: string | null, signal?: Abor
 }
 export function clearAgentConversation(): void { selectConversationForMode(window.localStorage,window.sessionStorage,null); }
 export function selectAgentConversation(id:string|null,createdAt?:string|null):void { selectConversationForMode(window.localStorage,window.sessionStorage,id,undefined,createdAt); }
-export async function agentChatStream(config: AgentChatConfig, message: string, conversationId: string | null, signal: AbortSignal, onEvent: (event: AgentChatEvent) => boolean | void, pendingRequestId?:string): Promise<string> {
-  const response = await fetch(agentChatUrl("stream", configuredApiBaseUrl), { method: "POST", signal, cache: "no-store", headers: { Accept: "text/event-stream", "Content-Type": "application/json", "X-Chat-Session": chatCredential() }, body: JSON.stringify({ ...config, message, conversation_id: conversationId, ...(pendingRequestId?{pending_request_id:pendingRequestId}:{}) }) });
+export async function agentChatStream(config: AgentChatConfig, message: string, conversationId: string | null, signal: AbortSignal, onEvent: (event: AgentChatEvent) => boolean | void, pendingRequestId?:string, displayMessage?:string): Promise<string> {
+  const response = await fetch(agentChatUrl("stream", configuredApiBaseUrl), { method: "POST", signal, cache: "no-store", headers: { Accept: "text/event-stream", "Content-Type": "application/json", "X-Chat-Session": chatCredential() }, body: JSON.stringify({ ...config, message, conversation_id: conversationId, ...(pendingRequestId?{pending_request_id:pendingRequestId,...(displayMessage?{display_message:displayMessage}:{})}:{}) }) });
   if (!response.ok) { const payload = await response.json().catch(() => null); throw apiErrorFromPayload(payload, response.status); }
   const reader = response.body?.getReader(); if (!reader) throw new ApiError("服务未返回流式响应。");
   const decoder = new TextDecoder(); let buffer = "", answer = "", eventName = "message", receivedDone = false;

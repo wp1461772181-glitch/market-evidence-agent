@@ -20,7 +20,7 @@ from test_agent_semantic_deixis import (  # noqa: F401  (helpers of the sibling 
     FILING_A, FILING_B, _pointing_runtime, _recorded_actions, _rewrite_turn, _saved_filing_set)
 from test_agent_semantic_regressions import (  # noqa: F401
     FINANCE_REFUSAL, _AAPL_HISTORY, _acting_runtime, _answer, _general_turn, _no_variants, _plan, _purposes,
-    _reuse_run, _runtime, _saved_web_set, _seeing_runtime, _status_by_id, _task, _turn, _web_rows)
+    _reuse_run, _runtime, _saved_web_set, _seeing_runtime, _status_by_id, _task, _turn, _turn_confirmed, _web_rows)
 
 from app.agent_workflow.actions import requested_action
 from app.agent_workflow.graph import build_workflow
@@ -72,7 +72,7 @@ def test_a_calendar_word_does_not_authorise_a_target_the_model_completed(monkeyp
 def test_the_ordinal_of_a_filing_is_read_by_the_server_whatever_the_model_picked(monkeypatch, words):
     executed, _ = _recorded_actions(monkeypatch)
     saved = _saved_filing_set([], ["AAPL"], [FILING_A, FILING_B], "filings")
-    _turn(build_workflow(), _pointing_runtime(saved, picks=[0]), words, "turn", result_sets=saved)
+    _turn_confirmed(build_workflow(), _pointing_runtime(saved, picks=[0]), words, "turn", result_sets=saved)
     assert [payload["source_id"] for _, payload in executed] == [FILING_B]
 
 
@@ -96,7 +96,7 @@ def test_a_singular_pointer_needs_exactly_one_record(monkeypatch):
 def test_a_collective_pointer_takes_the_whole_small_set(monkeypatch):
     executed, _ = _recorded_actions(monkeypatch)
     saved = _saved_filing_set([], ["AAPL"], [FILING_A, FILING_B], "filings")
-    _turn(build_workflow(), _pointing_runtime(saved), "把刚刚那些导入", "turn", result_sets=saved)
+    _turn_confirmed(build_workflow(), _pointing_runtime(saved), "把刚刚那些导入", "turn", result_sets=saved)
     assert [payload["source_id"] for _, payload in executed] == [FILING_A, FILING_B]
 
 

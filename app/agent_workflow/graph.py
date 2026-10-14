@@ -15,6 +15,7 @@ from langgraph.config import get_stream_writer
 from langgraph.runtime import Runtime
 
 from .routing import classify_intent, resolve_focus, route_for_intent
+from ..agent_chat_identity import owner_credential_matches
 from .request_resolution import extract_slots, parse_classification, resume_request, is_pending_reply, is_explicit_new_request, ACTION_CHOICES, ACCESSION, PERIOD, SOURCE_ID, TASK_ID
 from .state import AgentRuntimeContext, AgentWorkflowState, checkpoint_thread_id
 from .semantic import (NON_TICKERS, SCOPE_KEYS, SCOPE_TOOLS, SemanticError, call_stage, catalog, explicit_periods,
@@ -227,6 +228,15 @@ ACTION_LABELS = {"import": "导入资料库", "analyze": "生成 AI 分析", "in
 WEB_RECORDS_NOTICE = ("这些结果不是已保存的来源文件（例如公开网页新闻或 AI 分析摘要），目前不能{label}。"
                       "该功能只支持已保存的来源（SEC 申报文件或已上传资料）；网页新闻尚未保存为可操作的来源。")
 ACTION_SLOT_REASONS = {"missing_action_source", "missing_action_symbol", "missing_task_id"}
+# Every write the user can confirm in chat.  ``status`` only reads, so it never needs a card.
+WRITE_ACTION_LABELS = {"fetch_sec": "抓取 SEC 原文", "refresh_sec": "刷新 SEC 原文", "analyze": "生成 AI 分析",
+                       "import": "导入资料库", "index": "建立索引", "forecast": "创建预测"}
+COSTLY_WRITES = {"analyze": "会调用模型生成分析，可能产生用量。", "forecast": "会调用预测模型，可能产生用量。"}
+WRITE_CANCELLED = "已取消，没有执行任何操作。"
+OUT_OF_SCOPE_SCRIPT = ("这个问题不在我的范围内。我是 Market Evidence Agent，可以帮你查看已保存的行情和资料、核对来源、"
+                       "研究公开新闻，也可以对已保存的 SEC 文件做 AI 分析。比如：“查看 AAPL 最近行情”、"
+                       "“AAPL 最新财报里的营收是多少”、“找两条英伟达的最新新闻”。")
+DIALOG_BUDGET_CHARS, DIALOG_USER_CAP, DIALOG_ASSISTANT_CAP = 9000, 600, 500
 REWRITE_REASONS = {"reference_scope_changed", "reference_negation_changed", "reference_quantity_changed",
                    "reference_topic_changed"}
 
@@ -260,6 +270,49 @@ def _resumed_action(pending: dict, reply: str, owner: str, conversation: str) ->
     if pending.get("symbols") and not set(extract_slots(reply)["symbols"]) <= set(pending["symbols"]):
         return None
     return resume_request(pending, reply)
+
+
+def _dialog_view(messages: list[dict]) -> list[dict]:
+    """The conversation the resolver reads: each user message and the start of each answer, newest
+    last, as much of it as the budget holds (the oldest turns are the first to go).  The resolver
+    completes the user's words from it, so the beginning of a long conversation must not drop out
+    while a budget is left."""
+    picked, used = [], 0
+    for message in reversed(messages):
+        role = message.get("role")
+        if role not in {"user", "assistant"}:
+            continue
+        text = str(message.get("content") or "")[:DIALOG_USER_CAP if role == "user" else DIALOG_ASSISTANT_CAP]
+        if picked and used + len(text) > DIALOG_BUDGET_CHARS:
+            break
+        picked.append({"role": role, "content": text})
+        used += len(text)
+    return list(reversed(picked))
+
+
+def _proposal_reply(pending: dict, reply: str, owner: str, conversation: str) -> dict | None:
+    """The click on a button of a server-made write card ("同意", "选择其他写操作", "取消", or an
+    operation of the list).  The values are minted by the server and bound to the card's owner,
+    conversation and lifetime; no model is asked, so no model text chooses or changes the write."""
+    if (pending.get("reason") not in {"confirm_write", "choose_write_action"} or pending.get("owner") != owner
+            or pending.get("conversation") != conversation or pending.get("expires_at") is None
+            or not any(choice.get("value") == reply for choice in pending.get("choices") or [])):
+        return None
+    kind, _, rest = reply.partition(":")
+    proposal = pending.get("proposal") or {}
+    base = {"id": pending.get("id"), "question": proposal.get("question") or pending.get("question") or "",
+            "symbols": list(proposal.get("symbols") or []), "reply": reply,
+            "accession_number": proposal.get("accession_number"), "source_id": proposal.get("source_id"),
+            "form": proposal.get("form"), "reason": pending.get("reason")}
+    if kind == "cancel":
+        return {**base, "cancelled": True, "selected_action": proposal.get("action")}
+    if kind == "other":
+        return {**base, "change_action": True, "selected_action": None, "targets": proposal.get("targets")}
+    if kind == "confirm" and pending.get("reason") == "confirm_write" and proposal.get("action") in WRITE_ACTION_LABELS:
+        return {**base, "confirmed": True, "selected_action": proposal["action"], "targets": proposal.get("targets")}
+    if kind == "op" and rest in WRITE_ACTION_LABELS:
+        return {**base, "selected_action": rest, "targets": proposal.get("targets") if rest in SET_WRITES else None}
+    return None
 
 
 def _user_targets(original: str) -> dict:
@@ -412,12 +465,14 @@ async def _resolve_reference(state: AgentWorkflowState, runtime: Runtime[AgentRu
             known_ids = {item.get("id") for item in saved}
             saved = ([item for item in state["legacy_result_sets"] if item.get("id") not in known_ids] + saved)[-6:]
         known = catalog(saved, owner, conversation)
-        recent = [{"role": message.get("role"), "content": str(message.get("content") or "")[:800]}
-                  for message in state.get("messages", [])[-8:] if message.get("role") in {"user", "assistant"}]
+        recent = _dialog_view(state.get("messages", []))
         payload = {"question": incoming, "recent": recent, "catalog": known,
                    "pending": previous or None, "symbol_focus": state.get("symbol_focus"),
                    "material_focus": state.get("material_focus")}
         resumed = _resumed_action(previous, incoming, owner, conversation)
+        proposal_reply = None if resumed else _proposal_reply(previous, incoming, owner, conversation)
+        if proposal_reply:
+            resumed = proposal_reply  # a click on the write card: its frozen proposal continues, no model
         company_reply = None if resumed else _company_reply(previous, incoming, owner, conversation)
         if company_reply:
             words = company_reply  # the user's saved question and their reply: one request of theirs
@@ -455,21 +510,26 @@ async def _resolve_reference(state: AgentWorkflowState, runtime: Runtime[AgentRu
             # The reference is valid: its companies, sources and periods have a ground in the user's
             # words, the server's pending request or the saved sets.  The stages work on the user's
             # words, or on the rewrite where it completes them and is a faithful paraphrase of them.
-            from .actions import requested_action
+            from .actions import POINTER_AT_RECORDS
             user_words = [item["content"] for item in recent if item["role"] == "user"]
             other_text = [*[item["content"] for item in recent if item["role"] != "user"],
                           *[item["title"] for entry in known for item in entry["items"]],
                           *[str(choice.get("label") or "") for choice in
                             [*(previous.get("choices") or []), *(previous.get("source_choices") or [])]
                             if isinstance(choice, dict)]]
-            write_action = None if resumed or company_reply else requested_action(words)
+            # Whether the words are a write is the intent stage's reading and, above all, the user's click on
+            # the card.  Here only what a pointer means is pinned from server state: the saved records it
+            # points at (count, positions, owner) or the company/source the user's own words ground.
+            write_action = (None if resumed or company_reply else
+                            "import" if reference["relationship"] == "followup" and reference.get("result_set_id")
+                            and POINTER_AT_RECORDS.search(words) else "forecast")
             rewrite = reference["canonical_question"]
             # A reply that answers no open request of the server's is a new question and leaves the
             # old one behind: the rewrite (which may carry the old one's words) is not used for it.
             stale_pending = (bool(previous) and not (company_reply or selected_url or choice_set)
                              and not is_pending_reply(previous, words))
             canonical = (resumed["question"] if resumed else company_reply if company_reply else
-                         downstream_question(reference, words, pending=previous, is_write=bool(write_action),
+                         downstream_question(reference, words, pending=previous, is_write=False,
                                              rewrite_allowed=not stale_pending,
                                              trusted=[*user_words, str(previous.get("question") or "")],
                                              untrusted=other_text))
@@ -495,11 +555,14 @@ async def _resolve_reference(state: AgentWorkflowState, runtime: Runtime[AgentRu
                 write_targets, write_slots, conflict = _deictic_write(
                     write_action, words, rewrite, reference, known, saved, user_words, positions,
                     owner=owner, conversation=conversation, conflict=conflict)
+            if proposal_reply:
+                write_targets = proposal_reply.get("targets")  # the records the card showed, frozen
         except SemanticError as exc:
             reason = str(exc)
             return {"semantic_error": reason, "semantic_catalog": known, "semantic_hint": exc.hint,
                     "semantic_positions": None, "semantic_write_targets": None, "semantic_write_slots": None,
-                    "semantic_question_source": None, "semantic_owner": owner, "semantic_conversation": conversation,
+                    "semantic_question_source": None, "semantic_write_confirmed": False, "semantic_action_hint": None,
+                    "semantic_owner": owner, "semantic_conversation": conversation,
                     "intent": "clarify" if reason.startswith("reference_") else "classifier_error", "gate_reason": reason,
                     "started_at": started, "token_usage": stage_cost + exc.cost, "node_log": ["resolve_reference"],
                     "question": words, "original_question": words, "pending_request": None,
@@ -517,6 +580,8 @@ async def _resolve_reference(state: AgentWorkflowState, runtime: Runtime[AgentRu
                 "semantic_positions": positions, "semantic_conflict": conflict, "semantic_turn": True,
                 "semantic_write_targets": write_targets, "semantic_write_slots": write_slots,
                 "semantic_question_source": question_source,
+                "semantic_write_confirmed": bool(proposal_reply and proposal_reply.get("confirmed")),
+                "semantic_action_hint": None,
                 "semantic_owner": owner, "semantic_conversation": conversation,
                 "result_sets": saved, "legacy_result_sets": [],
                 "legacy_source_choices": state.get("legacy_source_choices", []),
@@ -591,31 +656,37 @@ async def _classify_intent(state: AgentWorkflowState, runtime: Runtime[AgentRunt
                 "reference": state["semantic_reference"], "recent": state.get("messages", [])[-4:]},
                 context, state.get("token_usage", 0), state["started_at"])
             stage_cost = cost
-            purposes = value.get("purposes")
+            purposes = list(dict.fromkeys(value.get("purposes")))
             allowed = {"saved_data", "source_qa", "analysis_qa", "faq_qa", "web_research",
-                       "summarize_existing", "system_action", "general"}
-            if set(value) != {"purposes"} or not isinstance(purposes, list) or not 1 <= len(purposes) <= 4 or any(p not in allowed for p in purposes):
+                       "summarize_existing", "system_action", "general", "out_of_scope"}
+            if set(value) - {"purposes", "action"} or not isinstance(purposes, list) or not 1 <= len(purposes) <= 4 or any(p not in allowed for p in purposes):
                 raise SemanticError("semantic_intent_invalid")
-            from .actions import requested_action
+            if "out_of_scope" in purposes and len(purposes) > 1:
+                purposes = [p for p in purposes if p != "out_of_scope"]  # the in-scope parts still run
+            if "system_action" in purposes and len(purposes) > 1:
+                purposes = ["system_action"]  # a write is its own turn: the user confirms it on a card
             words = state.get("original_question", "")
-            if (state["semantic_reference"].get("result_set_id") and "summarize_existing" not in purposes
-                    and not (purposes == ["system_action"] and requested_action(words))
-                    and not (set(purposes) <= {"saved_data", "source_qa", "analysis_qa", "faq_qa", "web_research"}
-                             and not STRONG_BACK_REFERENCE.search(words))):
-                # A follow-up works on the set it points at.  Two requests the resolver tied to a
-                # set are none: an explicit write takes nothing from the set (its target is the
-                # user's own words and it is asked for what it lacks), and words that hold only a
-                # pronoun point at no record, so a search the intent stage names is a new search for
-                # the company of the set (which the planner is told) and reuses nothing of it.
-                raise SemanticError("semantic_intent_reference_mismatch")
-            if not state["semantic_reference"].get("result_set_id") and re.search(r"新闻|\bnews\b", state.get("original_question", ""), re.I) and "web_research" not in purposes:
+            if (state["semantic_reference"].get("result_set_id") and "system_action" not in purposes
+                    and "summarize_existing" not in purposes and STRONG_BACK_REFERENCE.search(words)
+                    and purposes != ["out_of_scope"]):
+                # The user points back at a saved set ("总结刚刚那两条"): that set is read, whatever else is asked.
+                purposes = [*purposes, "summarize_existing"][:4]
+            if not state["semantic_reference"].get("result_set_id") and re.search(r"新闻|\bnews\b", state.get("original_question", ""), re.I) \
+                    and "web_research" not in purposes and purposes != ["out_of_scope"] and "system_action" not in purposes:
                 raise SemanticError("semantic_intent_news_mismatch")
             slots = extract_slots(state["question"])
             if purposes == ["system_action"]:
+                # A write is aimed at what the user typed and at what they point back at (verified in the
+                # reference stage); a company or id only the model completed is never the target.
                 slots = {**slots, **_user_targets(state.get("original_question", state["question"])),
                          **(state.get("semantic_write_slots") or {})}
+            action = value.get("action") if purposes == ["system_action"] else None
+            if purposes == ["out_of_scope"]:
+                return {"intent": "out_of_scope", "semantic_intents": purposes, "entities": {}, "gate_reason": "out_of_scope",
+                        "token_usage": state.get("token_usage", 0) + cost,
+                        "node_log": _log(state, "classify_intent")}
             return {"intent": purposes[0] if len(purposes) == 1 else "compound_research",
-                    "semantic_intents": purposes, "entities": slots,
+                    "semantic_intents": purposes, "entities": slots, "semantic_action_hint": action,
                     "token_usage": state.get("token_usage", 0) + cost,
                     "node_log": _log(state, "classify_intent")}
         except SemanticError as exc:
@@ -793,48 +864,27 @@ async def _route_intent(state: AgentWorkflowState, runtime: Runtime[AgentRuntime
                 return {"next_action": "unsupported", "gate_reason": "semantic_general_requires_evidence",
                         "node_log": _log(state, "route_intent")}
             return {"next_action": "general_answer", "node_log": _log(state, "route_intent")}
+        if state.get("intent") == "out_of_scope":
+            return {"next_action": "general_shortcut", "gate_reason": "out_of_scope", "gate_passed": True,
+                    "node_log": _log(state, "route_intent")}
         if state.get("intent") == "system_action":
+            # A write is never run on a model's reading of the words.  The intent stage names the write it
+            # thinks is meant (or none); the user is shown what would run and decides on a card (同意 /
+            # 选择其他写操作 / 取消).  A card the user already answered continues from its frozen proposal.
             resumed = state.get("resume_slots") or {}
-            # A write is only ever the user's own: named in this turn's words, or frozen in the
-            # pending request this reply answers.  Model text never selects it.
-            explicit_action = resumed.get("selected_action") if resumed else requested_action(state.get("original_question", ""))
-            if not explicit_action:
-                return {"next_action": "unsupported", "gate_reason": "implicit_write_rejected",
-                        "node_log": _log(state, "route_intent")}
-            if resumed:
-                return {"next_action": "system_action", "semantic_plan": [], "semantic_action": explicit_action,
-                        "node_log": _log(state, "route_intent")}
-            if state.get("semantic_write_targets") is not None:
-                # The records the words point at were chosen and checked in the reference stage
-                # (this owner's and conversation's saved set, the stated count, a ceiling); no
-                # model plans a write on them.
-                return {"next_action": "system_action", "semantic_plan": [], "semantic_action": explicit_action,
-                        "node_log": _log(state, "route_intent")}
-            if state.get("semantic_conflict") or _names_more_than_user(
-                    state["question"], state.get("original_question", state["question"])):
-                # The rewrite aims this write somewhere the user's words do not: nothing runs; the
-                # user is asked for the target and only what they wrote is kept in the pending request.
-                return {"next_action": "clarify", "gate_passed": False, "semantic_action": explicit_action,
+            from .actions import requested_action
+            # The intent stage's reading first; the plain verbs of the words only fill a gap (a hint: the
+            # user decides on the card anyway, and a verb nobody listed just means the list is shown).
+            action = (resumed.get("selected_action") or state.get("semantic_action_hint")
+                      or requested_action(state.get("original_question", "")))
+            if state.get("semantic_conflict") and not resumed:
+                # The pointer could not be pinned (count, position), or the rewrite aims the write somewhere
+                # the words and the server's state do not: nothing is proposed; the user is asked for the target.
+                return {"next_action": "clarify", "gate_passed": False, "semantic_action": action,
                         "gate_reason": {"forecast": "missing_action_symbol", "status": "missing_task_id"}.get(
-                            explicit_action, "missing_action_source"),
+                            action, "missing_action_source"),
                         "node_log": _log(state, "route_intent")}
-            emit("status", status="planning_tasks")
-            stage_cost = 0
-            try:
-                value, cost = await call_stage("planner", {"question": state["question"],
-                    "purposes": ["system_action"], "explicit_action": explicit_action,
-                    "symbols": state.get("entities", {}).get("symbols", [])}, runtime.context,
-                    state.get("token_usage", 0), state["started_at"])
-                stage_cost = cost
-                plan = validate_plan(value, [], explicit_action=True)
-                if len(plan) != 1 or plan[0]["tool"] != "system_action" or plan[0]["depends_on"] or not set(plan[0]["symbols"]).issubset(set(state.get("entities", {}).get("symbols") or [])):
-                    raise SemanticError("plan_action_invalid")
-            except SemanticError as exc:
-                return {"next_action": "unsupported", "gate_reason": str(exc),
-                        "token_usage": state.get("token_usage", 0) + stage_cost + exc.cost,
-                        "node_log": _log(state, "route_intent")}
-            return {"next_action": "system_action", "semantic_plan": plan, "semantic_action": explicit_action,
-                    "token_usage": state.get("token_usage", 0) + cost,
+            return {"next_action": "system_action", "semantic_plan": [], "semantic_action": action,
                     "node_log": _log(state, "route_intent")}
         entities = state.get("entities", {})
         if (entities.get("period") and re.search(r"Q[1-4]|季度|FY|财年|年报", entities["period"], re.I)
@@ -1565,7 +1615,8 @@ async def _execute_tools(state: AgentWorkflowState, runtime: Runtime[AgentRuntim
                                       owner=runtime.context.owner_hash,
                                       conversation=runtime.context.conversation_id,
                                       turn=state.get("turn_id", ""), task=active["id"],
-                                      scope=pending.get("scope", {}))
+                                      scope=pending.get("scope", {}),
+                                      asked=state.get("original_question") or state.get("question", ""))
     queue = list(state.get("pending_tool_queue", []))
     if needs_secondary and state.get("tool_calls", 0) + len(queue) + 1 < MAX_TOOLS:
         row = result["data"][0]
@@ -1629,7 +1680,8 @@ async def _confidence_gate(state: AgentWorkflowState) -> dict:
                                      conversation=state.get("semantic_conversation", ""),
                                      turn=state.get("turn_id", ""), task=active["id"],
                                      scope={"symbols": active["symbols"], **{key: value for key, value in
-                                            (state.get("semantic_active_scope") or {}).items() if value}})
+                                            (state.get("semantic_active_scope") or {}).items() if value}},
+                                     asked=state.get("original_question") or state.get("question", ""))
     retry = None
     if not active and not passed and observation["name"] == "web_research" and state.get("tool_calls", 0) < MAX_TOOLS \
             and not observation["arguments"].get("query_or_url", "").startswith("https://") \
@@ -1854,29 +1906,116 @@ async def _system_action_records(state: AgentWorkflowState, runtime: Runtime[Age
             "task_states": tasks}
 
 
+def _describe_write(action: str | None, targets: dict | None, entities: dict) -> list[str]:
+    """What a write would run on, in the server's own words: the saved records, or the company, source
+    and accession the user's words name."""
+    if targets is not None:
+        return [f"{number}. {record.get('title') or str(record['source_id'])[:8]}"
+                f"{' · ' + record['symbol'] if record.get('symbol') else ''}"
+                for number, record in enumerate(targets.get("items") or [], 1)]
+    parts = []
+    if entities.get("symbol") or entities.get("symbols"):
+        parts.append("、".join(entities.get("symbols") or [entities["symbol"]]))
+    if entities.get("accession_number"):
+        parts.append(f"accession {entities['accession_number']}")
+    if entities.get("source_id"):
+        parts.append(f"来源 {str(entities['source_id'])[:8]}…")
+    if entities.get("form"):
+        parts.append(str(entities["form"]))
+    return ["、".join(parts)] if parts else []
+
+
+async def _propose_write(state: AgentWorkflowState, runtime: Runtime[AgentRuntimeContext], action: str | None,
+                         targets: dict | None) -> dict:
+    """Show the user what would run and on what, and stop: 同意 / 选择其他写操作 / 取消.  The proposal is
+    frozen on the server (its owner, conversation, lifetime) and the card's words are the server's own,
+    made from it; the model's text takes no part in what a click means."""
+    if not owner_credential_matches(runtime.context.identity_credential):
+        # Writes belong to the owner: a guest gets no card (nothing they press could run).
+        answer = "系统任务未完成：owner_login_required。写操作需要先登录个人账户。"
+        emit("delta", text=answer)
+        return {"answer": answer, "pending_request": None, "terminal_status": "failed",
+                "gate_reason": "owner_login_required", "node_log": _log(state, "system_action")}
+    entities = state.get("entities", {})
+    resumed = state.get("resume_slots") or {}
+    question = resumed.get("question") or state.get("original_question") or state["question"]
+    proposal = {"action": action, "question": question,
+                "symbols": list(entities.get("symbols") or resumed.get("symbols") or []),
+                "source_id": entities.get("source_id"), "accession_number": entities.get("accession_number"),
+                "form": entities.get("form"), "targets": targets if action in SET_WRITES else None}
+    pending_id = str(uuid.uuid4())
+    if action is None:
+        reason = "choose_write_action"
+        answer = "我不确定你想执行哪一种写操作。请选择一个，或取消："
+        choices = [{"label": label, "value": f"op:{value}"} for value, label in WRITE_ACTION_LABELS.items()]
+        choices.append({"label": "取消", "value": f"cancel:{pending_id}"})
+    else:
+        reason = "confirm_write"
+        lines = _describe_write(action, proposal["targets"], entities)
+        answer = f"请确认要执行的写操作：**{WRITE_ACTION_LABELS[action]}**"
+        if lines:
+            answer += "\n\n" + "\n".join(lines)
+        answer += "\n\n" + COSTLY_WRITES.get(action, "") + ("\n" if action in COSTLY_WRITES else "") + \
+                  "确认后才会执行；可以改选其他写操作，或取消。"
+        choices = [{"label": "同意", "value": f"confirm:{pending_id}"},
+                   {"label": "选择其他写操作", "value": f"other:{pending_id}"},
+                   {"label": "取消", "value": f"cancel:{pending_id}"}]
+    pending = {"id": pending_id, "question": question, "intent": "system_action", "symbols": proposal["symbols"],
+               "reason": reason, "choices": choices, "proposal": proposal,
+               "owner": state.get("semantic_owner"), "conversation": state.get("semantic_conversation"),
+               "expires_at": (datetime.now(UTC) + PENDING_ACTION_TTL).isoformat()}
+    emit("clarification", request_id=pending_id, reason=reason, choices=choices)
+    emit("delta", text=answer)
+    return {"answer": answer, "pending_request": pending, "terminal_status": "waiting_for_input",
+            "gate_reason": reason, "node_log": _log(state, "system_action")}
+
+
 async def _system_action(state: AgentWorkflowState, runtime: Runtime[AgentRuntimeContext]) -> dict:
-    from .actions import ActionError, execute_action, requested_action, is_unsupported_news_upload
-    action = state.get("semantic_action") or (state.get("resume_slots") or {}).get("selected_action") or requested_action(state["question"])
-    if action and state.get("semantic_write_targets") is not None:
-        return await _system_action_records(state, runtime, action, state["semantic_write_targets"])
-    if is_unsupported_news_upload(state["question"]):
+    from .actions import ActionError, execute_action, is_unsupported_news_upload, requested_action
+    resumed = state.get("resume_slots") or {}
+    if resumed.get("cancelled"):
+        emit("delta", text=WRITE_CANCELLED)
+        return {"answer": WRITE_CANCELLED, "pending_request": None, "terminal_status": "succeeded",
+                "gate_reason": "write_cancelled", "node_log": _log(state, "system_action")}
+    carded = bool(state.get("semantic_turn"))   # the legacy path (injected callbacks) keeps its own contract
+    action = (state.get("semantic_action") or resumed.get("selected_action")
+              or (state.get("semantic_action_hint") if carded else requested_action(state["question"])))
+    confirmed = bool(state.get("semantic_write_confirmed"))
+    targets = state.get("semantic_write_targets")
+    if resumed.get("change_action"):
+        return await _propose_write(state, runtime, None, targets)
+    if targets is not None and not (targets.get("items") or []) and action in (None, *SET_WRITES):
+        # What the user points at holds no saved source (news of a web search, an AI-analysis list): no
+        # card is shown for something that could not run, and the words say why.
+        notice = WEB_RECORDS_NOTICE.format(label=ACTION_LABELS.get(action) or "导入资料库、生成 AI 分析或建立索引")
+        emit("delta", text=notice)
+        return {"answer": notice, "pending_request": None, "terminal_status": "complete",
+                "node_log": _log(state, "system_action")}
+    if action in SET_WRITES and targets is not None:
+        if not confirmed:
+            return await _propose_write(state, runtime, action, targets)
+        return await _system_action_records(state, runtime, action, targets)
+    if is_unsupported_news_upload(state["question"]) and (not carded or (not confirmed and action in (None, "import"))):
         answer = "目前不能把网页新闻或其链接直接上传到资料库。导入功能只支持已有来源 ID 或 SEC accession；这些新闻尚未保存为可导入来源。"
         emit("delta", text=answer)
         return {"answer": answer, "pending_request": None, "terminal_status": "complete", "node_log": _log(state, "system_action")}
     entities = state.get("entities", {})
     if not action:
-        return await _clarify({**state, "gate_reason": "missing_action_type"})
+        return await (_propose_write(state, runtime, None, None) if carded
+                      else _clarify({**state, "gate_reason": "missing_action_type"}))
     if action in {"analyze", "import"} and not (entities.get("source_id") or entities.get("accession_number")):
         return await _clarify({**state, "gate_reason": "missing_action_source"})
     if action in {"fetch_sec", "refresh_sec"} and not (entities.get("symbol") and entities.get("accession_number")):
         return await _clarify({**state, "gate_reason": "missing_action_source"})
     if action == "forecast" and not entities.get("symbol"):
         return await _clarify({**state, "gate_reason": "missing_action_symbol"})
+    if carded and action != "status" and not confirmed:
+        return await _propose_write(state, runtime, action, None)
     key = state.get("action_request_id") or __import__("hashlib").sha256(
         f"{runtime.context.conversation_id}:{state.get('original_question', state['question'])}".encode()).hexdigest()[:64]
     if action == "status":
         match = re.search(r"\b(?:[0-9a-f]{64}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b",
-                          state["question"] + " " + str((state.get("resume_slots") or {}).get("reply") or ""), re.I)
+                          state.get("original_question", state["question"]) + " " + str(resumed.get("reply") or ""), re.I)
         if not match: return await _clarify({**state, "gate_reason": "missing_task_id"})
         key = match.group().lower()
     payload = {name: entities[name] for name in ("symbol", "source_id", "accession_number") if entities.get(name)}
@@ -1899,7 +2038,10 @@ async def _system_action(state: AgentWorkflowState, runtime: Runtime[AgentRuntim
 
 
 async def _general_shortcut(state: AgentWorkflowState) -> dict:
-    answer = "你好！我可以帮你查看已保存的行情和资料、核对来源、研究公开新闻，并在个人模式下执行明确请求的资料或预测任务。"
+    if state.get("gate_reason") == "out_of_scope":
+        answer = OUT_OF_SCOPE_SCRIPT  # fixed words: the model is not asked about what this product is not for
+    else:
+        answer = "你好！我可以帮你查看已保存的行情和资料、核对来源、研究公开新闻，并在个人模式下执行明确请求的资料或预测任务。"
     emit("delta", text=answer)
     return {"answer": answer, "terminal_status": "succeeded", "node_log": _log(state, "general_shortcut")}
 
@@ -1925,7 +2067,7 @@ async def _fallback(state: AgentWorkflowState) -> dict:
     if reason in {"tool_budget_exhausted", "decision_budget_exhausted", "turn_deadline", "turn_token_budget", "chat_context_too_large"}:
         answer = "I reached this turn's research limit. Please narrow the question to continue."
     if isinstance(reason, str) and reason not in messages and (reason.startswith("semantic_") or reason.startswith("plan_") or reason.startswith("expansion_") or reason == "implicit_write_rejected"):
-        answer = f"本轮语义工作流未能安全完成（{reason}）。请重试或缩小问题范围。"
+        answer = "我没能可靠地处理这个请求。请换个说法，或补充公司、来源后再试一次。"  # the reason stays in the audit
     emit("delta", text=answer)
     return {"answer": answer, "terminal_status": "partially_succeeded" if any(t.get("status") == "succeeded" for t in state.get("task_states", [])) else "failed",
             "node_log": _log(state, "fallback")}

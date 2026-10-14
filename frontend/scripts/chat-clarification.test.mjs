@@ -29,6 +29,20 @@ test('a reference card is titled after what is missing', () => {
   assert.equal(clarificationTitle({...card,reason:'reference_scope_changed'}),'请补充信息');
 });
 
+test('a write confirmation card keeps the server-made buttons and titles itself', () => {
+  const id='11111111-1111-4111-8111-111111111111';
+  const card=normalizeClarification({request_id:id,reason:'confirm_write',choices:[
+    {label:'同意',value:`confirm:${id}`},{label:'选择其他写操作',value:`other:${id}`},{label:'取消',value:`cancel:${id}`}]});
+  assert.equal(clarificationTitle(card),'请确认要执行的写操作');
+  assert.equal(card.choices.length,3);
+  assert.deepEqual(selectedClarification(card,`confirm:${id}`),{message:`confirm:${id}`,pendingRequestId:id});
+  assert.deepEqual(selectedClarification(card,`cancel:${id}`),{message:`cancel:${id}`,pendingRequestId:id});
+  assert.throws(()=>selectedClarification(card,'confirm:22222222-2222-4222-8222-222222222222'),/invalid_clarification_choice/);
+  const pick=normalizeClarification({request_id:id,reason:'choose_write_action',choices:[{label:'导入资料库',value:'op:import'}]});
+  assert.equal(clarificationTitle(pick),'请选择要执行的写操作');
+  assert.deepEqual(selectedClarification(pick,'op:import'),{message:'op:import',pendingRequestId:id});
+});
+
 test('card manual reply accepts Chinese and uses the same pending identity', () => {
   const card=normalizeClarification({request_id:'11111111-1111-4111-8111-111111111111',reason:'missing_stock_focus',choices:[]});
   assert.deepEqual(manualClarification(card,'  就是苹果  '),{message:'就是苹果',pendingRequestId:card.request_id});

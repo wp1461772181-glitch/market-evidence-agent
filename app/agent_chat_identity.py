@@ -12,7 +12,7 @@ from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from .agent_chat_store import list_conversations
+from .agent_chat_store import list_conversations, set_conversation_title
 
 router = APIRouter(prefix="/agent-chat", tags=["agent-chat-identity"])
 _attempts: dict[str, list[float]] = {}
@@ -82,3 +82,21 @@ async def conversations(x_chat_session: str | None = Header(default=None), limit
         raise HTTPException(401, "chat_session_required", headers={"Cache-Control": "no-store"})
     rows = await list_conversations(x_chat_session, limit + 1, offset)
     return {"conversations": rows[:limit], "has_more": len(rows) > limit}
+
+
+class RenameBody(BaseModel):
+    title: str = Field(max_length=400)
+
+@router.patch("/conversations/{conversation_id}")
+async def rename_conversation(conversation_id: str, body: RenameBody, x_chat_session: str | None = Header(default=None)):
+    """Give one of this owner's conversations a name (an empty name restores the default)."""
+    if not x_chat_session or not 32 <= len(x_chat_session) <= 256:
+        raise HTTPException(401, "chat_session_required", headers={"Cache-Control": "no-store"})
+    if any(ord(char) < 32 or ord(char) == 127 for char in body.title):
+        raise HTTPException(422, "invalid_conversation_title", headers={"Cache-Control": "no-store"})
+    title = " ".join(body.title.split())
+    if len(title) > 80:
+        raise HTTPException(422, "conversation_title_too_long", headers={"Cache-Control": "no-store"})
+    if not await set_conversation_title(x_chat_session, conversation_id, title or None):
+        raise HTTPException(404, "conversation_not_found", headers={"Cache-Control": "no-store"})
+    return JSONResponse({"id": conversation_id, "title": title or None}, headers={"Cache-Control": "no-store"})

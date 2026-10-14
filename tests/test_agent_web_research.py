@@ -226,7 +226,7 @@ def test_search_can_ask_tavily_for_snippets_only(monkeypatch):
     asyncio.run(_search("AMD news"))
     asyncio.run(_search("AMD news", include_raw_content=False))
     assert [body["include_raw_content"] for body in bodies] == [True, False]
-    assert all(body["topic"] == "news" and body["max_results"] == 3 for body in bodies)
+    assert all(body["topic"] == "news" and body["max_results"] == 5 for body in bodies)
 
 
 # --- S6: relevance-based excerpt ----------------------------------------------------------------

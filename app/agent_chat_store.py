@@ -2,7 +2,7 @@ import hashlib, uuid, json
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from .config import DATABASE_URL
-from .agent_chat_models import AgentConversation, AgentMessage
+from .agent_chat_models import AgentConversation, AgentConversationTitle, AgentMessage
 ASYNC_URL=DATABASE_URL
 engine=create_async_engine(ASYNC_URL,pool_pre_ping=True,connect_args={"connect_timeout":3})
 Session=async_sessionmaker(engine,expire_on_commit=False)
@@ -68,18 +68,45 @@ async def finish_conversation(conversation_id: str, status: str):
             await s.commit()
 
 async def list_conversations(credential: str, limit: int = 20, offset: int = 0):
-    """Return only conversations owned by this credential, with a bounded title lookup."""
+    """Return only conversations owned by this credential, with a bounded title lookup: the name the
+    owner gave it, else the first question."""
     async with Session() as s:
         first_question = (select(AgentMessage.content)
             .where(AgentMessage.conversation_id == AgentConversation.id, AgentMessage.role == "user")
             .order_by(AgentMessage.sequence.asc()).limit(1).scalar_subquery())
         rows = (await s.execute(
-            select(AgentConversation.id, AgentConversation.created_at, AgentConversation.updated_at, first_question)
+            select(AgentConversation.id, AgentConversation.created_at, AgentConversation.updated_at, first_question,
+                   AgentConversationTitle.title)
+            .outerjoin(AgentConversationTitle, AgentConversationTitle.conversation_id == AgentConversation.id)
             .where(AgentConversation.owner_hash == owner_hash(credential))
             .order_by(AgentConversation.updated_at.desc(), AgentConversation.id.desc())
             .offset(offset).limit(limit)
         )).all()
         output = []
-        for cid, created_at, updated_at, title in rows:
-            output.append({"id": str(cid), "created_at": created_at.isoformat(), "updated_at": updated_at.isoformat(), "title": (title or "新建对话")[:120]})
+        for cid, created_at, updated_at, title, custom in rows:
+            output.append({"id": str(cid), "created_at": created_at.isoformat(), "updated_at": updated_at.isoformat(),
+                           "title": (custom or title or "新建对话")[:120], "custom_title": bool(custom)})
         return output
+
+
+async def set_conversation_title(credential: str, conversation_id: str, title: str | None) -> bool:
+    """Name (or, with None, un-name) one of this owner's conversations.  False when it is not theirs."""
+    try:
+        cid = uuid.UUID(conversation_id)
+    except ValueError:
+        return False
+    async with Session() as s:
+        owned = await s.scalar(select(AgentConversation.id).where(
+            AgentConversation.id == cid, AgentConversation.owner_hash == owner_hash(credential)))
+        if owned is None:
+            return False
+        row = await s.get(AgentConversationTitle, cid)
+        if not title:
+            if row is not None:
+                await s.delete(row)
+        elif row is None:
+            s.add(AgentConversationTitle(conversation_id=cid, title=title))
+        else:
+            row.title = title
+        await s.commit()
+        return True

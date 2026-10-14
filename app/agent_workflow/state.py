@@ -59,6 +59,8 @@ class AgentWorkflowState(TypedDict, total=False):
     semantic_write_targets: dict[str, Any] | None
     semantic_write_slots: dict[str, Any] | None
     semantic_question_source: str | None
+    semantic_action_hint: str | None      # the write the intent stage thinks is meant (a proposal, not an authority)
+    semantic_write_confirmed: bool        # the user pressed "同意" on a server-made proposal
 
 
 @dataclass(frozen=True)

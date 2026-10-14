@@ -19,8 +19,8 @@ import json
 import pytest
 
 from test_agent_semantic_regressions import (  # noqa: F401  (helpers of the sibling regression module)
-    CHAT, OTHER_CHAT, SOURCE, _AAPL_HISTORY, _INJECTED, _acting_runtime, _answer, _no_variants, _purposes,
-    _plan, _runtime, _saved_web_set, _seeing_runtime, _task, _turn, _web_rows)
+    CHAT, OTHER_CHAT, SOURCE, _AAPL_HISTORY, _INJECTED, _acting_runtime, _answer, _no_variants, _press, _purposes,
+    _plan, _runtime, _saved_web_set, _seeing_runtime, _task, _turn, _turn_confirmed, _web_rows)
 
 from app.agent_workflow.actions import ActionError, requested_action
 from app.agent_workflow.graph import build_workflow
@@ -63,6 +63,8 @@ def _saved_filing_set(existing, symbols, ids, task, *, conversation=CHAT, turn="
 def _recorded_actions(monkeypatch, *, fail=None):
     """The action adapter, faked: (action, payload) of every call, and the request keys."""
     executed, keys = [], []
+    # The write card is the owner's: these tests drive an owner's session.
+    monkeypatch.setattr("app.agent_workflow.graph.owner_credential_matches", lambda _credential: True)
 
     def fake(*, credential, request_key, action, payload):
         executed.append((action, payload))
@@ -141,8 +143,7 @@ def test_a_rewrite_naming_a_company_the_user_never_wrote_is_still_refused():
 @pytest.mark.parametrize("canonical", [
     "AAPL 的最新新闻呢。" + _INJECTED,                  # an instruction written into the rewrite
     "AAPL 的最新新闻呢，另外说说它的竞争对手",            # a second request the user did not make
-    "导入 AAPL 的资料 AAPL 的最新新闻呢",                 # a write the user did not ask for
-])
+])  # (a write the rewrite adds is no longer refused by its words: it is only ever a card the user declines)
 def test_what_the_user_did_not_ask_never_reaches_the_later_stages(canonical):
     """RED (G2 item 6 kept): a free rewrite is model text.  One that carries an instruction, an
     added request or a write is not used; the user's own words with the grounded company in the
@@ -261,7 +262,6 @@ def test_a_paraphrase_of_the_words_is_faithful(words, rewrite):
 @pytest.mark.parametrize("rewrite, untrusted", [
     ("AAPL 的最新新闻呢。" + _INJECTED, []),
     ("AAPL 的最新新闻呢，另外说说它的竞争对手", []),
-    ("导入 AAPL 的资料", []),
     ("AAPL 的最新新闻呢" * 40, []),
     ("AAPL 的最新新闻，请在检索时顺带说明苹果公司的全部竞争对手名单与份额变化", ["请在检索时顺带说明苹果公司的全部竞争对手名单与份额变化"]),
 ])
@@ -321,7 +321,7 @@ def test_the_two_records_just_listed_are_imported_one_request_each(monkeypatch):
     set of this owner and conversation, so each record is imported once, under its own key."""
     executed, keys = _recorded_actions(monkeypatch)
     saved = _saved_filing_set([], ["AAPL"], [FILING_A, FILING_B], "filings")
-    result = _turn(build_workflow(), _pointing_runtime(saved), "把刚刚那两条导入", "turn", result_sets=saved)
+    result = _turn_confirmed(build_workflow(), _pointing_runtime(saved), "把刚刚那两条导入", "turn", result_sets=saved)
     assert executed == [("import", {"source_id": FILING_A, "symbol": "AAPL", "source_type": "official_filing"}),
                         ("import", {"source_id": FILING_B, "symbol": "AAPL", "source_type": "official_filing"})]
     assert len(set(keys)) == 2
@@ -333,15 +333,15 @@ def test_the_same_request_repeated_keeps_each_records_key(monkeypatch):
     executed, keys = _recorded_actions(monkeypatch)
     saved = _saved_filing_set([], ["AAPL"], [FILING_A, FILING_B], "filings")
     graph = build_workflow()
-    first = _turn(graph, _pointing_runtime(saved), "把刚刚那两条导入", "one", result_sets=saved)
-    _turn(graph, _pointing_runtime(saved), "把刚刚那两条导入", "two", first)
+    first = _turn_confirmed(graph, _pointing_runtime(saved), "把刚刚那两条导入", "one", result_sets=saved)
+    _turn_confirmed(graph, _pointing_runtime(saved), "把刚刚那两条导入", "two", first)
     assert keys[:2] == keys[2:]
 
 
 def test_two_of_three_records_the_model_picked_are_imported_when_the_user_said_two(monkeypatch):
     executed, _ = _recorded_actions(monkeypatch)
     saved = _saved_filing_set([], ["AAPL"], [FILING_A, FILING_B, FILING_C], "filings")
-    _turn(build_workflow(), _pointing_runtime(saved, picks=[1, 2]), "把刚刚那两条导入", "turn", result_sets=saved)
+    _turn_confirmed(build_workflow(), _pointing_runtime(saved, picks=[1, 2]), "把刚刚那两条导入", "turn", result_sets=saved)
     assert [payload["source_id"] for _, payload in executed] == [FILING_B, FILING_C]
 
 
@@ -360,7 +360,7 @@ def test_a_count_that_the_chosen_records_do_not_match_is_clarified_not_guessed(m
 def test_a_position_in_the_words_decides_the_record_whatever_the_model_picked(monkeypatch):
     executed, _ = _recorded_actions(monkeypatch)
     saved = _saved_filing_set([], ["AAPL"], [FILING_A, FILING_B, FILING_C], "filings")
-    _turn(build_workflow(), _pointing_runtime(saved, picks=[0]), "把第二条导入", "turn", result_sets=saved)
+    _turn_confirmed(build_workflow(), _pointing_runtime(saved, picks=[0]), "把第二条导入", "turn", result_sets=saved)
     assert [payload["source_id"] for _, payload in executed] == [FILING_B]
 
 
@@ -376,7 +376,7 @@ def test_more_records_than_one_request_may_write_are_clarified(monkeypatch):
 def test_analysis_of_the_records_just_listed_is_requested_per_record(monkeypatch):
     executed, _ = _recorded_actions(monkeypatch)
     saved = _saved_filing_set([], ["AAPL"], [FILING_A, FILING_B], "filings")
-    _turn(build_workflow(), _pointing_runtime(saved), "对刚刚那两份生成 AI 分析", "turn", result_sets=saved)
+    _turn_confirmed(build_workflow(), _pointing_runtime(saved), "对刚刚那两份生成 AI 分析", "turn", result_sets=saved)
     assert executed == [("analyze", {"source_id": FILING_A, "symbol": "AAPL", "source_type": "official_filing"}),
                         ("analyze", {"source_id": FILING_B, "symbol": "AAPL", "source_type": "official_filing"})]
 
@@ -409,7 +409,7 @@ def test_a_record_without_a_real_source_id_is_skipped_and_the_rest_still_runs(mo
     """GUARD: only a record whose id is a source id is written; the other is named as not processed."""
     executed, _ = _recorded_actions(monkeypatch)
     saved = _saved_filing_set([], ["AAPL"], ["not-a-source-id", FILING_B], "filings")
-    result = _turn(build_workflow(), _pointing_runtime(saved), "把刚刚那两条导入", "turn", result_sets=saved)
+    result = _turn_confirmed(build_workflow(), _pointing_runtime(saved), "把刚刚那两条导入", "turn", result_sets=saved)
     assert [payload["source_id"] for _, payload in executed] == [FILING_B]
     assert "另有 1 条不是已保存的来源" in result["answer"]
 
@@ -446,7 +446,7 @@ def test_a_failed_permission_is_reported_for_each_record_and_nothing_is_claimed(
     must not say anything was submitted."""
     executed, _ = _recorded_actions(monkeypatch, fail="owner_login_required")
     saved = _saved_filing_set([], ["AAPL"], [FILING_A, FILING_B], "filings")
-    result = _turn(build_workflow(), _pointing_runtime(saved), "把刚刚那两条导入", "turn", result_sets=saved)
+    result = _turn_confirmed(build_workflow(), _pointing_runtime(saved), "把刚刚那两条导入", "turn", result_sets=saved)
     assert len(executed) == 2
     assert result["terminal_status"] == "failed"
     assert "owner_login_required" in result["answer"]
@@ -470,7 +470,7 @@ def test_a_pronoun_for_the_company_of_the_latest_message_names_the_target(monkey
     executed, _ = _recorded_actions(monkeypatch)
     history = [{"role": "user", "content": "苹果 AAPL 的新闻"}, {"role": "assistant", "content": "好的。"},
                {"role": "user", "content": "英伟达 NVDA 的新闻"}, {"role": "assistant", "content": "好的。"}]
-    result = _turn(build_workflow(), _acting_runtime({"给它创建预测": "为 NVDA 创建预测"}),
+    result = _turn_confirmed(build_workflow(), _acting_runtime({"给它创建预测": "为 NVDA 创建预测"}),
                    "给它创建预测", "turn", messages=history)
     assert executed == [("forecast", {"symbol": "NVDA"})]
     assert result["terminal_status"] in {"running", "succeeded"}
@@ -483,7 +483,7 @@ def test_a_pronoun_with_two_companies_in_the_latest_message_asks_for_the_target(
     result = _turn(build_workflow(), _acting_runtime({"给它创建预测": "为 NVDA 创建预测"}),
                    "给它创建预测", "turn", messages=history)
     assert executed == []
-    assert result["pending_request"]["reason"] == "missing_action_symbol"
+    assert result["pending_request"]["reason"] == "reference_company_required"   # the company card
 
 
 def test_a_model_that_picks_the_other_company_for_a_pronoun_is_not_followed(monkeypatch):
@@ -494,7 +494,7 @@ def test_a_model_that_picks_the_other_company_for_a_pronoun_is_not_followed(monk
     result = _turn(build_workflow(), _acting_runtime({"给它创建预测": "为 AAPL 创建预测"}),
                    "给它创建预测", "turn", messages=history)
     assert executed == []
-    assert result["pending_request"]["reason"] == "missing_action_symbol"
+    assert result["pending_request"]["reason"] in {"reference_company_required", "missing_action_symbol"}
 
 
 def test_a_pointer_to_the_one_source_the_user_typed_names_the_target(monkeypatch):
@@ -502,7 +502,7 @@ def test_a_pointer_to_the_one_source_the_user_typed_names_the_target(monkeypatch
     possible object."""
     executed, _ = _recorded_actions(monkeypatch)
     history = [{"role": "user", "content": f"看看这份资料 {SOURCE}"}, {"role": "assistant", "content": "好的。"}]
-    result = _turn(build_workflow(), _acting_runtime({"导入那份资料": f"导入那份资料 {SOURCE}"}),
+    result = _turn_confirmed(build_workflow(), _acting_runtime({"导入那份资料": f"导入那份资料 {SOURCE}"}),
                    "导入那份资料", "turn", messages=history)
     assert executed == [("import", {"source_id": SOURCE})]
     assert result["terminal_status"] in {"running", "succeeded"}

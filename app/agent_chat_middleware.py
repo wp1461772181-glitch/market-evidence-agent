@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import secrets
 
 from fastapi.responses import JSONResponse
@@ -74,6 +75,10 @@ def create_agent_chat_access_middleware(public_mode: bool, access_key: str, owne
         owner_configured_now = current(owner_configured) if owner_configured is not None else login_config is not None
         public_chat = request.method == "POST" and request.url.path in AgentChatBodyLimitMiddleware.PATHS
         public_chat_list = request.method == "GET" and request.url.path == "/agent-chat/conversations"
+        # Naming a conversation is the caller's own business: the handler only touches conversations
+        # of the credential sent (a guest's included), so it is not an owner-only write.
+        public_chat_rename = (request.method == "PATCH" and bool(
+            re.fullmatch(r"/agent-chat/conversations/[0-9a-fA-F-]{36}", request.url.path)))
         if request.method == "GET" and request.url.path.startswith("/agent-chat/conversations/") and request.url.path.endswith("/messages"):
             chat_session = request.headers.get("X-Chat-Session", "")
             if not 32 <= len(chat_session) <= 256:
@@ -84,7 +89,7 @@ def create_agent_chat_access_middleware(public_mode: bool, access_key: str, owne
             if public_chat or public_read or request.url.path == "/agent-chat/local-model-profiles":
                 response.headers["Cache-Control"] = "no-store"
             return response
-        if public_chat or public_chat_list or public_read:
+        if public_chat or public_chat_list or public_chat_rename or public_read:
             response = await call_next(request)
             response.headers["Cache-Control"] = "no-store"
             return response

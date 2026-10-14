@@ -11,7 +11,8 @@ The product focuses on an inspectable research process, traceable evidence, and 
 ## Agent chat
 
 - Full-page SSE chat streams status, tool calls, results, and answers, with readable badges for tool activity.
-- In this development worktree, a LangGraph workflow retrieves required sources, gates their evidence, then runs bounded read-only tool steps and answer synthesis. It does not fetch SEC filings online or perform writes. This version is not yet deployed to the public demo.
+- The semantic LangGraph workflow (checkpoints in PostgreSQL) first completes a follow-up that depends on earlier turns into a standalone question, and passes an already complete question through unchanged. It then recognizes intent, plans a bounded number of read-only tool steps, checks the evidence, and answers. Requests unrelated to research, such as writing code, get a fixed script and call no tools.
+- Write actions (fetching or refreshing SEC filings, importing into the knowledge base, generating AI analyses, building indexes, creating forecasts) are open only to personal identities. The model can only propose one; a confirmation card appears in the UI (Approve / Choose another action / Cancel), and the server runs the frozen proposal only after the click. Guest identities cannot run write actions.
 - `web_research` can search public pages through Tavily or read a public HTTPS URL. Search defaults to a separately configured server-side `TAVILY_API_KEY`; without it, search reports unavailable and never silently falls back to Bing. Public URL reads do not need a Tavily key. Page excerpts are bounded and search snippets are not treated as page bodies.
 - Answers support Markdown, tables, source citations, and quoted excerpts. Users can copy answers, navigate to questions, and inspect cited sources.
 - Conversations and tool traces are stored server-side by identity, with guest and personal identities separated. Users can export a local JSON conversation archive as a backup.
@@ -57,7 +58,7 @@ Public validation so far includes two saved AMD analyses that produced 66 chunks
 
 - **Watchlist and overview:** Users can maintain a list of US stock symbols; seven example stocks are provided by default. Stock pages organize prices, materials, forecasts, and evaluation by symbol.
 - **Prices and benchmark:** View saved OHLCV and SPY comparison candlesticks with data dates and fetch times. Historical snapshots can be read with time boundaries.
-- **SEC filings:** Store filing inventories, source links, and fetched excerpts; scanning can be started from the materials workflow. The Agent only reads saved records and does not fetch online.
+- **SEC filings:** Store filing inventories, source links, and fetched excerpts; scanning can be started from the materials workflow. The Agent's read tools only read saved records; fetching filing text is a write action that runs only after a personal identity confirms it.
 - **Material analysis:** Generate and cache AI analyses with versions, original quotes, and citation navigation. Reopening a saved analysis does not call a model again.
 - **Research workflow:** Reusable material analyses can produce a ResearchBrief, which can then be evaluated by the experimental Jev three-class decision model as bullish, neutral, or bearish. Jev consumes a research brief; it does not generate one. Fixed targets and expiry assessments are retained with immutable versions.
 - **Evaluation and run status:** Inspect expiry assessments, historical replay, background queues, and monitoring status. A four-strategy Recall@K/MRR evaluation harness exists; synthetic results do not represent production accuracy.
@@ -89,9 +90,9 @@ PostgreSQL stores business records, originals, chunks, jobs, and conversations; 
 
 ## Current boundaries
 
-The Agent reads saved records; explicit web research can read bounded excerpts from public pages. It does not trade, retrieve live prices, or fetch SEC filings online. In this development worktree, orchestration runs in durable LangGraph; the public demo still serves the published version. Evidence gating uses heuristics, answers can still be wrong, and citations do not prove every answer is faithful.
+The Agent's read tools only read saved records; explicit web research can read bounded excerpts from public pages, and error or navigation pages are detected and skipped. It does not trade or retrieve live prices. Write actions are open only to personal identities and run only after the confirmation card. Public web news is not yet a saved source that can be imported. The semantic LangGraph workflow, with durable checkpoints, is deployed to the public demo. Evidence gating uses heuristics, answers can still be wrong, and citations do not prove every answer is faithful.
 
-Forecasts, material analyses, and retrieval results require researcher review against original sources and timestamps. Forecast evaluation is meaningful only for matured samples with available outcomes; historical replay and synthetic retrieval metrics do not establish future performance. High-concurrency guarantees and end-to-end atomic writes remain unverified. Real model, authenticated Tavily search, and public deployment await independent acceptance.
+Forecasts, material analyses, and retrieval results require researcher review against original sources and timestamps. Forecast evaluation is meaningful only for matured samples with available outcomes; historical replay and synthetic retrieval metrics do not establish future performance. High-concurrency guarantees and end-to-end atomic writes remain unverified. Real-model and Tavily search checks were run by the maintainer on a shadow server; the public deployment has had only a guest smoke test and has not been independently accepted.
 
 ## Documentation
 
@@ -103,4 +104,4 @@ Forecasts, material analyses, and retrieval results require researcher review ag
 
 ## Future direction
 
-Next work is real-model and Tavily acceptance of this development worktree, followed by independent review and publication. The system does not implement multi-Agent autonomy or model fine-tuning.
+Next work is layered conversation context for long sessions, measured on long real conversations before any improvement is claimed. The system does not implement multi-Agent autonomy or model fine-tuning.

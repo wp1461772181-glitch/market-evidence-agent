@@ -31,3 +31,12 @@ class AgentMessage(Base):
     tool_call_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="complete")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class AgentConversationTitle(Base):
+    """A name the owner gave a conversation.  Without a row the first question names it; a separate
+    table keeps the conversation table unchanged (it is created with the others at startup)."""
+    __tablename__ = "agent_conversation_titles"
+    conversation_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("agent_conversations.id", ondelete="CASCADE"), primary_key=True)
+    title: Mapped[str] = mapped_column(String(80), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)

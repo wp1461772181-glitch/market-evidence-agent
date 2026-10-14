@@ -2,8 +2,23 @@ from __future__ import annotations
 import asyncio
 import json
 import httpx
+import os
 from fastapi import HTTPException
 from .agent_chat_api import PROVIDERS, BASE_URLS, PinnedPublicTransport
+
+
+def _bounded_seconds(name: str, default: float, low: float, high: float) -> float:
+    try:
+        return min(high, max(low, float(os.getenv(name, default))))
+    except ValueError:
+        return default
+
+
+# One request to the model service (a stage of the workflow, a tool decision): slow "thinking" models
+# need more than the old 25 s, and a request that runs out is retried once inside the stage limit.
+PROVIDER_REQUEST_SECONDS = _bounded_seconds("AGENT_PROVIDER_TIMEOUT_SECONDS", 35.0, 10.0, 90.0)
+# The whole streamed final answer; the turn's own deadline (graph.MAX_SECONDS) still bounds it.
+PROVIDER_STREAM_SECONDS = _bounded_seconds("AGENT_PROVIDER_STREAM_SECONDS", 90.0, 30.0, 180.0)
 
 class ProviderFailure(HTTPException):
     def __init__(self, code: str, *, stage: str, provider_status: int | None = None,
@@ -48,8 +63,8 @@ async def _post(provider,key,body,base_url=None):
     headers={"Authorization":f"Bearer {key}","Content-Type":"application/json"}
     if provider=="openrouter":headers["X-Title"]="Market Evidence Agent"
     try:
-        async with asyncio.timeout(25):
-          options={"timeout":httpx.Timeout(25),"follow_redirects":False,"trust_env":False}
+        async with asyncio.timeout(PROVIDER_REQUEST_SECONDS):
+          options={"timeout":httpx.Timeout(PROVIDER_REQUEST_SECONDS),"follow_redirects":False,"trust_env":False}
           if base_url: options["transport"]=PinnedPublicTransport()
           async with httpx.AsyncClient(**options) as client:
             async with client.stream("POST",endpoint(provider,base_url),headers=headers,json=body) as r:
@@ -77,8 +92,8 @@ async def stream_answer(provider,model,api_key,messages,reasoning_collector=None
     headers={"Authorization":f"Bearer {api_key}","Content-Type":"application/json"}
     if provider=="openrouter":headers["X-Title"]="Market Evidence Agent"
     try:
-        async with asyncio.timeout(25):
-            options={"timeout":httpx.Timeout(25),"follow_redirects":False,"trust_env":False}
+        async with asyncio.timeout(PROVIDER_STREAM_SECONDS):
+            options={"timeout":httpx.Timeout(PROVIDER_REQUEST_SECONDS),"follow_redirects":False,"trust_env":False}
             if base_url: options["transport"]=PinnedPublicTransport()
             async with httpx.AsyncClient(**options) as client:
                 async with client.stream("POST",endpoint(provider,base_url),headers=headers,json=body) as r:
