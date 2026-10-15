@@ -17,6 +17,8 @@ import httpx
 from langchain_core.tools import tool
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from .company_directory import COMPANIES
+
 MAX_PAGE_BYTES = 1_000_000
 MAX_SEARCH_BYTES = 180_000
 MAX_EXCERPT = 5_000
@@ -136,10 +138,7 @@ METRIC_GROUPS = {
     "cash_flow": ("cash flow", "现金流"),
     "debt": ("debt", "借款", "负债"),
 }
-ENTITY_ALIASES = {"AAPL": ("apple", "苹果", "蘋果"), "AMD": ("advanced micro devices", "超微", "amd"),
-                  "MSFT": ("microsoft", "微软"), "NVDA": ("nvidia", "英伟达"),
-                  "GOOGL": ("google", "alphabet", "谷歌"), "AMZN": ("amazon", "亚马逊"),
-                  "TSLA": ("tesla", "特斯拉"), "META": ("meta", "脸书")}
+ENTITY_ALIASES = COMPANIES  # the companies this product knows by name (app/company_directory.py)
 _GENERIC_LATIN = frozenset((
     "a an the and or of in on at to by for with from about into over than then that this these those is are was "
     "were be been has have had do does did can will would not no but its it as if so up what when where which "

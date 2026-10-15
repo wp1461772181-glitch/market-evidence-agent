@@ -16,7 +16,8 @@ from langgraph.runtime import Runtime
 
 from .routing import classify_intent, resolve_focus, route_for_intent
 from ..agent_chat_identity import owner_credential_matches
-from ..agent_context import CONTEXT_GUARD_BYTES, HISTORY_TOKEN_ALLOWANCE, earlier_summary
+from ..agent_context import BUDGET_KB, CONTEXT_GUARD_BYTES, HISTORY_TOKEN_ALLOWANCE, earlier_summary
+from ..company_directory import COMPANIES
 from .request_resolution import extract_slots, parse_classification, resume_request, is_pending_reply, is_explicit_new_request, ACTION_CHOICES, ACCESSION, PERIOD, SOURCE_ID, TASK_ID
 from .state import AgentRuntimeContext, AgentWorkflowState, checkpoint_thread_id
 from .semantic import (NON_TICKERS, SCOPE_KEYS, SCOPE_TOOLS, SemanticError, call_stage, catalog, explicit_periods,
@@ -54,6 +55,14 @@ def emit(event: str, **data: Any) -> None:
         pass
 
 
+def _names_alias(alias: str, text: str) -> bool:
+    """Whether the (lower-cased) text holds the name: a Latin name as a whole word, a Chinese one
+    anywhere (it has no word boundaries)."""
+    if not alias.isascii():
+        return alias in text
+    return re.search(r"(?<![a-z0-9])" + re.escape(alias) + r"(?![a-z0-9])", text) is not None
+
+
 def deterministic_confidence_gate(question: str, result: dict, citations: list[dict] | None = None,
                                   verified_symbols: list[str] | None = None) -> tuple[bool, str]:
     if not isinstance(result, dict) or not result.get("ok"):
@@ -88,17 +97,15 @@ def deterministic_confidence_gate(question: str, result: dict, citations: list[d
     if period and not re.search(re.escape(period.group(0)), text, re.I):
         return False, "requested_period_missing"
     is_web = result.get("source_type") == "web" or str(result.get("source", "")).startswith("public web")
-    web_aliases = {"AAPL": ("apple", "苹果", "蘋果"), "AMD": ("advanced micro devices", "超微", "amd"),
-                   "MSFT": ("microsoft", "微软"), "NVDA": ("nvidia", "英伟达"),
-                   "GOOGL": ("google", "alphabet", "谷歌"), "AMZN": ("amazon", "亚马逊"),
-                   "TSLA": ("tesla", "特斯拉"), "META": ("meta", "脸书")}
+    web_aliases = COMPANIES
     for symbol in verified_symbols or []:
         # The executor has validated this stock scope. A scoped record may use a
         # company name rather than its ticker; web pages must state the ticker.
+        # A Latin name counts only as a whole word: the ticker MU is not the "mu" in "community".
         if not any(isinstance(row, dict) and (
             (not is_web and (str(row.get("symbol", "")).upper() == symbol or
                              str(row.get("_verified_symbol", "")).upper() == symbol)) or
-            any(alias in " ".join(str(row.get(key, "")) for key in ("title", "excerpt", "content", "summary", "text")).lower()
+            any(_names_alias(alias, " ".join(str(row.get(key, "")) for key in ("title", "excerpt", "content", "summary", "text")).lower())
                 for alias in (symbol.lower(), *web_aliases.get(symbol, ())))
         ) for row in rows):
             return False, "requested_entity_missing"
@@ -244,7 +251,14 @@ WRITE_CANCELLED = "已取消，没有执行任何操作。"
 OUT_OF_SCOPE_SCRIPT = ("这个问题不在我的范围内。我是 Market Evidence Agent，可以帮你查看已保存的行情和资料、核对来源、"
                        "研究公开新闻，也可以对已保存的 SEC 文件做 AI 分析。比如：“查看 AAPL 最近行情”、"
                        "“AAPL 最新财报里的营收是多少”、“找两条英伟达的最新新闻”。")
-DIALOG_BUDGET_CHARS, DIALOG_USER_CAP, DIALOG_ASSISTANT_CAP = 9000, 600, 500
+# The resolver reads the newest part of the dialog the layers carry: 9,000 characters at the default
+# 64 KB history budget, more when the knob is raised (never less than before the layers existed).
+def _dialog_budget(budget_kb: int) -> int:
+    return max(9000, 9000 * budget_kb // 64)
+
+
+DIALOG_BUDGET_CHARS = _dialog_budget(BUDGET_KB)
+DIALOG_USER_CAP, DIALOG_ASSISTANT_CAP = 600, 500
 REWRITE_REASONS = {"reference_scope_changed", "reference_negation_changed", "reference_quantity_changed",
                    "reference_topic_changed"}
 
@@ -278,6 +292,15 @@ def _resumed_action(pending: dict, reply: str, owner: str, conversation: str) ->
     if pending.get("symbols") and not set(extract_slots(reply)["symbols"]) <= set(pending["symbols"]):
         return None
     return resume_request(pending, reply)
+
+
+def _newest_lines(text: str, limit: int) -> str:
+    """The newest lines of a numbered list that fit ``limit`` characters (the oldest are dropped
+    first, whole lines; one line longer than the limit keeps its end)."""
+    lines = [line for line in text.split("\n") if line.strip()]
+    while len(lines) > 1 and len("\n".join(lines)) > limit:
+        lines.pop(0)
+    return "\n".join(lines)[-limit:]
 
 
 def _dialog_view(messages: list[dict]) -> list[dict]:
@@ -481,7 +504,7 @@ async def _resolve_reference(state: AgentWorkflowState, runtime: Runtime[AgentRu
         if earlier:
             # Memory of turns older than the dialog above: read by the model, never a ground (the user's
             # own words in ``recent`` and the catalog scopes are the only grounds, as before).
-            payload["earlier_summary"] = earlier[:1500]
+            payload["earlier_summary"] = _newest_lines(earlier, 1500)
         resumed = _resumed_action(previous, incoming, owner, conversation)
         proposal_reply = None if resumed else _proposal_reply(previous, incoming, owner, conversation)
         if proposal_reply:
@@ -929,9 +952,14 @@ async def _route_intent(state: AgentWorkflowState, runtime: Runtime[AgentRuntime
                 # request ("search, then summarise"): it reads only what its parents produced, so
                 # an intent stage that named just the search does not make it a foreign purpose.
                 dependent_summary = task["purpose"] == "summarize_existing" and bool(task["depends_on"])
-                if ((task["purpose"] not in purposes and not dependent_summary)
-                        or not set(task["symbols"]).issubset(known_symbols)):
+                if task["purpose"] not in purposes and not dependent_summary:
                     raise SemanticError("plan_scope_mismatch")
+                ungrounded = sorted(set(task["symbols"]) - known_symbols)
+                if ungrounded:
+                    # The planner knows a ticker that nothing the user wrote (or the server holds) carries:
+                    # a company named in words this product has no entry for.  It is never scope on the
+                    # model's say-so; the user is told which code to write, and that code grounds it.
+                    raise SemanticError("plan_company_unconfirmed", hint=", ".join(ungrounded))
                 if task["tool"] == "web_research" and task["purpose"] != "web_research":
                     raise SemanticError("plan_purpose_mismatch")
                 if task["tool"] == "web_research":
@@ -990,7 +1018,7 @@ async def _route_intent(state: AgentWorkflowState, runtime: Runtime[AgentRuntime
                     "next_action": "retrieve", "token_usage": state.get("token_usage", 0) + cost,
                     "node_log": _log(state, "route_intent")}
         except SemanticError as exc:
-            return {"next_action": "unsupported", "gate_reason": str(exc),
+            return {"next_action": "unsupported", "gate_reason": str(exc), "semantic_hint": exc.hint,
                     "token_usage": state.get("token_usage", 0) + stage_cost + exc.cost,
                     "node_log": _log(state, "route_intent")}
     entities = dict(state.get("entities", {}))
@@ -2087,6 +2115,12 @@ async def _fallback(state: AgentWorkflowState) -> dict:
         "no_source": "没有找到指定的已保存来源；请核对股票代码和 accession。",
         "overview_original_insufficient_no_analysis": "已找到指定财报，但当前可读取的原文片段不足以写出可靠简介；该同一来源没有可核验的已保存 AI 分析（no_analysis）。材料索引可能仍在处理。",
     }
+    if reason == "plan_company_unconfirmed" and state.get("semantic_hint"):
+        codes = str(state["semantic_hint"])
+        first = codes.split(",")[0].strip()
+        messages["plan_company_unconfirmed"] = (
+            f"我没能确认你说的公司对应哪只股票（可能是 {codes}），不会凭猜测检索。"
+            f"请直接写股票代码再发一次，例如“搜一下 {first} 的新闻”。")
     answer = messages.get(reason, "我找到的资料与问题中的关键实体、指标或时间匹配不足，暂时无法可靠回答。")
     if reason in {"tool_budget_exhausted", "decision_budget_exhausted", "turn_deadline", "turn_token_budget", "chat_context_too_large"}:
         answer = "I reached this turn's research limit. Please narrow the question to continue."

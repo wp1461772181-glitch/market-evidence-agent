@@ -435,20 +435,22 @@ def test_focus_excerpt_never_exceeds_the_bound_and_never_invents_text():
             assert _pieces_are_verbatim(out, text), (name, limit)
 
 
-def test_focus_excerpt_term_groups_are_literally_the_ones_the_evidence_gate_uses():
-    """Drift guard: the synonym and entity-alias tables are read out of the gate's own source
-    (the gate is not edited); a change on either side makes this test fail."""
+def test_focus_excerpt_term_groups_are_the_ones_the_evidence_gate_uses():
+    """Drift guard: the synonym table is read out of the gate's own source; the entity table is the
+    company directory on both sides (the gate names it, web research is it)."""
     import ast
     import inspect
     import textwrap
     from app.agent_web_research import ENTITY_ALIASES, METRIC_GROUPS
     from app.agent_workflow.graph import deterministic_confidence_gate
+    from app.company_directory import COMPANIES
 
     tree = ast.parse(textwrap.dedent(inspect.getsource(deterministic_confidence_gate)))
-    literals = {target.id: ast.literal_eval(node.value) for node in ast.walk(tree) if isinstance(node, ast.Assign)
+    assigned = {target.id: node.value for node in ast.walk(tree) if isinstance(node, ast.Assign)
                 for target in node.targets if isinstance(target, ast.Name) and target.id in {"metric_groups", "web_aliases"}}
-    assert METRIC_GROUPS == literals["metric_groups"]
-    assert ENTITY_ALIASES == literals["web_aliases"]
+    assert METRIC_GROUPS == ast.literal_eval(assigned["metric_groups"])
+    assert isinstance(assigned["web_aliases"], ast.Name) and assigned["web_aliases"].id == "COMPANIES"
+    assert ENTITY_ALIASES is COMPANIES
 
 
 def test_web_research_returns_the_matching_passages_not_the_leading_characters(monkeypatch):

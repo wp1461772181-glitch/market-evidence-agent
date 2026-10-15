@@ -6,6 +6,12 @@ Saved SEC and saved AI analysis have separate exact reads. Latest financial repo
 
 `web_research` reads public HTTPS pages or searches Tavily with `TAVILY_API_KEY`, bounded results and extracted bodies. Search terms use company aliases and topic words; an unsuccessful relevant-article check permits one alternative search. A single explicit public HTTPS URL is sent to direct-read mode; multiple or invalid explicit URLs prompt clarification. A missing key returns unavailable for search; Bing RSS requires explicit `WEB_RESEARCH_BACKEND=bing_rss`. Search snippets remain leads, not body evidence. RFC 2822 and ISO publisher timestamps are normalized separately from fetch time; a fresh-news gate requires publisher dates for each retained source. Query freshness is bounded by Tavily's news `time_range` option and does not guarantee the newest available article. Web citations refer to retained conversation snapshots; evidence beyond the ten-citation cap is excluded from the model context.
 
+## Company names
+
+A company is recognized by name through one table, `app/company_directory.py` (ticker -> the Chinese and English names people write), read by the slot reader, web research and the evidence gate. Names that double as everyday words or sit inside other Chinese phrases are left out on purpose. A ticker typed in capitals (`SNOW`, `MU`) always works, whether or not the company is in the table.
+
+A model may know the ticker of a company the table lacks, but a ticker the user's words (or the server's state) do not carry is never used as scope on the model's say-so: the turn ends with `plan_company_unconfirmed` and tells the user which code to write. That code then grounds the request. Adding a company is a one-line change to the table plus the check that its names are distinctive (`tests/test_company_directory.py`).
+
 ## Local operation
 
 Apply the additive checkpoint and action-ledger migrations to the intended database before enabling chat actions:

@@ -280,6 +280,24 @@ def test_a_company_that_only_the_memory_names_is_not_a_ground_for_a_rewrite():
     assert result["pending_request"]["reason"] in {"reference_company_required", "reference_scope_changed"}
 
 
+def test_the_resolver_reads_more_of_the_dialog_when_the_budget_knob_is_raised_and_never_less():
+    """Found while answering a question about company names: the dialog view the resolver reads was a
+    fixed 9,000 characters, so a 128 KB budget put more history in the request that no stage read."""
+    from app.agent_workflow.graph import _dialog_budget
+    assert _dialog_budget(16) == _dialog_budget(64) == 9000
+    assert _dialog_budget(128) == 18000
+
+
+def test_when_the_summary_is_too_long_for_the_resolver_the_oldest_lines_go_first():
+    from app.agent_workflow.graph import _newest_lines
+    text = "\n".join(f"{n}. " + "字" * 40 for n in range(1, 8))
+    kept = _newest_lines(text, 150)
+    assert kept.splitlines()[-1].startswith("7. ") and len(kept) <= 150
+    assert not kept.startswith("1. ")
+    assert _newest_lines("一行" * 100, 50) == ("一行" * 100)[-50:]       # one long line keeps its end
+    assert _newest_lines("1. a\n2. b", 1500) == "1. a\n2. b"
+
+
 def test_the_resolver_prompt_says_the_summary_supplies_no_ground():
     from app.agent_workflow.semantic import STAGE_PROMPTS
     prompt = STAGE_PROMPTS["resolver"]

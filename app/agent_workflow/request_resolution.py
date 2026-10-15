@@ -5,14 +5,11 @@ import json
 import re
 from typing import Any
 
+from ..company_directory import ALIASES
 from ..symbols import normalize_market_symbol
 
 INTENTS = frozenset({"saved_data", "source_qa", "analysis_qa", "comparison_research",
                      "web_research", "system_action", "general", "other"})
-ALIASES = {"苹果": "AAPL", "蘋果": "AAPL", "apple": "AAPL", "微软": "MSFT", "microsoft": "MSFT",
-           "英伟达": "NVDA", "nvidia": "NVDA", "超微": "AMD", "amd": "AMD",
-           "谷歌": "GOOGL", "google": "GOOGL", "亚马逊": "AMZN", "amazon": "AMZN",
-           "特斯拉": "TSLA", "tesla": "TSLA", "meta": "META"}
 ACCESSION = re.compile(r"\b\d{10}-\d{2}-\d{6}\b")
 SOURCE_ID = re.compile(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b")
 TASK_ID = re.compile(r"\b[0-9a-fA-F]{64}\b")
