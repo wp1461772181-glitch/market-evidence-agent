@@ -1,109 +1,277 @@
-# Market Evidence Agent
+<div align="center">
 
-[中文](README.md) | [English](README.en.md)
+# 📈 Market Evidence Agent
 
-**演示：**[打开研究工作台](https://wp1461772181-glitch.github.io/market-evidence-agent/) · **仓库：**[wp1461772181-glitch/market-evidence-agent](https://github.com/wp1461772181-glitch/market-evidence-agent)
+### 先找证据，再形成判断。  
+### Evidence first. Decisions you can revisit.
 
-Market Evidence Agent 是面向个人美股研究者的研究工作台。它集中展示已保存的行情、SEC 文件、研究材料和版本化分析，并提供基于已保存证据的有限 Agent 对话。研究者可以发现材料线索、检查来源、保存分析，并查看预测版本与后续修订。
+**一个面向市场研究的双语 AI 工作台：把公开资料、已保存的数据与可追溯的研究判断连起来。**  
+**A bilingual research workbench connecting public sources, saved data, and traceable market judgments.**
 
-产品关注研究过程是否可检查、证据是否可追溯，以及结论能否随新材料修订。它不承诺股价预测准确，也不是交易执行或实时行情服务。
+[🚀 试用演示 / Try the demo](https://wp1461772181-glitch.github.io/market-evidence-agent/) · [📦 Source repository](https://github.com/wp1461772181-glitch/market-evidence-agent) · [🧭 中文](#中文) · [🇬🇧 English](#english)
 
-## Agent 对话
+</div>
 
-- 全页面 SSE 对话逐步显示状态、工具调用、结果和回答，并以清晰徽标展示工具活动。
-- 语义工作流（LangGraph，检查点存 PostgreSQL）先把带指代的追问补全成不依赖上下文的完整问题，已完整的问题原样透传；再识别意图、规划有限多步只读工具调用，检查证据后回答。与研究无关的请求（如写代码）直接走固定兜底话术，不调用工具。
-- 长对话用三层上下文：近期原文、半压历史（保留你的原话和答复开头）、追加式分段摘要，共用一个预算（默认 64 KB，`AGENT_CONTEXT_BUDGET_KB` 可调）。由指代消解阶段读取；回答阶段仍然只读本轮证据。摘要只是记忆，不是证据，不能作为引用依据。输入框旁的“上下文剩余”胶囊可查看各部分用量。
-- 写操作（抓取/刷新 SEC 原文、导入资料库、生成 AI 分析、建立索引、创建预测）只对个人身份开放：模型只能提出建议，界面弹出确认卡（同意 / 选择其他写操作 / 取消），点击后由服务端按冻结的内容执行；访客身份不能执行写操作。
-- `web_research` 可按用户请求通过 Tavily 搜索公开网页，或读取公开 HTTPS 页面；默认需单独配置后端 `TAVILY_API_KEY`。网页摘录有长度限制，搜索摘要不作为网页正文；失败会明确返回。公开 URL 读取不需要 Tavily Key。
-- 回答支持 Markdown、表格、来源引用和原文引句。用户可以复制回答、定位问题并查看对话中的来源。
-- 对话和工具轨迹按身份保存在服务端，访客与个人身份隔离。用户可导出本地 JSON 对话归档作为备份。
+> **演示说明 / Demo note** — GitHub Pages 提供前端；数据与 API 依赖维护者侧的独立后端。后端环境会影响演示可用性。  
+> GitHub Pages serves the frontend; data and API actions depend on a separate maintainer-hosted backend, which affects demo availability.
 
-| 工具 | 用途 |
-| --- | --- |
-| `query_stock_prices` | 查询已保存的日线 OHLCV 和抓取时间，不提供实时报价。 |
-| `query_latest_forecast` | 查询该股票当前研究预测版本、状态、时间和摘要。 |
-| `query_materials` | 搜索已保存的 SEC 文件摘录和用户上传材料，不搜索 FAQ。 |
-| `query_sec_filings` | 查询已保存的 SEC 文件目录及已抓取摘录，不访问 SEC。 |
-| `query_research_faq` | 查询已批准的研究 FAQ。 |
-| `query_material_analysis` | 读取某份材料最新保存的 AI 分析及其来源关联。 |
-| `search_material_analysis` | 搜索已保存的 AI 分析；这些分析是派生材料。 |
-
-## 试用
-
-1. 打开[在线演示](https://wp1461772181-glitch.github.io/market-evidence-agent/)，可访客浏览；写入类操作需要个人身份。
-2. 在模型设置中填写配置卡片的显示名称、服务端点、模型 ID 和自己的模型 Key，运行连通性测试并保存。选择该配置后即可在对话输入框中使用。模型配置步骤见[模型配置与存储说明](docs/model-profile-storage.md)。
-3. 可以询问已保存材料中的原文引句，或询问已保存 AMD 分析里的支持线索、反对线索和关键数字；再查看回答引用的来源。
-
-访客不会获得管理员权限；模型 Key 由用户在模型设置中提供，不是演示服务器提供的共享 Key。
-
-## 模型配置与本地对话归档
-
-- 可选预设模型或自定义 HTTPS 服务地址，并填写模型 ID 与显示名称；界面支持连通性测试、保存配置卡片和在对话输入区选择配置。
-- 支持模型发现的服务最多返回五个模型建议。服务商目录包括 DeepSeek、Kimi、MiniMax、Qwen、智谱、豆包、混元、百度、SiliconFlow、OpenRouter 和自定义端点；发现能力因服务而异。
-- 浏览器凭据使用 OPFS/IndexedDB；本地部署也可选择单独配置的服务端文件模式。浏览器不会把任意项目明文文件当作凭据库，这不代表静态加密。
-- 聊天历史不保存服务商 API Key。自动归档取决于浏览器能力，重载后需要重新选择归档文件。归档是本地对话记录，不是证据库；详见[对话归档说明](docs/chat-local-files.md)。
-
-## 研究材料与检索
-
-材料库管理已批准的 FAQ、抓取的 SEC 文件摘录，以及用户上传的 TXT、Markdown 和 PDF（不含 OCR）。后台提供上传/导入、检索测试和索引状态查看。PostgreSQL 保存原始材料、分块、任务和分析版本；Milvus 保存向量索引；BGE-M3 生成稠密向量，线上演示当前采用稠密检索与 BM25 经 RRF 融合的混合检索。可通过配置启用 `bge-reranker-v2-m3` 重排。
-
-解析会保留文档结构和表格表头。检索按所有者、股票、时间和版本范围过滤，支持幂等重试、重新索引和指向精确来源的引用。
-
-### 保存的分析也会成为知识
-
-保存的 AI 分析可进入知识检索，覆盖六类内容：摘要、事实、支持性推断、反向推断、关键数字和不确定性。分析保留版本、模型信息和原文引句；索引结果遵循公开/私有范围及所有者隔离。这些内容是从原始材料派生的 AI 分析，不等于经过独立核实的事实。
-
-公开验证中，两份已保存的 AMD 分析生成了 66 个分块，并完成索引、查询和引用回读。这验证了处理链路，不代表所有历史资料均已回填，也不保证每个问题都能准确检索。对话复盘与抽取是单独的可选操作，不会自动学习全部聊天。
-
-## 研究工作台
-
-- **关注列表与总览：**用户可维护美股代码列表；默认提供七只示例股票。股票详情按代码组织行情、材料、预测和评估。
-- **行情与基准：**展示已保存的 OHLCV 和 SPY 对照蜡烛图，并标注数据日期与抓取时间。历史快照支持按时间边界读取。
-- **SEC 文件：**保存文件目录、来源链接和已抓取摘录；可从材料工作流发起扫描。Agent 的读取工具只读已保存记录；个人身份确认后，写操作可按已保存的文件目录抓取 SEC 原文。
-- **材料分析：**为材料生成并缓存 AI 分析，保留版本、原文引句和引用导航。再次打开已保存分析不会重新调用模型。
-- **研究流程：**可复用材料分析生成 ResearchBrief，再交给实验性的 Jev 三分类决策模型评估看涨、中性或看跌。Jev 消费研究简报，不负责生成简报；固定目标与到期评估随不可变版本保存。
-- **评估与运行状态：**查看到期评估、历史回放、后台队列和监控状态。四种检索策略的 Recall@K/MRR 评测工具已实现；合成数据结果不能代表生产准确率。
-- **新闻线索：**保存新闻线索与聊天中的公开网页检索是两条独立只读路径；聊天不会自动保存网页为研究材料。
-
-Jev 预测会保留原始概率。系统具备基于已到期观察样本的本地校准流程，候选只有通过时间顺序留出验证后才可启用；历史回放的校准研究与实时样本分开。输出仍属实验性研究结果，不代表已获前向验证的投资胜率。
-
-## 架构
+## 🧭 工作流 / Shared workflow
 
 ```mermaid
 flowchart LR
-  U[研究者] --> FE[React 前端<br/>GitHub Pages]
-  FE --> API[FastAPI<br/>Mac / Funnel 或自托管]
-  API --> AG[Agent：SSE 对话]
-  AG --> T[七个只读工具]
-  T --> PG[(PostgreSQL<br/>业务记录与原始材料)]
-  T --> KB[知识检索服务]
-  API --> KB
-  PG --> CH[结构化分块]
-  CH --> EMB[BGE-M3 向量化]
-  EMB --> MV[(Milvus 索引)]
-  KB --> PG
-  KB --> MV
-  API --> LLM[独立配置的模型服务]
-  FE --> LOCAL[浏览器本地归档与配置]
+    U[自然语言请求 / Request] --> R[指代解析 / Resolve references]
+    R --> I[意图识别 / Recognize intent]
+    I --> P[任务规划 / Plan task]
+    P --> Q[知识检索查询扩展 / Knowledge-only query expansion]
+    Q --> T[证据检索 / Retrieve evidence]
+    T --> G{证据充分？ / Evidence sufficient?}
+    G -->|是 / Yes| A[生成带来源回答 / Answer with sources]
+    G -->|否 / No| N[说明无法确认 / Explain uncertainty]
+    P -->|写操作 / Write| C[确认卡 / Confirmation card]
+    C -->|同意 / Agree| X[执行已确认操作 / Execute confirmed action]
+    C -->|改选操作 / Choose another operation| P
+    C -->|取消 / Cancel| E((结束 / End))
+    T -.对话状态 / conversation state.-> DB[(PostgreSQL)]
+    X --> DB
+    DB --> M[材料分析与 ResearchBrief / Analysis]
+    M --> J[Jev 三分类实验输出 / Three-class output]
+    J --> V[不可变版本与固定目标 / Immutable version and fixed target]
 ```
 
-PostgreSQL 保存业务记录、原文、分块、任务和对话；Milvus 保存检索索引。原文与向量索引分开更新，不构成原子双写。模型服务与业务数据库分别配置。公开演示前端托管于 GitHub Pages，后端运行在维护者 Mac 并通过 Funnel 提供访问，因此演示依赖该主机在线；也可按文档在本地自托管。
+---
 
-## 当前边界
+# 中文
 
-Agent 的读取工具只读已保存记录；显式网页研究可读取有界的公开网页摘录（页面是错误页或导航壳时会被识别并跳过），不执行交易，也不实时查询行情。写操作仅限个人身份，且必须在界面确认后才会执行；公开网页新闻目前不是可导入的已保存来源。语义工作流（持久化 LangGraph）已部署到公开演示。上下文剩余显示的是本产品的上下文预算，不是你所选模型的窗口。证据门控是启发式检查，回答仍可能出错；引用不能证明每次回答都完全忠实。
+<a id="中文"></a>
 
-预测、材料分析和检索结果都需要研究者对照原始来源与时间核查。预测评估只对结果已成熟且数据可用的样本有意义；历史回放或合成检索指标不能说明未来表现。高并发保证与端到端原子写入尚未验收；真实模型与 Tavily 搜索已由维护者在影子环境验证，公开部署只做过游客冒烟，尚未独立验收。
+## 🌱 项目简介
 
-## 文档导航
+Market Evidence Agent 是一个**金融市场证据研究与版本化判断原型**。你可以用自然语言查询已保存的行情、SEC 文件和研究材料，也可以单独进行公开网页研究。系统整理可核对的来源，汇总材料分析，并将实验性三分类判断绑定到明确的证据版本和固定目标。
 
-- [本地运行与部署说明](docs/github-pages-local-backend.md)
-- [对话归档文件说明](docs/chat-local-files.md)
-- [模型配置与存储](docs/model-profile-storage.md) · [模型发现](docs/model-discovery.md)
-- [对话上下文管理与保留率评测](docs/agent-context.md) · [评测报告](docs/context-retention-report.md)
-- [知识检索说明](docs/knowledge-rag.md) · [四策略评测报告](docs/knowledge-rag-ch34-reports/four-strategy-evaluation.md)
-- [自定义股票支持](docs/custom-stock-support.md) · [实验预测与学习边界](docs/jev-local-learning.md)
+它让研究过程更容易回看：**当时看到了什么、依据来自哪里、后来新增了什么、判断如何变化。**
 
-## 后续方向
+## 💬 可以这样问
 
-可能的方向是降低每轮延迟（先测量再动）和让预算感知模型窗口；没有排期。系统没有实现多 Agent 自主协作或模型微调。
+- “查一下 AAPL 最近保存的 SEC 文件有哪些？”
+- “这份 10-K 对收入风险说了什么？请给我原文出处。”
+- “搜索近期关于 NVIDIA 的产品新闻，并列出发布日期和来源。”
+- “总结我保存的 MSFT 材料里，对现金流的不同说法。”
+- “解释看跌、中性、看涨三类概率分别表示什么。”
+- “把刚才找到的文件生成 AI 分析。”——会先显示操作确认卡。
+
+公开网页研究是独立的只读能力，网页结果不会自动导入已保存材料。写操作会先显示操作与目标，等待确认。
+
+## ✨ 能力一览
+
+### 自然语言研究 Agent
+
+请求依次经过**指代解析、意图识别、任务规划、知识检索查询扩展、证据检索与回答**。查询扩展只用于知识检索。证据门控会检查来源、实体和问题覆盖；证据不足时会说明无法确认。检索结果可保存为结果集，方便用“刚才那两条”继续追问。对话工作流状态保存在 PostgreSQL。
+
+### 数据与网页研究
+
+七种已保存数据读取工具覆盖价格历史、最新已保存预测、SEC 文件、材料、材料分析和研究 FAQ；`web_research` 是独立的第八种只读能力。公开网页发现使用 Tavily，也可读取用户提供的 HTTPS 页面，并限制请求大小、跳转次数与摘录长度。网页摘录可能不完整或过时，不会自动变成已保存或已核验材料。
+
+### 确认写操作与对话上下文
+
+Owner 发起写请求后，确认卡提供**同意、改选操作或取消**；取消会结束该写提案。Guest 不能执行写操作，读取任务状态不需要写确认。对话上下文分三层：近期轮次保留原文，较早轮次部分压缩，更早内容以追加式摘要保留。默认历史预算为 **64 KB**，可通过 `AGENT_CONTEXT_BUDGET_KB` 配置（16–128 KB）。摘要是记忆而非证据，回答依据来自本轮工具结果。
+
+### 可追溯分析与实验性判断
+
+单份材料分析可汇总为 `ResearchBrief`，记录引用材料、来源版本与决策时点。预测版本不可变，并关联固定目标合同。Jev 输出看跌 / 中性 / 看涨三类概率，默认 `FORECAST_DECISION_MODE=research_only`。成熟度评估区分尚未到期和可评估目标；历史回放与校准研究不证明前向准确率，本地校准也不等于微调 Jev。
+
+### 可选知识检索（RAG）
+
+可选 BGE-M3 / Milvus 路径支持 dense、BM25、hybrid、RRF 和**可选 reranking**，并提供服务端范围约束与来源引用。基础 RAG 不要求 reranker 模型文件；启用额外能力前请看[知识库与 RAG 指南](https://github.com/wp1461772181-glitch/market-evidence-agent/blob/847dc6fd8878f8ad510d67d6a21fdaa9b3cfee42/docs/knowledge-rag.md)。
+
+## 🧭 流程图
+
+上方共享流程图展示了读取与写入路径。公开网页研究不会自动入库；RAG 是可选检索路径。
+
+## 🏗️ 技术栈与源码地图
+
+| 部分 | 技术或入口 |
+| --- | --- |
+| 前端 | React 19、TypeScript、Vite；[应用入口](https://github.com/wp1461772181-glitch/market-evidence-agent/blob/847dc6fd8878f8ad510d67d6a21fdaa9b3cfee42/frontend/src/App.tsx)、[Agent 面板](https://github.com/wp1461772181-glitch/market-evidence-agent/blob/847dc6fd8878f8ad510d67d6a21fdaa9b3cfee42/frontend/src/AgentChatPanel.tsx) |
+| API 与工作流 | Python 3.12、FastAPI、LangGraph；[工作流](https://github.com/wp1461772181-glitch/market-evidence-agent/blob/847dc6fd8878f8ad510d67d6a21fdaa9b3cfee42/app/agent_workflow/graph.py)、[语义阶段](https://github.com/wp1461772181-glitch/market-evidence-agent/blob/847dc6fd8878f8ad510d67d6a21fdaa9b3cfee42/app/agent_workflow/semantic.py)、[写操作](https://github.com/wp1461772181-glitch/market-evidence-agent/blob/847dc6fd8878f8ad510d67d6a21fdaa9b3cfee42/app/agent_workflow/actions.py) |
+| 对话上下文 | 三层记忆与预算；[预算展示组件](https://github.com/wp1461772181-glitch/market-evidence-agent/blob/847dc6fd8878f8ad510d67d6a21fdaa9b3cfee42/frontend/src/ContextMeter.tsx) |
+| 研究数据 | [保存数据工具](https://github.com/wp1461772181-glitch/market-evidence-agent/blob/847dc6fd8878f8ad510d67d6a21fdaa9b3cfee42/app/agent_tools.py)、[网页研究](https://github.com/wp1461772181-glitch/market-evidence-agent/blob/847dc6fd8878f8ad510d67d6a21fdaa9b3cfee42/app/agent_web_research.py)、[材料分析](https://github.com/wp1461772181-glitch/market-evidence-agent/blob/847dc6fd8878f8ad510d67d6a21fdaa9b3cfee42/app/material_analysis.py)、[ResearchBrief](https://github.com/wp1461772181-glitch/market-evidence-agent/blob/847dc6fd8878f8ad510d67d6a21fdaa9b3cfee42/app/research_brief.py) |
+| 持久化与自动化 | PostgreSQL（含工作流检查点）；GitHub Actions 使用 PostgreSQL 16、Node.js 22；[CI 配置](https://github.com/wp1461772181-glitch/market-evidence-agent/blob/847dc6fd8878f8ad510d67d6a21fdaa9b3cfee42/.github/workflows/ci.yml) |
+
+## 🚀 本地开发（可选）
+
+需要 Python **3.12**、Node.js **22**，以及已配置并初始化 PostgreSQL 的本地环境。基础 Python API 也以数据库已就绪为前提；迁移、worker 和 RAG 是额外设置。仓库根目录没有 `docker-compose.yml`。
+
+```bash
+git clone https://github.com/wp1461772181-glitch/market-evidence-agent.git
+cd market-evidence-agent
+
+# 仅在没有现有配置时，从模板创建 .env
+[ -f .env ] || cp .env.example .env
+
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e '.[test]'
+
+cd frontend
+npm ci
+cd ..
+```
+
+请先阅读[本地后端与部署说明](https://github.com/wp1461772181-glitch/market-evidence-agent/blob/847dc6fd8878f8ad510d67d6a21fdaa9b3cfee42/docs/github-pages-local-backend.md)和[环境变量模板](https://github.com/wp1461772181-glitch/market-evidence-agent/blob/847dc6fd8878f8ad510d67d6a21fdaa9b3cfee42/.env.example)，按本地功能准备数据库和模型服务；密钥不要提交到 Git。基础启动方式如下：
+
+```bash
+# Terminal 1: configured, initialized PostgreSQL must be available
+source .venv/bin/activate
+uvicorn app.main:app --reload
+
+# Terminal 2
+cd frontend
+npm run dev
+```
+
+按 Vite 输出的本地地址打开前端。RAG 另需其依赖、Milvus、知识 schema 和索引；请参阅[RAG 指南](https://github.com/wp1461772181-glitch/market-evidence-agent/blob/847dc6fd8878f8ad510d67d6a21fdaa9b3cfee42/docs/knowledge-rag.md)与[`requirements-rag.txt`](https://github.com/wp1461772181-glitch/market-evidence-agent/blob/847dc6fd8878f8ad510d67d6a21fdaa9b3cfee42/requirements-rag.txt)。reranking 可选。
+
+### 开发者检查（按需）
+
+```bash
+python -m pytest -q
+cd frontend
+npm run test:i18n
+npm run build
+```
+
+## 📚 延伸阅读
+
+- [对话上下文与预算](https://github.com/wp1461772181-glitch/market-evidence-agent/blob/847dc6fd8878f8ad510d67d6a21fdaa9b3cfee42/docs/agent-context.md)
+- [Jev 本地校准与成熟度边界](https://github.com/wp1461772181-glitch/market-evidence-agent/blob/847dc6fd8878f8ad510d67d6a21fdaa9b3cfee42/docs/jev-local-learning.md)
+- [自定义股票代码支持](https://github.com/wp1461772181-glitch/market-evidence-agent/blob/847dc6fd8878f8ad510d67d6a21fdaa9b3cfee42/docs/custom-stock-support.md)
+- [Agent 工作流设计说明](https://github.com/wp1461772181-glitch/market-evidence-agent/blob/847dc6fd8878f8ad510d67d6a21fdaa9b3cfee42/docs/agent-research-v3-spec.md)
+- [模型配置文件存储](https://github.com/wp1461772181-glitch/market-evidence-agent/blob/847dc6fd8878f8ad510d67d6a21fdaa9b3cfee42/docs/model-profile-storage.md)
+
+## ⚖️ 研究边界
+
+- 这是持续演进的研究原型，不是投资建议、交易系统或收益承诺。
+- 三分类输出是实验性判断；历史回放和本地校准不证明前向准确率。
+- 结果受已保存数据、网页可读性和模型配置影响；摘录可能不完整，证据门控不能替代核对原文。
+- 后端取决于维护者侧环境；RAG 需要额外服务与索引。
+
+---
+
+# English
+
+<a id="english"></a>
+
+## 🌱 What it is
+
+Market Evidence Agent is a **market-research and versioned-judgment prototype**. Ask natural-language questions about saved price history, SEC filings, and research materials, or run public-web research as a separate read capability. It gathers source-backed results, can synthesize material analyses, and links experimental three-class judgments to a specific evidence version and fixed target.
+
+The research trail stays easier to revisit: **what was available then, where a claim came from, what changed later, and how the judgment evolved.**
+
+## 💬 Example prompts
+
+- “Which AAPL SEC filings have been saved most recently?”
+- “What does this 10-K say about revenue risks? Show the source.”
+- “Search recent NVIDIA product news and include publication dates and sources.”
+- “Compare saved MSFT materials that discuss cash flow.”
+- “Explain what bearish, neutral, and bullish probabilities mean.”
+- “Create an AI analysis for the filing we just found.” — a confirmation card appears first.
+
+Public-web research is a separate read capability; web results are not automatically imported into saved materials. Write requests show their operation and targets for confirmation.
+
+## ✨ What it includes
+
+### Natural-language research agent
+
+Requests proceed through **reference resolution, intent recognition, task planning, knowledge-retrieval query expansion, evidence retrieval, and answering**. Query expansion is only for knowledge retrieval. The evidence gate checks sources, entities, and question coverage; when evidence is insufficient, the agent says it cannot confirm. Results can be saved for follow-ups such as “those two filings.” Workflow state is checkpointed in PostgreSQL.
+
+### Data and public-web research
+
+Seven saved-data read tools cover price history, the latest saved forecast, SEC filings, materials, material analyses, and the research FAQ; `web_research` is a separate eighth read capability. Public-web discovery uses Tavily and can also read a user-provided HTTPS page, with limits on request size, redirects, and excerpt length. Web excerpts may be incomplete or stale and do not automatically become saved or verified materials.
+
+### Confirmed writes and conversation context
+
+An owner write request opens a card with **agree, choose another operation, or cancel**; cancellation ends that proposal. Guests cannot execute writes, while reading task status needs no write confirmation. Conversation context has three layers: recent turns remain raw, older turns are partly compressed, and earlier content is retained in append-only summaries. The default history budget is **64 KB**, configurable with `AGENT_CONTEXT_BUDGET_KB` (16–128 KB). Summaries are memory, not evidence; answer evidence comes from current-turn tool results.
+
+### Traceable analysis and experimental judgments
+
+Individual material analyses can be synthesized into a `ResearchBrief` with source-version references and a decision time. Forecast versions are immutable and linked to a fixed target contract. Jev produces bearish / neutral / bullish probabilities, with `FORECAST_DECISION_MODE=research_only` as the default. Maturity evaluation distinguishes pending targets from evaluable ones; historical replay and calibration research do not establish forward accuracy, and local calibration is not model fine-tuning.
+
+### Optional knowledge retrieval (RAG)
+
+The optional BGE-M3 / Milvus path supports dense, BM25, hybrid, RRF, and **optional reranking**, with server-side scope constraints and source quotes. Reranker model files are not required for basic RAG. See the [knowledge and RAG guide](https://github.com/wp1461772181-glitch/market-evidence-agent/blob/847dc6fd8878f8ad510d67d6a21fdaa9b3cfee42/docs/knowledge-rag.md) before enabling additional components.
+
+## 🧭 Workflow
+
+The shared diagram above shows the read and write paths. Public-web research is not an automatic import pipeline, and RAG is optional.
+
+## 🏗️ Technology and source map
+
+| Area | Technology or entry point |
+| --- | --- |
+| Frontend | React 19, TypeScript, Vite; [app entry](https://github.com/wp1461772181-glitch/market-evidence-agent/blob/847dc6fd8878f8ad510d67d6a21fdaa9b3cfee42/frontend/src/App.tsx), [agent panel](https://github.com/wp1461772181-glitch/market-evidence-agent/blob/847dc6fd8878f8ad510d67d6a21fdaa9b3cfee42/frontend/src/AgentChatPanel.tsx) |
+| API and workflow | Python 3.12, FastAPI, LangGraph; [workflow](https://github.com/wp1461772181-glitch/market-evidence-agent/blob/847dc6fd8878f8ad510d67d6a21fdaa9b3cfee42/app/agent_workflow/graph.py), [semantic stages](https://github.com/wp1461772181-glitch/market-evidence-agent/blob/847dc6fd8878f8ad510d67d6a21fdaa9b3cfee42/app/agent_workflow/semantic.py), [write actions](https://github.com/wp1461772181-glitch/market-evidence-agent/blob/847dc6fd8878f8ad510d67d6a21fdaa9b3cfee42/app/agent_workflow/actions.py) |
+| Conversation context | Three-layer memory and budget; [budget display component](https://github.com/wp1461772181-glitch/market-evidence-agent/blob/847dc6fd8878f8ad510d67d6a21fdaa9b3cfee42/frontend/src/ContextMeter.tsx) |
+| Research data | [saved-data tools](https://github.com/wp1461772181-glitch/market-evidence-agent/blob/847dc6fd8878f8ad510d67d6a21fdaa9b3cfee42/app/agent_tools.py), [web research](https://github.com/wp1461772181-glitch/market-evidence-agent/blob/847dc6fd8878f8ad510d67d6a21fdaa9b3cfee42/app/agent_web_research.py), [material analysis](https://github.com/wp1461772181-glitch/market-evidence-agent/blob/847dc6fd8878f8ad510d67d6a21fdaa9b3cfee42/app/material_analysis.py), [ResearchBrief](https://github.com/wp1461772181-glitch/market-evidence-agent/blob/847dc6fd8878f8ad510d67d6a21fdaa9b3cfee42/app/research_brief.py) |
+| Persistence and automation | PostgreSQL checkpoints; GitHub Actions with PostgreSQL 16 and Node.js 22; [CI workflow](https://github.com/wp1461772181-glitch/market-evidence-agent/blob/847dc6fd8878f8ad510d67d6a21fdaa9b3cfee42/.github/workflows/ci.yml) |
+
+## 🚀 Local development (optional)
+
+Requires Python **3.12**, Node.js **22**, and a configured, initialized local PostgreSQL environment. The basic Python API also assumes the database is ready; migrations, workers, and RAG require additional setup. There is no root `docker-compose.yml`.
+
+```bash
+git clone https://github.com/wp1461772181-glitch/market-evidence-agent.git
+cd market-evidence-agent
+
+# Create .env from the template only when no config already exists.
+[ -f .env ] || cp .env.example .env
+
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e '.[test]'
+
+cd frontend
+npm ci
+cd ..
+```
+
+Read the [local backend and deployment guide](https://github.com/wp1461772181-glitch/market-evidence-agent/blob/847dc6fd8878f8ad510d67d6a21fdaa9b3cfee42/docs/github-pages-local-backend.md) and [environment template](https://github.com/wp1461772181-glitch/market-evidence-agent/blob/847dc6fd8878f8ad510d67d6a21fdaa9b3cfee42/.env.example) to prepare your database, model service, and local settings. Keep real secrets out of Git. To run the servers:
+
+```bash
+# Terminal 1: configured, initialized PostgreSQL must be available
+source .venv/bin/activate
+uvicorn app.main:app --reload
+
+# Terminal 2
+cd frontend
+npm run dev
+```
+
+Open the local address printed by Vite. RAG separately requires its dependencies, Milvus, knowledge schema, and indexing; see the [RAG guide](https://github.com/wp1461772181-glitch/market-evidence-agent/blob/847dc6fd8878f8ad510d67d6a21fdaa9b3cfee42/docs/knowledge-rag.md) and [`requirements-rag.txt`](https://github.com/wp1461772181-glitch/market-evidence-agent/blob/847dc6fd8878f8ad510d67d6a21fdaa9b3cfee42/requirements-rag.txt). Reranking is optional.
+
+### Optional developer checks
+
+```bash
+python -m pytest -q
+cd frontend
+npm run test:i18n
+npm run build
+```
+
+## 📚 Further reading
+
+- [Conversation context and budget](https://github.com/wp1461772181-glitch/market-evidence-agent/blob/847dc6fd8878f8ad510d67d6a21fdaa9b3cfee42/docs/agent-context.md)
+- [Jev local calibration and maturity boundaries](https://github.com/wp1461772181-glitch/market-evidence-agent/blob/847dc6fd8878f8ad510d67d6a21fdaa9b3cfee42/docs/jev-local-learning.md)
+- [Custom stock-symbol support](https://github.com/wp1461772181-glitch/market-evidence-agent/blob/847dc6fd8878f8ad510d67d6a21fdaa9b3cfee42/docs/custom-stock-support.md)
+- [Agent workflow design](https://github.com/wp1461772181-glitch/market-evidence-agent/blob/847dc6fd8878f8ad510d67d6a21fdaa9b3cfee42/docs/agent-research-v3-spec.md)
+- [Model-profile storage](https://github.com/wp1461772181-glitch/market-evidence-agent/blob/847dc6fd8878f8ad510d67d6a21fdaa9b3cfee42/docs/model-profile-storage.md)
+
+## ⚖️ Research limitations
+
+- This is an evolving research prototype, not investment advice, a trading system, or a promise of returns.
+- Three-class outputs are experimental; historical replay and local calibration do not establish forward accuracy.
+- Results depend on saved data, page availability, and model configuration. Excerpts may be incomplete, and evidence gates do not replace checking original sources.
+- Backend actions depend on the maintainer-hosted environment; RAG needs additional services and indexing.
+
+---
+
+Based on source snapshot [`847dc6f`](https://github.com/wp1461772181-glitch/market-evidence-agent/tree/847dc6fd8878f8ad510d67d6a21fdaa9b3cfee42).
