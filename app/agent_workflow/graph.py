@@ -18,6 +18,7 @@ from .routing import classify_intent, resolve_focus, route_for_intent
 from ..agent_chat_identity import owner_credential_matches
 from ..agent_context import BUDGET_KB, CONTEXT_GUARD_BYTES, HISTORY_TOKEN_ALLOWANCE, earlier_summary
 from ..company_directory import COMPANIES
+from ..freshness import wants_recent
 from .request_resolution import extract_slots, parse_classification, resume_request, is_pending_reply, is_explicit_new_request, ACTION_CHOICES, ACCESSION, PERIOD, SOURCE_ID, TASK_ID
 from .state import AgentRuntimeContext, AgentWorkflowState, checkpoint_thread_id
 from .semantic import (NON_TICKERS, SCOPE_KEYS, SCOPE_TOOLS, SemanticError, call_stage, catalog, explicit_periods,
@@ -128,7 +129,7 @@ def deterministic_confidence_gate(question: str, result: dict, citations: list[d
         terms = [term for term in terms if term not in entity_terms]
     if terms and not any(term in text for term in terms):
         return False, "weak_question_coverage"
-    if is_web and re.search(r"(?:\b(?:latest|today|current|recent)\b|最新|今天|当前|近期)", question, re.I):
+    if is_web and wants_recent(question):
         if not all(isinstance(row, dict) and row.get("published_at") for row in rows):
             return False, "publisher_date_unavailable"
     return True, "heuristic_coverage_pass"
@@ -202,6 +203,20 @@ def _web_argument(question: str) -> str | None:
         except ValueError:
             return None
     return question[:512]
+
+
+def _with_latin_name(query: str, symbols: list[str]) -> str:
+    """A search written with a company's Chinese name finds little of the English-language news about
+    it.  The company's English name and ticker (the directory's) go next to the user's name when the
+    query holds neither; the query's company is the same, so its scope does not change."""
+    lowered = query.lower()
+    extra: list[str] = []
+    for symbol in symbols[:2]:
+        names = [name for name in COMPANIES.get(symbol, ()) if name.isascii() and name != symbol.lower()]
+        if not names or any(_names_alias(name, lowered) for name in (symbol.lower(), *names)):
+            continue
+        extra += [min(names, key=len).title(), symbol]
+    return f"{query} {' '.join(extra)}"[:300] if extra else query
 
 
 def _expanded_web_query(question: str, symbols: list[str]) -> str:
@@ -713,8 +728,10 @@ async def _classify_intent(state: AgentWorkflowState, runtime: Runtime[AgentRunt
         emit("status", status="recognizing_intent")
         stage_cost = 0
         try:
+            previous = [item for item in state.get("semantic_intents") or [] if isinstance(item, str)][:4]
             value, cost = await call_stage("intent_recognizer", {"question": state["question"],
-                "reference": state["semantic_reference"], "recent": state.get("messages", [])[-4:]},
+                "reference": state["semantic_reference"], "recent": state.get("messages", [])[-4:],
+                **({"previous_purposes": previous} if previous else {})},
                 context, state.get("token_usage", 0), state["started_at"])
             stage_cost = cost
             purposes = list(dict.fromkeys(value.get("purposes")))
@@ -1040,7 +1057,7 @@ async def _route_intent(state: AgentWorkflowState, runtime: Runtime[AgentRuntime
             required = []
             for task in plan:
                 symbol = task["symbols"][0] if len(task["symbols"]) == 1 else None
-                args = ({"query_or_url": task["query"]} if task["tool"] == "web_research" else
+                args = ({"query_or_url": _with_latin_name(task["query"], task["symbols"])} if task["tool"] == "web_research" else
                         {"symbol": symbol} if task["tool"] in {"query_stock_prices", "query_latest_forecast", "query_sec_filings", "query_material_analysis"} and symbol else
                         {"symbol": symbol, "keyword": task["query"][:80]} if task["tool"] in {"query_materials", "search_material_analysis"} and symbol else
                         {"keyword": task["query"][:80]} if task["tool"] == "query_research_faq" else {})

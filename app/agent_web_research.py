@@ -18,6 +18,7 @@ from langchain_core.tools import tool
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .company_directory import COMPANIES
+from .freshness import published_within, search_time_range, window_days
 
 MAX_PAGE_BYTES = 1_000_000
 MAX_SEARCH_BYTES = 180_000
@@ -443,6 +444,15 @@ async def _get_public(url: str, *, limit: int) -> tuple[str, str, bytes]:
     raise ValueError("upstream_unavailable")
 
 
+def _tavily_body(query: str, include_raw_content: bool) -> dict:
+    """The search request.  A question for the recent end of the news (or for a named span) carries the
+    backend's nearest time range, so that old articles are not what comes back."""
+    time_range = search_time_range(query)
+    return {"query": query[:300], "max_results": 5, "search_depth": "basic",
+            "include_raw_content": include_raw_content, "topic": "news",
+            **({"time_range": time_range} if time_range else {})}
+
+
 async def _search(query: str, include_raw_content: bool = True) -> list[dict]:
     backend = os.getenv("WEB_RESEARCH_BACKEND", "tavily").strip().lower()
     if backend == "tavily":
@@ -454,9 +464,7 @@ async def _search(query: str, include_raw_content: bool = True) -> list[dict]:
                                      trust_env=False, transport=PinnedPublicTransport(allow_internal_query=True)) as client:
             async with client.stream("POST", "https://api.tavily.com/search",
                                      headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                                     json={"query": query[:300], "max_results": 5, "search_depth": "basic",
-                                           "include_raw_content": include_raw_content, "topic": "news",
-                                           **({"time_range": "week"} if re.search(r"(?:\b(?:latest|today|recent|this week)\b|最新|今天|近期)", query, re.I) else {})}) as response:
+                                     json=_tavily_body(query, include_raw_content)) as response:
                 if response.status_code >= 400:
                     raise ValueError("search_backend_unavailable")
                 raw = await _read_bounded(response, MAX_SEARCH_BYTES)
@@ -506,6 +514,14 @@ async def _research(query_or_url: str) -> dict:
             # One long article can push Tavily's raw_content past the response cap; ask for
             # snippets only and read each page through the normal bounded public fetch.
             candidates = await _search(query_or_url, include_raw_content=False)
+    if not is_url and window_days(query_or_url) is not None:
+        # A span the user named ("半个月内"): the search backend's range is only the nearest one that holds it,
+        # so what is older than the span, or cannot be dated, is left out.
+        span = window_days(query_or_url)
+        candidates = [item for item in candidates if published_within(item.get("published_at"), span, fetched_at)]
+        if not candidates:
+            return {"ok": True, "data": [], "source": "public web search and fetched page excerpts",
+                    "as_of": fetched_at.isoformat(), "error_code": None}
     sources = []
     focus_query = None if is_url else query_or_url      # an exact URL read keeps its leading text
     started = time.monotonic()

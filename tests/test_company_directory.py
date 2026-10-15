@@ -112,7 +112,7 @@ def test_a_company_in_the_directory_is_searched_without_a_ticker_typed():
                        planner=_plan(_task("news", "web_research", "web_research", ["MU"], "美光 新闻")),
                        query_expander=_no_variants, executor=execute, answerer=_answer("美光的新闻 [1]。"))
     final = _turn(build_workflow(), runtime, "帮我搜一下美光的新闻", "turn")
-    assert calls == [("web_research", {"query_or_url": "美光 新闻"})]
+    assert calls == [("web_research", {"query_or_url": "美光 新闻 Micron MU"})]   # the English name and ticker join it
     assert final["terminal_status"] == "succeeded"
 
 

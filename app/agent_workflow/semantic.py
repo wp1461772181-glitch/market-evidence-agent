@@ -52,6 +52,8 @@ def _planner_prompt() -> str:
         "with the keys id, purpose, tool, symbols, query, depends_on and, only when needed, scope. "
         "purpose must be exactly one of these labels and tool must be one of the tools listed for it: "
         f"{pairs}. "
+        "Every task's purpose must be one of the input's purposes (the intent stage's reading of the request): "
+        "never plan another kind of data, such as stock prices for a request read as web_research. "
         "scope is an optional object for a one-company saved-filing or saved-analysis task with only the "
         "keys source_id, accession_number, form (10-K, 10-Q or 8-K) and period, each copied exactly from "
         "the user's words or the referenced result set; when companies ask for different reports, give "
@@ -120,7 +122,12 @@ STAGE_PROMPTS = {
                           "trivia, entertainment or personal advice; use it alone. A request with several parts needs one "
                           "purpose per part. Summarizing prior results is summarize_existing; never classify a conversational "
                           "summary as system_action. A request that searches the web and then summarizes or explains what it "
-                          "finds needs both web_research and summarize_existing. Original source and saved AI analysis differ."),
+                          "finds needs both web_research and summarize_existing. Original source and saved AI analysis differ. "
+                          "previous_purposes, when present, are the purposes of this conversation's previous request. A "
+                          "message that only refines that request (a time window such as 'within half a month', a "
+                          "count, a source, 'recent') and asks for no different kind of data keeps those purposes: after "
+                          "a web news search, 'the recent market, within half a month' is still web_research. An "
+                          "explicit price, a filing, an analysis or another company is judged on its own words."),
     "planner": _planner_prompt(),
     "query_expander": "Only for the active retrieval task. Return JSON exactly: variants array of up to two related query strings. Preserve all symbols, exact source, periods, numbers and negation; do not add unrelated topics.",
 }
@@ -246,7 +253,8 @@ def catalog(result_sets: list[dict], owner: str, conversation: str) -> list[dict
 
 
 TOPIC_GROUPS = (
-    ("latest", "recent", "today", "current", "最新", "近期", "今天", "当前"),
+    ("latest", "recent", "today", "current", "最新", "近期", "今天", "当前",
+     "最近", "近日", "近几天", "这几天", "半个月", "半月", "本周", "本月", "this week", "this month", "past week", "past month"),
     ("revenue", "sales", "营收", "收入", "营业收入"),
     ("profit", "earnings", "net income", "利润", "净利润"),
     ("cash flow", "现金流"),
