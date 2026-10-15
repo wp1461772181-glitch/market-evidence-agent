@@ -373,11 +373,33 @@ ORDINAL_MARK = re.compile(r"第\s*[零〇一二两三四五六七八九十\d]{1,
                           r"|\bthe (?:first|second|third|fourth|fifth|sixth|last) \w+", re.I)
 
 
+QUEUE_CARD = "company_not_in_queue"
+
+
+def _queue_symbol(pending: dict, reply: str, owner: str, conversation: str) -> str | None:
+    """The company the user answered the research-queue card for: one of the card's own buttons (the
+    values are minted by the server) or a ticker typed instead.  Nothing the model wrote takes part."""
+    if (pending.get("reason") != QUEUE_CARD or pending.get("owner") != owner
+            or pending.get("conversation") != conversation or pending.get("expires_at") is None):
+        return None
+    text = reply.strip()
+    for choice in pending.get("choices") or []:
+        if isinstance(choice, dict) and choice.get("value") == text and ":" in text:
+            return text.partition(":")[2] or None
+    if is_pending_reply(pending, text):
+        symbols = extract_slots(text)["symbols"]
+        return symbols[0] if len(symbols) == 1 else None
+    return None
+
+
 def _company_reply(pending: dict, reply: str, owner: str, conversation: str) -> str | None:
     """The question the "which company?" card was asked for, continued with a reply that is a
     bounded company value.  Both are the user's own words (the card's saved question, the reply),
     so no model is asked and no model text takes part."""
     asked = pending.get("question")
+    symbol = _queue_symbol(pending, reply, owner, conversation)
+    if symbol and isinstance(asked, str) and asked.strip():
+        return f"{asked.strip()} {symbol}"      # the user's saved words, with the code they chose
     if (pending.get("reason") != "reference_company_required" or pending.get("owner") != owner
             or pending.get("conversation") != conversation or pending.get("expires_at") is None
             or not isinstance(asked, str) or not asked.strip() or not is_pending_reply(pending, reply)):
@@ -510,6 +532,7 @@ async def _resolve_reference(state: AgentWorkflowState, runtime: Runtime[AgentRu
         if proposal_reply:
             resumed = proposal_reply  # a click on the write card: its frozen proposal continues, no model
         company_reply = None if resumed else _company_reply(previous, incoming, owner, conversation)
+        queue_symbol = None if resumed else _queue_symbol(previous, incoming, owner, conversation)
         if company_reply:
             words = company_reply  # the user's saved question and their reply: one request of theirs
         stage_cost = cost = 0
@@ -621,6 +644,8 @@ async def _resolve_reference(state: AgentWorkflowState, runtime: Runtime[AgentRu
                 "semantic_owner": owner, "semantic_conversation": conversation,
                 "result_sets": saved, "legacy_result_sets": [],
                 "legacy_source_choices": state.get("legacy_source_choices", []),
+                **({"queue_decided": list(dict.fromkeys([*(state.get("queue_decided") or []), queue_symbol]))}
+                   if queue_symbol else {}),
                 "resume_slots": resumed, "pending_request": None,
                 # One durable idempotency key per pending request, whatever the reply's wording.
                 "action_request_id": (hashlib.sha256(f"{conversation}:{previous['id']}".encode()).hexdigest()[:64]
@@ -958,8 +983,13 @@ async def _route_intent(state: AgentWorkflowState, runtime: Runtime[AgentRuntime
                 if ungrounded:
                     # The planner knows a ticker that nothing the user wrote (or the server holds) carries:
                     # a company named in words this product has no entry for.  It is never scope on the
-                    # model's say-so; the user is told which code to write, and that code grounds it.
-                    raise SemanticError("plan_company_unconfirmed", hint=", ".join(ungrounded))
+                    # model's say-so.  A client that sent its research queue gets the card (the user's
+                    # click grounds the code); one that did not is told which code to write.
+                    if runtime.context.watchlist is None:
+                        raise SemanticError("plan_company_unconfirmed", hint=", ".join(ungrounded))
+                    return {"next_action": "clarify", "gate_passed": False, "gate_reason": QUEUE_CARD,
+                            "semantic_hint": ungrounded[0], "token_usage": state.get("token_usage", 0) + cost,
+                            "node_log": _log(state, "route_intent")}
                 if task["tool"] == "web_research" and task["purpose"] != "web_research":
                     raise SemanticError("plan_purpose_mismatch")
                 if task["tool"] == "web_research":
@@ -990,6 +1020,17 @@ async def _route_intent(state: AgentWorkflowState, runtime: Runtime[AgentRuntime
                         task["query"][:80])
                 if task["tool"] == "summarize_existing_results" and reference.get("result_set_id") is None and not task["depends_on"]:
                     raise SemanticError("plan_summary_source_missing")
+            queue = runtime.context.watchlist
+            if queue is not None and not any(task["purpose"] == "system_action" for task in plan):
+                # A company that is not in the user's research queue (and that they have not answered for in
+                # this conversation): ask whether to add it or only look this once.  A write has its own card.
+                decided = set(state.get("queue_decided") or [])
+                missing = [symbol for task in plan for symbol in task["symbols"]
+                           if symbol not in queue and symbol not in decided]
+                if missing:
+                    return {"next_action": "clarify", "gate_passed": False, "gate_reason": QUEUE_CARD,
+                            "semantic_hint": missing[0], "token_usage": state.get("token_usage", 0) + cost,
+                            "node_log": _log(state, "route_intent")}
             scopes = await _task_scopes(plan, state)
             if any(scope.get("period") and not (scope.get("source_id") or scope.get("accession_number"))
                    for scope in scopes.values()):
@@ -1875,6 +1916,19 @@ async def _clarify(state: AgentWorkflowState) -> dict:
         emit("delta", text=answer)
         return {"answer": answer, "pending_request": pending, "terminal_status": "waiting_for_input",
                 "node_log": _log(state, "clarify")}
+    if reason == QUEUE_CARD:
+        symbol = str(state.get("semantic_hint") or "").strip()
+        answer = f"{symbol} 不在你的研究队列里。要把它加入研究队列，还是只看这一次的结果？"
+        pending = {"id": str(uuid.uuid4()), "question": state.get("original_question") or state["question"],
+                   "intent": state.get("intent"), "symbols": [symbol], "reason": reason,
+                   "choices": [{"label": "加入研究队列并查询", "value": f"queue_add:{symbol}"},
+                               {"label": "不加入，只看这次", "value": f"queue_view:{symbol}"}],
+                   "owner": state.get("semantic_owner"), "conversation": state.get("semantic_conversation"),
+                   "expires_at": (datetime.now(UTC) + PENDING_ACTION_TTL).isoformat()}
+        emit("clarification", request_id=pending["id"], reason=reason, choices=pending["choices"])
+        emit("delta", text=answer)
+        return {"answer": answer, "pending_request": pending, "terminal_status": "waiting_for_input",
+                "node_log": _log(state, "clarify")}
     answer = {"missing_stock_focus": "请指定要查询的股票。", "missing_comparison_symbol": "请指定要比较的另一家公司。",
               "symbol_suggestion": "APPL 可能是 AAPL。请选择股票代码或手动输入。",
               "period_requires_accession": "当前资料没有可靠的报告期间字段。请提供该报告的 accession，或改按申报日期查询。",
@@ -2247,12 +2301,13 @@ async def stream_workflow(*, question: str, messages: list[dict], provider: str,
                           conversation_id: str, identity_credential: str = "", turn_id: str = "",
                           pending_request_id: str | None = None, legacy_result_sets: list[dict] | None = None,
                           legacy_source_choices: list[dict] | None = None,
-                          classifier: object | None = None):
+                          classifier: object | None = None, watchlist: list[str] | None = None):
     from .checkpoints import open_postgres_checkpointer
     from .settings import checkpoint_database_url
     context = AgentRuntimeContext(provider=provider, model=model, api_key=api_key, base_url=base_url,
                                   owner_hash=owner_hash, conversation_id=conversation_id,
-                                  identity_credential=identity_credential, classifier=classifier)
+                                  identity_credential=identity_credential, classifier=classifier,
+                                  watchlist=None if watchlist is None else tuple(watchlist))
     thread = checkpoint_thread_id(owner_hash, conversation_id)
     async with open_postgres_checkpointer(checkpoint_database_url()) as saver:
         graph = build_workflow(saver)
@@ -2304,7 +2359,8 @@ async def run_workflow(**kwargs) -> dict:
     from .settings import checkpoint_database_url
     context = AgentRuntimeContext(provider=kwargs["provider"], model=kwargs["model"], api_key=kwargs["api_key"],
                                   base_url=kwargs.get("base_url"), owner_hash=kwargs["owner_hash"],
-                                  conversation_id=kwargs["conversation_id"], identity_credential=kwargs.get("identity_credential", ""))
+                                  conversation_id=kwargs["conversation_id"], identity_credential=kwargs.get("identity_credential", ""),
+                                  watchlist=None if kwargs.get("watchlist") is None else tuple(kwargs["watchlist"]))
     async with open_postgres_checkpointer(checkpoint_database_url()) as saver:
         graph = build_workflow(saver)
         return await graph.ainvoke({"question": kwargs["question"], "messages": kwargs["messages"],

@@ -130,7 +130,7 @@ def is_pending_reply(pending: dict[str, Any], reply: str) -> bool:
     if is_explicit_new_request(text):
         return False
     if reason in {"missing_stock_focus", "missing_comparison_symbol", "missing_action_symbol", "symbol_suggestion",
-                  "reference_company_required"}:
+                  "reference_company_required", "company_not_in_queue"}:
         return _standalone_symbol(text)
     if reason == "missing_action_source":
         stripped = SOURCE_ID.sub("", ACCESSION.sub("", text)).strip(" ,，。:：")

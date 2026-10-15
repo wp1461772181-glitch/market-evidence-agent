@@ -8,7 +8,8 @@ import { EvidenceCenter } from "./EvidenceCenter";
 import { MaterialLibrary } from "./MaterialLibrary";
 import { HistoricalReplayWorkspace } from "./HistoricalReplayWorkspace";
 import { normalizeTicker, normalizeWatchlist, selectionForWatchlist, MAX_WATCHLIST } from "./watchlist.mjs";
-import { getChatMode, setChatMode, personalChatLogin } from "./api";
+import { getChatMode, setChatMode, personalChatLogin, getResearchQueue, putResearchQueue } from "./api";
+import { registerWatchlistAdder, setWatchlistSnapshot } from "./watchlist-bridge.mjs";
 import { chatSessionKey } from "./chat-session.mjs";
 import { completePersonalLogin } from "./chat-mode-switch.mjs";
 
@@ -47,6 +48,46 @@ function WorkspaceApp({onModeChange}:{onModeChange:(mode:"guest"|"personal")=>vo
   const activeSymbolRef = useRef(requestedSymbol);
   activeSymbolRef.current = requestedSymbol;
   useEffect(() => { try { localStorage.setItem(WATCHLIST_KEY, JSON.stringify(symbols)); } catch { /* optional preference */ } }, [symbols]);
+  // The queue the chat request carries, and the add the agent's "not in your research queue" card uses.
+  useEffect(() => { setWatchlistSnapshot(symbols); }, [symbols]);
+  useEffect(() => registerWatchlistAdder((raw: string) => {
+    const ticker = normalizeTicker(raw);
+    if (ticker) setSymbols(items => items.includes(ticker) || items.length >= MAX_WATCHLIST ? items : [...items, ticker]);
+  }), []);
+  // The owner's queue lives in the database (clearing the browser must not clear it); a guest's stays in the
+  // browser.  The browser copy is the cache: it shows at once, and the server's copy replaces it when read.
+  const personal = getChatMode() === "personal";
+  const [queueReady, setQueueReady] = useState(!personal);
+  const lastSavedQueue = useRef("");
+  useEffect(() => {
+    if (!personal) return;
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const saved = await getResearchQueue(controller.signal);
+        if (controller.signal.aborted) return;
+        if (saved === null) {
+          // First time: the list this browser holds becomes the owner's.
+          lastSavedQueue.current = JSON.stringify(symbols);
+          await putResearchQueue(symbols, controller.signal);
+        } else {
+          const clean = [...new Set(saved.map(normalizeTicker).filter((item): item is string => Boolean(item)))].slice(0, MAX_WATCHLIST);
+          lastSavedQueue.current = JSON.stringify(clean);
+          setSymbols(clean);
+        }
+      } catch { /* offline, or the server copy is not readable: the browser copy stays */ }
+      finally { if (!controller.signal.aborted) setQueueReady(true); }
+    })();
+    return () => controller.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [personal]);
+  useEffect(() => {
+    if (!personal || !queueReady) return;
+    const body = JSON.stringify(symbols);
+    if (body === lastSavedQueue.current) return;
+    lastSavedQueue.current = body;
+    void putResearchQueue(symbols).catch(() => { /* the browser copy still holds it */ });
+  }, [symbols, personal, queueReady]);
   useEffect(() => { if (symbols.length) setRequestedSymbol(current => selectionForWatchlist(current, symbols)); }, [symbols]);
   useEffect(() => { try { localStorage.setItem("market-evidence-agent:selected-symbol:v1", requestedSymbol); } catch { /* optional preference */ } }, [requestedSymbol]);
 

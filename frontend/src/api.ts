@@ -3,6 +3,7 @@ import { agentChatUrl } from "./agent-chat-url.mjs";
 import { fetchAgentChatModels } from "./agent-chat-models.mjs";
 import { apiErrorMessage } from "./api-errors.mjs";
 import { normalizeContextUsage, type ContextUsage } from "./context-usage.mjs";
+import { watchlistSnapshot } from "./watchlist-bridge.mjs";
 import { activeChatCredential, applyChatIdentity, changeChatMode, currentChatMode, conversationCreatedAtForMode, conversationForMode, selectConversationForMode } from "./chat-identity.mjs";
 
 export const configuredApiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/+$/, "");
@@ -60,6 +61,19 @@ export async function renameAgentConversation(id:string,title:string,signal?:Abo
   const data=await response.json().catch(()=>null) as {title?:unknown}|null;
   return typeof data?.title==="string"&&data.title?data.title:null;
 }
+/** The owner's research queue as the server keeps it: null until one was saved.  Owner only. */
+export async function getResearchQueue(signal?:AbortSignal): Promise<string[]|null> {
+  const url = agentChatUrl("stream", configuredApiBaseUrl).replace(/stream$/, "research-queue");
+  const response = await fetch(url,{signal,cache:"no-store",headers:{Accept:"application/json","X-Chat-Session":chatCredential()}});
+  if(!response.ok) throw new ApiError("研究队列暂时无法读取。",response.status);
+  const data=await response.json().catch(()=>null) as {symbols?:unknown}|null;
+  return Array.isArray(data?.symbols)?data.symbols.filter((item):item is string=>typeof item==="string"):null;
+}
+export async function putResearchQueue(symbols:string[],signal?:AbortSignal): Promise<void> {
+  const url = agentChatUrl("stream", configuredApiBaseUrl).replace(/stream$/, "research-queue");
+  const response = await fetch(url,{method:"PUT",signal,cache:"no-store",headers:{Accept:"application/json","Content-Type":"application/json","X-Chat-Session":chatCredential()},body:JSON.stringify({symbols})});
+  if(!response.ok) throw new ApiError("研究队列保存失败。",response.status);
+}
 export async function listAgentConversations(offset=0,signal?:AbortSignal): Promise<{conversations:ConversationSummary[];hasMore:boolean}> {
   const url = agentChatUrl("stream", configuredApiBaseUrl).replace(/stream$/, `conversations?limit=30&offset=${offset}`);
   const response = await fetch(url,{signal,cache:"no-store",headers:{Accept:"application/json","X-Chat-Session":chatCredential()}});
@@ -81,7 +95,7 @@ export async function restoreAgentChat(selectedId?: string | null, signal?: Abor
 export function clearAgentConversation(): void { selectConversationForMode(window.localStorage,window.sessionStorage,null); }
 export function selectAgentConversation(id:string|null,createdAt?:string|null):void { selectConversationForMode(window.localStorage,window.sessionStorage,id,undefined,createdAt); }
 export async function agentChatStream(config: AgentChatConfig, message: string, conversationId: string | null, signal: AbortSignal, onEvent: (event: AgentChatEvent) => boolean | void, pendingRequestId?:string, displayMessage?:string): Promise<string> {
-  const response = await fetch(agentChatUrl("stream", configuredApiBaseUrl), { method: "POST", signal, cache: "no-store", headers: { Accept: "text/event-stream", "Content-Type": "application/json", "X-Chat-Session": chatCredential() }, body: JSON.stringify({ ...config, message, conversation_id: conversationId, ...(pendingRequestId?{pending_request_id:pendingRequestId,...(displayMessage?{display_message:displayMessage}:{})}:{}) }) });
+  const response = await fetch(agentChatUrl("stream", configuredApiBaseUrl), { method: "POST", signal, cache: "no-store", headers: { Accept: "text/event-stream", "Content-Type": "application/json", "X-Chat-Session": chatCredential() }, body: JSON.stringify({ ...config, message, conversation_id: conversationId, ...(watchlistSnapshot()?{watchlist:watchlistSnapshot()}:{}), ...(pendingRequestId?{pending_request_id:pendingRequestId,...(displayMessage?{display_message:displayMessage}:{})}:{}) }) });
   if (!response.ok) { const payload = await response.json().catch(() => null); throw apiErrorFromPayload(payload, response.status); }
   const reader = response.body?.getReader(); if (!reader) throw new ApiError("服务未返回流式响应。");
   const decoder = new TextDecoder(); let buffer = "", answer = "", eventName = "message", receivedDone = false;

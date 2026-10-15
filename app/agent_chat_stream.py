@@ -120,7 +120,14 @@ def _restore_citations(items,credential):
    else:verified.append({'ordinal':ordinal,'chunk_id':str(chunk.id),'title':'来源已失效','section':'','source_url':None,'observed_at':None,'source_type':'unavailable','truncated':False})
  return verified
 class StreamRequest(BaseModel):
- provider:str=Field(pattern="^(deepseek|kimi|minimax|qwen|zhipu|doubao|hunyuan|baidu|siliconflow|openrouter|custom)$"); base_url:str|None=Field(default=None,max_length=2048); model:str=Field(min_length=1,max_length=160,pattern=r"^[A-Za-z0-9._:/-]+$"); api_key:SecretStr; message:str=Field(min_length=1,max_length=4000); conversation_id:str|None=None; pending_request_id:str|None=Field(default=None,max_length=36); display_message:str|None=Field(default=None,max_length=120)
+ provider:str=Field(pattern="^(deepseek|kimi|minimax|qwen|zhipu|doubao|hunyuan|baidu|siliconflow|openrouter|custom)$"); base_url:str|None=Field(default=None,max_length=2048); model:str=Field(min_length=1,max_length=160,pattern=r"^[A-Za-z0-9._:/-]+$"); api_key:SecretStr; message:str=Field(min_length=1,max_length=4000); conversation_id:str|None=None; pending_request_id:str|None=Field(default=None,max_length=36); display_message:str|None=Field(default=None,max_length=120); watchlist:list[str]|None=Field(default=None,max_length=30)
+ @field_validator("watchlist")
+ @classmethod
+ def clean_watchlist(cls,value):
+  # The research queue the client holds, only to decide whether a company needs the add-or-not card.
+  if value is None:return None
+  from .agent_chat_store import clean_queue
+  return clean_queue(value)
  @field_validator("base_url")
  @classmethod
  def valid_endpoint(cls,value):
@@ -298,7 +305,7 @@ async def stream_chat(payload:StreamRequest,request:Request,x_chat_session:str|N
    async for event in stream_workflow(question=payload.message,messages=messages,provider=payload.provider,model=payload.model,
      api_key=payload.api_key.get_secret_value(),base_url=payload.base_url,owner_hash=owner_hash(x_chat_session),
      conversation_id=cid,identity_credential=x_chat_session,turn_id=turn,pending_request_id=payload.pending_request_id,
-     legacy_result_sets=legacy_result_sets,legacy_source_choices=legacy_source_choices):
+     legacy_result_sets=legacy_result_sets,legacy_source_choices=legacy_source_choices,watchlist=payload.watchlist):
     kind=event.get("event")
     if kind=="assistant_tool_request":
      await append_message(cid,turn,"assistant","",tool_calls=event["protocol"])
@@ -440,3 +447,31 @@ async def get_messages(conversation_id:str,x_chat_session:str|None=Header(defaul
    messages.append(item)
   elif row.get("role")=="user":messages.append({"role":"user","content":row["content"],"status":row["status"]})
  return {"messages":messages}
+
+
+class ResearchQueueBody(BaseModel):
+    symbols: list[str] = Field(max_length=60)
+
+
+def _owner_only(x_chat_session: str | None) -> str:
+    from .agent_chat_identity import owner_credential_matches
+    if not x_chat_session or not owner_credential_matches(x_chat_session):
+        raise HTTPException(403, "owner_only")
+    return x_chat_session
+
+
+@router.get("/research-queue")
+async def get_research_queue_endpoint(x_chat_session: str | None = Header(default=None)):
+    """The site owner's research queue; ``symbols`` is null until one was saved.  (Every GET passes the
+    public middleware, so the owner check is this handler's own.)  A guest's queue stays in their browser."""
+    from .agent_chat_store import get_research_queue
+    credential = _owner_only(x_chat_session)
+    return {"symbols": await get_research_queue(credential)}
+
+
+@router.put("/research-queue")
+async def put_research_queue_endpoint(body: ResearchQueueBody, x_chat_session: str | None = Header(default=None)):
+    from .agent_chat_store import put_research_queue
+    credential = _owner_only(x_chat_session)
+    return {"symbols": await put_research_queue(credential, body.symbols)}
+

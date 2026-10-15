@@ -11,6 +11,7 @@ import { KnowledgeAdminPage } from './KnowledgeAdminPage';
 import { ContextMeter } from "./ContextMeter";
 import { restoreConversationAfterPersistence, restoreConversationSafely } from "./chat-session.mjs";
 import { normalizeClarification, selectedClarification, manualClarification, clarificationTitle, isActiveClarification } from "./chat-clarification.mjs";
+import { addToWatchlist, queueAddTicker } from "./watchlist-bridge.mjs";
 import { createArchive, createSerializedWriter, isPickerCancelled, mergeConversation, serializeArchive, validateArchive, writeAtomically, type ArchiveConversation, type ChatArchive } from "./chat-archive.mjs";
 
 type State = "idle" | "testing" | "ready" | "sending" | "restoring" | "error";
@@ -144,6 +145,7 @@ export function AgentChatProviderRoot({ children }: { children: ReactNode }) {
     const card=messages.at(-1)?.clarification;
     if (!card || card.request_id!==requestId) return;
     const selection=selectedClarification(card,value);
+    const queued=queueAddTicker(value); if(queued) addToWatchlist(queued);
     await sendContent(selection.message,selection.pendingRequestId,card.choices.find(choice=>choice.value===value)?.label);
   }
   async function replyToCard(value:string,requestId:string) {

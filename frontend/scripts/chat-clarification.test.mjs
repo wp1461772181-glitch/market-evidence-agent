@@ -57,3 +57,13 @@ test('only the last waiting live card can submit', () => {
   assert.equal(isActiveClarification([card],0,true),false);
   assert.equal(isActiveClarification([{...card,status:'cancelled'}],0,false),false);
 });
+
+test('the research-queue card keeps its two server-made buttons and a title', () => {
+  const card=normalizeClarification({request_id:'11111111-1111-4111-8111-111111111111',reason:'company_not_in_queue',
+    choices:[{label:'加入研究队列并查询',value:'queue_add:MU'},{label:'不加入，只看这次',value:'queue_view:MU'}]});
+  assert.equal(card.choices.length,2);
+  assert.equal(clarificationTitle(card),'这只股票不在研究队列里');
+  assert.deepEqual(selectedClarification(card,'queue_view:MU'),
+    {message:'queue_view:MU',pendingRequestId:'11111111-1111-4111-8111-111111111111'});
+  assert.throws(() => selectedClarification(card,'queue_add:AMD'), /invalid_clarification_choice/);
+});

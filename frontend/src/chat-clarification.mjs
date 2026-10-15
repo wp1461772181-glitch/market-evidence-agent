@@ -6,7 +6,7 @@ const actionChoices = [
 const titles = {missing_action_type:'请选择要执行的操作',missing_action_source:'请指定已保存的来源',
   missing_action_symbol:'请指定股票代码',missing_task_id:'请提供任务 ID',missing_comparison_symbol:'请选择另一家公司',
   missing_stock_focus:'请选择查询的股票',symbol_suggestion:'请确认股票代码',period_requires_accession:'请提供报告 accession',ambiguous_web_url:'请提供公开网页链接',reference_unavailable:'请选择来源或原网页',reference_company_required:'请告诉我是哪家公司',
-  reference_item_unavailable:'请指明是哪一条结果',
+  reference_item_unavailable:'请指明是哪一条结果',company_not_in_queue:'这只股票不在研究队列里',
   confirm_write:'请确认要执行的写操作',choose_write_action:'请选择要执行的写操作'};
 
 export function normalizeClarification(value) {

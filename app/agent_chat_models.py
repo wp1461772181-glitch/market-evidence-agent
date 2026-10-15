@@ -55,3 +55,15 @@ class AgentConversationSummary(Base):
     upto_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class AgentResearchQueue(Base):
+    """The research queue (the stocks the owner follows) as the site owner keeps it, one row per owner
+    credential hash, so that clearing the browser does not clear it.  A guest's queue stays in their
+    browser.  A separate table keeps the existing ones unchanged (it is created with them at startup)."""
+    __tablename__ = "agent_research_queue"
+    owner_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    symbols: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(),
+                                                 onupdate=func.now(), nullable=False)
+

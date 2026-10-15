@@ -62,6 +62,7 @@ class AgentWorkflowState(TypedDict, total=False):
     semantic_action_hint: str | None      # the write the intent stage thinks is meant (a proposal, not an authority)
     semantic_write_confirmed: bool        # the user pressed "同意" on a server-made proposal
     history_allowance: int                # tokens the carried conversation adds to this turn's budget
+    queue_decided: list[str]              # symbols the user already answered the research-queue card for
 
 
 @dataclass(frozen=True)
@@ -82,6 +83,8 @@ class AgentRuntimeContext:
     intent_recognizer: object | None = field(default=None, repr=False, compare=False)
     planner: object | None = field(default=None, repr=False, compare=False)
     query_expander: object | None = field(default=None, repr=False, compare=False)
+    # The research queue the client sent (None: this client sends none, so nothing asks about it).
+    watchlist: tuple[str, ...] | None = field(default=None, repr=False, compare=False)
 
 
 def checkpoint_thread_id(owner_hash: str, conversation_id: str) -> str:

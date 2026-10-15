@@ -3,7 +3,8 @@ from sqlalchemy import select, func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from .config import DATABASE_URL
-from .agent_chat_models import AgentConversation, AgentConversationSummary, AgentConversationTitle, AgentMessage
+from .agent_chat_models import (AgentConversation, AgentConversationSummary, AgentConversationTitle, AgentMessage,
+                                AgentResearchQueue)
 from . import agent_context as layers
 ASYNC_URL=DATABASE_URL
 engine=create_async_engine(ASYNC_URL,pool_pre_ping=True,connect_args={"connect_timeout":3})
@@ -153,3 +154,40 @@ async def set_conversation_title(credential: str, conversation_id: str, title: s
             row.title = title
         await s.commit()
         return True
+
+
+MAX_RESEARCH_QUEUE = 30  # the same bound as the front end's list
+
+
+def clean_queue(symbols) -> list[str]:
+    """Tickers in the form the workspace uses, each once, at most MAX_RESEARCH_QUEUE; anything else is dropped."""
+    from .symbols import normalize_market_symbol
+    seen: list[str] = []
+    for value in symbols if isinstance(symbols, (list, tuple)) else []:
+        try:
+            symbol = normalize_market_symbol(value)
+        except ValueError:
+            continue
+        if symbol not in seen:
+            seen.append(symbol)
+    return seen[:MAX_RESEARCH_QUEUE]
+
+
+async def get_research_queue(credential: str) -> list[str] | None:
+    """The owner's saved queue; None when none was ever saved (an empty list is a queue the owner emptied)."""
+    async with Session() as s:
+        row = await s.get(AgentResearchQueue, owner_hash(credential))
+        return None if row is None else clean_queue(row.symbols)
+
+
+async def put_research_queue(credential: str, symbols) -> list[str]:
+    queue = clean_queue(symbols)
+    async with Session() as s:
+        row = await s.get(AgentResearchQueue, owner_hash(credential))
+        if row is None:
+            s.add(AgentResearchQueue(owner_hash=owner_hash(credential), symbols=queue))
+        else:
+            row.symbols = queue
+        await s.commit()
+    return queue
+
