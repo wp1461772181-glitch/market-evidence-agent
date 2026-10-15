@@ -192,6 +192,37 @@
 .agent-composer-tools { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; }
 .agent-model-switch select { max-width: 220px; padding: 6px 28px 6px 12px; border: 1px solid var(--c-line); border-radius: 999px; background: var(--c-tint); color: var(--c-ink); font: 12.5px var(--sans); cursor: pointer; }
 .agent-model-switch select:focus-visible { outline: 2px solid var(--c-accent); outline-offset: 1px; }
+
+/* --- context meter: what the next message carries, beside the model picker ------------------- */
+.context-meter { position: relative; flex: 0 0 auto; }
+.context-pill { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px 5px 8px; border: 1px solid var(--c-line); border-radius: 999px; background: var(--c-tint); color: var(--c-muted); font: 12px var(--sans); white-space: nowrap; cursor: pointer; transition: border-color .12s, background .12s, color .12s; }
+.context-pill:hover, .context-pill[aria-expanded="true"] { border-color: var(--c-line-strong); background: var(--c-surface); color: var(--c-ink); }
+.context-pill:focus-visible { outline: 2px solid var(--c-accent); outline-offset: 1px; }
+.context-pill svg { width: 16px; height: 16px; flex: 0 0 auto; }
+.context-ring-track { fill: none; stroke: var(--c-line-strong); stroke-width: 2.2; }
+.context-ring-used { fill: none; stroke: var(--c-accent); stroke-width: 2.2; stroke-linecap: round; }
+.context-pill.is-warn .context-ring-used { stroke: #c58a2b; }
+.context-pill.is-full { color: var(--c-warn); }
+.context-pill.is-full .context-ring-used { stroke: var(--c-warn); }
+.context-card { position: absolute; z-index: 50; right: 0; bottom: calc(100% + 10px); width: min(340px, calc(100vw - 32px)); box-sizing: border-box; padding: 14px 16px 12px; border: 1px solid var(--c-line); border-radius: 14px; background: var(--c-surface); box-shadow: 0 12px 36px rgba(20,43,48,.16); color: var(--c-ink); }
+.context-card header { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.context-card header strong { font-size: 13px; }
+.context-card header span { color: var(--c-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.context-bar { display: flex; height: 8px; overflow: hidden; border-radius: 999px; background: var(--c-line); }
+.context-seg { display: block; height: 100%; min-width: 2px; }
+.context-parts { display: grid; gap: 7px; margin: 12px 0 8px; padding: 0; list-style: none; }
+.context-parts li { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto; align-items: baseline; gap: 8px; font-size: 12.5px; }
+.context-dot { width: 8px; height: 8px; border-radius: 50%; align-self: center; }
+.context-part-name small, .context-part-size small { color: var(--c-faint); font-size: 11px; }
+.context-part-size { color: var(--c-muted); font-variant-numeric: tabular-nums; text-align: right; }
+.context-note { margin: 6px 0 0; color: var(--c-muted); font-size: 11.5px; line-height: 1.5; }
+.context-note.is-warn { color: var(--c-warn); }
+.context-seg.is-system, .context-dot.is-system { background: #8d9b98; }
+.context-seg.is-tools, .context-dot.is-tools { background: #b6c1be; }
+.context-seg.is-summary, .context-dot.is-summary { background: #d9a441; }
+.context-seg.is-compressed, .context-dot.is-compressed { background: #6a9bd1; }
+.context-seg.is-recent, .context-dot.is-recent { background: var(--c-accent); }
+.context-seg.is-free, .context-dot.is-free { background: var(--c-line); box-shadow: inset 0 0 0 1px var(--c-line-strong); }
 .agent-send { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; padding: 0; border: 0; border-radius: 50%; background: var(--c-accent); color: #fff; cursor: pointer; transition: background .12s, transform .12s, opacity .12s; }
 .agent-send:hover:not(:disabled) { background: var(--c-accent-hover); transform: translateY(-1px); }
 .agent-send:disabled { background: var(--c-line-strong); cursor: not-allowed; }
@@ -219,6 +250,9 @@
   .agent-capability p { display: none; }
 }
 @media (max-width: 520px) {
+  .context-pill-label { display: none; }
+  .context-pill { padding: 5px 8px 5px 6px; }
+  .context-card { position: fixed; left: 16px; right: 16px; bottom: 96px; width: auto; }
   .agent-page .agent-page-heading h1 { font-size: 17px; }
   .agent-header-actions > span { display: none; }
   .agent-welcome h2 { font-size: 22px; }

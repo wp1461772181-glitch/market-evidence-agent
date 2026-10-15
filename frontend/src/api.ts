@@ -2,6 +2,7 @@ import type { DashboardResponse, EvidenceRevision, EvidenceRevisionInventory, Ev
 import { agentChatUrl } from "./agent-chat-url.mjs";
 import { fetchAgentChatModels } from "./agent-chat-models.mjs";
 import { apiErrorMessage } from "./api-errors.mjs";
+import { normalizeContextUsage, type ContextUsage } from "./context-usage.mjs";
 import { activeChatCredential, applyChatIdentity, changeChatMode, currentChatMode, conversationCreatedAtForMode, conversationForMode, selectConversationForMode } from "./chat-identity.mjs";
 
 export const configuredApiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/+$/, "");
@@ -41,6 +42,16 @@ export async function personalChatLogin(code: string, signal?: AbortSignal): Pro
   return payload.credential;
 }
 export type ConversationSummary = { id:string; title:string; created_at:string; updated_at:string; custom_title?:boolean };
+export type { ContextUsage };
+/** What the next message of this conversation carries of the earlier ones, by part; null when it cannot be read.
+ *  Without an id it is the fixed part only (a conversation that has not started). */
+export async function getContextUsage(id:string|null,signal?:AbortSignal): Promise<ContextUsage|null> {
+  const base = agentChatUrl("stream", configuredApiBaseUrl).replace(/stream$/, "");
+  const url = id ? `${base}conversations/${encodeURIComponent(id)}/context` : `${base}context`;
+  const response = await fetch(url,{signal,cache:"no-store",headers:{Accept:"application/json","X-Chat-Session":chatCredential()}});
+  if(!response.ok) return null;
+  return normalizeContextUsage(await response.json().catch(()=>null));
+}
 /** Name one of the caller's conversations; resolves to the saved name, or null when it was cleared. */
 export async function renameAgentConversation(id:string,title:string,signal?:AbortSignal): Promise<string|null> {
   const url = agentChatUrl("stream", configuredApiBaseUrl).replace(/stream$/, `conversations/${encodeURIComponent(id)}`);

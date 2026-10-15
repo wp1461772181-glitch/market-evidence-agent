@@ -41,7 +41,7 @@ def parse_classification(raw: str) -> dict[str, Any]:
     return value
 
 
-def extract_slots(question: str) -> dict[str, Any]:
+def extract_slots(question: str, max_symbols: int = 5) -> dict[str, Any]:
     lower = question.lower()
     symbols: list[str] = []
     for alias, symbol in ALIASES.items():
@@ -72,7 +72,7 @@ def extract_slots(question: str) -> dict[str, Any]:
     explicit_web = any(word in lower for word in ("新闻", "网页", "联网", "公开搜索", "web", "news", "online"))
     summary = any(word in lower for word in ("摘要", "总结", "概括", "简介", "简要内容", "简要概括", "summary", "summarize", "overview"))
     analysis = any(word in lower for word in ("ai", "分析", "analysis"))
-    return {"symbols": symbols[:5], "symbol": symbols[0] if len(symbols) == 1 else None,
+    return {"symbols": symbols[:max_symbols], "symbol": symbols[0] if len(symbols) == 1 else None,
             "suggestion": suggestion, "form": form, "accession_number": accession.group() if accession else None,
             "source_id": source_id.group() if source_id else None,
             "period": period.group() if period else None, "web_required": explicit_web,

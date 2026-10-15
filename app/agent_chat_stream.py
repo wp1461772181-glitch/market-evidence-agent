@@ -12,6 +12,8 @@ from .agent_tools import tool_schemas
 from .agent_tool_executor import execute_tool
 from .agent_workflow.graph import stream_workflow, mark_terminal_status, run_workflow
 from .agent_chat_store import create_conversation,verify_conversation,append_message,owned_messages,history,finish_conversation,owner_hash
+from .agent_chat_store import conversation_context
+from . import agent_context as layers
 router=APIRouter(prefix="/agent-chat",tags=["agent-chat-stream"])
 LOCKS={}
 MAX_PROTOCOL_BYTES=32000
@@ -39,7 +41,8 @@ Financial answer contract:
 - A stored excerpt, including a truncated excerpt, is only the saved passage; never describe it as a complete filing, full report, or full financial statement.
 - Use query_sec_filings for saved fetched filing text; its excerpt coverage flag indicates whether only part of the stored body is shown. For a generic report overview, if the original excerpt is insufficient and a query_material_analysis result is bound to that exact source ID, state the original coverage limit and label the secondary summary as saved AI analysis with its version, model, date, and citation. Never present it as official original text or full-report coverage. For explicit original proof or a specific theme, keep original and derived evidence distinct and apply the matching evidence gate. Use query_material_analysis for requested saved AI analysis, and label it as AI analysis rather than official filing fact. Use query_materials for original source text; use search_material_analysis only for clearly labeled derived AI analysis, never as guaranteed original facts, and compare against original sources when asked to verify.
 - State the applicable source and as-of date when supplied. These instructions do not replace checking that each factual claim is actually supported by the cited evidence.
-- You cannot save, import, record or modify anything yourself. Such actions run only after the user confirms a card the system shows; never say that you did one."""
+- You cannot save, import, record or modify anything yourself. Such actions run only after the user confirms a card the system shows; never say that you did one.
+- A system note headed "Earlier conversation (memory" is a summary of older turns. It may be incomplete or wrong, it is not evidence, and it is never cited; only this turn's numbered tool evidence supports a factual claim."""
 def _record_low_confidence(question,conversation_id,turn_id,owner,reason):
  from .database import SessionLocal
  from .knowledge.models import LowConfidenceQuestion
@@ -253,8 +256,11 @@ async def stream_chat(payload:StreamRequest,request:Request,x_chat_session:str|N
    # the user saw on the button.
    shown=payload.display_message.strip() if payload.pending_request_id and payload.display_message else ""
    await append_message(cid,turn,"user",shown or payload.message)
-   history_rows=await history(cid,x_chat_session) or []
+   context=await conversation_context(cid,x_chat_session) or {}
+   history_rows=context.get("l1_rows",[])
    messages=[{"role":"system","content":SYSTEM}]
+   # Older turns come first: the summary note (layer 3), then the half-compressed turns (layer 2).
+   messages.extend(layers.prefix_messages(context.get("segments",[]),context.get("half_turns",[])))
    legacy_calls=set()
    for position,m in enumerate(history_rows):
     if m["status"]!="complete" or m["role"] not in ("user","assistant","tool"):continue
@@ -285,7 +291,7 @@ async def stream_chat(payload:StreamRequest,request:Request,x_chat_session:str|N
      continue
     messages.append(item)
    messages.append({"role":"user","content":payload.message})
-   if _protocol_size({"messages":messages,"tools":tool_schemas()})>40000:raise HTTPException(413,"chat_context_too_large")
+   if _protocol_size({"messages":messages,"tools":tool_schemas()})>layers.CONTEXT_GUARD_BYTES:raise HTTPException(413,"chat_context_too_large")
    from .agent_workflow.semantic import hydrate_legacy_web_sets, legacy_web_source_choices
    legacy_result_sets=hydrate_legacy_web_sets(history_rows,owner=owner_hash(x_chat_session),conversation=cid)
    legacy_source_choices=legacy_web_source_choices(history_rows)
@@ -331,6 +337,9 @@ async def stream_chat(payload:StreamRequest,request:Request,x_chat_session:str|N
       await asyncio.to_thread(_record_low_confidence,payload.message,cid,turn,owner_hash(x_chat_session),event["reason"])
      await append_message(cid,turn,"assistant",text_out,tool_calls=protocol)
      await finish_conversation(cid,"active")
+     from .agent_context_summary import schedule_summary
+     schedule_summary(cid,x_chat_session,provider=payload.provider,model=payload.model,
+                      api_key=payload.api_key.get_secret_value(),base_url=payload.base_url)
      if restored:yield frame("citations",{"turn_id":turn,"items":restored})
      yield frame("done",{"conversation_id":cid,"turn_id":turn,"status":event.get("status","complete"),"reason":event.get("reason")})
    if not terminal:raise HTTPException(502,"workflow_incomplete")
@@ -358,6 +367,36 @@ async def stream_chat(payload:StreamRequest,request:Request,x_chat_session:str|N
   finally:
    release_resources()
  return _ResourceStreamingResponse(events(),media_type="text/event-stream",headers={"Cache-Control":"no-store","X-Accel-Buffering":"no"},background=BackgroundTask(release_resources),cleanup=release_resources)
+
+def _context_report(context: dict | None) -> dict:
+    """The numbers of the context card: what the next turn of a conversation carries, by part.  The
+    fixed part is the system prompt and the tool definitions; the rest is the history, by layer."""
+    context = context or {}
+    note = layers.summary_message(context.get("segments", []))
+    half_turns = context.get("half_turns", [])
+    return layers.usage_report(
+        system_bytes=layers.json_bytes({"role": "system", "content": SYSTEM}),
+        tools_bytes=layers.json_bytes(tool_schemas()),
+        summary_bytes=layers.json_bytes(note) if note else 0,
+        summary_segments=len(context.get("segments", [])),
+        half_bytes=sum(layers.half_size(turn) for turn in half_turns),
+        half_turns=len(half_turns),
+        recent_bytes=int(context.get("l1_bytes", 0)),
+        recent_turns=int(context.get("l1_turns", 0)),
+        hidden_turns=len(context.get("overflow", [])),
+    )
+
+@router.get("/context")
+async def get_empty_context():
+    """The context of a conversation that has not started: only the fixed part."""
+    return _context_report(None)
+
+@router.get("/conversations/{conversation_id}/context")
+async def get_conversation_context(conversation_id:str,x_chat_session:str|None=Header(default=None)):
+ if not x_chat_session:raise HTTPException(404,"conversation_not_found")
+ context=await conversation_context(conversation_id,x_chat_session)
+ if context is None:raise HTTPException(404,"conversation_not_found")
+ return _context_report(context)
 
 @router.get("/conversations/{conversation_id}/messages")
 async def get_messages(conversation_id:str,x_chat_session:str|None=Header(default=None)):

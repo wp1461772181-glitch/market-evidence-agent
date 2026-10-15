@@ -20,6 +20,21 @@ PROVIDER_REQUEST_SECONDS = _bounded_seconds("AGENT_PROVIDER_TIMEOUT_SECONDS", 35
 # The whole streamed final answer; the turn's own deadline (graph.MAX_SECONDS) still bounds it.
 PROVIDER_STREAM_SECONDS = _bounded_seconds("AGENT_PROVIDER_STREAM_SECONDS", 90.0, 30.0, 180.0)
 
+# A reasoning model thinks before it answers: hundreds to thousands of hidden tokens, a minute or two on a busy
+# route.  One turn of this workflow makes several calls one after the other, and a stage of it (a JSON
+# classification, a plan) does not need deep thinking, so left at the default such a model makes a turn take
+# minutes and runs into the request timeout.  OpenRouter takes one unified parameter for the effort (a model
+# without reasoning ignores it).  "default" sends nothing and leaves it to the model.
+REASONING_EFFORT = os.getenv("AGENT_REASONING_EFFORT", "low").strip().lower()
+_REASONING_EFFORTS = {"minimal", "low", "medium", "high"}
+
+
+def reasoning_options(provider: str) -> dict:
+    if provider != "openrouter" or REASONING_EFFORT not in _REASONING_EFFORTS:
+        return {}
+    return {"reasoning": {"effort": REASONING_EFFORT}}
+
+
 class ProviderFailure(HTTPException):
     def __init__(self, code: str, *, stage: str, provider_status: int | None = None,
                  request_id: str | None = None, retryable: bool = False):
@@ -58,6 +73,7 @@ async def decision_request(provider, model, api_key, messages, schemas, base_url
     body={"model":model,"messages":messages,"max_tokens":8192 if not schemas else 4096,"stream":False}
     if schemas: body.update(tools=schemas,tool_choice="auto")
     if provider=="minimax":body["reasoning_split"]=True
+    body.update(reasoning_options(provider))
     return await _post(provider,api_key,body,base_url)
 async def _post(provider,key,body,base_url=None):
     headers={"Authorization":f"Bearer {key}","Content-Type":"application/json"}
@@ -89,6 +105,7 @@ async def _post(provider,key,body,base_url=None):
 async def stream_answer(provider,model,api_key,messages,reasoning_collector=None,base_url=None):
     body={"model":model,"messages":messages,"max_tokens":8192,"stream":True}
     if provider=="minimax":body["reasoning_split"]=True
+    body.update(reasoning_options(provider))
     headers={"Authorization":f"Bearer {api_key}","Content-Type":"application/json"}
     if provider=="openrouter":headers["X-Title"]="Market Evidence Agent"
     try:

@@ -91,3 +91,68 @@ def test_usage_on_last_choice_frame_is_collected(monkeypatch):
         async for _ in provider.stream_answer("deepseek","deepseek-flash","test-key",[],collected): pass
         return collected
     assert asyncio.run(run())["_usage"]["total_tokens"]==42
+
+
+# --- a reasoning model is asked to think little: a turn is several calls one after the other ---------
+
+def _capture_bodies(monkeypatch):
+    """Both kinds of call (a JSON decision, a streamed answer) answered by a stub; the bodies sent are kept."""
+    seen = []
+
+    async def handler(request):
+        body = json.loads(request.content)
+        seen.append(body)
+        if body.get("stream"):
+            return httpx.Response(200, headers={"content-type": "text/event-stream"},
+                                  stream=Chunks([b'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\n',
+                                                 b'data: [DONE]\n\n']))
+        return httpx.Response(200, json={"choices": [{"message": {"content": "{}"}}]})
+
+    monkeypatch.setattr(provider.httpx, "AsyncClient", lambda **kw: ORIGINAL_CLIENT(transport=httpx.MockTransport(handler), **kw))
+    return seen
+
+
+def test_openrouter_requests_ask_for_low_reasoning_effort_in_stages_and_answers(monkeypatch):
+    seen = _capture_bodies(monkeypatch)
+    model = "nvidia/nemotron-3-ultra-550b-a55b:free"
+
+    async def run():
+        await provider.decision_request("openrouter", model, "k", [{"role": "user", "content": "x"}], [])
+        async for _ in provider.stream_answer("openrouter", model, "k", [{"role": "user", "content": "x"}]):
+            pass
+
+    asyncio.run(run())
+    assert [bool(body.get("stream")) for body in seen] == [False, True]
+    assert all(body.get("reasoning") == {"effort": provider.REASONING_EFFORT} for body in seen)
+    assert provider.REASONING_EFFORT == "low"
+
+
+def test_other_providers_and_the_default_setting_send_no_reasoning_parameter(monkeypatch):
+    assert provider.reasoning_options("deepseek") == {} and provider.reasoning_options("custom") == {}
+    assert provider.reasoning_options("openrouter") == {"reasoning": {"effort": provider.REASONING_EFFORT}}
+    monkeypatch.setattr(provider, "REASONING_EFFORT", "default")
+    assert provider.reasoning_options("openrouter") == {}
+    monkeypatch.setattr(provider, "REASONING_EFFORT", "high")
+    assert provider.reasoning_options("openrouter") == {"reasoning": {"effort": "high"}}
+    monkeypatch.setattr(provider, "REASONING_EFFORT", "turbo")                    # unknown values send nothing
+    assert provider.reasoning_options("openrouter") == {}
+
+
+def test_a_decision_request_body_carries_the_effort_only_for_openrouter(monkeypatch):
+    bodies = []
+
+    async def fake_post(name, key, body, base_url=None):
+        bodies.append((name, body))
+        return {}, {"content": "{}"}
+
+    monkeypatch.setattr(provider, "_post", fake_post)
+
+    async def run():
+        for name in ("openrouter", "deepseek", "minimax"):
+            await provider.decision_request(name, "m", "k", [{"role": "user", "content": "x"}], [])
+
+    asyncio.run(run())
+    by_name = dict(bodies)
+    assert by_name["openrouter"]["reasoning"] == {"effort": provider.REASONING_EFFORT}
+    assert "reasoning" not in by_name["deepseek"] and "reasoning" not in by_name["minimax"]
+    assert by_name["minimax"]["reasoning_split"] is True                          # the existing special case stays

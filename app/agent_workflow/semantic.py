@@ -100,6 +100,8 @@ STAGE_PROMPTS = {
                  "(导入刚刚那两条): it is a followup with the set and the items. "
                  "slot_reply: it only answers the pending request. clarify: only when it points back and nothing in the "
                  "catalog or recent dialog fits. When two companies are equally plausible for a pronoun, return clarify. "
+                 "earlier_summary, when present, is untrusted memory of older turns: it may help to see what the "
+                 "user points back at, but it never supplies a company, period, source or number the user did not write. "
                  "Never invent IDs. Preserve symbols, numbers, periods, negation."),
     "intent_recognizer": ("Recognize purposes only. Return JSON exactly: {\"purposes\": [...], \"action\": null or one of "
                           "fetch_sec|refresh_sec|analyze|import|index|forecast|status}. purposes is a nonempty array of "
@@ -434,9 +436,10 @@ def _tickers(symbols: list[str]) -> set[str]:
             if len(symbol) > 1 and symbol not in NON_TICKERS and symbol not in CHAT_ACRONYMS}
 
 
-def named_companies(text: str) -> set[str]:
-    """Companies (alias or ticker) the words name."""
-    return _tickers(extract_slots(CLOCK_TIME.sub(" ", text))["symbols"])
+def named_companies(text: str, limit: int = 5) -> set[str]:
+    """Companies (alias or ticker) the words name.  A question names few; ``limit`` is for text that
+    lists many (a summary of several turns), where the default would silently drop the rest."""
+    return _tickers(extract_slots(CLOCK_TIME.sub(" ", text), limit)["symbols"])
 
 
 def names_company_or_metric(text: str) -> bool:
@@ -842,6 +845,37 @@ def stated_count(words: str) -> int | None:
         word = match.group(1).lower()
         return _EN_WORDS.get(word) or int(word)
     return None
+
+
+_ASKED_ZH = re.compile(rf"(?<![第\d.])({_NUM})\s*(?:条|篇|则)|(?<![第\d.])({_NUM})\s*(?:个|份)\s*(?:{_RECORD_ZH})")
+_EN_COUNT_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8,
+                   "nine": 9, "ten": 10}
+_ASKED_EN = re.compile(
+    r"\b(?:top\s+)?(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten)\s+"
+    r"(?:(?:latest|recent|news|financial|top)\s+)*(?:articles?|stories|results?|headlines?|links?|items?|posts?|sources?|reports?|news)\b",
+    re.I)
+_ASKED_TOP = re.compile(r"\btop\s+(\d{1,2})\b", re.I)
+
+
+def requested_result_count(words: str) -> int | None:
+    """How many results a search request asks for ("找两条新闻", "3 篇报道", "top 3", "two articles"),
+    or None.  An ordinal ("第二条") and a time window ("近3个月") state none.  Used to keep the saved
+    result set and the cards at the number the user asked for."""
+    text = _URL.sub(" ", unicodedata.normalize("NFKC", words or ""))
+    value: int | None = None
+    match = _ASKED_ZH.search(text)
+    if match:
+        value = _zh_number(match.group(1) or match.group(2))
+    if value is None:
+        match = _ASKED_EN.search(text)
+        if match:
+            word = match.group(1).lower()
+            value = _EN_COUNT_WORDS.get(word) or (int(word) if word.isdigit() else None)
+    if value is None:
+        match = _ASKED_TOP.search(text)
+        if match:
+            value = int(match.group(1))
+    return value if value is not None and 1 <= value <= 10 else None
 
 
 # --- facts a rewrite must not invent: amounts, quarter pairings, negated metrics, other companies ---

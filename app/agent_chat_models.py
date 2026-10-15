@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, Text, Uuid, func
+from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint, Uuid, func
 from sqlalchemy.orm import Mapped, mapped_column
 from .database import Base
 
@@ -40,3 +40,18 @@ class AgentConversationTitle(Base):
     conversation_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("agent_conversations.id", ondelete="CASCADE"), primary_key=True)
     title: Mapped[str] = mapped_column(String(80), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class AgentConversationSummary(Base):
+    """One segment of the oldest layer of a conversation's context: a summary of the turns whose
+    messages lie between ``from_sequence`` and ``upto_sequence``.  Segments are only appended and
+    never rewritten, so a fact passes through at most one lossy compression."""
+    __tablename__ = "agent_conversation_summaries"
+    __table_args__ = (UniqueConstraint("conversation_id", "seq", name="uq_agent_summary_conversation_seq"),)
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    conversation_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("agent_conversations.id", ondelete="CASCADE"), nullable=False, index=True)
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    from_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    upto_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

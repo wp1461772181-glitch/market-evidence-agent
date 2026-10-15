@@ -79,7 +79,7 @@ def create_agent_chat_access_middleware(public_mode: bool, access_key: str, owne
         # of the credential sent (a guest's included), so it is not an owner-only write.
         public_chat_rename = (request.method == "PATCH" and bool(
             re.fullmatch(r"/agent-chat/conversations/[0-9a-fA-F-]{36}", request.url.path)))
-        if request.method == "GET" and request.url.path.startswith("/agent-chat/conversations/") and request.url.path.endswith("/messages"):
+        if request.method == "GET" and request.url.path.startswith("/agent-chat/conversations/") and request.url.path.endswith(("/messages", "/context")):
             chat_session = request.headers.get("X-Chat-Session", "")
             if not 32 <= len(chat_session) <= 256:
                 return JSONResponse(status_code=401, content={"detail": "chat_session_required"}, headers={"Cache-Control": "no-store"})

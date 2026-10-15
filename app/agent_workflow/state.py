@@ -61,6 +61,7 @@ class AgentWorkflowState(TypedDict, total=False):
     semantic_question_source: str | None
     semantic_action_hint: str | None      # the write the intent stage thinks is meant (a proposal, not an authority)
     semantic_write_confirmed: bool        # the user pressed "同意" on a server-made proposal
+    history_allowance: int                # tokens the carried conversation adds to this turn's budget
 
 
 @dataclass(frozen=True)

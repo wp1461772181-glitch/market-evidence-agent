@@ -43,14 +43,14 @@ def stream_fixture(monkeypatch):
     monkeypatch.setattr(checkpoints, "open_postgres_checkpointer", temporary_saver)
     stored = []
     async def append(*args, **kwargs): stored.append((args, kwargs))
-    async def empty(*args): return []
+    async def empty(*args, **kwargs): return {"l1_rows": []}
     async def yes(*args): return True
     async def create(*args): return str(uuid4())
     async def finish(*args): stored.append(((), {"finished": args[1]}))
     monkeypatch.setattr(stream, "verify_conversation", yes)
     monkeypatch.setattr(stream, "create_conversation", create)
     monkeypatch.setattr(stream, "append_message", append)
-    monkeypatch.setattr(stream, "history", empty)
+    monkeypatch.setattr(stream, "conversation_context", empty)
     monkeypatch.setattr(stream, "finish_conversation", finish)
     monkeypatch.setattr(stream, "_record_low_confidence", lambda *args: stored.append(((), {"low_confidence": args[-1]})))
     tool_results = {}
@@ -144,11 +144,11 @@ def test_incomplete_prior_tool_batch_replays_as_labeled_evidence(stream_fixture,
     classification["intent"] = "general"
     calls = [{"id": "one", "type": "function", "function": {"name": "query_stock_prices", "arguments": "{}"}},
              {"id": "two", "type": "function", "function": {"name": "query_stock_prices", "arguments": "{}"}}]
-    async def prior(*_):
-        return [{"role": "assistant", "content": "", "status": "complete",
-                 "tool_calls": {"calls": calls, "reasoning_content": "real reasoning"}},
-                {"role": "tool", "content": '{"ok":true}', "status": "complete", "tool_call_id": "one"}]
-    monkeypatch.setattr(stream, "history", prior)
+    async def prior(*_, **__):
+        return {"l1_rows": [{"role": "assistant", "content": "", "status": "complete",
+                             "tool_calls": {"calls": calls, "reasoning_content": "real reasoning"}},
+                            {"role": "tool", "content": '{"ok":true}', "status": "complete", "tool_call_id": "one"}]}
+    monkeypatch.setattr(stream, "conversation_context", prior)
     asyncio.run(send("Explain prime numbers"))
     model_messages = requests[1][0]
     assert not any(item.get("tool_calls") for item in model_messages)

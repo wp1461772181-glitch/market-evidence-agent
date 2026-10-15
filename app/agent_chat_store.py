@@ -1,8 +1,10 @@
 import hashlib, uuid, json
 from sqlalchemy import select, func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from .config import DATABASE_URL
-from .agent_chat_models import AgentConversation, AgentConversationTitle, AgentMessage
+from .agent_chat_models import AgentConversation, AgentConversationSummary, AgentConversationTitle, AgentMessage
+from . import agent_context as layers
 ASYNC_URL=DATABASE_URL
 engine=create_async_engine(ASYNC_URL,pool_pre_ping=True,connect_args={"connect_timeout":3})
 Session=async_sessionmaker(engine,expire_on_commit=False)
@@ -44,6 +46,47 @@ async def history(conversation_id: str, credential: str, limit_bytes=14000):
             if used+size>limit_bytes: break
             output[0:0]=[{"role":m.role,"content":m.content,"tool_calls":m.tool_calls,"tool_call_id":m.tool_call_id,"status":m.status,"turn_id":str(m.turn_id)} for m in group]; used+=size
         return output
+async def conversation_context(conversation_id: str, credential: str, *, l1_bytes: int = layers.L1_BYTES,
+                               l2_bytes: int = layers.L2_BYTES, l3_bytes: int = layers.L3_BYTES):
+    """What the next turn of this conversation carries of the turns before it, by layer (the rule is
+    ``agent_context.layer_rows``; this reads the rows and the segments).  None when the conversation
+    is not this credential's."""
+    if not await verify_conversation(conversation_id, credential):
+        return None
+    cid = uuid.UUID(conversation_id)
+    async with Session() as s:
+        rows = (await s.scalars(select(AgentMessage).where(AgentMessage.conversation_id == cid)
+                                .order_by(AgentMessage.sequence.desc()).limit(500))).all()
+        segments = (await s.scalars(select(AgentConversationSummary)
+                                    .where(AgentConversationSummary.conversation_id == cid)
+                                    .order_by(AgentConversationSummary.seq.asc()))).all()
+    stored = [{"role": m.role, "content": m.content, "tool_calls": m.tool_calls, "tool_call_id": m.tool_call_id,
+               "status": m.status, "turn_id": m.turn_id, "sequence": m.sequence} for m in reversed(rows)]
+    made = [{"seq": x.seq, "from_sequence": x.from_sequence, "upto_sequence": x.upto_sequence, "content": x.content}
+            for x in segments]
+    return layers.layer_rows(stored, made, l1_bytes=l1_bytes, l2_bytes=l2_bytes, l3_bytes=l3_bytes)
+
+
+async def append_summary(conversation_id: str, from_sequence: int, upto_sequence: int, content: str) -> bool:
+    """Append the next summary segment.  False when it would not move the covered range forward
+    (another task got there first) or when the segment number was taken in the meantime."""
+    cid = uuid.UUID(conversation_id)
+    async with Session() as s:
+        last = (await s.execute(select(AgentConversationSummary.seq, AgentConversationSummary.upto_sequence)
+                                .where(AgentConversationSummary.conversation_id == cid)
+                                .order_by(AgentConversationSummary.seq.desc()).limit(1))).first()
+        if last is not None and upto_sequence <= last.upto_sequence:
+            return False
+        s.add(AgentConversationSummary(conversation_id=cid, seq=(last.seq if last else 0) + 1,
+                                       from_sequence=from_sequence, upto_sequence=upto_sequence, content=content))
+        try:
+            await s.commit()
+        except IntegrityError:
+            await s.rollback()
+            return False
+        return True
+
+
 async def owned_messages(conversation_id: str,credential: str):
     if not await verify_conversation(conversation_id,credential): return None
     async with Session() as s:

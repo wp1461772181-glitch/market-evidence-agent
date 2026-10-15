@@ -12,6 +12,7 @@ The product focuses on an inspectable research process, traceable evidence, and 
 
 - Full-page SSE chat streams status, tool calls, results, and answers, with readable badges for tool activity.
 - The semantic LangGraph workflow (checkpoints in PostgreSQL) first completes a follow-up that depends on earlier turns into a standalone question, and passes an already complete question through unchanged. It then recognizes intent, plans a bounded number of read-only tool steps, checks the evidence, and answers. Requests unrelated to research, such as writing code, get a fixed script and call no tools.
+- Long conversations use three context layers: recent turns word for word, half-compressed history (your words and the start of each answer), and appended segment summaries, sharing one budget (64 KB by default, set with `AGENT_CONTEXT_BUDGET_KB`). The reference-resolution stage reads them; the answer stage still reads only the turn's evidence. A summary is memory, not evidence, and is never a ground for a citation. The “Context left” pill beside the model picker shows each part.
 - Write actions (fetching or refreshing SEC filings, importing into the knowledge base, generating AI analyses, building indexes, creating forecasts) are open only to personal identities. The model can only propose one; a confirmation card appears in the UI (Approve / Choose another action / Cancel), and the server runs the frozen proposal only after the click. Guest identities cannot run write actions.
 - `web_research` can search public pages through Tavily or read a public HTTPS URL. Search defaults to a separately configured server-side `TAVILY_API_KEY`; without it, search reports unavailable and never silently falls back to Bing. Public URL reads do not need a Tavily key. Page excerpts are bounded and search snippets are not treated as page bodies.
 - Answers support Markdown, tables, source citations, and quoted excerpts. Users can copy answers, navigate to questions, and inspect cited sources.
@@ -90,7 +91,7 @@ PostgreSQL stores business records, originals, chunks, jobs, and conversations; 
 
 ## Current boundaries
 
-The Agent's read tools only read saved records; explicit web research can read bounded excerpts from public pages, and error or navigation pages are detected and skipped. It does not trade or retrieve live prices. Write actions are open only to personal identities and run only after the confirmation card. Public web news is not yet a saved source that can be imported. The semantic LangGraph workflow, with durable checkpoints, is deployed to the public demo. Evidence gating uses heuristics, answers can still be wrong, and citations do not prove every answer is faithful.
+The Agent's read tools only read saved records; explicit web research can read bounded excerpts from public pages, and error or navigation pages are detected and skipped. It does not trade or retrieve live prices. Write actions are open only to personal identities and run only after the confirmation card. Public web news is not yet a saved source that can be imported. The semantic LangGraph workflow, with durable checkpoints, is deployed to the public demo. “Context left” is this product's context budget, not the window of the model you chose. Evidence gating uses heuristics, answers can still be wrong, and citations do not prove every answer is faithful.
 
 Forecasts, material analyses, and retrieval results require researcher review against original sources and timestamps. Forecast evaluation is meaningful only for matured samples with available outcomes; historical replay and synthetic retrieval metrics do not establish future performance. High-concurrency guarantees and end-to-end atomic writes remain unverified. Real-model and Tavily search checks were run by the maintainer on a shadow server; the public deployment has had only a guest smoke test and has not been independently accepted.
 
@@ -99,9 +100,10 @@ Forecasts, material analyses, and retrieval results require researcher review ag
 - [Local setup and deployment](docs/github-pages-local-backend.md)
 - [Conversation archive files](docs/chat-local-files.md)
 - [Model profiles and storage](docs/model-profile-storage.md) · [Model discovery](docs/model-discovery.md)
+- [Conversation context and the retention evaluation](docs/agent-context.md) · [Evaluation report](docs/context-retention-report.md)
 - [Knowledge retrieval](docs/knowledge-rag.md) · [Four-strategy evaluation report](docs/knowledge-rag-ch34-reports/four-strategy-evaluation.md)
 - [Custom stock support](docs/custom-stock-support.md) · [Experimental forecast and learning limits](docs/jev-local-learning.md)
 
 ## Future direction
 
-Next work is layered conversation context for long sessions, measured on long real conversations before any improvement is claimed. The system does not implement multi-Agent autonomy or model fine-tuning.
+Possible directions are lower per-turn latency (measured first) and a budget that knows the model's window; nothing is scheduled. The system does not implement multi-Agent autonomy or model fine-tuning.
