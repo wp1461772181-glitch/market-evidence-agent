@@ -21,6 +21,13 @@ def test_trillion_compound_chinese_units_are_checked_instead_of_ignored(amount,b
     from app.agent_workflow.evidence import unsupported_numbers
     assert unsupported_numbers(amount+'[1]',[{'ordinal':1,'quote':'Apple reached US$5 trillion.'}]) is blocked
 
+@pytest.mark.parametrize('quote,blocked',[('Apple 市值5萬億美元。',False),('Apple 市值7萬億美元。',True)])
+def test_traditional_source_magnitudes_compare_without_changing_source_text(quote,blocked):
+    from app.agent_workflow.evidence import unsupported_numbers
+    citations=[{'ordinal':1,'quote':quote}]
+    assert unsupported_numbers('Apple 市值5万亿美元[1]',citations) is blocked
+    assert citations[0]['quote']==quote
+
 @pytest.mark.parametrize('body',[
  'Apple FY2024 revenue was 10. Apple FY2025 profit was 20.',
  'Apple Q3 2024 revenue was 10. Apple Q1 2025 revenue was 20.',
