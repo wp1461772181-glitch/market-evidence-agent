@@ -20,6 +20,7 @@ export function normalizeClarification(value) {
   if (typeof value.question==='string') card.question=value.question.slice(0,400);
   if (value.display && typeof value.display==='object') {
     const display={};
+    if(value.display.agent_suggestion===true) display.agent_suggestion=true;
     for (const key of ['title','saved_date','web_date','alternative']) if(typeof value.display[key]==='string') display[key]=value.display[key].slice(0,600);
     const publicLink=url=>{try{const p=new URL(url);return p.protocol==='https:'&&!p.username&&!p.password?p.href:undefined}catch{return undefined}};
     if(typeof value.display.url==='string') display.url=publicLink(value.display.url);
@@ -41,7 +42,7 @@ export function manualClarification(clarification, input) {
   return {message,pendingRequestId:clarification.request_id};
 }
 
-export function clarificationTitle(clarification) { return titles[clarification?.reason]??'请补充信息'; }
+export function clarificationTitle(clarification) { return clarification?.display?.agent_suggestion===true?'Agent 建议：请决定是否批准':titles[clarification?.reason]??'请补充信息'; }
 
 export function isActiveClarification(messages,index,readOnly) {
   const message=messages[index];

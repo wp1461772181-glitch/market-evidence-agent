@@ -8,9 +8,10 @@ def test_catalogue_contains_executable_handlers_with_typed_permission_metadata()
     assert {'ingest_web_source','add_to_research_queue','remove_from_research_queue','scan_official'}<=set(policies)
     for policy in policies.values():
         assert policy.args_schema and policy.description and policy.errors and policy.actionable_error
-        assert policy.confirmation==(policy.level=='costly')
+        assert policy.confirmation==(policy.level in {'reversible','costly'})
         assert not(policy.guest and policy.level=='costly')
-    assert {s['function']['name'] for s in schemas(owner=True)}==set(policies)
+    assert {s['function']['name'] for s in schemas(owner=True,granted={n for n,p in policies.items() if p.level in {'reversible','costly'}})}==set(policies)
+    assert not {n for n,p in policies.items() if p.level in {'reversible','costly'}}&{s['function']['name'] for s in schemas(owner=True)}
     assert 'ingest_web_source' not in {s['function']['name'] for s in schemas(owner=False)}
 
 @pytest.mark.parametrize('name',['change_login_code','read_api_key','delete_database','delete_conversation','configure_model'])
@@ -23,6 +24,8 @@ def test_unregistered_tool_cannot_be_exposed():
     assert registered_tools(owner=False,registry={'undeclared':Tool()})==[]
 
 WRITE_ARGUMENTS={
+ 'add_to_research_queue':{'symbol':'AMD'},'remove_from_research_queue':{'symbol':'AMD'},
+ 'review_filing':{'source_id':'11111111-1111-4111-8111-111111111111','decision':'accepted'},
  'fetch_sec':{'symbol':'AMD'},'refresh_sec':{'symbol':'AMD'},
  'analyze':{'symbol':'AMD','source_id':'11111111-1111-4111-8111-111111111111'},
  'import':{'symbol':'AMD','source_id':'11111111-1111-4111-8111-111111111111'},
@@ -37,11 +40,11 @@ WRITE_ARGUMENTS={
  'import_sources':{'source_type':'sec','source_ids':['11111111-1111-4111-8111-111111111111']},
 }
 
-def test_every_costly_tool_has_a_tokenless_security_probe():
-    assert set(WRITE_ARGUMENTS)=={p.name for p in definitions().values() if p.level=='costly'}
+def test_every_server_write_has_a_tokenless_security_probe():
+    assert set(WRITE_ARGUMENTS)=={p.name for p in definitions().values() if p.level in {'reversible','costly'}}
 
 @pytest.mark.parametrize('name',WRITE_ARGUMENTS)
-def test_no_costly_tool_can_bypass_consent_through_public_dispatch(name,monkeypatch):
+def test_no_server_write_can_bypass_consent_through_public_dispatch(name,monkeypatch):
     import asyncio
     from app.agent_workflow import tools
     from app.agent_workflow.state import AgentRuntimeContext

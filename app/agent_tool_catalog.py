@@ -108,8 +108,8 @@ EXTRA=(
  ('search_knowledge',KnowledgeArgs,'read','Search saved knowledge and filings before public research. Empty results do not stop web research.'),
  ('query_system_status',StatusArgs,'read','Read existing jobs, monitor, evaluation, replay or indexing status. Never starts work.'),
  ('query_research_queue',Empty,'read','Read the owner queue, or ask the guest browser to display its local queue.'),
- ('add_to_research_queue',QueueArgs,'reversible','Add a symbol explicitly requested by the user; owner database or guest browser only. No confirmation.'),
- ('remove_from_research_queue',QueueArgs,'reversible','Remove a requested symbol from the queue, keeping all materials and history. No confirmation.'),
+ ('add_to_research_queue',QueueArgs,'reversible','Add a requested symbol: owner database requires server confirmation; guest browser-local queue needs no server write.'),
+ ('remove_from_research_queue',QueueArgs,'reversible','Remove a requested symbol, keeping materials and history. Owner database requires server confirmation; guest browser-local only.'),
  ('select_stock',StockArgs,'client','Select the current stock in the browser without fetching new data.'),
  ('open_page',PageArgs,'client','Open a named existing workspace page without changing data.'),
  ('ask_user',CardArgs,'card','Ask for a missing entity or let the user choose between options. Use when the reference is ambiguous.'),
@@ -126,16 +126,26 @@ EXTRA=(
  ('review_filing',ReviewArgs,'reversible','Record the owner requested accepted/rejected relevance review for a saved SEC filing. Never delete data.'),
 )
 
+# Every base registry entry is read-only; write names come from catalogue levels.
+WriteTool=Literal[tuple(name for name,_,level,_ in EXTRA if level in {'reversible','costly'})]
+class RequestActionArgs(Args):
+    tool:WriteTool
+    arguments:dict=Field(default_factory=dict)
+    reason:str=Field(min_length=1,max_length=400)
+
+def write_tool_names():return {n for n,p in definitions().items() if p.level in {'reversible','costly'}}
+
 def definitions():
     from .agent_tools import TOOL_REGISTRY
     result={name:ToolPolicy(name,tool.description,tool.args_schema,'read') for name,tool in TOOL_REGISTRY.items()}
     for name,schema,level,description in EXTRA:
-        result[name]=ToolPolicy(name,description,schema,level,True,level!='costly' and name!='review_filing',level=='costly')
+        result[name]=ToolPolicy(name,description,schema,level,True,level!='costly' and name!='review_filing',level in {'reversible','costly'})
+    result['request_action']=ToolPolicy('request_action','Request owner approval for an agent-suggested operation that is NOT a user request. Arguments must match the target tool schema. No fetching or business writes before approval; at most one suggestion per turn.',RequestActionArgs,'card',True,False)
     return result
 
-def schemas(*,owner:bool):
+def schemas(*,owner:bool,granted=()):
     return [{'type':'function','function':{'name':p.name,'description':p.description,'parameters':p.args_schema.model_json_schema()}}
-        for p in definitions().values() if p.owner and(owner or p.guest)]
+        for p in definitions().values() if p.owner and(owner or p.guest) and (p.level not in {'reversible','costly'} or p.name in granted)]
 
 def validate(name,args):
     policy=definitions().get(name)

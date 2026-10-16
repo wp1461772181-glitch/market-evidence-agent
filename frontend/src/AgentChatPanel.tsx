@@ -45,6 +45,7 @@ function ClarificationCard({clarification,active,onChoose,onReply}:{clarificatio
   const title=t(clarificationTitle(clarification));
   return <div className={`agent-clarification-card${write?" is-write":""}${active?"":" is-locked"}`} role="group" aria-label={title}>
     <strong>{title}</strong>
+    {clarification.display?.agent_suggestion&&<p>{t("这是 agent 的建议，不是你的要求。批准后才会继续。")}</p>}
     {clarification.question&&<p>{clarification.question}</p>}
     {clarification.display&&<div className="agent-confirmation-details">
       <p><strong>{clarification.display.title}</strong></p>

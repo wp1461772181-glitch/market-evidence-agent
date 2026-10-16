@@ -13,7 +13,7 @@ from .models import AgentWebSource
 
 def safe(value):return json.loads(json.dumps(value,default=str,ensure_ascii=False))
 def result(rows,source):return {'ok':True,'data':safe(rows),'source':source,'as_of':datetime.now(UTC).isoformat()}
-def error(code):return {'ok':False,'data':[],'error_code':code,'hint':'请修正参数或选择已返回的来源；没有资料时可先联网查找。'}
+def error(code):return {'ok':False,'data':[],'error_code':code,'hint':'用 request_action 请求用户批准' if code=='write_tool_not_granted' else '请修正参数或选择已返回的来源；没有资料时可先联网查找。'}
 
 
 async def search_knowledge(args,context):
@@ -57,7 +57,24 @@ async def invoke(name,args,context,*,emit=None):
     except Exception:return error('invalid_arguments')
     policy=definitions()[name];is_owner=owner_credential_matches(context.identity_credential)
     if not is_owner and not policy.guest:return error('owner_login_required')
-    if policy.level=='costly':return error('confirmation_required')
+    if policy.level=='costly' or (policy.level=='reversible' and is_owner):return error('confirmation_required')
+    return await _dispatch(name,args,context,is_owner,emit)
+
+
+async def execute_reversible(operation,key,context,*,emit=None):
+    """Require the exact durable operation currently executing under consent's lock."""
+    from . import consent
+    try:
+        request_id,index=key.rsplit('.',1)
+        saved=consent.lookup(context.identity_credential,context.conversation_id,request_id)
+        if saved['status']!='executing' or saved['operations'][int(index)]!=operation:raise ValueError('confirmation_parameter_mismatch')
+        name=operation['name'];args=validate(name,operation['arguments'])
+        if definitions()[name].level!='reversible':raise ValueError('invalid_action_tool')
+    except (ValueError,IndexError,KeyError,TypeError):return error('confirmation_required')
+    return await _dispatch(name,args,context,True,emit)
+
+
+async def _dispatch(name,args,context,is_owner,emit):
     if context.executor:
         value=context.executor(name,args)
         return await value if hasattr(value,'__await__') else value

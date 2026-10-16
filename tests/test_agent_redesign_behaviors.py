@@ -30,7 +30,7 @@ def owned(monkeypatch,disposable_database):
     for module in (direct,consent,tools):monkeypatch.setattr(module,'owner_credential_matches',lambda c:c=='owner')
     return 'owner'
 
-async def turn(question,*,route='A',scope=None,steps=(),answers=None,owner=False,state=None,resolver=None,messages=None,pending=None):
+async def turn(question,*,route='A',scope=None,steps=(),answers=None,owner=False,state=None,resolver=None,messages=None,pending=None,grants=()):
     calls=[];events=[];steps=iter(steps);values=copy.deepcopy(answers or {})
     async def execute(name,args):
         calls.append((name,args))
@@ -40,7 +40,7 @@ async def turn(question,*,route='A',scope=None,steps=(),answers=None,owner=False
         return copy.deepcopy(value)
     async def decide(*_):return next(steps,{'content':'已完成，来源见 [1]。' if any(n=='web_research' for n,_ in calls) else '没有可核验资料。'})
     context=AgentRuntimeContext('custom','test','dummy',owner_hash=owner_hash('owner' if owner else 'guest'),conversation_id='c',identity_credential='owner' if owner else 'guest',
-        classifier=lambda q:{'category':route,**{k:v for k,v in (scope or {}).items() if k!='answer'}},decider=decide,executor=execute,answerer=lambda *_:(scope or {}).get('answer') or '已完成：已返回证据；未完成：剩余请求。',resolver=resolver)
+        classifier=lambda q:{'category':route,'requested_actions':list(grants),**{k:v for k,v in (scope or {}).items() if k!='answer'}},decider=decide,executor=execute,answerer=lambda *_:(scope or {}).get('answer') or '已完成：已返回证据；未完成：剩余请求。',resolver=resolver)
     async def emit(e):events.append(e)
     result=await run_direct_turn(question,context,emit=emit,state={**(state or {}),'requested_pending_id':pending},messages=messages)
     return result,calls,events,context
@@ -78,7 +78,7 @@ def test_forbidden_requests_never_reach_any_model_tool(text):
 @pytest.mark.parametrize('text',['请不要导入刚才那份资料','别把那份资料导入','do not import this source'])
 def test_negated_write_cannot_get_a_proposal(owned,text):
     identity=str(uuid.uuid4())
-    r,_,_,_=run(text+' '+identity,route='D',owner=True,steps=[call('import',symbol='AMD',source_id=identity),{'content':'未写入。'}])
+    r,_,_,_=run(text+' '+identity,route='D',owner=True,grants=['import'],steps=[call('import',symbol='AMD',source_id=identity),{'content':'未写入。'}])
     assert r['pending_request'] is None
 
 def test_page_injection_cannot_authorize_web_ingestion(owned):
@@ -97,10 +97,11 @@ def test_conditional_web_save_compares_frozen_dates_before_card(owned,newer):
     filing_date=(NOW-timedelta(days=5 if newer else 0)).isoformat()
     filing={'id':str(uuid.uuid4()),'symbol':'AAPL','source_type':'official_filing','title':'Apple filing','excerpt':'Apple revenue increased.','filed_at':filing_date}
     p=page('Apple',1)
-    r,_,_,_=run('比较苹果营收新闻和财报的日期，新闻更新就放入知识库',owner=True,scope={'company':'Apple','symbol':'AAPL','company_mention':'苹果','query':'revenue'},
+    r,_,_,_=run('比较苹果营收新闻和财报的日期，新闻更新就放入知识库',owner=True,grants=['ingest_web_source'],scope={'company':'Apple','symbol':'AAPL','company_mention':'苹果','query':'revenue'},
         steps=[call('web_research',query='Apple revenue news',company='Apple'),call('ingest_web_source',url=p['url'],newer_than=1),{'content':'两个日期已比较 [1] [2]'}],
         answers={'search_knowledge':{'ok':True,'data':[filing]},'web_research':{'ok':True,'data':[{**p,'excerpt':'Apple revenue increased in the news.'}]}})
     assert bool(r['pending_request'])==newer
+    if not newer:assert r['audit']['write_outcome']=='refused:not_newer'
     if newer:
         display=r['pending_request']['display'];assert display['saved_date']==filing_date and display['web_date']==p['published_at']
         assert display['url']==p['url'] and 'SEC' in display['alternative']
@@ -108,7 +109,7 @@ def test_conditional_web_save_compares_frozen_dates_before_card(owned,newer):
 
 def test_confirmed_web_save_persists_once_and_is_searchable(owned,monkeypatch):
     p=page('Oracle',1,n=uuid.uuid4().hex)
-    r,_,_,ctx=run('搜索 Oracle 新闻然后导入资料库',owner=True,scope={'company':'Oracle'},steps=[call('web_research',query='Oracle news',company='Oracle'),call('ingest_web_source',url=p['url'])],answers={'web_research':{'ok':True,'data':[p]}})
+    r,_,_,ctx=run('搜索 Oracle 新闻然后导入资料库',owner=True,grants=['ingest_web_source'],scope={'company':'Oracle'},steps=[call('web_research',query='Oracle news',company='Oracle'),call('ingest_web_source',url=p['url'])],answers={'web_research':{'ok':True,'data':[p]}})
     assert r['status']=='waiting_for_input';card=r['pending_request']
     with SessionLocal() as db:assert not db.scalar(select(AgentWebSource).where(AgentWebSource.source_url==p['url']))
     from app.agent_workflow import web_sources
@@ -128,13 +129,22 @@ def test_queue_add_remove_are_real_owner_or_guest_local(owned,owner):
     events=[]
     async def emit(e):events.append(e)
     ctx=AgentRuntimeContext('custom','test','dummy',owner_hash=owner_hash('owner' if owner else 'guest'),identity_credential='owner' if owner else 'guest')
-    first=asyncio.run(tools.invoke('add_to_research_queue',{'symbol':'MU'},ctx,emit=emit))
+    def invoke(name):
+        if not owner:return asyncio.run(tools.invoke(name,{'symbol':'MU'},ctx,emit=emit))
+        denied=asyncio.run(tools.invoke(name,{'symbol':'MU'},ctx,emit=emit))
+        assert denied['error_code']=='confirmation_required'
+        operation={'name':name,'arguments':{'symbol':'MU'}}
+        card=consent.propose('owner',ctx.conversation_id,[operation],{'title':name})
+        result=asyncio.run(run_direct_turn(card['choices'][0]['value'],ctx,emit=emit,state={'pending_request':card,'requested_pending_id':card['id']}))
+        assert result['audit']['write_outcome']=='executed'
+        return {'ok':result['status']=='succeeded'}
+    first=invoke('add_to_research_queue')
     assert first['ok']
     with SessionLocal() as db:
         row=db.get(AgentResearchQueue,ctx.owner_hash)
         if owner:assert 'MU' in row.symbols
         else:assert row is None and events[-1]['action']=='queue_add'
-    asyncio.run(tools.invoke('remove_from_research_queue',{'symbol':'MU'},ctx,emit=emit))
+    assert invoke('remove_from_research_queue')['ok']
     with SessionLocal() as db:
         row=db.get(AgentResearchQueue,ctx.owner_hash)
         if owner:assert 'MU' not in row.symbols
@@ -145,14 +155,14 @@ def test_result_set_wrong_ordinal_or_zero_count_never_confirms(owned,text,positi
     rows=[page('Apple',n=1),page('Apple',n=2)]
     state={'result_sets':[{'id':'saved','owner':owner_hash('owner'),'conversation':'c','rows':rows,'scope':{'company':'Apple'},'tool':'web_research'}]}
     resolver=lambda _: {'relationship':'new','canonical_question':text}
-    r,_,_,_=run(text,route='D',owner=True,state=state,resolver=resolver,steps=[call('use_result_set',result_set_id='saved',positions=positions,action='import'),{'content':'未写入'}])
+    r,_,_,_=run(text,route='D',owner=True,grants=['ingest_web_source'],state=state,resolver=resolver,steps=[call('use_result_set',result_set_id='saved',positions=positions,action='import'),{'content':'未写入'}])
     assert r['pending_request'] is None
 
 
 def test_two_news_targets_frozen_and_confirmed_exactly_twice(owned,monkeypatch):
     rows=[page('Apple',n=1),page('Apple',n=2)]
     state={'result_sets':[{'id':'saved','owner':owner_hash('owner'),'conversation':'c','rows':rows,'scope':{'company':'Apple'},'tool':'web_research'}]}
-    r,_,_,ctx=run('导入刚才那两条',route='D',owner=True,state=state,resolver=lambda _: {'relationship':'new'},steps=[call('use_result_set',result_set_id='saved',positions=[1,2],action='import')])
+    r,_,_,ctx=run('导入刚才那两条',route='D',owner=True,grants=['ingest_web_source'],state=state,resolver=lambda _: {'relationship':'new'},steps=[call('use_result_set',result_set_id='saved',positions=[1,2],action='import')])
     card=r['pending_request'];assert len(card['display']['targets'])==2
     count=[];monkeypatch.setattr(tools,'execute_costly',lambda operation,key,context:count.append(operation['arguments']['url']) or {'ok':True})
     async def emit(_):pass
@@ -165,7 +175,7 @@ def test_reference_accepts_catalogue_urls_followed_by_sentence_punctuation(owned
     rows=[page('Apple',n=1),page('Apple',n=2)]
     state={'result_sets':[{'id':'saved','owner':owner_hash('owner'),'conversation':'c','rows':rows,'scope':{'company':'Apple'},'tool':'web_research'}]}
     canonical='导入刚才那两条 Apple 新闻：'+rows[0]['url']+' 和 '+rows[1]['url']+punctuation
-    r,_,_,_=run('导入刚才那两条',route='D',owner=True,state=state,
+    r,_,_,_=run('导入刚才那两条',route='D',owner=True,grants=['ingest_web_source'],state=state,
         resolver=lambda _:{'relationship':'followup','canonical_question':canonical},
         steps=[call('use_result_set',result_set_id='saved',positions=[1,2],action='import')])
     assert r['pending_request']['reason']=='write_confirmation'
@@ -174,7 +184,7 @@ def test_reference_accepts_catalogue_urls_followed_by_sentence_punctuation(owned
 
 def test_reference_still_rejects_a_url_not_in_the_catalogue(owned):
     state={'result_sets':[{'id':'saved','owner':owner_hash('owner'),'conversation':'c','rows':[page('Apple')],'scope':{'company':'Apple'},'tool':'web_research'}]}
-    r,c,_,_=run('导入刚才那条',route='D',owner=True,state=state,
+    r,c,_,_=run('导入刚才那条',route='D',owner=True,grants=['ingest_web_source'],state=state,
         resolver=lambda _:{'relationship':'followup','canonical_question':'导入 Apple 新闻 https://other.example.org/Apple/1。'})
     assert r['pending_request']['reason']=='missing_information' and not c
 
@@ -183,7 +193,7 @@ def test_parallel_web_proposals_freeze_every_requested_target_in_one_card(owned,
     rows=[page('Apple',n=1),page('Apple',n=2)]
     state={'result_sets':[{'id':'saved','owner':owner_hash('owner'),'conversation':'c','rows':rows,'scope':{'company':'Apple'},'tool':'web_research'}]}
     parallel={'tool_calls':[call('ingest_web_source',url=p['url'])['tool_calls'][0] for p in rows]}
-    r,_,_,ctx=run('导入刚才那两条',route='D',owner=True,state=state,resolver=lambda _:{'relationship':'new'},steps=[parallel])
+    r,_,_,ctx=run('导入刚才那两条',route='D',owner=True,grants=['ingest_web_source'],state=state,resolver=lambda _:{'relationship':'new'},steps=[parallel])
     saved=consent.lookup(ctx.identity_credential,ctx.conversation_id,r['pending_request']['id'])
     assert [op['arguments']['url'] for op in saved['operations']]==[p['url'] for p in rows]
     assert [target['url'] for target in saved['display']['targets']]==[p['url'] for p in rows]
@@ -199,14 +209,14 @@ def test_parallel_proposal_does_not_show_a_partial_card_when_one_target_is_inval
     p=page('Apple')
     state={'result_sets':[{'id':'saved','owner':owner_hash('owner'),'conversation':'c','rows':[p],'scope':{'company':'Apple'},'tool':'web_research'}]}
     parallel={'tool_calls':[call('ingest_web_source',url=url)['tool_calls'][0] for url in (p['url'],'https://other.example.org/not-returned')]}
-    r,_,_,_=run('导入刚才那两条',route='D',owner=True,state=state,resolver=lambda _:{'relationship':'new'},steps=[parallel,{'content':'资料数量不完整，请重新选择。'}])
+    r,_,_,_=run('导入刚才那两条',route='D',owner=True,grants=['ingest_web_source'],state=state,resolver=lambda _:{'relationship':'new'},steps=[parallel,{'content':'资料数量不完整，请重新选择。'}])
     assert r['pending_request'] is None
 
 
 def test_single_web_proposal_cannot_satisfy_an_explicit_two_target_request(owned):
     rows=[page('Apple',n=1),page('Apple',n=2)]
     state={'result_sets':[{'id':'saved','owner':owner_hash('owner'),'conversation':'c','rows':rows,'scope':{'company':'Apple'},'tool':'web_research'}]}
-    r,_,_,_=run('导入刚才那两条',route='D',owner=True,state=state,resolver=lambda _:{'relationship':'new'},
+    r,_,_,_=run('导入刚才那两条',route='D',owner=True,grants=['ingest_web_source'],state=state,resolver=lambda _:{'relationship':'new'},
         steps=[call('ingest_web_source',url=rows[0]['url']),{'content':'目标数量不完整。'}])
     assert r['pending_request'] is None
 
@@ -232,7 +242,7 @@ def test_same_web_body_at_another_url_does_not_create_a_new_confirmation(owned):
     p=page('BodyDuplicateCo');other={**p,'url':'https://other.example.org/same-body'}
     with SessionLocal() as db:
         save_snapshot(db,owner_hash('owner'),p,company='BodyDuplicateCo');db.commit()
-    r,_,_,_=run('搜索 BodyDuplicateCo 新闻然后保存',owner=True,scope={'company':'BodyDuplicateCo'},
+    r,_,_,_=run('搜索 BodyDuplicateCo 新闻然后保存',owner=True,grants=['ingest_web_source'],scope={'company':'BodyDuplicateCo'},
         steps=[call('web_research',query='BodyDuplicateCo news',company='BodyDuplicateCo'),call('ingest_web_source',url=other['url']),{'content':'资料已存在，无需再次入库。'}],
         answers={'web_research':{'ok':True,'data':[other]}})
     assert r['pending_request'] is None and r['status']=='succeeded'
@@ -260,7 +270,7 @@ def test_failed_body_is_excluded_from_final_model_context():
 
 def test_web_consent_saves_the_exact_reviewed_snapshot_without_refetch(owned,monkeypatch):
     original=page('SnapshotCo',1,n=uuid.uuid4().hex)
-    r,_,_,ctx=run('搜索 SnapshotCo 新闻然后保存',owner=True,scope={'company':'SnapshotCo'},steps=[call('web_research',query='SnapshotCo news',company='SnapshotCo'),call('ingest_web_source',url=original['url'])],answers={'web_research':{'ok':True,'data':[original]}})
+    r,_,_,ctx=run('搜索 SnapshotCo 新闻然后保存',owner=True,grants=['ingest_web_source'],scope={'company':'SnapshotCo'},steps=[call('web_research',query='SnapshotCo news',company='SnapshotCo'),call('ingest_web_source',url=original['url'])],answers={'web_research':{'ok':True,'data':[original]}})
     card=r['pending_request'];assert card
     from app.agent_workflow import web_sources
     async def changed_page(*_,**__):return {**original,'title':'Changed after confirmation','excerpt':'SnapshotCo completely changed content.'}
@@ -287,14 +297,14 @@ def test_resolver_cannot_invent_a_fiscal_year_removed_by_numeric_parser():
 
 def test_conditional_newer_save_requires_an_explicit_comparison_ordinal(owned):
     p=page('Apple',1)
-    r,_,_,_=run('如果苹果的网页新闻日期更新就放入知识库',owner=True,scope={'company':'Apple','symbol':'AAPL','company_mention':'苹果'},
+    r,_,_,_=run('如果苹果的网页新闻日期更新就放入知识库',owner=True,grants=['ingest_web_source'],scope={'company':'Apple','symbol':'AAPL','company_mention':'苹果'},
         steps=[call('web_research',query='Apple news',company='Apple'),call('ingest_web_source',url=p['url']),{'content':'日期比较尚未完成。'}],
         answers={'web_research':{'ok':True,'data':[p]}})
     assert r['pending_request'] is None
 
 def test_confirmation_previews_original_title_without_treating_it_as_an_answer_claim(owned):
     p=page('Apple');p['title']='Apple acquired ExampleCo for $100 million'
-    r,_,_,_=run('搜索苹果网页然后保存',owner=True,scope={'company':'Apple','symbol':'AAPL','company_mention':'苹果'},
+    r,_,_,_=run('搜索苹果网页然后保存',owner=True,grants=['ingest_web_source'],scope={'company':'Apple','symbol':'AAPL','company_mention':'苹果'},
         steps=[call('web_research',query='Apple news',company='Apple'),call('ingest_web_source',url=p['url'])],answers={'web_research':{'ok':True,'data':[p]}})
     assert r['status']=='waiting_for_input'
     assert r['pending_request']['display']['title']==p['title']

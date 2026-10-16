@@ -3,7 +3,7 @@ import re
 
 # A request to analyse a relationship cannot authorize an import or queue mutation.
 VERBS={
-    'fetch_sec':r'抓取|获取|下载|fetch|download',
+    'fetch_sec':r'抓取|获取|下载|拉取|拉去|同步|缓存|fetch|download|sync|cache',
     'refresh_sec':r'刷新|重新抓取|refresh|refetch',
     'analyze':r'分析|analy[sz]e',
     'import':r'导入|入库|放入|放进|保存|import|ingest|save',
@@ -34,3 +34,9 @@ def authorized(name,words):
     matches=list(verbs.finditer(words))
     if not matches:return False
     return all(not any(n.start()<=v.start()<n.end() for n in NEGATION.finditer(words)) for v in matches)
+
+def vetoed(name,words):
+    """Negative veto only. This function can NEVER grant an operation."""
+    pattern=VERBS.get(name)
+    if not pattern:return False
+    return any(re.search(pattern,n.group(0),re.I) for n in NEGATION.finditer(words))

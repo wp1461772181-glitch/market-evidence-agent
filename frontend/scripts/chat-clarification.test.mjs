@@ -79,3 +79,14 @@ test('a batch confirmation keeps the dates beside each individual target',()=>{
  assert.equal(card.display.targets[0].saved_date,'2026-10-01');
  assert.equal(card.display.targets[1].web_date,'2026-10-15');
 });
+
+test('agent suggestions stay visibly distinct and preserve server authorization buttons',()=>{
+ const id='11111111-1111-4111-8111-111111111111';
+ const card=normalizeClarification({request_id:id,reason:'write_confirmation',display:{title:'这是 agent 的建议，不是你的要求：fetch_sec',agent_suggestion:true,targets:[{symbol:'INTC'}]},choices:[{label:'授权，拉取最新一份',value:`authorize:${id}`}]});
+ assert.equal(card.display.agent_suggestion,true);
+ assert.equal(clarificationTitle(card),'Agent 建议：请决定是否批准');
+ assert.deepEqual(selectedClarification(card,`authorize:${id}`),{message:`authorize:${id}`,pendingRequestId:id});
+ const ordinary=normalizeClarification({...card,display:{agent_suggestion:'true'}});
+ assert.notEqual(ordinary.display.agent_suggestion,true);
+ assert.notEqual(clarificationTitle(ordinary),'Agent 建议：请决定是否批准');
+});
