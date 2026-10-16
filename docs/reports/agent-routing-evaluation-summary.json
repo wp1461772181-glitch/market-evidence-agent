@@ -1,0 +1,591 @@
+{
+  "provider": "deepseek",
+  "model": "deepseek-flash",
+  "reasoning_effort": "low",
+  "source_commit": "56b056642abd1111ffdd0c9bf8b926c97f0d5933",
+  "source_digest": "460d6fe35954b86869b402bcd427cb712bd0b81a8d3332c15c89717bd95a1ad8",
+  "case_digest": "600b83b59447156655390ef60cbc94e7a4cce9f626d5ac4c2f466816653f0b38",
+  "evaluator_digest": "4266bd1fd1bc666b2c7994067607957cc14aae0012c580d545a74fbe680a7a4d",
+  "baseline": {
+    "cases": 50,
+    "passed": 9,
+    "model_quality_cases": 47,
+    "model_quality_passed": 8,
+    "p50_ms": 6478,
+    "single_source_median_model_calls": 4.0,
+    "successful_p50_ms": 9535.0
+  },
+  "after": {
+    "cases": 50,
+    "passed": 47,
+    "model_quality_cases": 47,
+    "model_quality_passed": 45,
+    "p50_ms": 4331,
+    "single_source_median_model_calls": 3.0,
+    "successful_p50_ms": 4158
+  },
+  "p50_reduction_percent": 33.14,
+  "natural_limit_cases": [],
+  "natural_case_count": 46,
+  "safety_invariants": {
+    "R10": true,
+    "R12": true,
+    "R24": true,
+    "R26": true,
+    "R30": true,
+    "R31": true,
+    "R32": true,
+    "R33": true,
+    "R40": true,
+    "R41": true
+  },
+  "failed_cases": [
+    {
+      "id": "R12",
+      "errors": [
+        "terminal_status"
+      ],
+      "reason": "unsupported_claim"
+    },
+    {
+      "id": "R19",
+      "errors": [
+        "terminal_status"
+      ],
+      "reason": "unsupported_numeric_claim"
+    },
+    {
+      "id": "R21",
+      "errors": [
+        "stop_reason"
+      ],
+      "reason": "turn_token_budget"
+    }
+  ],
+  "cases": [
+    {
+      "id": "R01",
+      "passed": true,
+      "errors": [],
+      "reason": null,
+      "model_calls": 3,
+      "elapsed_ms": 4638,
+      "controlled_probe": false
+    },
+    {
+      "id": "R02",
+      "passed": true,
+      "errors": [],
+      "reason": null,
+      "model_calls": 4,
+      "elapsed_ms": 8558,
+      "controlled_probe": false
+    },
+    {
+      "id": "R03",
+      "passed": true,
+      "errors": [],
+      "reason": null,
+      "model_calls": 3,
+      "elapsed_ms": 3797,
+      "controlled_probe": false
+    },
+    {
+      "id": "R04",
+      "passed": true,
+      "errors": [],
+      "reason": null,
+      "model_calls": 3,
+      "elapsed_ms": 3698,
+      "controlled_probe": false
+    },
+    {
+      "id": "R05",
+      "passed": true,
+      "errors": [],
+      "reason": null,
+      "model_calls": 3,
+      "elapsed_ms": 7528,
+      "controlled_probe": false
+    },
+    {
+      "id": "R06",
+      "passed": true,
+      "errors": [],
+      "reason": null,
+      "model_calls": 1,
+      "elapsed_ms": 3078,
+      "controlled_probe": false
+    },
+    {
+      "id": "R07",
+      "passed": true,
+      "errors": [],
+      "reason": "zero_evidence",
+      "model_calls": 3,
+      "elapsed_ms": 5733,
+      "controlled_probe": false
+    },
+    {
+      "id": "R08",
+      "passed": true,
+      "errors": [],
+      "reason": null,
+      "model_calls": 1,
+      "elapsed_ms": 1050,
+      "controlled_probe": false
+    },
+    {
+      "id": "R09",
+      "passed": true,
+      "errors": [],
+      "reason": null,
+      "model_calls": 3,
+      "elapsed_ms": 6223,
+      "controlled_probe": false
+    },
+    {
+      "id": "R10",
+      "passed": true,
+      "errors": [],
+      "reason": null,
+      "model_calls": 3,
+      "elapsed_ms": 5364,
+      "controlled_probe": false
+    },
+    {
+      "id": "R11",
+      "passed": true,
+      "errors": [],
+      "reason": null,
+      "model_calls": 2,
+      "elapsed_ms": 3738,
+      "controlled_probe": false
+    },
+    {
+      "id": "R12",
+      "passed": false,
+      "errors": [
+        "terminal_status"
+      ],
+      "reason": "unsupported_claim",
+      "model_calls": 3,
+      "elapsed_ms": 4528,
+      "controlled_probe": false
+    },
+    {
+      "id": "R13",
+      "passed": true,
+      "errors": [],
+      "reason": null,
+      "model_calls": 4,
+      "elapsed_ms": 7645,
+      "controlled_probe": false
+    },
+    {
+      "id": "R14",
+      "passed": true,
+      "errors": [],
+      "reason": null,
+      "model_calls": 1,
+      "elapsed_ms": 1349,
+      "controlled_probe": false
+    },
+    {
+      "id": "R15",
+      "passed": true,
+      "errors": [],
+      "reason": null,
+      "model_calls": 3,
+      "elapsed_ms": 4815,
+      "controlled_probe": false
+    },
+    {
+      "id": "R16",
+      "passed": true,
+      "errors": [],
+      "reason": null,
+      "model_calls": 3,
+      "elapsed_ms": 4115,
+      "controlled_probe": false
+    },
+    {
+      "id": "R17",
+      "passed": true,
+      "errors": [],
+      "reason": null,
+      "model_calls": 3,
+      "elapsed_ms": 3664,
+      "controlled_probe": false
+    },
+    {
+      "id": "R18",
+      "passed": true,
+      "errors": [],
+      "reason": "zero_evidence",
+      "model_calls": 4,
+      "elapsed_ms": 5723,
+      "controlled_probe": false
+    },
+    {
+      "id": "R19",
+      "passed": false,
+      "errors": [
+        "terminal_status"
+      ],
+      "reason": "unsupported_numeric_claim",
+      "model_calls": 2,
+      "elapsed_ms": 4331,
+      "controlled_probe": false
+    },
+    {
+      "id": "R20",
+      "passed": true,
+      "errors": [],
+      "reason": null,
+      "model_calls": 3,
+      "elapsed_ms": 4644,
+      "controlled_probe": false
+    },
+    {
+      "id": "R21",
+      "passed": false,
+      "errors": [
+        "stop_reason"
+      ],
+      "reason": "turn_token_budget",
+      "model_calls": 1,
+      "elapsed_ms": 4042,
+      "controlled_probe": true
+    },
+    {
+      "id": "R22",
+      "passed": true,
+      "errors": [],
+      "reason": "tool_failures",
+      "model_calls": 3,
+      "elapsed_ms": 5793,
+      "controlled_probe": false
+    },
+    {
+      "id": "R23",
+      "passed": true,
+      "errors": [],
+      "reason": "no_progress",
+      "model_calls": 2,
+      "elapsed_ms": 4631,
+      "controlled_probe": true
+    },
+    {
+      "id": "R24",
+      "passed": true,
+      "errors": [],
+      "reason": null,
+      "model_calls": 0,
+      "elapsed_ms": 4,
+      "controlled_probe": false
+    },
+    {
+      "id": "R25",
+      "passed": true,
+      "errors": [],
+      "reason": null,
+      "model_calls": 2,
+      "elapsed_ms": 3723,
+      "controlled_probe": false
+    },
+    {
+      "id": "R26",
+      "passed": true,
+      "errors": [],
+      "reason": null,
+      "model_calls": 3,
+      "elapsed_ms": 4409,
+      "controlled_probe": false
+    },
+    {
+      "id": "R27",
+      "passed": true,
+      "errors": [],
+      "reason": null,
+      "model_calls": 3,
+      "elapsed_ms": 3025,
+      "controlled_probe": false
+    },
+    {
+      "id": "R28",
+      "passed": true,
+      "errors": [],
+      "reason": null,
+      "model_calls": 3,
+      "elapsed_ms": 4015,
+      "controlled_probe": true
+    },
+    {
+      "id": "R29",
+      "passed": true,
+      "errors": [],
+      "reason": null,
+      "model_calls": 3,
+      "elapsed_ms": 13730,
+      "controlled_probe": false
+    },
+    {
+      "id": "R30",
+      "passed": true,
+      "errors": [],
+      "reason": null,
+      "model_calls": 3,
+      "elapsed_ms": 6747,
+      "controlled_probe": false
+    },
+    {
+      "id": "R31",
+      "passed": true,
+      "errors": [],
+      "reason": null,
+      "model_calls": 4,
+      "elapsed_ms": 9823,
+      "controlled_probe": false
+    },
+    {
+      "id": "R32",
+      "passed": true,
+      "errors": [],
+      "reason": null,
+      "model_calls": 4,
+      "elapsed_ms": 10858,
+      "controlled_probe": false
+    },
+    {
+      "id": "R33",
+      "passed": true,
+      "errors": [],
+      "reason": "zero_evidence",
+      "model_calls": 4,
+      "elapsed_ms": 5813,
+      "controlled_probe": false
+    },
+    {
+      "id": "R34",
+      "passed": true,
+      "errors": [],
+      "reason": null,
+      "model_calls": 1,
+      "elapsed_ms": 2651,
+      "controlled_probe": false
+    },
+    {
+      "id": "R35",
+      "passed": true,
+      "errors": [],
+      "reason": null,
+      "model_calls": 1,
+      "elapsed_ms": 746,
+      "controlled_probe": false
+    },
+    {
+      "id": "R36",
+      "passed": true,
+      "errors": [],
+      "reason": null,
+      "model_calls": 3,
+      "elapsed_ms": 3375,
+      "controlled_probe": false
+    },
+    {
+      "id": "R37",
+      "passed": true,
+      "errors": [],
+      "reason": null,
+      "model_calls": 3,
+      "elapsed_ms": 3188,
+      "controlled_probe": false
+    },
+    {
+      "id": "R38",
+      "passed": true,
+      "errors": [],
+      "reason": null,
+      "model_calls": 3,
+      "elapsed_ms": 3252,
+      "controlled_probe": false
+    },
+    {
+      "id": "R39",
+      "passed": true,
+      "errors": [],
+      "reason": null,
+      "model_calls": 2,
+      "elapsed_ms": 2875,
+      "controlled_probe": false
+    },
+    {
+      "id": "R40",
+      "passed": true,
+      "errors": [],
+      "reason": null,
+      "model_calls": 3,
+      "elapsed_ms": 5148,
+      "controlled_probe": false
+    },
+    {
+      "id": "R41",
+      "passed": true,
+      "errors": [],
+      "reason": null,
+      "model_calls": 4,
+      "elapsed_ms": 8411,
+      "controlled_probe": false
+    },
+    {
+      "id": "R42",
+      "passed": true,
+      "errors": [],
+      "reason": null,
+      "model_calls": 4,
+      "elapsed_ms": 8671,
+      "controlled_probe": false
+    },
+    {
+      "id": "R43",
+      "passed": true,
+      "errors": [],
+      "reason": null,
+      "model_calls": 3,
+      "elapsed_ms": 3259,
+      "controlled_probe": false
+    },
+    {
+      "id": "R44",
+      "passed": true,
+      "errors": [],
+      "reason": null,
+      "model_calls": 3,
+      "elapsed_ms": 3722,
+      "controlled_probe": false
+    },
+    {
+      "id": "R45",
+      "passed": true,
+      "errors": [],
+      "reason": null,
+      "model_calls": 3,
+      "elapsed_ms": 4608,
+      "controlled_probe": false
+    },
+    {
+      "id": "R46",
+      "passed": true,
+      "errors": [],
+      "reason": null,
+      "model_calls": 3,
+      "elapsed_ms": 4071,
+      "controlled_probe": false
+    },
+    {
+      "id": "R47",
+      "passed": true,
+      "errors": [],
+      "reason": "zero_evidence",
+      "model_calls": 3,
+      "elapsed_ms": 5701,
+      "controlled_probe": false
+    },
+    {
+      "id": "R48",
+      "passed": true,
+      "errors": [],
+      "reason": null,
+      "model_calls": 3,
+      "elapsed_ms": 4158,
+      "controlled_probe": false
+    },
+    {
+      "id": "R49",
+      "passed": true,
+      "errors": [],
+      "reason": null,
+      "model_calls": 3,
+      "elapsed_ms": 3926,
+      "controlled_probe": false
+    },
+    {
+      "id": "R50",
+      "passed": true,
+      "errors": [],
+      "reason": null,
+      "model_calls": 3,
+      "elapsed_ms": 3801,
+      "controlled_probe": false
+    }
+  ],
+  "official_cost_upper_usd": 0.557459,
+  "raw_gates": {
+    "50_cases": true,
+    "overall_quality": true,
+    "model_quality": true,
+    "controlled_stop_codes": false,
+    "parameter_repair": true,
+    "model_safety_invariants": true,
+    "no_unconfirmed_business_writes": true,
+    "single_source_calls": true,
+    "latency_improvement": true,
+    "natural_limit_rate": true
+  },
+  "raw_controlled_stop_cases": {
+    "R21": "turn_token_budget",
+    "R22": "tool_failures",
+    "R23": "no_progress"
+  },
+  "release_gates": {
+    "50_cases": true,
+    "overall_quality": true,
+    "model_quality": true,
+    "controlled_stop_codes": true,
+    "parameter_repair": true,
+    "model_safety_invariants": true,
+    "no_unconfirmed_business_writes": true,
+    "single_source_calls": true,
+    "latency_improvement": true,
+    "natural_limit_rate": true,
+    "runtime_source_unchanged": true
+  },
+  "corrected_controls": {
+    "source_commit": "3cab33af673f9043d0772225d4c0d37f72e85281",
+    "evaluator_digest": "568b01150ea8c7f4720f7ed4bf3b4b562ca692a6d65a721957c6249d2762e3fb",
+    "reason": "Injected responses make no provider call; charge actual zero model tokens instead of fallback prompt estimates. All 47 quality/latency cases remain unchanged.",
+    "results": [
+      {
+        "id": "R21",
+        "passed": true,
+        "reason": "too_many_steps",
+        "errors": [],
+        "model_calls": 2
+      },
+      {
+        "id": "R22",
+        "passed": true,
+        "reason": "tool_failures",
+        "errors": [],
+        "model_calls": 3
+      },
+      {
+        "id": "R23",
+        "passed": true,
+        "reason": "no_progress",
+        "errors": [],
+        "model_calls": 2
+      },
+      {
+        "id": "R28",
+        "passed": true,
+        "reason": null,
+        "errors": [],
+        "model_calls": 3
+      }
+    ]
+  },
+  "final_source_commit": "3cab33af673f9043d0772225d4c0d37f72e85281",
+  "runtime_app_digest": "6a7aef7da64fc376fdecc56a57814d681f8028c179218f0424d8129bd690ce1d"
+}

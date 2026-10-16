@@ -11,9 +11,9 @@ The product focuses on an inspectable research process, traceable evidence, and 
 ## Agent chat
 
 - Full-page SSE chat streams status, tool calls, results, and answers, with readable badges for tool activity.
-- The semantic LangGraph workflow (checkpoints in PostgreSQL) first completes a follow-up that depends on earlier turns into a standalone question, and passes an already complete question through unchanged. It then recognizes intent, plans a bounded number of read-only tool steps, checks the evidence, and answers. Requests unrelated to research, such as writing code, get a fixed script and call no tools.
-- Long conversations use three context layers: recent turns word for word, half-compressed history (your words and the start of each answer), and appended segment summaries, sharing one budget (64 KB by default, set with `AGENT_CONTEXT_BUDGET_KB`). The reference-resolution stage reads them; the answer stage still reads only the turn's evidence. A summary is memory, not evidence, and is never a ground for a citation. The “Context left” pill beside the model picker shows each part.
-- Write actions (fetching or refreshing SEC filings, importing into the knowledge base, generating AI analyses, building indexes, creating forecasts) are open only to personal identities. The model can only propose one; a confirmation card appears in the UI (Approve / Choose another action / Cancel), and the server runs the frozen proposal only after the click. Guest identities cannot run write actions.
+- The production LangGraph entry point now uses four direct routes: A retrieves evidence before the tool loop, B answers in-scope concepts without tools, C returns a fixed out-of-scope response, and D enters the tool loop directly. Structured model function calls select the route and typed read tools. Reference resolution is a separate model call followed by scope validation; the first standalone question skips it. A and D share typed read, queue/navigation and confirmed owner-write tools.
+- Long conversations use three context layers: recent turns word for word, half-compressed history (your words and the start of each answer), and appended segment summaries, sharing one budget (64 KB by default, set with `AGENT_CONTEXT_BUDGET_KB`). In the current direct graph, a bounded recent-dialogue slice is supplied as reference context; prior messages are not evidence or a ground for a citation. A summary is memory, not evidence. The “Context left” pill beside the model picker shows each part.
+- Costly writes require an owner confirmation card with frozen arguments, an expiring conversation-bound capability, and durable replay protection. Guests receive browser-local queue and navigation actions. Confirmed web ingestion remains private and retains `web_news` provenance through indexing and retrieval.
 - `web_research` can search public pages through Tavily or read a public HTTPS URL. Search defaults to a separately configured server-side `TAVILY_API_KEY`; without it, search reports unavailable and never silently falls back to Bing. Public URL reads do not need a Tavily key. Page excerpts are bounded and search snippets are not treated as page bodies.
 - Answers support Markdown, tables, source citations, and quoted excerpts. Users can copy answers, navigate to questions, and inspect cited sources.
 - Conversations and tool traces are stored server-side by identity, with guest and personal identities separated. Users can export a local JSON conversation archive as a backup.
@@ -63,7 +63,7 @@ Public validation so far includes two saved AMD analyses that produced 66 chunks
 - **Material analysis:** Generate and cache AI analyses with versions, original quotes, and citation navigation. Reopening a saved analysis does not call a model again.
 - **Research workflow:** Reusable material analyses can produce a ResearchBrief, which can then be evaluated by the experimental Jev three-class decision model as bullish, neutral, or bearish. Jev consumes a research brief; it does not generate one. Fixed targets and expiry assessments are retained with immutable versions.
 - **Evaluation and run status:** Inspect expiry assessments, historical replay, background queues, and monitoring status. A four-strategy Recall@K/MRR evaluation harness exists; synthetic results do not represent production accuracy.
-- **News leads:** Saved news leads and public web retrieval in chat are separate read-only paths; chat does not automatically save webpages as research materials.
+- **News leads:** Saved news leads and public web retrieval in chat are separate read-only paths; chat does not automatically save webpages as research materials. Recent queries require readable publication dates; explicit `days_back` windows (1–366 days) are clipped precisely, while an unbounded “recent” request uses seven days.
 
 Jev forecasts retain the original probabilities. A local calibration pipeline uses matured observed samples and enables a candidate only after chronological holdout validation; historical calibration research is kept separate from live samples. Outputs remain experimental research results, not forward-validated investment success rates.
 
@@ -74,7 +74,7 @@ flowchart LR
   U[Researcher] --> FE[React frontend<br/>GitHub Pages]
   FE --> API[FastAPI<br/>Mac / Funnel or self-hosted]
   API --> AG[Agent: SSE chat]
-  AG --> T[Seven read-only tools]
+  AG --> T[Typed catalogue: reads, browser actions,<br/>confirmed owner writes]
   T --> PG[(PostgreSQL<br/>Business records and originals)]
   T --> KB[Knowledge retrieval service]
   API --> KB
@@ -91,7 +91,7 @@ PostgreSQL stores business records, originals, chunks, jobs, and conversations; 
 
 ## Current boundaries
 
-The Agent's read tools only read saved records; explicit web research can read bounded excerpts from public pages, and error or navigation pages are detected and skipped. It does not trade or retrieve live prices. Write actions are open only to personal identities and run only after the confirmation card. Public web news is not yet a saved source that can be imported. The semantic LangGraph workflow, with durable checkpoints, is deployed to the public demo. “Context left” is this product's context budget, not the window of the model you chose. Evidence gating uses heuristics, answers can still be wrong, and citations do not prove every answer is faithful.
+The Agent's read tools only read saved records; explicit web research can read bounded excerpts from public pages, and error or navigation pages are detected and skipped. It does not trade or retrieve live prices. Page/API write actions have their existing identity checks. Chat writes require explicit user intent and server confirmation; public pages may be ingested as `web_news` without becoming official evidence. The deployed public demo may run a different revision; this worktree has not been deployed. “Context left” is this product's context budget, not the window of the model you chose. Evidence gating uses heuristics, answers can still be wrong, and citations do not prove every answer is faithful.
 
 Forecasts, material analyses, and retrieval results require researcher review against original sources and timestamps. Forecast evaluation is meaningful only for matured samples with available outcomes; historical replay and synthetic retrieval metrics do not establish future performance. High-concurrency guarantees and end-to-end atomic writes remain unverified. Real-model and Tavily search checks were run by the maintainer on a shadow server; the public deployment has had only a guest smoke test and has not been independently accepted.
 
@@ -107,3 +107,8 @@ Forecasts, material analyses, and retrieval results require researcher review ag
 ## Future direction
 
 Possible directions are lower per-turn latency (measured first) and a budget that knows the model's window; nothing is scheduled. The system does not implement multi-Agent autonomy or model fine-tuning.
+
+
+## 🧭 Routing verification
+
+The [C1–C14 verification report](docs/reports/agent-routing-verification.md) links the 50-case JSONL evaluation, permissions, test migration, and release status. The public demo may run a different revision.

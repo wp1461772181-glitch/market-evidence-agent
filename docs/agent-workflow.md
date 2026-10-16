@@ -1,35 +1,63 @@
-# Agent workflow status (development worktree, not deployed)
+# Agent workflow / Agent 工作流
 
-The SSE chat endpoint runs a LangGraph StateGraph with reference resolution, strict classification, deterministic routing, scoped source reads, evidence checks, authorized system actions, clarification, answer generation and audit recording. Custom graph events feed SSE and SQL conversation history. PostgreSQL checkpoints hold pending scope and task state; model keys and identity credentials remain in request-only runtime context.
+此文描述本分支的实现；线上版本以发布记录中的 SHA 为准。验收结果见 [路由改造报告](reports/agent-routing-verification.md)，完整设计见 [C1–C14 规范](superpowers/specs/2026-10-15-agent-routing-redesign.zh-CN.md)。
 
-Saved SEC and saved AI analysis have separate exact reads. Latest financial reports are selected by filing date among 10-Q/10-K sources, and exact AI summaries use the selected source. Thematic questions bind explicit accession, form or source ID before retrieval; a verified direct-source fallback is available while indexing is pending. Multi-stock compound requests retain per-source task outcomes and report missing evidence. Rejected retrieval content and its citation ordinals are excluded before final generation. Clarifications retain a pending request ID and selected scope. Owner actions use an additive idempotency ledger and existing SEC, analysis, knowledge and forecast services; a submitted asynchronous job remains running until its underlying job reports completion. Limits are five tools, six decision steps, 120 seconds, graph recursion limit 60, and a 32,000-token turn budget using provider totals where available and labeled estimates otherwise. The evidence gate checks basic source, entity, metric, and period coverage; it does not establish claim faithfulness.
-
-`web_research` reads public HTTPS pages or searches Tavily with `TAVILY_API_KEY`, bounded results and extracted bodies. Search terms use company aliases and topic words; an unsuccessful relevant-article check permits one alternative search. A single explicit public HTTPS URL is sent to direct-read mode; multiple or invalid explicit URLs prompt clarification. A missing key returns unavailable for search; Bing RSS requires explicit `WEB_RESEARCH_BACKEND=bing_rss`. Search snippets remain leads, not body evidence. RFC 2822 and ISO publisher timestamps are normalized separately from fetch time; a fresh-news gate requires publisher dates for each retained source. Query freshness is bounded by Tavily's news `time_range` option and does not guarantee the newest available article. Web citations refer to retained conversation snapshots; evidence beyond the ten-citation cap is excluded from the model context.
-
-## Company names and the research queue
-
-A company is recognized by name through one table, `app/company_directory.py` (ticker -> the Chinese and English names people write), read by the slot reader, web research and the evidence gate. Names that double as everyday words or sit inside other Chinese phrases are left out on purpose. A ticker typed in capitals (`SNOW`, `MU`) always works, whether or not the company is in the table.
-
-The research queue (the stocks on the "自选股票" page) is the user's list of companies they follow. The owner's queue is stored in `agent_research_queue` (read and written through the owner-only `GET`/`PUT /agent-chat/research-queue`); a guest's queue stays in the browser. The chat request carries the queue as `watchlist`.
-
-When a plan is about a company that is not in the request's queue (and the user has not answered for it in this conversation), the turn ends with a card, `company_not_in_queue`: add it to the queue and search, or only look this once. The buttons are server-made (`queue_add:MU`, `queue_view:MU`); either one continues the user's own words with that code, and the add is done by the front end on the same list as the "+" button. A write has its own confirmation card and is not asked about. A client that sends no `watchlist` is never asked.
-
-A model may know the ticker of a company the words do not name, but a ticker nothing the user wrote (or the server holds) carries is never used as scope on the model's say-so: with a queue the card above is shown (the click grounds the code); without one the turn ends with `plan_company_unconfirmed` and tells the user which code to write. Adding a company to the directory is a one-line change plus the check that its names are distinctive (`tests/test_company_directory.py`).
-
-## Local operation
-
-Apply the additive checkpoint and action-ledger migrations to the intended database before enabling chat actions:
-
-```sh
-PYTHONPATH=. .venv/bin/python scripts/migrate_agent_workflow.py
-PYTHONPATH=. .venv/bin/python scripts/migrate_agent_actions.py
-PYTHONPATH=. .venv/bin/pytest -q
-cd frontend && npm run test:i18n && npm run build
-curl -fsS http://127.0.0.1:8000/health/agent-workflow
+```mermaid
+flowchart TD
+    U[用户消息 / User message] --> R{有历史或待处理引用?}
+    R -->|是| REF[独立模型指代消解 + 来源范围校验]
+    R -->|首个独立问题| CLASS[独立模型分类 A/B/C/D]
+    REF --> CLASS
+    CLASS -->|A 取证| K[固定查询已保存资料 + 确定性证据闸]
+    K --> LOOP[同一个受预算约束的 Agent 工具循环]
+    CLASS -->|D 动作/组合任务| LOOP
+    CLASS -->|B 金融/公司常识| B[不调用工具；数字附未核实声明]
+    CLASS -->|C 范围外| C[固定话术；不调用工具]
+    LOOP --> READ[读工具 / Read]
+    LOOP --> LOCAL[队列与页面动作 / Reversible or client action]
+    LOOP --> CARD[补信息卡 / Clarification]
+    LOOP --> COST[仅所有者：冻结参数 + 确认卡]
+    COST --> CONFIRM[服务端校验一次性能力令牌]
+    CONFIRM --> WRITE[执行现有业务服务并持久化结果]
+    READ --> GATE[校验公司、期间、指标、日期和引用]
+    GATE --> LOOP
+    LOOP --> FINAL[仅本轮已接受证据作答 / Final answer]
 ```
 
-The workflow uses `AGENT_CHECKPOINT_DATABASE_URL` when set, otherwise the application's PostgreSQL URL. `/health/agent-workflow` reports `checkpoint_ready`, `tavily_configured`, and the selected web backend. A false checkpoint readiness means chat cannot run until the migration and database are available. The migration does not publish or alter existing business records.
+A 的固定检索为空时仍进入循环，可以联网查找。研究队列不限制可查询的公司。B 的数字来自模型常识时标明未经资料核实；C 不调用工具。指代解析与分类是独立调用，真正的首个独立问题跳过解析。历史、摘要和网页正文都不能赋予写权限；回答模型读取本轮已接受证据、操作状态和服务器结果目录。
 
-## Verification and limits
+## Tools and permissions / 工具与权限
 
-Fixture-driven tests exercise the graph, SSE/SQL traces, owner isolation, interrupted action recovery, partial results, deadlines, cancellation and PostgreSQL checkpoint reopen. This worktree has not run authenticated DeepSeek, Tavily, browser or production acceptance. Provider outputs and retrieved excerpts still require source review. The current gate has limited paraphrase and complex-period coverage. Checkpoint and business SQL writes remain separate transactions. Interrupted analysis and forecast requests reconcile by their underlying idempotency key; an action without a provable replay path reports `interrupted_reconcile_required` instead of claiming progress.
+[集中工具目录](../app/agent_tool_catalog.py) 声明名称、说明、Pydantic 参数、级别、所有者/游客权限、确认要求和错误提示。A、D 共用目录；游客看不到写级工具。完整接口映射见 [工具与词表清单](reports/agent-routing-inventory.md)。
+
+- 读：已保存价格、预测、材料、SEC 原文、FAQ、派生分析、知识库、公开网页、队列、任务/监控/评估/回放及工作区记录。
+- 可逆/客户端动作：加入或移出队列、切换股票、打开页面；所有者队列写自己的数据库记录，游客只接收浏览器动作。浏览器按动作 ID 去重。
+- 有成本或难撤销：SEC 抓取/刷新、分析、导入、索引、预测、行情初始化、官方扫描、历史回放、预测修订、翻译与知识候选审核；必须先生成所有者确认卡。
+- 不开放：登录码、模型密钥/配置、清库、删除对话。
+
+确认卡冻结操作与目标。随机令牌绑定所有者、对话、参数摘要，10 分钟有效。数据库锁覆盖消费和业务执行，已完成的消费返回持久化结果；崩溃后停留在 executing 的请求不得自动重放。原有写服务继续使用幂等台账。改变操作需取消旧提案并重新提交；网页里的“导入本页”不构成用户授权。
+
+## Public web and saved web news / 网页与网页入库
+
+`web_research(query, company?, days_back?, max_results?)` 接收模型填好的参数。`days_back` 范围 1–366，最近新闻按 7 天、半个月按 15 天；搜索范围之后再按可解析的发布日期精确裁剪。只有明确时间跨度在模型漏填时才由 `freshness.py` 作兼容兜底。公开 HTTPS 抓取沿用有地址固定、重定向校验和大小限制的传输；搜索摘要不冒充正文。
+
+`ingest_web_source` 只接受本轮或服务器已返回结果中的 URL。用户明确要求保存（含条件保存）且为所有者时，才可出确认卡。比较条件使用服务器证据日期；卡片显示库内日期、网页日期、标题、URL 和 SEC 替代方案。较旧/相同或已入库的 URL 不产生新提案。
+
+提案时冻结用户已看到的正文快照、URL、日期和哈希；确认后直接保存该快照，不重新抓取网页。保存有大小限制的正文快照、规范化 URL、内容哈希、发布时间、抓取时间与提取方法。URL/正文在所有者范围内去重。保存记录与知识文档保持 private；同步、建索引、检索和引用始终保留 `source_type=web_news`，不会升级成官方文件。知识表仍需按现有显式迁移流程准备，启动过程只自动创建新增的 agent 表，不修改既有表。
+
+## Budgets and failures / 预算与停止
+
+默认成功调用最多 6 个不同调用（可配置为 6–8），全局最多 12 次（包括重试）；同一可重试错误额外重试最多 2 次。参数错误交给模型修正，不作网络重试。保留 token 和 120 秒回合预算，并为已传入的历史留出额度。
+
+- `too_many_steps`：任务过多，保留已有来源，提示拆分剩余任务。
+- `tool_failures`：报告失败的工具、尝试次数与安全原因码。
+- `no_progress`：相同调用或持续没有新证据，停止打转。
+
+到限额后禁用工具作一次部分结果回答。正文中出现工具协议标记时重试一次，仍失败报 `provider_protocol_invalid`。失败/被闸拒绝的正文不进入回答上下文；引用不存在的来源不能作为成功回答。数量型金额还会与所引证据进行单位归一化核对；有限的事件护栏检查来源类别与否定极性，句号后的引用仍绑定前句。这不能替代完整的语义事实核验。
+
+## Verification / 验证
+
+常规测试只用可控模型回调与外部 I/O；确认、去重、权限、重放与引用恢复使用临时 PostgreSQL 数据库。真实模型验收使用 [50 条 JSONL](../scripts/evaluation/cases/agent-routing-v3.jsonl) 和 [评测脚本](../scripts/evaluation/routing_acceptance.py)，模型、费用、调用数与延迟记录在验收报告中。限制/错误探针与真实模型质量样本分别标注，不把模拟选择当成模型准确率。
+
+
+实际模型验收使用用户指定的 DeepSeek 官方 `deepseek-flash`，请求强度由 `AGENT_REASONING_EFFORT` 控制，默认 low；OpenRouter 使用自身的原生 effort 参数。显式 default 或未知设置不传该参数。最终结果与 provider 费用边界见验收报告。

@@ -84,3 +84,14 @@ it could be relied on.
 After the title filter at `2026-09-25T03:17:25Z`, the live TechCrunch counts
 were AAPL 18, MSFT 13, GOOGL 20, AMZN 15 and NVDA 14. These are review leads,
 not a coverage or event-materiality measurement.
+
+
+## Routing redesign compatibility (2026-10-15)
+
+The metadata-only CLI no longer embeds company/product aliases or RSS tags. Without configuration every symbol uses its literal ticker query in GDELT; RSS reports unsupported. To supply a literal source scope for one company:
+
+```sh
+python scripts/discover_news_candidates.py --symbols AAPL --company-query Apple --match-term apple --match-term iphone --exclude-term 'apple pie' --rss-tag apple
+```
+
+`DiscoveryScope` is explicit caller configuration, not a company lookup or an agent routing decision. The historical probe results above describe the former defaults; they do not establish current feed availability. The agent itself uses its separate bounded `web_research` tool with model-supplied company/window arguments.
