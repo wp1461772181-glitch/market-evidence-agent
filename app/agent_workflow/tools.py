@@ -172,6 +172,9 @@ def execute_costly(operation,key,context):
     """Only called inside consent.execute after capability and payload validation."""
     name=operation['name'];args=operation['arguments'];credential=context.identity_credential
     if not owner_credential_matches(credential):raise ValueError('owner_login_required')
+    if name in {'fetch_sec','refresh_sec'} and operation.get('discovery'):
+        from .sec_sources import register_confirmed
+        register_confirmed(operation)
     if name in {'fetch_sec','refresh_sec','analyze','import','index','forecast'}:
         from .actions import execute_action
         payload={k:v for k,v in args.items() if v is not None and k!='form'}
@@ -187,8 +190,12 @@ def execute_costly(operation,key,context):
         page=freeze_snapshot(snapshot)
         if page['content_hash']!=snapshot.get('content_hash') or canonical_url(args['url'])!=page['url']:raise ValueError('confirmation_snapshot_mismatch')
         from .evidence import gate_row
-        accepted,_=gate_row('',{**page,'source_type':'web'},company=args.get('company'),symbol=args.get('symbol'),metrics=[])
+        accepted,_=gate_row('',{**page,'source_type':'web'},company=args.get('company'),symbol=args.get('symbol'),metrics=[],entity_aliases=operation.get('entity_aliases',[]))
         if not accepted:raise ValueError('requested_entity_missing')
+        if operation.get('condition'):
+            from .web_sources import timestamp
+            before=timestamp(operation['condition'].get('saved_date'));after=timestamp(page.get('published_at'))
+            if not before or not after or after<=before:raise ValueError('comparison_condition_failed')
         with SessionLocal() as db:
             value=save_snapshot(db,context.owner_hash,page,symbol=args.get('symbol'),company=args.get('company'));db.commit()
             return value

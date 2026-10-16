@@ -35,9 +35,9 @@
 
 **Interfaces:** Reference.referents; validated source text; audit.stages; B independently generated from resolved question and bounded history.
 
-- [ ] Add failing tests for B empty/retry/protocol and copied referent/forged target/scope checks.
-- [ ] Implement source-normalized referents, classifier-only scope, separate B generation, and bounded stage audit.
-- [ ] Run focused and full backend suite; record legacy answer-field test migration; commit A1–A4.
+- [x] Add failing tests for B empty/retry/protocol and copied referent/forged target/scope checks.
+- [x] Implement source-normalized referents, classifier-only scope, separate B generation, and bounded stage audit.
+- [x] Run focused and full backend suite; record legacy answer-field test migration; commit A1–A4.
 
 ### Task 2: B1/B2/B4 grants and tool exposure
 
@@ -45,10 +45,10 @@
 
 **Interfaces:** catalogue-derived WriteTool enum; requested_actions; per-turn immutable grants; write_tool_not_granted errors; normalized negation veto.
 
-- [ ] Add failing tests for synonyms, invalid enum filtering, unexposed writes, negation, guests and result-set action grants.
-- [ ] Register write functions only when granted; list remaining operations as unavailable descriptions; check every native invocation before dispatch.
-- [ ] Preserve guest browser queue operations as client-local actions. Check structured entity mappings against verified data, not capitalization heuristics.
-- [ ] Run focused and full backend suite; commit B1/B2/B4.
+- [x] Add failing tests for synonyms, invalid enum filtering, unexposed writes, negation, guests and result-set action grants.
+- [x] Register write functions only when granted; list remaining operations as unavailable descriptions; check every native invocation before dispatch.
+- [x] Preserve guest browser queue operations as client-local actions. Check structured entity mappings against verified data, not capitalization heuristics.
+- [x] Run focused and full backend suite; commit B1/B2/B4.
 
 ### Task 3: B3/B5/B6 server suggestion consent
 
@@ -56,11 +56,11 @@
 
 **Interfaces:** request_action(tool, arguments, reason); existing server capability values; suggestion display marker; audit.write_outcome.
 
-- [ ] Add failing tests for one suggestion per turn, typed arguments, cancellation, owner/session/expiry, replay/concurrency and no preapproval side effects.
-- [ ] Reuse consent.propose/execute without changing their semantics. Capability metadata is the only proposal-stage DB write; business data and external fetches remain untouched.
-- [ ] For ingest_web_source, approval consumes a grant capability and produces one durable, frozen-content confirmation card; replay returns the same result/card.
-- [ ] Preserve confirm/change/cancel/reply compatibility and support server-mapped authorize values; explain refusals instead of falling back to empty-evidence prose.
-- [ ] Add suggestion label to existing card UI and tests; run backend/full frontend checks; commit B3/B5/B6.
+- [x] Add failing tests for one suggestion per turn, typed arguments, cancellation, owner/session/expiry, replay/concurrency and no preapproval side effects.
+- [x] Reuse consent.propose/execute without changing their semantics. Capability metadata is the only proposal-stage DB write; business data and external fetches remain untouched.
+- [x] For ingest_web_source, approval consumes a grant capability and produces one durable, frozen-content confirmation card; replay returns the same result/card.
+- [x] Preserve confirm/change/cancel/reply compatibility and support server-mapped authorize values; explain refusals instead of falling back to empty-evidence prose.
+- [x] Add suggestion label to existing card UI and tests; run backend/full frontend checks; commit B3/B5/B6.
 
 ### Task 4: Evaluation, review and one release
 
@@ -78,3 +78,12 @@
 - Base suite: 1270 passed, 7 skipped with production interpreter; source baseline is clean.
 - Consent capability persistence is required by the spec; "no proposal-stage DB writes" means no business data writes, not suppressing the capability ledger itself.
 - All future design changes and deviations must be recorded here and in the final report before implementation.
+- Entity mapping implementation: classifier may attach `company_mention`, copied literally from allowed user/referent context, while `company`/`symbol` name the interpreted issuer. The server verifies the English issuer/ticker pair against official SEC metadata; translation of the original mention remains the classifier's semantic responsibility. Failure to verify asks for clarification. This is the user-approved mapping exception to literal symbol matching, not a company alias dictionary.
+- User further confirmed: ALL owner/server writes, including reversible queue/relevance changes, require a server confirmation capability. Guest browser-local queue remains immediate. Original v3 R16/R27 owner queue expectations will be changed to confirmation cards; no silent exception to the token invariant.
+
+- A-only export 3a544532 passed 1289/7 before commit 2a09139. Literal issuer mismatch counterexample passed after 82a412e.
+- Independent reviewer found a caller-controlled confirmed boolean bypass; removed it and checked durable executing consent+exact operation in the internal reversible dispatcher. RED→GREEN evidence retained.
+- Interim complete suites passed 1306/7 in both interpreters; final post-review suites are running. Frontend 87 tests and tsc/Vite build pass. One source freeze precedes paid model acceptance; no production release has happened.
+
+- User approved earlier assistant list sources by message ID. Implemented internal assistant_message IDs in bounded history and exact current-conversation quote validation (15a831a); V02 continues actual V01 conversations (1280881). Full post-change suites: 1316/7 in both interpreters. Independent follow-up provenance review found no blocker (32 focused checks).
+- Native first full corrected-harness trial: 29/50, natural27/47; preserved before over-rejection corrections. First v4 source trial retained incomplete after user approved source extension; latest v4 source run in progress on1280881. Same cumulative ledger, no failed-result replacement.

@@ -141,7 +141,7 @@ async def evaluate(args):
             code=getattr(exc,'detail',type(exc).__name__)
             if not isinstance(code,str) or len(code)>100:code=type(exc).__name__
             result={'passed':False,'errors':[code],'reason':code,'tools':active.calls}
-        result.update(native_tape=active.native_tape,model_stages=active.model_stages,id=case['id'],controlled_probe=active.scenario in {'limit','no_progress','repair'},model_calls=len(current)-before,elapsed_ms=round((time.monotonic()-started)*1000))
+        result.update(native_tape=active.native_tape,model_stages=active.model_stages,id=case['id'],controlled_probe=active.scenario in {'limit','healthy_work','no_progress','repair'},model_calls=len(current)-before,elapsed_ms=round((time.monotonic()-started)*1000))
         results.append(result)
         value={'evaluator_digest':evaluator_digest,'source_digest':source_digest,'source_manifest':manifest,'base_sha':base_sha,'case_digest':hashlib.sha256(Path(args.cases).read_bytes()).hexdigest(),'phase':args.phase,'provider':args.provider,'model':args.model,'reasoning_effort':args.effort,'budget_usd':args.budget_usd,'environment':'real provider; synthetic public evidence and disposable test DB; no production writes','results':results,'ledger':ledger,'cost_upper_usd':sum(c['cost_upper_usd'] for c in ledger)}
         Path(args.output).write_text(json.dumps(value,ensure_ascii=False,indent=2))
@@ -153,6 +153,6 @@ async def evaluate(args):
     Path(args.output).write_text(json.dumps(value,ensure_ascii=False,indent=2));print(value['summary'])
 
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument('--provider',choices=['deepseek','openrouter'],default='deepseek');parser.add_argument('--model',default='deepseek-flash');parser.add_argument('--key-name');parser.add_argument('--effort',choices=['low','high'],default='low');parser.add_argument('--ledger');parser.add_argument('--issuer-metadata');parser.add_argument('--budget-usd',type=float,default=.5);parser.add_argument('--phase',choices=['after','baseline'],required=True);parser.add_argument('--cases',default=str(Path(__file__).with_name('cases')/'agent-routing-v3.jsonl'));parser.add_argument('--output',required=True);parser.add_argument('--limit',type=int,default=50);parser.add_argument('--ids');args=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument('--provider',choices=['deepseek','openrouter'],default='deepseek');parser.add_argument('--model',default='deepseek-flash');parser.add_argument('--key-name');parser.add_argument('--effort',choices=['low','high'],default='low');parser.add_argument('--ledger');parser.add_argument('--issuer-metadata');parser.add_argument('--budget-usd',type=float,default=.5);parser.add_argument('--phase',choices=['after','baseline'],required=True);parser.add_argument('--cases',default=str(Path(__file__).with_name('cases')/'agent-routing-v5.jsonl'));parser.add_argument('--output',required=True);parser.add_argument('--limit',type=int,default=50);parser.add_argument('--ids');args=parser.parse_args()
     with database():asyncio.run(evaluate(args))
 if __name__=='__main__':main()

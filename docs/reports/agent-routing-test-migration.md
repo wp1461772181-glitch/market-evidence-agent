@@ -33,3 +33,36 @@
 
 
 2026-10-16 补充：DeepSeek-Flash 官方接口的思考强度配置现在与 OpenRouter 分别使用各自原生参数；`test_agent_chat_provider.py` 原来“DeepSeek 不传参数”的断言已按官方 API 合约更新。CLI-only 元数据发现也移除了内置公司映射，旧 probe 测试改为显式提供合成 DiscoveryScope，新增默认 ticker 查询/未配置 RSS 的契约和全 app AST 防漂移检查。这些是 C7/C10/C11 的适配变化，不放宽来源、归属或确认权限。
+
+## V4 reference/grant repair (base c9a75bc)
+
+No behavior coverage was deleted; two catalogue test functions were renamed from costly to server_write to broaden the tokenless probes. Baseline for this repair was 1270 passed / 7 skipped. The earlier planner migration counts above describe the earlier redesign, not this repair.
+
+| Changed test | Reason and preserved behavior |
+| --- | --- |
+| acceptance/chat_stream/parent_model_profiles native fixtures | Classifier metadata no longer contains an answer; a separate native answer call follows B classification. Expected first-turn B model calls change from one to two. |
+| workflow_persistence | Answer supplied through independent answerer; reopen/isolation/private-runtime-key assertions remain. |
+| redesign_behaviors | Explicit granted-action fixture replaces positive verb-whitelist authorization; denial/negative tests grant the relevant tool where needed so they still exercise the intended guard. Native entity interpretations include original company mention or literal ticker and controlled official issuer metadata. |
+| tool_catalog | Default owner schemas exclude ungranted writes; catalogue confirmation covers reversible and costly server writes. Tokenless adapter probes now include all server writes. |
+| owner queue behavior | Public invocation denies server mutation; actual owner add/remove passes through real temporary PostgreSQL consent and its execution handler. Guest browser queue remains immediate and leaves no server queue row. |
+| frontend chat clarification | Additional agent_suggestion boolean preserves only strict true; normal server button values remain intact. Existing confirm/change/cancel/reply protocol remains. |
+
+Original `agent-routing-v3.jsonl` stays byte-for-byte unchanged. `agent-routing-v3-confirmed.jsonl` changes ONLY R16/R27 expectations, by explicit user decision: a server confirmation card containing the queue operation replaces immediate owner mutation. All other case inputs and expectations are identical. The evaluator checks the frozen operation name and target count, rather than pretending a preconfirmation adapter call occurred. Compare these migrated results with the historical v3 baseline transparently; they are not identical old acceptance semantics.
+
+New v4 tests cover missing/invalid B generation and one retry, copied/forged source references, B/C scope exemption, official issuer mapping including shared-name-prefix counterexample, unknown action filtering, hidden-tool forgery, negative veto, guest exclusions, typed suggestions, replay/concurrency, cancellation, frozen second-stage web consent and accurate failed/no-write outcomes. Deterministic probes and live model trials have separate denominators in the new report.
+
+User-approved V4 follow-up clarification: Reference now additionally accepts server-derived `assistant_message:<id>` sources from the current conversation. `text` remains an exact normalized substring of that identified message; a forged ID or a quote found only in another supplied history is rejected. The `mention` field describes what was resolved; it is not an extra exact quote of the newest user message. Older assistant words still cannot supply facts or write grants. V02 continues the actual saved V01 conversations so setup answers are not regenerated or canned.
+
+The exact changed/new/renamed function inventory for this repair is [v4 migration JSON](agent-routing-v4-test-migration.json). Function counts differ from parametrized pytest case counts; the final source suite has 1316 passing cases versus baseline1270, with7 skips retained.
+
+## V5 approved policy migration (base1280881)
+
+当前验收见[V5报告](agent-routing-v5-verification.md)，逐函数清单见[V5迁移JSON](agent-routing-v5-test-migration.json)。上面的1316通过是历史V4提交结果。
+
+- 固定token/步骤/总时长用例改为：超过旧累计值仍计量和继续、15个正常读调用完成、持续流续期、空心跳/仅role帧不续期、取消释放连接；停滞仍保留部分证据。
+- 正常引用/金额/事件反例保留，新增逐段保留、缺失引用、裸数字、确定性来源计算与无效算式。只有旧股价每句关键词限制取消。
+- 敏感词“不进模型”的预期改为可进入分类，仍无密钥/删除能力与无授权写；产品配置帮助独立验证。运行时key不得入持久化的原断言保留。
+- 数量不足改为显式部分确认卡；错误序号、零数量、多提目标、冻结实际目标与确认重放仍拒绝/保持幂等。SEC缺目录的下一步改为发现失败可重试，不要求用户手动先扫描。
+- 矛盾refinement用例改为明确任务切换可继续、仅时间调整恢复旧字段、否定/元语言提及不能改成价格任务。公司映射仍使用受控官方元数据。
+- 原无引用占位输出`first second`改为带真实fixture金额及引用的回答，所有权/事件顺序/会话持久化/运行时key不落盘断言不变。
+- 原v3及v3-confirmed语料未改。新增v5语料仅迁移R21/R24，控制器探针仍单独计量；未执行新的付费试验。

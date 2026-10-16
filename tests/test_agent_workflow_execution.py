@@ -13,7 +13,7 @@ def test_accession_digits_are_not_interpreted_as_requested_period():
     assert deterministic_confidence_gate(question, result, verified_symbols=["AMD"])[0]
 
 
-def test_stream_deadline_returns_normal_done_and_checkpoint_status(monkeypatch):
+def test_stream_inactivity_returns_normal_done_and_checkpoint_status(monkeypatch):
     from contextlib import asynccontextmanager
     from langgraph.checkpoint.memory import InMemorySaver
     import app.agent_workflow.graph as workflow
@@ -27,7 +27,7 @@ def test_stream_deadline_returns_normal_done_and_checkpoint_status(monkeypatch):
         return {}, {"content": "late"}
     monkeypatch.setattr(checkpoints,"open_postgres_checkpointer",open_saver)
     monkeypatch.setattr(direct,"decision_request",slow_decision)
-    monkeypatch.setattr(direct,"MAX_SECONDS",0.01)
+    monkeypatch.setattr(direct,"IDLE_SECONDS",0.01)
     async def collect():
         events=[]
         async for item in workflow.stream_workflow(question="hello",messages=[{"role":"user","content":"hello"}],
@@ -36,4 +36,4 @@ def test_stream_deadline_returns_normal_done_and_checkpoint_status(monkeypatch):
             events.append(item)
         return events
     events=asyncio.run(collect())
-    assert events[-1]["event"]=="done" and events[-1]["reason"]=="turn_deadline"
+    assert events[-1]["event"]=="done" and events[-1]["reason"]=="no_progress"

@@ -8,7 +8,8 @@ def normalized(text):
 class Referent(BaseModel):
     model_config=ConfigDict(extra='forbid')
     mention:str=Field(min_length=1,max_length=100)
-    text:str=Field(min_length=1,max_length=400)
+    text:str=Field(default='',max_length=400)
+    item_id:str|None=Field(default=None,pattern=r'^[a-f0-9]{20}$')
     source:str=Field(pattern=r'^(assistant_previous|assistant_message:[a-f0-9]{20}|user_history|result_set:[A-Za-z0-9_-]{1,64})$')
 
 def assistant_message_sources(messages):
@@ -20,19 +21,48 @@ def assistant_message_sources(messages):
         sources['assistant_message:'+identity]=content
     return sources
 
+def assistant_item_catalogue(messages):
+    catalogue=[]
+    for source,content in assistant_message_sources(messages).items():
+        items=[]
+        for line in content.splitlines():
+            match=re.match(r'^\s*(?:#{1,6}\s*)?(?:\*\*)?(?:\d{1,3}[.、)）]|[（(]\d{1,3}[)）])\s*(.+)',line)
+            if not match:continue
+            # A label is an exact source substring; the ID binds message and text.
+            text=match.group(1).strip().strip('*').strip()[:400]
+            identity=hashlib.sha256(json.dumps([source,len(items),text],ensure_ascii=False).encode()).hexdigest()[:20]
+            items.append({'position':len(items)+1,'item_id':identity,'text':text})
+        if items:catalogue.append({'source':source,'items':items})
+    return catalogue
+
 def validate_referents(referents,original,messages,sets):
     previous=next((str(m.get('content') or '') for m in reversed(messages) if m.get('role')=='assistant' and m.get('content') and not m.get('tool_calls') and m.get('status') not in {'failed','cancelled'}), '')
     users='\n'.join(str(m.get('content','')) for m in messages if m.get('role')=='user')
     earlier=assistant_message_sources(messages)
+    catalogue=assistant_item_catalogue(messages)
     verified=[]
     for ref in referents:
+        actual_source=next(reversed(earlier),'') if ref.source=='assistant_previous' else ref.source
+        listing=next((entry['items'] for entry in catalogue if entry['source']==actual_source),[])
+        if listing:
+            from .semantic import ordinal_positions
+            wanted=ordinal_positions(original,len(listing))
+        else:wanted=None
+        if ref.item_id:
+            selected=next((item for entry in catalogue if entry['source']==ref.source for item in entry['items'] if item['item_id']==ref.item_id),None)
+            if not selected:raise ValueError('reference_item_unbound')
+            if wanted is not None and selected['position'] not in wanted:raise ValueError('reference_position_mismatch')
+            verified.append({**ref.model_dump(),'text':selected['text']});continue
         if ref.source=='assistant_previous':source=previous
         elif ref.source.startswith('assistant_message:'):source=earlier.get(ref.source,'')
         elif ref.source=='user_history':source=users
         else:
             saved=next((s for s in sets if s['id']==ref.source.split(':',1)[1]),None)
             source=json.dumps(saved['rows'],ensure_ascii=False,default=str) if saved else ''
-        if not source or normalized(ref.text) not in normalized(source):raise ValueError('reference_text_unbound')
+        if not source or not ref.text or normalized(ref.text) not in normalized(source):raise ValueError('reference_text_unbound')
+        if wanted is not None:
+            candidates=[item for item in listing if normalized(ref.text) in normalized(item['text'])]
+            if not candidates or not any(item['position'] in wanted for item in candidates):raise ValueError('reference_position_mismatch')
         verified.append(ref.model_dump())
     return verified
 

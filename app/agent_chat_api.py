@@ -102,17 +102,59 @@ def _ch34_simulated_hello(request: Request, payload: ChatRequest) -> ChatRespons
         return None
     return ChatResponse(content='SIMULATED local demo provider: hello check passed. No external model was called.',model=payload.model)
 
-def _validated_base_url(value):
+def _canonical_model_url(value):
     if value is None: return value
     if any(ord(c)<32 or c=="\\" for c in value): raise ValueError("invalid endpoint")
     p=urlsplit(value.strip())
-    if p.scheme!="https" or not p.hostname or p.username or p.password or p.query or p.fragment: raise ValueError("invalid endpoint")
+    if p.scheme not in {"http","https"} or not p.hostname or p.username or p.password or p.query or p.fragment: raise ValueError("invalid endpoint")
     try: port=p.port
     except ValueError as exc: raise ValueError("invalid endpoint") from exc
     if "%" in p.netloc or (port is not None and not 1 <= port <= 65535): raise ValueError("invalid endpoint")
     path=p.path.rstrip("/")
     if path.endswith("/chat/completions"): path=path[:-len("/chat/completions")].rstrip("/")
-    return urlunsplit(("https",p.netloc,path,"",""))
+    if '%' in path or '..' in path or '//' in path:raise ValueError('invalid endpoint')
+    return urlunsplit((p.scheme,p.netloc.lower(),path,"",""))
+
+def local_model_endpoints():
+    try:
+        values=json.loads(os.getenv('AGENT_LOCAL_MODEL_BASE_URLS','[]'))
+        if not isinstance(values,list) or len(values)>16:return set()
+        return {_canonical_model_url(v) for v in values if isinstance(v,str) and len(v)<=2048}
+    except (ValueError,TypeError):return set()
+
+def _validated_base_url(value):
+    canonical=_canonical_model_url(value)
+    if canonical and not canonical.startswith('https://') and canonical not in local_model_endpoints():raise ValueError('invalid endpoint')
+    return canonical
+
+def model_transport(base_url,**kwargs):
+    base=_validated_base_url(base_url)
+    return LocalModelTransport(base) if base in local_model_endpoints() else PinnedPublicTransport(**kwargs)
+
+class LocalModelTransport(httpx.AsyncBaseTransport):
+    """Only exact operator endpoints, only model routes, pinned private addresses."""
+    def __init__(self,base_url,inner=None):
+        self.base=_canonical_model_url(base_url)
+        if self.base not in local_model_endpoints():raise ValueError('local_model_not_configured')
+        self.inner=inner or httpx.AsyncHTTPTransport(trust_env=False)
+    async def handle_async_request(self,request):
+        if self.base not in local_model_endpoints() or str(request.url) not in {self.base+'/models',self.base+'/chat/completions'}:
+            raise httpx.ConnectError('unsafe_endpoint')
+        if (request.method,request.url.path.rsplit('/',1)[-1]) not in {('GET','models'),('POST','completions')}:
+            raise httpx.ConnectError('unsafe_endpoint')
+        host=request.url.host;port=request.url.port or (443 if request.url.scheme=='https' else 80)
+        try:
+            answers=await asyncio.wait_for(asyncio.get_running_loop().getaddrinfo(host,port,type=socket.SOCK_STREAM),5)
+            ips={ipaddress.ip_address(row[4][0]) for row in answers}
+            networks=[ipaddress.ip_network(n) for n in ('127.0.0.0/8','10.0.0.0/8','172.16.0.0/12','192.168.0.0/16','::1/128','fc00::/7')]
+            if not ips or any(not any(ip in net for net in networks if ip.version==net.version) for ip in ips):raise ValueError()
+            ip=sorted(ips,key=lambda v:(v.version,int(v)))[0]
+        except Exception as exc:raise httpx.ConnectError('unsafe_endpoint') from exc
+        request.headers['host']=urlsplit(self.base).netloc
+        request.url=request.url.copy_with(host=str(ip),port=port)
+        request.extensions['sni_hostname']=host
+        return await self.inner.handle_async_request(request)
+    async def aclose(self):await self.inner.aclose()
 
 class ModelDiscoveryRequest(BaseModel):
     provider: Literal["deepseek", "kimi", "minimax", "qwen", "zhipu", "doubao", "hunyuan", "baidu", "siliconflow", "openrouter", "custom"]
@@ -164,10 +206,10 @@ async def _call(payload: ChatRequest, messages: list[dict[str, str]], max_tokens
     try:
         target = (payload.base_url or PROVIDERS.get(payload.provider, BASE_URLS.get(payload.provider, ""))).rstrip("/")
         if not target.endswith("/chat/completions"): target += "/chat/completions"
-        if payload.base_url is not None and not target.startswith("https://"): raise HTTPException(422,"invalid_agent_chat_request")
+        if payload.base_url is not None:_validated_base_url(payload.base_url)
         custom=payload.base_url is not None
         client_options={"timeout":httpx.Timeout(25.0),"follow_redirects":False,"trust_env":False}
-        if custom: client_options["transport"]=PinnedPublicTransport()
+        if custom: client_options["transport"]=model_transport(payload.base_url)
         async with asyncio.timeout(25):
             async with httpx.AsyncClient(**client_options) as client:
                 if custom:
@@ -323,7 +365,7 @@ async def discover_models(payload: ModelDiscoveryRequest):
     try:
         try:
             async with asyncio.timeout(MODEL_DISCOVERY_TIMEOUT):
-                async with httpx.AsyncClient(timeout=httpx.Timeout(MODEL_DISCOVERY_TIMEOUT), follow_redirects=False, trust_env=False, transport=PinnedPublicTransport(allow_internal_query=siliconflow_query)) as client:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(MODEL_DISCOVERY_TIMEOUT), follow_redirects=False, trust_env=False, transport=model_transport(base,allow_internal_query=siliconflow_query)) as client:
                     async with client.stream("GET", target, headers=headers) as response:
                         code = response.status_code
                         if 300 <= code < 400: raise HTTPException(502, "model_discovery_redirect_rejected")

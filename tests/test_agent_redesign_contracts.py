@@ -42,18 +42,18 @@ def test_operational_result_is_returned_as_success_to_the_next_native_decision()
     result=asyncio.run(run_direct_turn('看看监控状态',context,emit=_emit))
     assert result['status']=='succeeded' and len(seen)==2
 
-def test_partial_evidence_survives_successful_call_budget(monkeypatch):
-    import app.agent_workflow.direct as direct
-    monkeypatch.setattr(direct,'MAX_DISTINCT_CALLS',2)
+def test_healthy_reads_continue_beyond_old_successful_call_limit():
     count=0
     async def decide(*_):
         nonlocal count
         count+=1
-        return {'tool_calls':[{'id':str(count),'function':{'name':'query_stock_prices','arguments':json.dumps({'symbol':('AMD','AAPL','MU')[count-1]})}}]}
-    context=AgentRuntimeContext('custom','test','dummy',classifier=lambda _:'D',decider=decide,executor=lambda n,a:{'ok':True,'data':[{'id':a['symbol'],'symbol':a['symbol'],'close':100}]},answerer=lambda *_:'已完成：2 项价格来源 [1] [2]；未完成：剩余请求。')
-    result=asyncio.run(run_direct_turn('八件互不相关的查询',context,emit=_emit))
-    assert result['reason']=='too_many_steps' and result['status']=='partially_succeeded'
-    assert len(result['citations'])==2 and '部分完成' in result['answer'] and '拆成' in result['answer']
+        if count>15:return {'content':'已取得价格来源[1]。'}
+        return {'tool_calls':[{'id':str(count),'function':{'name':'query_stock_prices','arguments':json.dumps({'symbol':'AAA'+chr(64+count)})}}]}
+    context=AgentRuntimeContext('custom','test','dummy',classifier=lambda _:'D',decider=decide,executor=lambda n,a:{'ok':True,'data':[{'id':a['symbol'],'symbol':a['symbol'],'close':100}]})
+    result=asyncio.run(run_direct_turn('查多家公司的价格',context,emit=_emit))
+    assert result['status']=='succeeded' and result['reason'] is None
+    assert len(result['citations'])==15 and result['audit']['tool_calls']==15
+
 
 def test_numeric_claim_must_be_in_the_cited_evidence():
     decisions=iter([{'tool_calls':[{'id':'price','function':{'name':'query_stock_prices','arguments':'{"symbol":"AMD"}'}}]},{'content':'AMD 收盘价为 999 美元 [1]。'}])
@@ -86,12 +86,11 @@ def test_rejected_success_body_is_not_in_sse_or_persistable_tool_events():
     assert not result['citations']
     assert 'PRIVATE_REJECTED_TEXT' not in json.dumps(events)
 
-def test_rejected_closing_text_keeps_budget_partial_results(monkeypatch):
+def test_rejected_closing_text_keeps_stagnation_partial_results(monkeypatch):
     import app.agent_workflow.direct as direct
-    monkeypatch.setattr(direct,'MAX_DISTINCT_CALLS',1)
     context=AgentRuntimeContext('custom','test','dummy',classifier=lambda _:'D',
         decider=lambda *_:{'tool_calls':[{'id':'p','function':{'name':'query_stock_prices','arguments':'{"symbol":"AMD"}'}}]},
         executor=lambda *_:{'ok':True,'data':[{'id':'p','symbol':'AMD','close':100}]},answerer=lambda *_:'AMD CEO 辞职了 [1]。')
     result=asyncio.run(run_direct_turn('查 AMD 价格及其他目标',context,emit=_emit))
-    assert result['reason']=='too_many_steps' and result['status']=='partially_succeeded'
+    assert result['reason']=='no_progress' and result['status']=='partially_succeeded'
     assert '100' in result['answer'] and '[1]' in result['answer'] and 'CEO' not in result['answer']

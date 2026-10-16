@@ -1,0 +1,217 @@
+{
+  "baseline": "128088196cb2b9026918f2a82e24a447d2ec3a15",
+  "scope": "Function inventory, not parametrized pytest count. Original historical case files unchanged; new v5 corpus changes only R21/R24 relative to v3-confirmed.",
+  "files": [
+    {
+      "file": "tests/test_agent_acceptance.py",
+      "removed_or_renamed": [],
+      "new_or_renamed": [],
+      "changed_existing": [
+        "test_stream_ownership_persistence_and_tool_disable"
+      ],
+      "unchanged_existing": 21
+    },
+    {
+      "file": "tests/test_agent_answer_repair.py",
+      "removed_or_renamed": [
+        "test_conflicting_refinement_is_clarified_instead_of_erasing_explicit_switch",
+        "test_numeric_repair_respects_token_budget"
+      ],
+      "new_or_renamed": [
+        "test_explicit_task_switch_overrides_inconsistent_refinement",
+        "test_numeric_repair_continues_beyond_old_token_budget"
+      ],
+      "changed_existing": [
+        "test_negative_or_metalinguistic_metric_mentions_cannot_override_conflicting_scope"
+      ],
+      "unchanged_existing": 6
+    },
+    {
+      "file": "tests/test_agent_answers_v5.py",
+      "removed_or_renamed": [],
+      "new_or_renamed": [
+        "test_bad_passage_does_not_erase_supported_passage",
+        "test_bare_factual_number_is_checked_against_the_attached_source",
+        "test_calculation_rejects_ungrounded_inputs_and_unsafe_or_invalid_arithmetic",
+        "test_ordinary_uncited_fact_cannot_survive_a_supported_price_sentence",
+        "test_source_bound_deterministic_calculation_exposes_formula_and_inputs",
+        "test_stock_source_does_not_require_a_stock_keyword_in_every_sentence"
+      ],
+      "changed_existing": [],
+      "unchanged_existing": 0
+    },
+    {
+      "file": "tests/test_agent_chat_provider.py",
+      "removed_or_renamed": [],
+      "new_or_renamed": [],
+      "changed_existing": [
+        "test_openrouter_requests_ask_for_low_reasoning_effort_in_stages_and_answers"
+      ],
+      "unchanged_existing": 12
+    },
+    {
+      "file": "tests/test_agent_chat_stream.py",
+      "removed_or_renamed": [
+        "test_forbidden_ui_only_operations_invoke_no_tools"
+      ],
+      "new_or_renamed": [
+        "test_sensitive_words_can_reach_classifier_but_no_secret_or_delete_capability"
+      ],
+      "changed_existing": [],
+      "unchanged_existing": 7
+    },
+    {
+      "file": "tests/test_agent_context.py",
+      "removed_or_renamed": [
+        "test_a_long_history_does_not_eat_the_work_budget_of_the_turn"
+      ],
+      "new_or_renamed": [
+        "test_cumulative_work_is_accounted_without_a_token_or_elapsed_time_stop"
+      ],
+      "changed_existing": [],
+      "unchanged_existing": 18
+    },
+    {
+      "file": "tests/test_agent_entity_v4.py",
+      "removed_or_renamed": [],
+      "new_or_renamed": [
+        "test_exact_official_issuer_precedes_other_issuers_sharing_its_prefix"
+      ],
+      "changed_existing": [],
+      "unchanged_existing": 4
+    },
+    {
+      "file": "tests/test_agent_evaluation_manifest.py",
+      "removed_or_renamed": [],
+      "new_or_renamed": [
+        "test_v5_case_policy_changes_are_explicit_and_healthy_control_terminates"
+      ],
+      "changed_existing": [],
+      "unchanged_existing": 3
+    },
+    {
+      "file": "tests/test_agent_grants_v4.py",
+      "removed_or_renamed": [],
+      "new_or_renamed": [],
+      "changed_existing": [
+        "test_failed_proposal_preserves_specific_next_step",
+        "test_no_card_write_result_includes_reason_not_zero_evidence"
+      ],
+      "unchanged_existing": 5
+    },
+    {
+      "file": "tests/test_agent_local_models_v5.py",
+      "removed_or_renamed": [],
+      "new_or_renamed": [
+        "test_http_model_endpoint_requires_exact_operator_allowlist",
+        "test_local_transport_has_only_model_routes_and_public_transport_stays_private_safe",
+        "test_safe_key_configuration_question_reaches_model_without_secret_capability"
+      ],
+      "changed_existing": [],
+      "unchanged_existing": 0
+    },
+    {
+      "file": "tests/test_agent_progress_v5.py",
+      "removed_or_renamed": [],
+      "new_or_renamed": [
+        "test_cancelled_stream_closes_transport",
+        "test_cumulative_work_does_not_exhaust_healthy_turn",
+        "test_final_stream_with_real_deltas_outlives_fixed_duration",
+        "test_keepalives_and_role_only_frames_do_not_renew_progress",
+        "test_long_work_keeps_recent_complete_tool_protocol_in_bounded_model_context",
+        "test_model_usage_is_recorded_after_old_cumulative_limit",
+        "test_native_decision_streams_reasoning_and_function_arguments_beyond_old_deadline",
+        "test_watchdog_progress_renews_but_no_progress_expires"
+      ],
+      "changed_existing": [],
+      "unchanged_existing": 0
+    },
+    {
+      "file": "tests/test_agent_redesign_behaviors.py",
+      "removed_or_renamed": [
+        "test_forbidden_requests_never_reach_any_model_tool",
+        "test_model_budget_exhaustion_after_a_read_preserves_partial_evidence",
+        "test_parallel_proposal_does_not_show_a_partial_card_when_one_target_is_invalid",
+        "test_single_web_proposal_cannot_satisfy_an_explicit_two_target_request"
+      ],
+      "new_or_renamed": [
+        "test_parallel_proposal_shows_only_valid_targets_with_partial_warning",
+        "test_provider_stall_after_a_read_preserves_partial_evidence",
+        "test_sensitive_requests_cannot_gain_unregistered_or_ungranted_capabilities",
+        "test_single_web_proposal_is_explicitly_partial_for_a_two_target_request"
+      ],
+      "changed_existing": [
+        "test_conditional_newer_save_requires_an_explicit_comparison_ordinal",
+        "test_result_set_wrong_ordinal_or_zero_count_never_confirms"
+      ],
+      "unchanged_existing": 24
+    },
+    {
+      "file": "tests/test_agent_redesign_contracts.py",
+      "removed_or_renamed": [
+        "test_partial_evidence_survives_successful_call_budget",
+        "test_rejected_closing_text_keeps_budget_partial_results"
+      ],
+      "new_or_renamed": [
+        "test_healthy_reads_continue_beyond_old_successful_call_limit",
+        "test_rejected_closing_text_keeps_stagnation_partial_results"
+      ],
+      "changed_existing": [],
+      "unchanged_existing": 8
+    },
+    {
+      "file": "tests/test_agent_reference_v4.py",
+      "removed_or_renamed": [],
+      "new_or_renamed": [
+        "test_bad_copied_quote_gets_one_correction_attempt_and_keeps_source_validation",
+        "test_repeated_bad_reference_stays_rejected_after_single_correction"
+      ],
+      "changed_existing": [
+        "test_copied_assistant_concept_is_a_valid_referent_without_company_card"
+      ],
+      "unchanged_existing": 10
+    },
+    {
+      "file": "tests/test_agent_reference_v5.py",
+      "removed_or_renamed": [],
+      "new_or_renamed": [
+        "test_reference_item_does_not_trust_retyped_model_text",
+        "test_relative_date_year_is_grounded_in_server_time",
+        "test_server_item_identity_restores_original_label_and_rejects_foreign_source",
+        "test_valid_item_id_cannot_select_the_wrong_requested_position",
+        "test_verified_bilingual_reference_can_switch_company"
+      ],
+      "changed_existing": [],
+      "unchanged_existing": 0
+    },
+    {
+      "file": "tests/test_agent_workflow_execution.py",
+      "removed_or_renamed": [
+        "test_stream_deadline_returns_normal_done_and_checkpoint_status"
+      ],
+      "new_or_renamed": [
+        "test_stream_inactivity_returns_normal_done_and_checkpoint_status"
+      ],
+      "changed_existing": [],
+      "unchanged_existing": 1
+    },
+    {
+      "file": "tests/test_agent_writes_v5.py",
+      "removed_or_renamed": [],
+      "new_or_renamed": [
+        "test_cancel_committed_before_next_durable_claim_stops_that_item",
+        "test_cancellation_during_one_effect_stops_later_items_and_preserves_completed_results",
+        "test_cancelled_agent_await_requests_batch_stop_without_repeating_started_effect",
+        "test_independent_batch_continues_and_replays_without_reexecuting",
+        "test_item_in_flight_is_journaled_before_effect_and_crash_is_not_replayed",
+        "test_official_discovery_selects_latest_metadata_without_business_writes",
+        "test_permission_failure_stops_remaining_targets",
+        "test_registration_occurs_only_inside_confirmed_execution_and_is_idempotent",
+        "test_sec_suggestion_can_be_approved_without_prior_inventory_and_does_no_discovery",
+        "test_suggested_sec_discovery_waits_for_initial_approval_and_returns_frozen_second_card"
+      ],
+      "changed_existing": [],
+      "unchanged_existing": 0
+    }
+  ]
+}

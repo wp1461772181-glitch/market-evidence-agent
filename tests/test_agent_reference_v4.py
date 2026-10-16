@@ -34,11 +34,11 @@ def test_b_generation_recovers_once_and_does_not_store_answer_in_scope():
     assert result['status']=='succeeded' and '保证金' in result['answer']
     assert len(calls)==2 and 'answer' not in result['previous_scope']
 
-@pytest.mark.parametrize('term',['期货（Futures）','期权（Option）','互换（Swap）'])
-def test_copied_assistant_concept_is_a_valid_referent_without_company_card(term):
+@pytest.mark.parametrize('term,position',[('期货（Futures）','第二个'),('期权（Option）','第三个'),('互换（Swap）','第四个')])
+def test_copied_assistant_concept_is_a_valid_referent_without_company_card(term,position):
     resolver=lambda _:{'relationship':'followup','canonical_question':'详细解释'+term,
-        'referents':[{'mention':'第二个','text':term,'source':'assistant_previous'}]}
-    result,calls=run('解释第二个',resolver=resolver,answers=['这是一种金融合约。'],messages=HISTORY)
+        'referents':[{'mention':position,'text':term,'source':'assistant_previous'}]}
+    result,calls=run('解释'+position,resolver=resolver,answers=['这是一种金融合约。'],messages=HISTORY)
     assert result['status']=='succeeded' and not result['pending_request']
     assert term in json.dumps(calls[0],ensure_ascii=False)
     audit=result['audit']['stages']['resolver']
@@ -49,6 +49,26 @@ def test_forged_referent_is_rejected_before_classification():
         'referents':[{'mention':'第二个','text':'Palantir','source':'assistant_previous'}]}
     result,calls=run('解释第二个',resolver=resolver,messages=HISTORY)
     assert result['status']=='waiting_for_input' and not calls
+    assert result['audit']['stages']['resolver']['validator']['passed'] is False
+
+def test_bad_copied_quote_gets_one_correction_attempt_and_keeps_source_validation():
+    attempts=[]
+    def resolver(payload):
+        attempts.append(payload)
+        return {'relationship':'followup','canonical_question':'解释期货（Futures）',
+            'referents':[{'mention':'第二个','text':'期货合约是一份标准化且有保证金的合约' if len(attempts)==1 else '期货（Futures）','source':'assistant_previous'}]}
+    result,calls=run('解释第二个',resolver=resolver,answers=['期货采用保证金和每日结算。'],messages=HISTORY)
+    assert len(attempts)==2 and result['status']=='succeeded' and len(calls)==1
+    assert result['audit']['resolver_retries']==1
+    assert result['audit']['stages']['resolver']['validator']['passed'] is True
+
+def test_repeated_bad_reference_stays_rejected_after_single_correction():
+    attempts=[]
+    def resolver(payload):
+        attempts.append(payload)
+        return {'relationship':'followup','canonical_question':'解释Palantir','referents':[{'mention':'第二个','text':'Palantir','source':'assistant_previous'}]}
+    result,calls=run('解释第二个',resolver=resolver,messages=HISTORY)
+    assert len(attempts)==2 and not calls and result['pending_request']
     assert result['audit']['stages']['resolver']['validator']['passed'] is False
 
 def test_fullwidth_and_whitespace_copy_is_valid():

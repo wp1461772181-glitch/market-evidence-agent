@@ -60,7 +60,7 @@ class Fixture:
                 n=2 if self.scenario=='two_news' else 3 if self.scenario=='three_news' else args.get('max_results',5)
                 rows=[self.page(i+1) for i in range(min(n,3))]
         elif name in {'search_knowledge','query_sec_filings','query_materials'} and self.scenario in {'compound','filing_summary','conditional_new','conditional_old','duplicate','filing'}:rows=[self.filing()]
-        elif name=='query_stock_prices' and self.scenario=='limit':rows=[{'id':str(uuid.uuid4()),'symbol':args['symbol'],'close':100,'trading_date':self.now.date().isoformat(),'fetched_at':self.now.isoformat(),'source':'evaluation'}]
+        elif name=='query_stock_prices' and self.scenario in {'limit','healthy_work'}:rows=[{'id':str(uuid.uuid4()),'symbol':args['symbol'],'close':100,'trading_date':self.now.date().isoformat(),'fetched_at':self.now.isoformat(),'source':'evaluation'}]
         elif name=='query_system_status':rows=[{'status':'idle','source_type':'system_status'}]
         elif name in {'add_to_research_queue','remove_from_research_queue','query_research_queue'}:rows=[{'status':'client_requested','symbols':[self.symbol] if name!='remove_from_research_queue' else []}]
         elif name in {'select_stock','open_page'}:rows=[{'status':'client_requested'}]
@@ -81,11 +81,12 @@ class Fixture:
         names={s['function']['name'] for s in schemas}
         if not names or names & {'resolve_reference','classify_request','resolve_user_request','recognize_purposes','plan_tasks','expand_query'}:return None
         scenario=self.scenario
-        if scenario not in {'limit','no_progress','repair'}:return None
+        if scenario not in {'limit','healthy_work','no_progress','repair'}:return None
         # These are adversarial controller probes, not model quality samples.
         self.step+=1
-        if scenario=='limit':
+        if scenario in {'limit','healthy_work'}:
             symbols=['AMD','AAPL','MU','NVDA','RBLX','MSFT','GOOG','AMZN']
+            if scenario=='healthy_work' and self.step>8:return {'reasoning_content':'','content':'\n'.join(symbol+' 收盘价为100美元['+str(i+1)+']。' for i,symbol in enumerate(symbols))}
             return {'reasoning_content':'','tool_calls':[{'id':str(uuid.uuid4()),'type':'function','function':{'name':'query_stock_prices','arguments':json.dumps({'symbol':symbols[(self.step-1)%8]})}}]}
         if scenario=='repair' and self.step>1:return None
         params={'query':self.company+' news '+str(self.step),'company':self.company,'days_back':367 if scenario=='repair' else 7,'max_results':2}

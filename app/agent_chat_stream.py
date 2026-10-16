@@ -184,10 +184,8 @@ class StreamRequest(BaseModel):
   p=urlsplit(value.strip())
   try: port=p.port
   except ValueError as exc: raise ValueError("invalid endpoint") from exc
-  if p.scheme!="https" or not p.hostname or p.username or p.password or p.query or p.fragment or "%" in p.netloc or (port is not None and not 1<=port<=65535):raise ValueError("invalid endpoint")
-  path=p.path.rstrip("/")
-  if path.endswith("/chat/completions"):path=path[:-len("/chat/completions")].rstrip("/")
-  return urlunsplit(("https",p.netloc,path,"",""))
+  from .agent_chat_api import _validated_base_url
+  return _validated_base_url(value)
  @model_validator(mode="after")
  def custom_has_endpoint(self):
   if self.provider=="custom" and not self.base_url:raise ValueError("custom endpoint required")

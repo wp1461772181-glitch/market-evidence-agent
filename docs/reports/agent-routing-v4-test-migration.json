@@ -1,0 +1,160 @@
+{
+  "baseline": "c9a75bcfc8bec25a5212cae6fd3bb28f21ecad4c",
+  "scope": "This repair only; function names are not expanded pytest case counts. Existing helpers/fixtures are described in Markdown.",
+  "renames": {
+    "test_every_costly_tool_has_a_tokenless_security_probe": "test_every_server_write_has_a_tokenless_security_probe",
+    "test_no_costly_tool_can_bypass_consent_through_public_dispatch": "test_no_server_write_can_bypass_consent_through_public_dispatch"
+  },
+  "files": [
+    {
+      "file": "tests/test_agent_acceptance.py",
+      "removed_or_renamed": [],
+      "new_or_renamed": [],
+      "changed_existing": [
+        "test_current_message_is_sent_and_no_tool_path_streams"
+      ],
+      "unchanged_existing": 21
+    },
+    {
+      "file": "tests/test_agent_chat_stream.py",
+      "removed_or_renamed": [],
+      "new_or_renamed": [],
+      "changed_existing": [
+        "test_ask_user_card_survives_sse_and_history"
+      ],
+      "unchanged_existing": 7
+    },
+    {
+      "file": "tests/test_agent_entity_v4.py",
+      "removed_or_renamed": [],
+      "new_or_renamed": [
+        "test_ambiguous_official_issuer_does_not_guess_ticker",
+        "test_literal_ticker_or_unique_official_issuer_does_not_force_company_card",
+        "test_shared_first_word_does_not_verify_a_different_issuer",
+        "test_verified_ticker_pair_and_literal_mention_bind_scope"
+      ],
+      "changed_existing": [],
+      "unchanged_existing": 0
+    },
+    {
+      "file": "tests/test_agent_evaluation_v4.py",
+      "removed_or_renamed": [],
+      "new_or_renamed": [
+        "test_invalid_issuer_fixture_fails_before_any_model_request",
+        "test_official_issuer_fixture_preserves_list_or_raw_sec_response"
+      ],
+      "changed_existing": [],
+      "unchanged_existing": 0
+    },
+    {
+      "file": "tests/test_agent_grants_v4.py",
+      "removed_or_renamed": [],
+      "new_or_renamed": [
+        "test_failed_proposal_preserves_specific_next_step",
+        "test_guest_has_no_server_writes_or_request_action_but_local_queue_stays",
+        "test_negation_is_only_a_veto_not_positive_verb_authorization",
+        "test_no_card_write_result_includes_reason_not_zero_evidence",
+        "test_only_classified_server_write_is_registered_and_proposed",
+        "test_ungranted_native_write_rejected_even_when_model_ignores_schema",
+        "test_unknown_requested_actions_are_discarded"
+      ],
+      "changed_existing": [],
+      "unchanged_existing": 0
+    },
+    {
+      "file": "tests/test_agent_redesign_behaviors.py",
+      "removed_or_renamed": [],
+      "new_or_renamed": [],
+      "changed_existing": [
+        "test_arbitrary_company_news_search_has_explicit_window_no_queue_card",
+        "test_conditional_newer_save_requires_an_explicit_comparison_ordinal",
+        "test_conditional_web_save_compares_frozen_dates_before_card",
+        "test_confirmation_previews_original_title_without_treating_it_as_an_answer_claim",
+        "test_confirmed_web_save_persists_once_and_is_searchable",
+        "test_followup_cannot_change_known_symbol_without_an_explicit_new_entity",
+        "test_negated_write_cannot_get_a_proposal",
+        "test_parallel_proposal_does_not_show_a_partial_card_when_one_target_is_invalid",
+        "test_parallel_web_proposals_freeze_every_requested_target_in_one_card",
+        "test_queue_add_remove_are_real_owner_or_guest_local",
+        "test_reference_accepts_catalogue_urls_followed_by_sentence_punctuation",
+        "test_reference_still_rejects_a_url_not_in_the_catalogue",
+        "test_result_set_wrong_ordinal_or_zero_count_never_confirms",
+        "test_same_web_body_at_another_url_does_not_create_a_new_confirmation",
+        "test_single_web_proposal_cannot_satisfy_an_explicit_two_target_request",
+        "test_time_scope_prose_is_not_mistaken_for_a_new_company",
+        "test_two_news_targets_frozen_and_confirmed_exactly_twice",
+        "test_web_consent_saves_the_exact_reviewed_snapshot_without_refetch"
+      ],
+      "unchanged_existing": 12
+    },
+    {
+      "file": "tests/test_agent_reference_v4.py",
+      "removed_or_renamed": [],
+      "new_or_renamed": [
+        "test_a_rejects_ungrounded_classifier_company_before_tools",
+        "test_b_c_do_not_run_business_company_or_number_grounding",
+        "test_b_generation_recovers_once_and_does_not_store_answer_in_scope",
+        "test_b_missing_or_bad_generation_retries_then_fails",
+        "test_copied_assistant_concept_is_a_valid_referent_without_company_card",
+        "test_earlier_assistant_list_has_stable_source_and_exact_quote_after_detail",
+        "test_forged_referent_is_rejected_before_classification",
+        "test_fullwidth_and_whitespace_copy_is_valid",
+        "test_historical_mention_is_descriptive_but_source_text_still_must_be_exact",
+        "test_long_reference_audit_is_bounded_and_does_not_include_api_key",
+        "test_official_pair_does_not_bind_a_different_literal_issuer"
+      ],
+      "changed_existing": [],
+      "unchanged_existing": 0
+    },
+    {
+      "file": "tests/test_agent_suggestions_v4.py",
+      "removed_or_renamed": [],
+      "new_or_renamed": [
+        "test_approval_button_maps_to_operation_and_replay_is_once",
+        "test_approved_web_without_newer_body_does_not_claim_ingestion",
+        "test_caller_cannot_assert_confirmation_without_capability",
+        "test_failed_approved_operation_reports_refusal_and_next_step",
+        "test_simultaneous_approval_uses_existing_consent_serialization",
+        "test_suggestion_arguments_must_match_target_schema",
+        "test_suggestion_only_mints_capability_and_is_limited_to_one",
+        "test_web_suggestion_requires_second_frozen_confirmation_and_replays_preparation_once"
+      ],
+      "changed_existing": [],
+      "unchanged_existing": 0
+    },
+    {
+      "file": "tests/test_agent_tool_catalog.py",
+      "removed_or_renamed": [
+        "test_every_costly_tool_has_a_tokenless_security_probe",
+        "test_no_costly_tool_can_bypass_consent_through_public_dispatch"
+      ],
+      "new_or_renamed": [
+        "test_every_server_write_has_a_tokenless_security_probe",
+        "test_no_server_write_can_bypass_consent_through_public_dispatch"
+      ],
+      "changed_existing": [
+        "test_catalogue_contains_executable_handlers_with_typed_permission_metadata"
+      ],
+      "unchanged_existing": 2
+    },
+    {
+      "file": "tests/test_agent_workflow_persistence.py",
+      "removed_or_renamed": [],
+      "new_or_renamed": [],
+      "changed_existing": [
+        "test_invalid_second_classifier_cannot_reuse_old_answer_or_authority",
+        "test_postgres_reopen_preserves_context_but_never_runtime_key"
+      ],
+      "unchanged_existing": 1
+    },
+    {
+      "file": "tests/test_parent_model_profiles.py",
+      "removed_or_renamed": [],
+      "new_or_renamed": [],
+      "changed_existing": [
+        "test_custom_endpoint_and_model_reach_standalone_classifier"
+      ],
+      "unchanged_existing": 13
+    }
+  ]
+}

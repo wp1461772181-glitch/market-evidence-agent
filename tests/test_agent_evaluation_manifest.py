@@ -31,3 +31,16 @@ def test_injected_probe_does_not_consume_real_model_token_budget(monkeypatch):
         for _ in range(8):await turn.model([{'role':'user','content':'probe'}],[])
     asyncio.run(exercise())
     assert turn.audit['token_usage']==0 and turn.audit['usage_mode']=='actual'
+
+def test_v5_case_policy_changes_are_explicit_and_healthy_control_terminates():
+    import runpy
+    root=Path(__file__).resolve().parents[1]/'scripts/evaluation'
+    old=[json.loads(line) for line in (root/'cases/agent-routing-v3-confirmed.jsonl').read_text().splitlines()]
+    new=[json.loads(line) for line in (root/'cases/agent-routing-v5.jsonl').read_text().splitlines()]
+    assert len(old)==len(new)==50
+    assert {a['id'] for a,b in zip(old,new) if a!=b}=={'R21','R24'}
+    fixture=runpy.run_path(str(root/'routing_fixtures.py'))['Fixture'](new[20])
+    schemas=[{'function':{'name':'query_stock_prices'}}]
+    calls=[fixture.forced_decision(schemas) for _ in range(9)]
+    assert all(c.get('tool_calls') for c in calls[:8])
+    assert 'tool_calls' not in calls[8] and '[8]' in calls[8]['content']

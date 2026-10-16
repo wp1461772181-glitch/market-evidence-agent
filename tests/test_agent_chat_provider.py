@@ -122,7 +122,7 @@ def test_openrouter_requests_ask_for_low_reasoning_effort_in_stages_and_answers(
             pass
 
     asyncio.run(run())
-    assert [bool(body.get("stream")) for body in seen] == [False, True]
+    assert [bool(body.get("stream")) for body in seen] == [True, True]
     assert all(body.get("reasoning") == {"effort": provider.REASONING_EFFORT} for body in seen)
     assert provider.REASONING_EFFORT == "low"
 

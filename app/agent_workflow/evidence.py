@@ -53,7 +53,7 @@ def period_match(request: str, body: str) -> bool:
 
 def gate_row(question: str, row: dict, *, symbol: str | None=None, company: str | None=None,
              metrics: list[str] | None=None, period: str | None=None, days_back: int | None=None,
-             official_only: bool=False, now: datetime | None=None) -> tuple[bool,str]:
+             official_only: bool=False, now: datetime | None=None, entity_aliases: list[str] | None=None) -> tuple[bool,str]:
     kind=row.get('source_type','')
     web=kind in {'web','web_news'} or 'url' in row
     if row.get('fetch_error') or row.get('body_hash_valid') is False:return False,'invalid_source_body'
@@ -66,7 +66,7 @@ def gate_row(question: str, row: dict, *, symbol: str | None=None, company: str 
     if symbol and row.get('symbol') and row['symbol'].upper()!=symbol.upper():return False,'requested_entity_missing'
     # Saved rows are verified by their query's symbol filter. Public pages must name the
     # entity in body text; a forged headline by itself is never sufficient.
-    if web and (company or symbol) and not any(contains(x,body) for x in (company,symbol) if x):
+    if web and (company or symbol) and not any(contains(x,body) for x in (company,symbol,*(entity_aliases or [])) if x):
         return False,'requested_entity_missing'
     if not web and symbol and not row.get('symbol') and not row.get('_verified_symbol') and not any(contains(x,body+' '+title) for x in (company,symbol) if x):
         return False,'requested_entity_missing'
@@ -181,6 +181,10 @@ def unsupported_numbers(answer,citations):
         amounts=re.findall(number+r'\s*'+magnitude+r'\s*(?:美元|元|dollars?|USD|%|％)',checked,re.I)
         amounts+=re.findall(r'\$\s*'+number+r'\s*'+magnitude,checked,re.I)
         claim=figure_values(' '.join(amounts))
+        # Bare financial amounts are also claims. Strip only citation identities,
+        # list labels and grounded date/period syntax, never arbitrary numbers.
+        bare=re.sub(r'^\s*\d+[.、)]\s*','',checked)
+        claim|=figure_values(bare)
         if any(v not in allowed and not(v/100 in allowed and re.search(r'%|％|百分',passage)) for v in claim):return True
     return False
 
@@ -236,8 +240,19 @@ def unsupported_claims(answer,citations):
         for terms in CLAIM_FEATURES[2:]:
             claim_polarity=event_polarities(passage,terms)
             if claim_polarity and not claim_polarity<=event_polarities(evidence,supporting_event_terms(terms)):return True
-        if all(c.get('source_type')=='saved_price' for c in sources):
-            price_terms=('股价','收盘','开盘','最高','最低','成交量','行情','价格','交易日','交易时间','抓取','来源','close','open','high','low','volume','price','date','saved','source')
-            table_values='|' in passage and bool(re.search(r'\d',re.sub(r'\[\d+\]','',passage)))
-            if not table_values and not any(contains(t,passage) for t in price_terms):return True
     return False
+
+
+def reviewed_passages(answer,citations,*,require_citations=False,check_claims=True):
+    """Diagnostics apply to affected passages, never erase other verified content."""
+    accepted=[];issues=[]
+    for passage in cited_passages(answer):
+        if not passage.strip():continue
+        uncertainty=bool(re.search(r'没有(?:可核验)?(?:资料|证据)|无法(?:核实|确认)|no (?:verified )?evidence',passage,re.I))
+        code=('invalid_citation' if citation_errors(passage,citations) else
+              'missing_citation' if require_citations and not re.search(r'\[\d+\]',passage) and not uncertainty else
+              'unsupported_numeric_claim' if check_claims and unsupported_numbers(passage,citations) else
+              'unsupported_claim' if check_claims and unsupported_claims(passage,citations) else None)
+        if code:issues.append(code)
+        else:accepted.append(passage.strip())
+    return accepted,issues

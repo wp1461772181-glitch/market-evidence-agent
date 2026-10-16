@@ -26,7 +26,10 @@ def resolve_ticker(company):
     words=issuer_words(company)
     if not words or len(words[0])<3:return None
     try:
-        symbols={r['ticker'] for r in ticker_records() if issuer_words(r['title'])[:len(words)]==words}
+        rows=ticker_records()
+        exact={r['ticker'] for r in rows if issuer_words(r['title'])==words}
+        if exact:return next(iter(exact)) if len(exact)==1 else None
+        symbols={r['ticker'] for r in rows if issuer_words(r['title'])[:len(words)]==words}
         return next(iter(symbols)) if len(symbols)==1 else None
     except Exception:return None
 

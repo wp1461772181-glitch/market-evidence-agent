@@ -17,7 +17,6 @@ from .state import AgentRuntimeContext, AgentWorkflowState, checkpoint_thread_id
 CLASSIFIER_SYSTEM = "Classify the latest user message into A evidence, B ordinary in-scope explanation, C out of scope, or D system action. Return a route_request function call."
 OUT_OF_SCOPE_SCRIPT = "这个请求不在 Market Evidence Agent 的功能范围内。我可以协助查证市场资料、公开新闻和已保存证据。"
 WRITE_CANCELLED = "已取消，没有执行任何操作。"
-MAX_SECONDS = 120
 HISTORY_TOKEN_ALLOWANCE = 32000
 
 
@@ -82,15 +81,8 @@ async def stream_workflow(*, question: str, messages: list[dict], provider: str,
         # Legacy pending IDs are accepted for API compatibility. The direct graph
         # does not interpret them as write consent or execute a pending operation.
         state = {"question": question, "messages": messages, "turn_id": turn_id,"requested_pending_id":pending_request_id}
-        try:
-            async with asyncio.timeout(MAX_SECONDS+10):
-                async for event in graph.astream(state, config, context=context, stream_mode="custom"):
-                    yield event
-        except TimeoutError:
-            text = "本轮研究达到时限，已停止继续调用工具。"
-            yield {"event": "delta", "text": text}
-            yield {"event": "done", "status": "failed", "reason": "turn_deadline", "citations": [],
-                   "answer": text, "final_protocol": {}, "audit": {"stop_reason": "turn_deadline"}}
+        async for event in graph.astream(state, config, context=context, stream_mode="custom"):
+            yield event
 
 
 async def mark_terminal_status(owner_hash: str, conversation_id: str, status: str, partial_answer: str) -> None:
@@ -115,17 +107,7 @@ async def run_workflow(**kwargs) -> dict:
             {"configurable": {"thread_id": checkpoint_thread_id(kwargs["owner_hash"], kwargs["conversation_id"])},
              "recursion_limit": 30}, context=context)
 
-def _turn_limit(state: AgentWorkflowState) -> int:
-    """The token budget of this turn: the work budget, plus what the conversation carried into the
-    turn costs (up to the history budget), so a long history does not eat the budget for the work."""
-    return MAX_TOKENS + max(0, min(int(state.get("history_allowance") or 0), HISTORY_TOKEN_ALLOWANCE))
-
-
 def _budget_reason(state: AgentWorkflowState, reserve: int = 1800) -> str | None:
-    if time.monotonic() - state.get("started_at", time.monotonic()) >= MAX_SECONDS:
-        return "turn_deadline"
-    if state.get("token_usage", 0) + (_bytes(state.get("messages", [])) + 3) // 4 + reserve > _turn_limit(state):
-        return "turn_token_budget"
     if _bytes(state.get("messages", [])) > CONTEXT_GUARD_BYTES:
         return "chat_context_too_large"
     return None
@@ -164,7 +146,6 @@ def _dialog_view(messages: list[dict]) -> list[dict]:
 
 import time,os
 from .. import agent_context as _layers
-MAX_TOKENS=32000
 HISTORY_TOKEN_ALLOWANCE=_layers.HISTORY_TOKEN_ALLOWANCE
 DIALOG_BUDGET_CHARS=_layers.HISTORY_BUDGET
 

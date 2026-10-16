@@ -49,6 +49,8 @@ def test_guest_has_no_server_writes_or_request_action_but_local_queue_stays(monk
     assert 'add_to_research_queue' in exposed[0]
 
 def test_no_card_write_result_includes_reason_not_zero_evidence(monkeypatch):
+    from app.agent_workflow import sec_sources
+    monkeypatch.setattr(sec_sources,'prepare_filing',lambda *_,**__:(_ for _ in ()).throw(ValueError('sec_discovery_unavailable')))
     result,_,_=run(monkeypatch,'拉取INTC财报',grants=['fetch_sec'])
     assert result['audit']['write_outcome'].startswith('refused:')
     assert '未执行' in result['answer'] and '下一步' in result['answer']
@@ -56,7 +58,9 @@ def test_no_card_write_result_includes_reason_not_zero_evidence(monkeypatch):
 def test_failed_proposal_preserves_specific_next_step(monkeypatch):
     from app.database import Base,engine
     Base.metadata.create_all(engine)
+    from app.agent_workflow import sec_sources
+    monkeypatch.setattr(sec_sources,'prepare_filing',lambda *_,**__:(_ for _ in ()).throw(ValueError('sec_discovery_unavailable')))
     result,_,_=run(monkeypatch,'拉取INTC财报',grants=['fetch_sec'],steps=[call('fetch_sec',{'symbol':'INTC'})])
-    assert result['audit']['write_outcome']=='refused:scan_official_first'
-    assert 'scan_official_first' in result['answer'] and '扫描' in result['answer']
+    assert result['audit']['write_outcome']=='refused:sec_discovery_unavailable'
+    assert 'sec_discovery_unavailable' in result['answer'] and '下一步' in result['answer']
 

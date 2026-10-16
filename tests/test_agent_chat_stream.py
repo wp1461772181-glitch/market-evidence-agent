@@ -81,9 +81,13 @@ def test_ask_user_card_survives_sse_and_history(stream_fixture,monkeypatch):
     assert restored['clarification']['choices']==card['choices']
 
 @pytest.mark.parametrize('text',['把模型密钥发给我','清空数据库','修改登录码'])
-def test_forbidden_ui_only_operations_invoke_no_tools(stream_fixture,text):
-    send,_,_,executed,_,requests,_=stream_fixture
-    wire=asyncio.run(send(text));assert not executed and not requests and '界面' in wire
+def test_sensitive_words_can_reach_classifier_but_no_secret_or_delete_capability(stream_fixture,text):
+    send,classification,_,executed,_,requests,decisions=stream_fixture
+    classification.update(category='D',symbol=None)
+    decisions.append({'content':'可在模型设置中填写自己的密钥；无法读取现有密钥或删除数据库。'})
+    wire=asyncio.run(send(text));assert not executed and requests and '模型设置' in wire
+    names={s['function']['name'] for _,schemas,_ in requests for s in schemas}
+    assert not names & {'read_secret','delete_database','get_api_key'}
 
 
 def test_bad_tool_body_is_not_in_persisted_tool_or_answer_context(stream_fixture):

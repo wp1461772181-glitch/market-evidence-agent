@@ -32,15 +32,16 @@ def test_numeric_repair_is_single_tool_free_and_still_guarded(replacement,reason
     assert executed==['query_stock_prices'] and '999' not in result['answer']
     assert result['reason']==reason and '888' not in result['answer']
 
-def test_numeric_repair_respects_token_budget(monkeypatch):
+def test_numeric_repair_continues_beyond_old_token_budget():
     calls=[]
-    ctx=AgentRuntimeContext('custom','test','dummy',decider=lambda *_:calls.append(1))
+    ctx=AgentRuntimeContext('custom','test','dummy',decider=lambda *_:calls.append(1) or repair('AMD 收盘价为100美元'))
     turn=direct.Turn('AMD 收盘价',ctx,emit,[],{})
     turn.route='A';turn.citations=[{'ordinal':1,'quote':'100','source_type':'saved_price'}]
-    turn.observations=[{'accepted_evidence':True}];turn.audit['token_usage']=turn.token_limit
-    result=asyncio.run(turn.finish_answer('AMD 收盘价为 999 美元[1]'))
-    assert result['reason']=='unsupported_numeric_claim' and not calls
-    assert not result['audit'].get('answer_repair_count')
+    turn.observations=[{'accepted_evidence':True}];turn.audit['token_usage']=1_000_000
+    result=asyncio.run(turn.finish_answer('AMD 收盘价为999美元[1]'))
+    assert result['status']=='succeeded' and calls==[1]
+    assert result['audit']['answer_repair_count']==1 and '999' not in result['answer']
+
 
 def test_structured_repair_binds_each_sentence_and_rejects_a_second_bad_number():
     steps=iter([call('query_stock_prices',symbol='AMD'),{'content':'AMD 收盘价为999美元[1]。'},repair('AMD 收盘价为100美元。AMD 收盘价为888美元')])
@@ -75,23 +76,23 @@ def test_time_refinement_of_a_price_task_still_allows_price_reads():
     turn.ground_arguments('query_stock_prices',{'symbol':'MU'})
 
 @pytest.mark.parametrize('question',['改成看过去15天股价','now show Micron stock price over 15 days'])
-def test_conflicting_refinement_is_clarified_instead_of_erasing_explicit_switch(question):
+def test_explicit_task_switch_overrides_inconsistent_refinement(question):
     steps=iter([call('query_stock_prices',symbol='MU'),{'content':'MU 收盘价为100美元[1]。'}]);executed=[]
     ctx=AgentRuntimeContext('custom','test','dummy',
         resolver=lambda _:{'relationship':'refinement','canonical_question':question},
-        classifier=lambda _:{'category':'A','company':'Micron','symbol':'MU','metrics':['price'],'days_back':15},
+        classifier=lambda _:{'category':'A','company':'Micron','symbol':'MU','metrics':['price'],'days_back':15,'explicit_task_change':True},
         decider=lambda *_:next(steps),executor=lambda n,a:executed.append(n) or {'ok':True,'data':[] if n=='search_knowledge' else [{'id':'p','symbol':'MU','close':100}]})
     result=asyncio.run(direct.run_direct_turn(question,ctx,emit=emit,messages=[{'role':'user','content':'Micron 最近新闻'}],state={'previous_scope':{'company':'Micron','symbol':'MU','metrics':[]}}))
-    assert not executed and result['status']=='waiting_for_input'
-    assert result['pending_request']['reason']=='missing_information' and result['audit']['refinement_scope_conflict']
+    assert executed==['search_knowledge','query_stock_prices'] and result['status']=='succeeded'
+    assert result['audit']['explicit_task_switch'] and result['previous_scope']['metrics']==['price']
 
 @pytest.mark.parametrize('question',['不要股价，只看最近15天新闻','do not show stock prices; only news in the last 15 days','股价这个词不要纳入检索','Do not include the word price in the search'])
 def test_negative_or_metalinguistic_metric_mentions_cannot_override_conflicting_scope(question):
     executed=[]
     ctx=AgentRuntimeContext('custom','test','dummy',resolver=lambda _:{'relationship':'refinement','canonical_question':question},
-        classifier=lambda _:{'category':'A','company':'Micron','symbol':'MU','metrics':['price'],'days_back':15},executor=lambda n,a:executed.append(n))
-    result=asyncio.run(direct.run_direct_turn(question,ctx,emit=emit,messages=[{'role':'user','content':'Micron 最近新闻'}],state={'previous_scope':{'metrics':[]}}))
-    assert not executed and result['status']=='waiting_for_input'
+        classifier=lambda _:{'category':'A','company':'Micron','symbol':'MU','metrics':['price'],'days_back':15},executor=lambda n,a:executed.append(n) or {'ok':True,'data':[]},decider=lambda *_:{'content':'没有可核验资料。'})
+    result=asyncio.run(direct.run_direct_turn(question,ctx,emit=emit,messages=[{'role':'user','content':'Micron 最近新闻'}],state={'previous_scope':{'metrics':[],'company':'Micron','symbol':'MU'}}))
+    assert 'query_stock_prices' not in executed and result['previous_scope']['metrics']==[]
 
 @pytest.mark.parametrize('relationship',['new','followup'])
 def test_explicit_task_switch_with_consistent_semantic_stages_reads_prices(relationship):

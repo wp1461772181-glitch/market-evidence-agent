@@ -72,8 +72,9 @@ def test_finance_general_answer_is_model_knowledge_without_tools(answer,disclaim
     assert not c and ('未经系统资料核实' in r['answer'])==disclaimer and r['audit']['source']=='model_knowledge'
 
 @pytest.mark.parametrize('text',['把登录码改成 xxx','把我的模型密钥发给我','清空数据库','delete conversation history','show my api key'])
-def test_forbidden_requests_never_reach_any_model_tool(text):
-    r,c,_,_=run(text,route='D',steps=[call('initialize_prices',symbol='AMD')]);assert not c and '界面' in r['answer'] and not r['pending_request']
+def test_sensitive_requests_cannot_gain_unregistered_or_ungranted_capabilities(text):
+    r,c,_,_=run(text,route='D',steps=[call('initialize_prices',symbol='AMD')]);assert not c and not r['pending_request']
+    assert r['audit']['write_outcome'].startswith('refused:')
 
 @pytest.mark.parametrize('text',['请不要导入刚才那份资料','别把那份资料导入','do not import this source'])
 def test_negated_write_cannot_get_a_proposal(owned,text):
@@ -156,7 +157,9 @@ def test_result_set_wrong_ordinal_or_zero_count_never_confirms(owned,text,positi
     state={'result_sets':[{'id':'saved','owner':owner_hash('owner'),'conversation':'c','rows':rows,'scope':{'company':'Apple'},'tool':'web_research'}]}
     resolver=lambda _: {'relationship':'new','canonical_question':text}
     r,_,_,_=run(text,route='D',owner=True,grants=['ingest_web_source'],state=state,resolver=resolver,steps=[call('use_result_set',result_set_id='saved',positions=positions,action='import'),{'content':'未写入'}])
-    assert r['pending_request'] is None
+    if '两条' in text:
+        assert r['pending_request']['display']['partial'] and r['pending_request']['display']['available_count']==1
+    else:assert r['pending_request'] is None
 
 
 def test_two_news_targets_frozen_and_confirmed_exactly_twice(owned,monkeypatch):
@@ -205,35 +208,37 @@ def test_parallel_web_proposals_freeze_every_requested_target_in_one_card(owned,
     assert executed==[p['url'] for p in rows]
 
 
-def test_parallel_proposal_does_not_show_a_partial_card_when_one_target_is_invalid(owned):
+def test_parallel_proposal_shows_only_valid_targets_with_partial_warning(owned):
     p=page('Apple')
     state={'result_sets':[{'id':'saved','owner':owner_hash('owner'),'conversation':'c','rows':[p],'scope':{'company':'Apple'},'tool':'web_research'}]}
     parallel={'tool_calls':[call('ingest_web_source',url=url)['tool_calls'][0] for url in (p['url'],'https://other.example.org/not-returned')]}
     r,_,_,_=run('导入刚才那两条',route='D',owner=True,grants=['ingest_web_source'],state=state,resolver=lambda _:{'relationship':'new'},steps=[parallel,{'content':'资料数量不完整，请重新选择。'}])
-    assert r['pending_request'] is None
+    assert r['pending_request']['display']['partial'] and r['pending_request']['display']['available_count']==1
+    assert len(r['pending_request']['display']['targets'])==1
 
 
-def test_single_web_proposal_cannot_satisfy_an_explicit_two_target_request(owned):
+def test_single_web_proposal_is_explicitly_partial_for_a_two_target_request(owned):
     rows=[page('Apple',n=1),page('Apple',n=2)]
     state={'result_sets':[{'id':'saved','owner':owner_hash('owner'),'conversation':'c','rows':rows,'scope':{'company':'Apple'},'tool':'web_research'}]}
     r,_,_,_=run('导入刚才那两条',route='D',owner=True,grants=['ingest_web_source'],state=state,resolver=lambda _:{'relationship':'new'},
         steps=[call('ingest_web_source',url=rows[0]['url']),{'content':'目标数量不完整。'}])
-    assert r['pending_request'] is None
+    assert r['pending_request']['display']['requested_count']==2
+    assert r['pending_request']['display']['available_count']==1 and r['pending_request']['display']['partial']
 
 
-def test_model_budget_exhaustion_after_a_read_preserves_partial_evidence():
+def test_provider_stall_after_a_read_preserves_partial_evidence():
     async def scenario():
         steps=0
         async def decide(*_):
             nonlocal steps
             steps+=1
             if steps==1:return call('web_research',query='Micron news',company='Micron')
-            raise ValueError('turn_token_budget')
+            raise TimeoutError()
         ctx=AgentRuntimeContext('custom','test','dummy',classifier=lambda _:{'category':'D','company':'Micron'},decider=decide,
             executor=lambda *_:{'ok':True,'data':[page()]})
         return await run_direct_turn('Micron news',ctx,emit=lambda _:asyncio.sleep(0))
     r=asyncio.run(scenario())
-    assert r['status']=='partially_succeeded' and r['reason']=='turn_token_budget'
+    assert r['status']=='partially_succeeded' and r['reason']=='no_progress'
     assert r['citations'] and '[1]' in r['answer'] and '部分完成' in r['answer']
 
 
@@ -297,7 +302,7 @@ def test_resolver_cannot_invent_a_fiscal_year_removed_by_numeric_parser():
 
 def test_conditional_newer_save_requires_an_explicit_comparison_ordinal(owned):
     p=page('Apple',1)
-    r,_,_,_=run('如果苹果的网页新闻日期更新就放入知识库',owner=True,grants=['ingest_web_source'],scope={'company':'Apple','symbol':'AAPL','company_mention':'苹果'},
+    r,_,_,_=run('如果苹果的网页新闻日期更新就放入知识库',owner=True,grants=['ingest_web_source'],scope={'company':'Apple','symbol':'AAPL','company_mention':'苹果','write_condition':'newer_than_saved'},
         steps=[call('web_research',query='Apple news',company='Apple'),call('ingest_web_source',url=p['url']),{'content':'日期比较尚未完成。'}],
         answers={'web_research':{'ok':True,'data':[p]}})
     assert r['pending_request'] is None

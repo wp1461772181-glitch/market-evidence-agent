@@ -19,8 +19,12 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 from .freshness import published_within, search_time_range, window_days
 
-MAX_PAGE_BYTES = 1_000_000
-MAX_SEARCH_BYTES = 180_000
+def _body_limit(name,default):
+    try:return max(32_000,min(10_000_000,int(os.getenv(name,default))))
+    except ValueError:return default
+
+MAX_PAGE_BYTES = _body_limit('AGENT_WEB_PAGE_MAX_BYTES',2_000_000)
+MAX_SEARCH_BYTES = _body_limit('AGENT_WEB_SEARCH_MAX_BYTES',512_000)
 MAX_EXCERPT = 5_000
 MAX_REDIRECTS = 2
 

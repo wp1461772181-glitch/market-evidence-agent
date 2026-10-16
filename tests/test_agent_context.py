@@ -250,15 +250,10 @@ def test_the_request_guard_is_the_budget_not_a_fixed_forty_kilobytes(stream_fixt
     assert "event: error" in refused and "chat_context_too_large" in refused and "event: done" not in refused
 
 
-def test_a_long_history_does_not_eat_the_work_budget_of_the_turn():
+def test_cumulative_work_is_accounted_without_a_token_or_elapsed_time_stop():
     from app.agent_workflow import graph
-    from app.agent_workflow.state import AgentWorkflowState
-    plain: AgentWorkflowState = {"token_usage": 0, "messages": [], "started_at": 0}
-    assert graph._turn_limit(plain) == graph.MAX_TOKENS
-    carried: AgentWorkflowState = {"history_allowance": 9_000}
-    assert graph._turn_limit(carried) == graph.MAX_TOKENS + 9_000
-    huge: AgentWorkflowState = {"history_allowance": 10 ** 9}
-    assert graph._turn_limit(huge) == graph.MAX_TOKENS + layers.HISTORY_TOKEN_ALLOWANCE
+    state={'token_usage':10**9,'messages':[],'started_at':0,'history_allowance':10**9}
+    assert graph._budget_reason(state) is None
 
 
 def test_the_request_guard_inside_the_workflow_follows_the_budget_too(monkeypatch):

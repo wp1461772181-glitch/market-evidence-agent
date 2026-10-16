@@ -228,11 +228,11 @@ def test_legacy_unmapped_upload_is_visible_only_to_configured_site_owner(monkeyp
 
 
 def test_stream_ownership_persistence_and_tool_disable(monkeypatch):
-    requests=provider_fixture(monkeypatch,decision={'role':'assistant','content':None,'tool_calls':[call('query_stock_prices',{'symbol':'AAPL'})]})
+    requests=provider_fixture(monkeypatch,decision={'role':'assistant','content':None,'tool_calls':[call('query_stock_prices',{'symbol':'AAPL'})]},chunks=[b'data: {"choices":[{"delta":{"content":"AAPL close 101 dollars [1]"},"finish_reason":"stop"}]}\n\n',b'data: [DONE]\n\n'])
     with TestClient(main.app) as client:
         response=send(client,message='show AAPL prices'); events=frames(response)
         assert response.status_code==200 and events[-1][0]=='done'
-        assert ''.join(e[1]['text'] for e in events if e[0]=='delta')=='first second'
+        assert ''.join(e[1]['text'] for e in events if e[0]=='delta')=='AAPL close 101 dollars [1]'
         assert [e[0] for e in events].index('tool_result')<[e[0] for e in events].index('delta')
         cid=events[0][1]['conversation_id']
         owned=client.get(f'/agent-chat/conversations/{cid}/messages',headers={'X-Chat-Session':SESSION})
