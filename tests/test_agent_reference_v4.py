@@ -64,6 +64,21 @@ def test_historical_mention_is_descriptive_but_source_text_still_must_be_exact()
     result=validate_referents(refs,'它的最新新闻呢',[{'role':'user','content':'帮我搜两条美光的新闻'}],[])
     assert result[0]['text']=='帮我搜两条美光的新闻'
 
+def test_earlier_assistant_list_has_stable_source_and_exact_quote_after_detail():
+    from app.agent_workflow.references import Referent,assistant_message_sources,validate_referents
+    from app.agent_workflow.direct import bounded_history
+    history=[*HISTORY,{'role':'user','content':'解释第二个'},{'role':'assistant','content':'期货详细说明：一、保证金；二、每日结算。'}]
+    sources=assistant_message_sources(history)
+    source=next(k for k,v in sources.items() if v==LIST)
+    refs=[Referent(mention='第四个',text='互换（Swap）',source=source)]
+    assert validate_referents(refs,'第四个呢',history,[])[0]['text']=='互换（Swap）'
+    assert source in bounded_history(history)
+    # A source id alone cannot carry a copied target that is absent from that message.
+    with pytest.raises(ValueError,match='reference_text_unbound'):
+        validate_referents([Referent(mention='第四个',text='Palantir',source=source)],'第四个呢',history,[])
+    with pytest.raises(ValueError,match='reference_text_unbound'):
+        validate_referents(refs,'第四个呢',history[2:],[])
+
 def test_b_c_do_not_run_business_company_or_number_grounding():
     for category in ['B','C']:
         resolver=lambda _:{'relationship':'followup','canonical_question':'解释Futures及100美元的例子','referents':[]}

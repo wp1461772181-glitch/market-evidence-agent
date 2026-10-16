@@ -10,7 +10,7 @@ from ..agent_tool_catalog import definitions,schemas,validate,KnowledgeArgs,writ
 from .evidence import gate_row,number_rows,citation_errors,contains
 from . import tools,consent
 from .authorization import vetoed
-from .references import Referent,validate_referents,bounded_stage,normalized
+from .references import Referent,validate_referents,bounded_stage,normalized,assistant_message_sources
 
 MAX_DISTINCT_CALLS=max(6,min(8,int(os.getenv('AGENT_SUCCESSFUL_CALL_LIMIT','6'))))
 MAX_TOTAL_CALLS=max(1,min(12,int(os.getenv('AGENT_HARD_CALL_LIMIT','12'))))
@@ -71,9 +71,12 @@ def bounded_history(messages):
     # Keep the layered context's system summary, raw user turns and compressed turns.
     # It may ground a reference, but can never supply facts or write authority.
     selected=[];used=0
+    sources=assistant_message_sources(messages or [])
+    source_by_text={v:k for k,v in sources.items()}
     for message in reversed(messages or []):
         if message.get('role') not in {'user','assistant','system'}:continue
         item={'role':message['role'],'content':str(message.get('content',''))}
+        if message['role']=='assistant' and item['content'] in source_by_text:item['source']=source_by_text[item['content']]
         size=len(json.dumps(item,ensure_ascii=False).encode())
         if used+size>64000:continue
         selected.append(item);used+=size
@@ -150,7 +153,7 @@ class Turn:
             return
         payload={'question':self.original,'history':self.history,'previous_scope':self.state.get('previous_scope'),'pending':{k:self.state.get('pending_request',{}).get(k) for k in ('question','original_question')} if self.state.get('requested_pending_id') else None,'catalogue':[{'id':s['id'],'scope':s.get('scope',{}),'items':[{'position':i+1,'title':r.get('title'),'symbol':r.get('symbol'),'id':r.get('id'),'url':r.get('url')} for i,r in enumerate(s['rows'])]} for s in self.sets]}
         if self.context.resolver:value=await injected(self.context.resolver,payload)
-        else:value=parsed(await self.model([{'role':'system','content':'Resolve references, not facts or write authority. New self-contained requests stay verbatim. When the user selects a previous assistant item by position, name, 那个 or 刚才的, copy the item name EXACTLY from that answer into canonical_question and referents (mention, text, source=assistant_previous). Result catalogue selections use result_set:<id>; prior user text uses user_history. Previous answers are topic pointers, NEVER factual evidence or permission. Do not invent companies, numbers, URLs or actions. If no list exists or several items/lists are plausible, return clarify and choices from actual items. NEVER pass unresolved references downstream. Use refinement only for time/count changes, preserving the source channel. In public-news context, 我要最近的行情，也就是半个月之内的 refines news to 15 days; it does not switch to stock prices. An explicit task change uses followup. Return resolve_reference.'},{'role':'user','content':json.dumps(payload,ensure_ascii=False)}],REFERENCE_SCHEMA))
+        else:value=parsed(await self.model([{'role':'system','content':'Resolve references, not facts or write authority. New self-contained requests stay verbatim. When the user selects a previous assistant item by position, name, 那个 or 刚才的, copy the item name EXACTLY from that answer into canonical_question and referents (mention, text, source=assistant_previous). Earlier assistant lists carry server-derived source identifiers in history: use their exact assistant_message:<id> source when a follow-up refers back across intervening explanations. Preserve the active parent list when the user continues selecting its items; explanatory subheadings do not silently replace that list. Use assistant_previous only for the immediately preceding assistant answer. If several lists are genuinely plausible, clarify. Result catalogue selections use result_set:<id>; prior user text uses user_history. Previous answers are topic pointers, NEVER factual evidence or permission. Do not invent companies, numbers, URLs or actions. If no list exists or several items/lists are plausible, return clarify and choices from actual items. NEVER pass unresolved references downstream. Use refinement only for time/count changes, preserving the source channel. In public-news context, 我要最近的行情，也就是半个月之内的 refines news to 15 days; it does not switch to stock prices. An explicit task change uses followup. Return resolve_reference.'},{'role':'user','content':json.dumps(payload,ensure_ascii=False)}],REFERENCE_SCHEMA))
         value=Reference.model_validate(value)
         self.reference_value=value
         try:self.verified_referents=validate_referents(value.referents,self.original,prior,self.sets)

@@ -1,5 +1,5 @@
 """Copied conversational referents and bounded diagnostics, never write authority."""
-import copy,json,re,unicodedata
+import copy,hashlib,json,re,unicodedata
 from pydantic import BaseModel,ConfigDict,Field
 
 def normalized(text):
@@ -9,14 +9,25 @@ class Referent(BaseModel):
     model_config=ConfigDict(extra='forbid')
     mention:str=Field(min_length=1,max_length=100)
     text:str=Field(min_length=1,max_length=400)
-    source:str=Field(pattern=r'^(assistant_previous|user_history|result_set:[A-Za-z0-9_-]{1,64})$')
+    source:str=Field(pattern=r'^(assistant_previous|assistant_message:[a-f0-9]{20}|user_history|result_set:[A-Za-z0-9_-]{1,64})$')
+
+def assistant_message_sources(messages):
+    sources={}
+    for position,m in enumerate(messages):
+        if m.get('role')!='assistant' or not m.get('content') or m.get('tool_calls') or m.get('status') in {'failed','cancelled'}:continue
+        content=str(m['content'])
+        identity=hashlib.sha256(json.dumps([position,content],ensure_ascii=False).encode()).hexdigest()[:20]
+        sources['assistant_message:'+identity]=content
+    return sources
 
 def validate_referents(referents,original,messages,sets):
     previous=next((str(m.get('content') or '') for m in reversed(messages) if m.get('role')=='assistant' and m.get('content') and not m.get('tool_calls') and m.get('status') not in {'failed','cancelled'}), '')
     users='\n'.join(str(m.get('content','')) for m in messages if m.get('role')=='user')
+    earlier=assistant_message_sources(messages)
     verified=[]
     for ref in referents:
         if ref.source=='assistant_previous':source=previous
+        elif ref.source.startswith('assistant_message:'):source=earlier.get(ref.source,'')
         elif ref.source=='user_history':source=users
         else:
             saved=next((s for s in sets if s['id']==ref.source.split(':',1)[1]),None)
