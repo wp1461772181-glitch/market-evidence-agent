@@ -2,10 +2,10 @@
   "provider": "deepseek",
   "model": "deepseek-flash",
   "reasoning_effort": "low",
-  "source_commit": "56b056642abd1111ffdd0c9bf8b926c97f0d5933",
-  "source_digest": "460d6fe35954b86869b402bcd427cb712bd0b81a8d3332c15c89717bd95a1ad8",
+  "source_commit": "fc58db3c5e2b8ed2ffafd4384ed49a8a3c0a13c6",
+  "source_digest": "8fcd5b9ab4b7b32457814a062900db233233c3a05c8765cdc25f56666b4f1aa2",
   "case_digest": "600b83b59447156655390ef60cbc94e7a4cce9f626d5ac4c2f466816653f0b38",
-  "evaluator_digest": "4266bd1fd1bc666b2c7994067607957cc14aae0012c580d545a74fbe680a7a4d",
+  "evaluator_digest": "568b01150ea8c7f4720f7ed4bf3b4b562ca692a6d65a721957c6249d2762e3fb",
   "baseline": {
     "cases": 50,
     "passed": 9,
@@ -17,14 +17,19 @@
   },
   "after": {
     "cases": 50,
-    "passed": 47,
+    "passed": 50,
     "model_quality_cases": 47,
-    "model_quality_passed": 45,
-    "p50_ms": 4331,
+    "model_quality_passed": 47,
+    "p50_ms": 4722,
     "single_source_median_model_calls": 3.0,
-    "successful_p50_ms": 4158
+    "successful_p50_ms": 4722
   },
-  "p50_reduction_percent": 33.14,
+  "p50_reduction_percent": 27.11,
+  "controlled_stop_cases": {
+    "R21": "too_many_steps",
+    "R22": "tool_failures",
+    "R23": "no_progress"
+  },
   "natural_limit_cases": [],
   "natural_case_count": 46,
   "safety_invariants": {
@@ -39,29 +44,20 @@
     "R40": true,
     "R41": true
   },
-  "failed_cases": [
-    {
-      "id": "R12",
-      "errors": [
-        "terminal_status"
-      ],
-      "reason": "unsupported_claim"
-    },
-    {
-      "id": "R19",
-      "errors": [
-        "terminal_status"
-      ],
-      "reason": "unsupported_numeric_claim"
-    },
-    {
-      "id": "R21",
-      "errors": [
-        "stop_reason"
-      ],
-      "reason": "turn_token_budget"
-    }
-  ],
+  "gates": {
+    "50_cases": true,
+    "overall_quality": true,
+    "model_quality": true,
+    "controlled_stop_codes": true,
+    "parameter_repair": true,
+    "model_safety_invariants": true,
+    "no_unconfirmed_business_writes": true,
+    "single_source_calls": true,
+    "latency_improvement": true,
+    "natural_limit_rate": true,
+    "no_plan_failures": true
+  },
+  "failed_cases": [],
   "cases": [
     {
       "id": "R01",
@@ -69,7 +65,7 @@
       "errors": [],
       "reason": null,
       "model_calls": 3,
-      "elapsed_ms": 4638,
+      "elapsed_ms": 4400,
       "controlled_probe": false
     },
     {
@@ -78,7 +74,7 @@
       "errors": [],
       "reason": null,
       "model_calls": 4,
-      "elapsed_ms": 8558,
+      "elapsed_ms": 7175,
       "controlled_probe": false
     },
     {
@@ -87,7 +83,7 @@
       "errors": [],
       "reason": null,
       "model_calls": 3,
-      "elapsed_ms": 3797,
+      "elapsed_ms": 4531,
       "controlled_probe": false
     },
     {
@@ -96,7 +92,7 @@
       "errors": [],
       "reason": null,
       "model_calls": 3,
-      "elapsed_ms": 3698,
+      "elapsed_ms": 4781,
       "controlled_probe": false
     },
     {
@@ -105,7 +101,7 @@
       "errors": [],
       "reason": null,
       "model_calls": 3,
-      "elapsed_ms": 7528,
+      "elapsed_ms": 6988,
       "controlled_probe": false
     },
     {
@@ -114,7 +110,7 @@
       "errors": [],
       "reason": null,
       "model_calls": 1,
-      "elapsed_ms": 3078,
+      "elapsed_ms": 3323,
       "controlled_probe": false
     },
     {
@@ -123,7 +119,7 @@
       "errors": [],
       "reason": "zero_evidence",
       "model_calls": 3,
-      "elapsed_ms": 5733,
+      "elapsed_ms": 5471,
       "controlled_probe": false
     },
     {
@@ -132,7 +128,7 @@
       "errors": [],
       "reason": null,
       "model_calls": 1,
-      "elapsed_ms": 1050,
+      "elapsed_ms": 759,
       "controlled_probe": false
     },
     {
@@ -141,7 +137,7 @@
       "errors": [],
       "reason": null,
       "model_calls": 3,
-      "elapsed_ms": 6223,
+      "elapsed_ms": 6237,
       "controlled_probe": false
     },
     {
@@ -149,8 +145,8 @@
       "passed": true,
       "errors": [],
       "reason": null,
-      "model_calls": 3,
-      "elapsed_ms": 5364,
+      "model_calls": 2,
+      "elapsed_ms": 5244,
       "controlled_probe": false
     },
     {
@@ -158,19 +154,17 @@
       "passed": true,
       "errors": [],
       "reason": null,
-      "model_calls": 2,
-      "elapsed_ms": 3738,
+      "model_calls": 3,
+      "elapsed_ms": 5347,
       "controlled_probe": false
     },
     {
       "id": "R12",
-      "passed": false,
-      "errors": [
-        "terminal_status"
-      ],
-      "reason": "unsupported_claim",
+      "passed": true,
+      "errors": [],
+      "reason": null,
       "model_calls": 3,
-      "elapsed_ms": 4528,
+      "elapsed_ms": 5171,
       "controlled_probe": false
     },
     {
@@ -179,7 +173,7 @@
       "errors": [],
       "reason": null,
       "model_calls": 4,
-      "elapsed_ms": 7645,
+      "elapsed_ms": 8288,
       "controlled_probe": false
     },
     {
@@ -188,7 +182,7 @@
       "errors": [],
       "reason": null,
       "model_calls": 1,
-      "elapsed_ms": 1349,
+      "elapsed_ms": 1188,
       "controlled_probe": false
     },
     {
@@ -197,7 +191,7 @@
       "errors": [],
       "reason": null,
       "model_calls": 3,
-      "elapsed_ms": 4815,
+      "elapsed_ms": 4831,
       "controlled_probe": false
     },
     {
@@ -205,8 +199,8 @@
       "passed": true,
       "errors": [],
       "reason": null,
-      "model_calls": 3,
-      "elapsed_ms": 4115,
+      "model_calls": 4,
+      "elapsed_ms": 4834,
       "controlled_probe": false
     },
     {
@@ -215,7 +209,7 @@
       "errors": [],
       "reason": null,
       "model_calls": 3,
-      "elapsed_ms": 3664,
+      "elapsed_ms": 3324,
       "controlled_probe": false
     },
     {
@@ -224,18 +218,16 @@
       "errors": [],
       "reason": "zero_evidence",
       "model_calls": 4,
-      "elapsed_ms": 5723,
+      "elapsed_ms": 6188,
       "controlled_probe": false
     },
     {
       "id": "R19",
-      "passed": false,
-      "errors": [
-        "terminal_status"
-      ],
-      "reason": "unsupported_numeric_claim",
+      "passed": true,
+      "errors": [],
+      "reason": null,
       "model_calls": 2,
-      "elapsed_ms": 4331,
+      "elapsed_ms": 4763,
       "controlled_probe": false
     },
     {
@@ -244,18 +236,16 @@
       "errors": [],
       "reason": null,
       "model_calls": 3,
-      "elapsed_ms": 4644,
+      "elapsed_ms": 5063,
       "controlled_probe": false
     },
     {
       "id": "R21",
-      "passed": false,
-      "errors": [
-        "stop_reason"
-      ],
-      "reason": "turn_token_budget",
-      "model_calls": 1,
-      "elapsed_ms": 4042,
+      "passed": true,
+      "errors": [],
+      "reason": "too_many_steps",
+      "model_calls": 2,
+      "elapsed_ms": 7195,
       "controlled_probe": true
     },
     {
@@ -264,7 +254,7 @@
       "errors": [],
       "reason": "tool_failures",
       "model_calls": 3,
-      "elapsed_ms": 5793,
+      "elapsed_ms": 4722,
       "controlled_probe": false
     },
     {
@@ -273,7 +263,7 @@
       "errors": [],
       "reason": "no_progress",
       "model_calls": 2,
-      "elapsed_ms": 4631,
+      "elapsed_ms": 5352,
       "controlled_probe": true
     },
     {
@@ -291,7 +281,7 @@
       "errors": [],
       "reason": null,
       "model_calls": 2,
-      "elapsed_ms": 3723,
+      "elapsed_ms": 2717,
       "controlled_probe": false
     },
     {
@@ -300,7 +290,7 @@
       "errors": [],
       "reason": null,
       "model_calls": 3,
-      "elapsed_ms": 4409,
+      "elapsed_ms": 4999,
       "controlled_probe": false
     },
     {
@@ -309,7 +299,7 @@
       "errors": [],
       "reason": null,
       "model_calls": 3,
-      "elapsed_ms": 3025,
+      "elapsed_ms": 3178,
       "controlled_probe": false
     },
     {
@@ -318,7 +308,7 @@
       "errors": [],
       "reason": null,
       "model_calls": 3,
-      "elapsed_ms": 4015,
+      "elapsed_ms": 4187,
       "controlled_probe": true
     },
     {
@@ -327,7 +317,7 @@
       "errors": [],
       "reason": null,
       "model_calls": 3,
-      "elapsed_ms": 13730,
+      "elapsed_ms": 7365,
       "controlled_probe": false
     },
     {
@@ -336,7 +326,7 @@
       "errors": [],
       "reason": null,
       "model_calls": 3,
-      "elapsed_ms": 6747,
+      "elapsed_ms": 6047,
       "controlled_probe": false
     },
     {
@@ -345,7 +335,7 @@
       "errors": [],
       "reason": null,
       "model_calls": 4,
-      "elapsed_ms": 9823,
+      "elapsed_ms": 8445,
       "controlled_probe": false
     },
     {
@@ -354,7 +344,7 @@
       "errors": [],
       "reason": null,
       "model_calls": 4,
-      "elapsed_ms": 10858,
+      "elapsed_ms": 7819,
       "controlled_probe": false
     },
     {
@@ -363,7 +353,7 @@
       "errors": [],
       "reason": "zero_evidence",
       "model_calls": 4,
-      "elapsed_ms": 5813,
+      "elapsed_ms": 5112,
       "controlled_probe": false
     },
     {
@@ -372,7 +362,7 @@
       "errors": [],
       "reason": null,
       "model_calls": 1,
-      "elapsed_ms": 2651,
+      "elapsed_ms": 2451,
       "controlled_probe": false
     },
     {
@@ -381,7 +371,7 @@
       "errors": [],
       "reason": null,
       "model_calls": 1,
-      "elapsed_ms": 746,
+      "elapsed_ms": 927,
       "controlled_probe": false
     },
     {
@@ -390,7 +380,7 @@
       "errors": [],
       "reason": null,
       "model_calls": 3,
-      "elapsed_ms": 3375,
+      "elapsed_ms": 2986,
       "controlled_probe": false
     },
     {
@@ -399,7 +389,7 @@
       "errors": [],
       "reason": null,
       "model_calls": 3,
-      "elapsed_ms": 3188,
+      "elapsed_ms": 3311,
       "controlled_probe": false
     },
     {
@@ -408,7 +398,7 @@
       "errors": [],
       "reason": null,
       "model_calls": 3,
-      "elapsed_ms": 3252,
+      "elapsed_ms": 3229,
       "controlled_probe": false
     },
     {
@@ -417,7 +407,7 @@
       "errors": [],
       "reason": null,
       "model_calls": 2,
-      "elapsed_ms": 2875,
+      "elapsed_ms": 2869,
       "controlled_probe": false
     },
     {
@@ -425,8 +415,8 @@
       "passed": true,
       "errors": [],
       "reason": null,
-      "model_calls": 3,
-      "elapsed_ms": 5148,
+      "model_calls": 2,
+      "elapsed_ms": 2758,
       "controlled_probe": false
     },
     {
@@ -435,7 +425,7 @@
       "errors": [],
       "reason": null,
       "model_calls": 4,
-      "elapsed_ms": 8411,
+      "elapsed_ms": 7337,
       "controlled_probe": false
     },
     {
@@ -444,7 +434,7 @@
       "errors": [],
       "reason": null,
       "model_calls": 4,
-      "elapsed_ms": 8671,
+      "elapsed_ms": 7682,
       "controlled_probe": false
     },
     {
@@ -453,7 +443,7 @@
       "errors": [],
       "reason": null,
       "model_calls": 3,
-      "elapsed_ms": 3259,
+      "elapsed_ms": 2951,
       "controlled_probe": false
     },
     {
@@ -462,7 +452,7 @@
       "errors": [],
       "reason": null,
       "model_calls": 3,
-      "elapsed_ms": 3722,
+      "elapsed_ms": 3288,
       "controlled_probe": false
     },
     {
@@ -471,7 +461,7 @@
       "errors": [],
       "reason": null,
       "model_calls": 3,
-      "elapsed_ms": 4608,
+      "elapsed_ms": 3718,
       "controlled_probe": false
     },
     {
@@ -480,7 +470,7 @@
       "errors": [],
       "reason": null,
       "model_calls": 3,
-      "elapsed_ms": 4071,
+      "elapsed_ms": 4007,
       "controlled_probe": false
     },
     {
@@ -489,7 +479,7 @@
       "errors": [],
       "reason": "zero_evidence",
       "model_calls": 3,
-      "elapsed_ms": 5701,
+      "elapsed_ms": 5975,
       "controlled_probe": false
     },
     {
@@ -498,7 +488,7 @@
       "errors": [],
       "reason": null,
       "model_calls": 3,
-      "elapsed_ms": 4158,
+      "elapsed_ms": 4009,
       "controlled_probe": false
     },
     {
@@ -507,7 +497,7 @@
       "errors": [],
       "reason": null,
       "model_calls": 3,
-      "elapsed_ms": 3926,
+      "elapsed_ms": 3317,
       "controlled_probe": false
     },
     {
@@ -516,76 +506,66 @@
       "errors": [],
       "reason": null,
       "model_calls": 3,
-      "elapsed_ms": 3801,
+      "elapsed_ms": 3975,
       "controlled_probe": false
     }
   ],
-  "official_cost_upper_usd": 0.557459,
-  "raw_gates": {
-    "50_cases": true,
-    "overall_quality": true,
-    "model_quality": true,
-    "controlled_stop_codes": false,
-    "parameter_repair": true,
-    "model_safety_invariants": true,
-    "no_unconfirmed_business_writes": true,
-    "single_source_calls": true,
-    "latency_improvement": true,
-    "natural_limit_rate": true
+  "official_cost_upper_usd": 0.74899,
+  "baseline_evaluator_digest": "4266bd1fd1bc666b2c7994067607957cc14aae0012c580d545a74fbe680a7a4d",
+  "comparison_boundary": "Same cases, provider, model and reasoning effort; evaluator differs only in zero-token accounting for synthetic controller responses. The 47 natural model-decision paths are unchanged by that harness correction; controlled probes are excluded from quality and latency.",
+  "previous_complete_run": {
+    "artifact": "deepseek-flash-after-50-v5.json",
+    "source_commit": "56b056642abd1111ffdd0c9bf8b926c97f0d5933",
+    "summary": {
+      "cases": 50,
+      "passed": 47,
+      "model_quality_cases": 47,
+      "model_quality_passed": 45,
+      "p50_ms": 4331,
+      "single_source_median_model_calls": 3.0,
+      "successful_p50_ms": 4158
+    },
+    "note": "Original failures preserved in raw artifact; final run follows currency, scope, structured answer and event-grounding fixes."
   },
-  "raw_controlled_stop_cases": {
-    "R21": "turn_token_budget",
-    "R22": "tool_failures",
-    "R23": "no_progress"
+  "currency_only_run": {
+    "artifact": "deepseek-flash-after-50-v6.json",
+    "source_commit": "03221b0065f91a4d89b64d28db7dbcbdd470f7a3",
+    "summary": {
+      "cases": 50,
+      "passed": 50,
+      "model_quality_cases": 47,
+      "model_quality_passed": 47,
+      "p50_ms": 4125,
+      "single_source_median_model_calls": 3.0,
+      "successful_p50_ms": 4125
+    },
+    "note": "Passed the fixed cases; subsequent real guest failures led to the scope/answer repair patch. This earlier score is not substituted for the final run."
   },
-  "release_gates": {
-    "50_cases": true,
-    "overall_quality": true,
-    "model_quality": true,
-    "controlled_stop_codes": true,
-    "parameter_repair": true,
-    "model_safety_invariants": true,
-    "no_unconfirmed_business_writes": true,
-    "single_source_calls": true,
-    "latency_improvement": true,
-    "natural_limit_rate": true,
-    "runtime_source_unchanged": true
+  "scope_repair_run": {
+    "artifact": "deepseek-flash-after-50-v7.json",
+    "source_commit": "961bc378f234a607fafffd751d855fc2f723ee9f",
+    "summary": {
+      "cases": 50,
+      "passed": 48,
+      "model_quality_cases": 47,
+      "model_quality_passed": 45,
+      "p50_ms": 4502,
+      "single_source_median_model_calls": 3.0,
+      "successful_p50_ms": 4502
+    },
+    "note": "Two fixed-case failures and a 3/5 public guest smoke are preserved. Final scores come exclusively from v8 at fc58db3."
   },
-  "corrected_controls": {
-    "source_commit": "3cab33af673f9043d0772225d4c0d37f72e85281",
-    "evaluator_digest": "568b01150ea8c7f4720f7ed4bf3b4b562ca692a6d65a721957c6249d2762e3fb",
-    "reason": "Injected responses make no provider call; charge actual zero model tokens instead of fallback prompt estimates. All 47 quality/latency cases remain unchanged.",
-    "results": [
+  "public_guest_smoke": {
+    "artifact": "guest-release-smoke-grounding.json",
+    "cases": 5,
+    "passed": 4,
+    "fully_accepted": false,
+    "failed_cases": [
       {
-        "id": "R21",
-        "passed": true,
-        "reason": "too_many_steps",
-        "errors": [],
-        "model_calls": 2
-      },
-      {
-        "id": "R22",
-        "passed": true,
-        "reason": "tool_failures",
-        "errors": [],
-        "model_calls": 3
-      },
-      {
-        "id": "R23",
-        "passed": true,
-        "reason": "no_progress",
-        "errors": [],
-        "model_calls": 2
-      },
-      {
-        "id": "R28",
-        "passed": true,
-        "reason": null,
-        "errors": [],
-        "model_calls": 3
+        "spec_case": 1,
+        "reason": "unsupported_numeric_claim"
       }
-    ]
-  },
-  "final_source_commit": "3cab33af673f9043d0772225d4c0d37f72e85281",
-  "runtime_app_digest": "6a7aef7da64fc376fdecc56a57814d681f8028c179218f0424d8129bd690ce1d"
+    ],
+    "boundary": "Public HTTPS SSE with real web I/O; separate from fixed evaluation gates. Rejected drafts were not retained, so the remaining numeric rejection is not diagnosed as either a false positive or model fabrication."
+  }
 }

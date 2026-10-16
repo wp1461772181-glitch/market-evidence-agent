@@ -270,11 +270,11 @@ npm run build
 
 ---
 
-Based on source snapshot [`847dc6f`](https://github.com/wp1461772181-glitch/market-evidence-agent/tree/847dc6fd8878f8ad510d67d6a21fdaa9b3cfee42).
+Routing implementation and release evidence verified on 2026-10-16; see the report below for exact revisions and limitations.
 
 
 ### 🧭 路由改造验收 / Routing verification
 
-本分支的 C1–C14 实现、50 条行为用例、权限与测试迁移说明见 [验收报告](docs/reports/agent-routing-verification.md)。线上演示可能仍运行此前的 SHA；发布状态以报告为准。
+2026-10-16 的 C1–C14 实现、DeepSeek-Flash 50 条行为用例、权限、测试迁移和实际发布记录见 [验收报告](docs/reports/agent-routing-verification.md)。线上版本与验收边界以报告为准。
 
-See the [verification report](docs/reports/agent-routing-verification.md) for the C1–C14 implementation, 50 behavior cases, permissions and test migration. The public demo may still run an earlier revision.
+See the [verification report](docs/reports/agent-routing-verification.md) for the C1–C14 implementation, 50 DeepSeek-Flash behavior cases, permissions, test migration and verified release records dated 2026-10-16.
