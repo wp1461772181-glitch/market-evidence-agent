@@ -104,13 +104,17 @@ async def evaluate(args):
                             else:
                                 # Sequential real dialogue, never reset to a preferred earlier answer.
                                 import re
-                                items=re.findall(r'(?m)^\s*(?:\*\*)?(?:\d+[.、)）]|[一二三四五六七八九十]+[、.])\s*(.+)',initial)
+                                items=re.findall(r'(?m)^\s*(?:#{1,6}\s*)?(?:\*\*)?(?:\d+[.、)）]|[一二三四五六七八九十]+[、.])\s*(.+)',initial)
                                 extra['initial_list_items']=items
                                 for question,term in zip(case['setup']['followups'],case['setup']['terms']):
                                     state=await ask(question);check_topic(state,term)
                                     if term is None:
                                         refs=state.get('audit',{}).get('stages',{}).get('resolver',{}).get('referents',[])
                                         if not refs:errors.append('last_item_not_bound')
+                                        label=items[-1].split('：')[0].split(':')[0].replace('**','').strip() if items else ''
+                                        extra['last_initial_item_label']=label
+                                        if not label:errors.append('last_item_grader_needs_manual_review')
+                                        elif not any(len(r.get('text',''))>=2 and r['text'].replace('**','') in label for r in refs):errors.append('wrong_last_initial_item')
                         elif scenario=='concept':
                             history=[{'role':'user','content':'请列举几种金融衍生品'},{'role':'assistant','content':LIST}]
                             state=await ask(case['utterance']);check_topic(state,case['setup']['term'].split('（')[0])
