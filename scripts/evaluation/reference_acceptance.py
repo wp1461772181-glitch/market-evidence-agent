@@ -50,7 +50,7 @@ async def evaluate(args):
     direct.decision_request=decision
     cases=[json.loads(l) for l in Path(args.cases).read_text().splitlines() if l.strip()]
     manifest={str(p):digest(p) for folder in ('app','frontend/src','scripts/evaluation') for p in sorted(Path(folder).rglob('*')) if p.is_file() and p.suffix in {'.py','.ts','.tsx','.mjs','.jsonl'}}
-    results=[];halted=False
+    results=[];halted=False;chains={}
     output={'environment':'official real deepseek-flash; thinking enabled; reasoning_effort=low; disposable PostgreSQL checkpoints; synthetic external business/public I/O; captured official issuer data; deterministic probes separately labelled','model':'deepseek-flash','budget_usd':args.budget_usd,'source_manifest':manifest,'source_digest':hashlib.sha256(json.dumps(manifest,sort_keys=True).encode()).hexdigest(),'base_sha':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),'issuer_metadata_sha256':digest(args.issuer_metadata),'case_digest':digest(args.cases),'results':results,'ledger':request_cost}
     def save():
         output['cost_upper_usd']=sum(r['upper_usd'] for r in request_cost)
@@ -79,12 +79,15 @@ async def evaluate(args):
                             from app.models import SecFilingInventory
                             with SessionLocal() as db:
                                 row=db.get(SecFilingInventory,uuid.UUID(fixture.filing_id));row.form='10-Q';db.commit()
-                        async def execute(name,arguments):
+                        async def execute(name,arguments,fixture=fixture):
                             calls.append({'name':name,'arguments':copy.deepcopy(arguments)})
                             return await fixture.execute(name,arguments)
                         context=AgentRuntimeContext('deepseek','deepseek-flash',key,owner_hash=fixture.owner,conversation_id=fixture.conversation,identity_credential=fixture.credential,executor=execute)
                         config={'configurable':{'thread_id':checkpoint_thread_id(fixture.owner,fixture.conversation)}}
                         history=[]
+                        if scenario=='derivative_chain' and case['setup'].get('continue_from'):
+                            origin=chains[rep];context=origin['context'];config=origin['config'];history=copy.deepcopy(origin['history'])
+                            extra['continued_from']={'case':'V01','repeat':rep,'thread_id':config['configurable']['thread_id']}
                         async def ask(question):
                             history.append({'role':'user','content':question})
                             state=await asyncio.wait_for(graph.ainvoke({'question':question,'messages':copy.deepcopy(history),'requested_pending_id':None},config,context=context),135)
@@ -98,9 +101,11 @@ async def evaluate(args):
                             if term and (term not in state.get('answer','') or term not in resolved(state)):errors.append('wrong_referent')
                             if len(state.get('answer',''))<minimum:errors.append('answer_too_short')
                         if scenario in {'derivatives','derivative_chain'}:
-                            first=await ask(case['utterance']);initial=first['answer']
+                            if scenario=='derivative_chain' and case['setup'].get('continue_from'):initial=chains[rep]['initial']
+                            else:first=await ask(case['utterance']);initial=first['answer']
                             if scenario=='derivatives':
                                 state=await ask(case['setup']['then']);check_topic(state,'期货',150)
+                                chains[rep]={'context':context,'config':config,'history':copy.deepcopy(history),'initial':initial}
                             else:
                                 # Sequential real dialogue, never reset to a preferred earlier answer.
                                 import re
