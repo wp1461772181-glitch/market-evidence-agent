@@ -1,6 +1,26 @@
 import pytest
 from app.agent_workflow.evidence import gate_row,deterministic_confidence_gate
 
+@pytest.mark.parametrize('claim,quote,blocked',[
+ ('Tim Cook 离任[1]。','The achievement follows the departure of longtime chief executive Tim Cook.',False),
+ ('Tim Cook 辞职[1]。','The departure of Tim Cook was announced.',True),
+ ('Tim Cook 离任[1]。','Tim Cook resigned as chief executive.',False),
+ ('Tim Cook 离任[1]。','Tim Cook has not resigned.',True),
+ ('Tim Cook 没有离任[1]。','The departure of Tim Cook was announced.',True),
+ ('John Ternus 上任 CEO[1]。','New chief executive John Ternus takes charge.',False),
+ ('John Ternus 接任 CEO[1]。','New chief executive John Ternus takes charge.',False),
+ ('John Ternus 被任命为 CEO[1]。','Chief executive John Ternus takes charge.',True),
+ ('John Ternus 已经上任 CEO[1]。','John Ternus was appointed CEO and will take office next year.',True),
+])
+def test_departure_and_role_start_translations_keep_event_strength_and_polarity(claim,quote,blocked):
+    from app.agent_workflow.evidence import unsupported_claims
+    assert unsupported_claims(claim,[{'ordinal':1,'quote':quote,'source_type':'web'}]) is blocked
+
+@pytest.mark.parametrize('amount,blocked',[('5万亿美元',False),('7万亿美元',True),('0.5万亿美元',True)])
+def test_trillion_compound_chinese_units_are_checked_instead_of_ignored(amount,blocked):
+    from app.agent_workflow.evidence import unsupported_numbers
+    assert unsupported_numbers(amount+'[1]',[{'ordinal':1,'quote':'Apple reached US$5 trillion.'}]) is blocked
+
 @pytest.mark.parametrize('body',[
  'Apple FY2024 revenue was 10. Apple FY2025 profit was 20.',
  'Apple Q3 2024 revenue was 10. Apple Q1 2025 revenue was 20.',

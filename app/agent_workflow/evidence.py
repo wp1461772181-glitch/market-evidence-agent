@@ -177,7 +177,7 @@ def unsupported_numbers(answer,citations):
         allowed=figure_values(body)
         checked=re.sub(r'\[\d+\]','',passage)
         number=r'\d+(?:,\d{3})*(?:\.\d+)?'
-        magnitude=r'(?:千万|百万|亿|万|千|trillion|billion|million|thousand|bn|mn|b|m|k)?'
+        magnitude=r'(?:万亿|千万|百万|亿|万|千|trillion|billion|million|thousand|bn|mn|b|m|k)?'
         amounts=re.findall(number+r'\s*'+magnitude+r'\s*(?:美元|元|dollars?|USD|%|％)',checked,re.I)
         amounts+=re.findall(r'\$\s*'+number+r'\s*'+magnitude,checked,re.I)
         claim=figure_values(' '.join(amounts))
@@ -185,14 +185,25 @@ def unsupported_numbers(answer,citations):
     return False
 
 # Claim validation only. These concepts never route a request or choose a tool.
+RESIGNATION_TERMS=('resign','resigned','resignation','stepped down','辞职','辞任')
+DEPARTURE_TERMS=('departure','departed','departing','离任','卸任','退任')
+APPOINTMENT_TERMS=('appoint','appointed','appointment','named','任命','出任')
+ROLE_START_TERMS=('takes charge','took charge','taking charge','takes office','took office','上任','接任')
 CLAIM_FEATURES=(
  ('CEO','chief executive','首席执行官','执行长'),
  ('CFO','chief financial','首席财务官','财务主管'),
- ('resign','resigned','resignation','stepped down','辞职','辞任','离任','卸任','退任'),
- ('appoint','appointed','appointment','named','任命','出任','上任'),
+ RESIGNATION_TERMS,
+ APPOINTMENT_TERMS,
  ('bankruptcy','bankrupt','破产'),
  ('acquisition','acquire','acquired','收购'),
+ DEPARTURE_TERMS,
+ ROLE_START_TERMS,
 )
+
+def supporting_event_terms(terms):
+    # Resignation entails departure; a bare departure does not prove resignation.
+    if terms==DEPARTURE_TERMS:return terms+RESIGNATION_TERMS
+    return terms
 
 def event_polarities(text,terms):
     """Local explicit negation guard; intentionally not a full natural-language parser."""
@@ -221,10 +232,10 @@ def unsupported_claims(answer,citations):
             continue
         evidence=simplified(' '.join(str(c.get('quote','')) for c in sources))
         for terms in CLAIM_FEATURES:
-            if any(contains(t,passage) for t in terms) and not any(contains(t,evidence) for t in terms):return True
+            if any(contains(t,passage) for t in terms) and not any(contains(t,evidence) for t in supporting_event_terms(terms)):return True
         for terms in CLAIM_FEATURES[2:]:
             claim_polarity=event_polarities(passage,terms)
-            if claim_polarity and not claim_polarity<=event_polarities(evidence,terms):return True
+            if claim_polarity and not claim_polarity<=event_polarities(evidence,supporting_event_terms(terms)):return True
         if all(c.get('source_type')=='saved_price' for c in sources):
             price_terms=('股价','收盘','开盘','最高','最低','成交量','行情','价格','交易日','交易时间','抓取','来源','close','open','high','low','volume','price','date','saved','source')
             table_values='|' in passage and bool(re.search(r'\d',re.sub(r'\[\d+\]','',passage)))

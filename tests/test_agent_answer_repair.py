@@ -5,13 +5,19 @@ from app.agent_workflow.state import AgentRuntimeContext
 
 async def emit(_):pass
 def call(name,**args):return {'tool_calls':[{'id':name,'function':{'name':name,'arguments':json.dumps(args)}}]}
+def repair(text,citations=(1,)):return {'content':json.dumps({'claims':[{'text':text,'citations':list(citations)}]},ensure_ascii=False)}
 
 @pytest.mark.parametrize('replacement,reason',[
-    ({'content':'AMD 收盘价为 100 美元 [1]。'},None),
-    ({'content':'AMD 收盘价为 888 美元 [1]。'},'unsupported_numeric_claim'),
+    (repair('AMD 收盘价为 100 美元'),None),
+    (repair('AMD 收盘价为 888 美元'),'unsupported_numeric_claim'),
     (call('initialize_prices',symbol='AMD'),'unsupported_numeric_claim'),
-    ({'content':'AMD 收盘价为 100 美元 [99]。'},'invalid_citation'),
-    ({'content':'AMD CEO 已辞职 [1]。'},'unsupported_claim'),
+    (repair('AMD 收盘价为 100 美元',(99,)),'invalid_citation'),
+    (repair('AMD CEO 已辞职'),'unsupported_claim'),
+    ({'content':'unstructured 100 dollars [1]'},'unsupported_numeric_claim'),
+    (repair('AMD 收盘价为 100 美元 [99]'),'unsupported_numeric_claim'),
+    (repair('AMD 收盘价为 100 美元',(True,)),'unsupported_numeric_claim'),
+    (repair('AMD 收盘价为 100 美元',(-1,)),'unsupported_numeric_claim'),
+    (repair('AMD 收盘价为 100 美元',(0,)),'unsupported_numeric_claim'),
 ])
 def test_numeric_repair_is_single_tool_free_and_still_guarded(replacement,reason):
     steps=iter([call('query_stock_prices',symbol='AMD'),{'content':'AMD 收盘价为 999 美元 [1]。'},replacement])
@@ -35,6 +41,22 @@ def test_numeric_repair_respects_token_budget(monkeypatch):
     result=asyncio.run(turn.finish_answer('AMD 收盘价为 999 美元[1]'))
     assert result['reason']=='unsupported_numeric_claim' and not calls
     assert not result['audit'].get('answer_repair_count')
+
+def test_structured_repair_binds_each_sentence_and_rejects_a_second_bad_number():
+    steps=iter([call('query_stock_prices',symbol='AMD'),{'content':'AMD 收盘价为999美元[1]。'},repair('AMD 收盘价为100美元。AMD 收盘价为888美元')])
+    ctx=AgentRuntimeContext('custom','test','dummy',classifier=lambda _:'D',decider=lambda *_:next(steps),executor=lambda *_:{'ok':True,'data':[{'id':'p','symbol':'AMD','close':100}]})
+    result=asyncio.run(direct.run_direct_turn('AMD 收盘价',ctx,emit=emit))
+    assert result['reason']=='unsupported_numeric_claim' and '888' not in result['answer'] and result['audit']['answer_repair_count']==1
+
+def test_repair_never_retries_a_malformed_native_protocol(monkeypatch):
+    calls=[]
+    async def bad(*args,**kwargs):calls.append(1);return {'usage':{'total_tokens':1}},{'content':'<|tool_calls|>'}
+    monkeypatch.setattr(direct,'decision_request',bad)
+    turn=direct.Turn('AMD 收盘价',AgentRuntimeContext('custom','test','dummy'),emit,[],{})
+    turn.route='A';turn.citations=[{'ordinal':1,'quote':'100','source_type':'saved_price'}]
+    turn.observations=[{'name':'query_stock_prices','result':{'ok':True,'data':[{'close':100}]},'accepted_evidence':True}]
+    result=asyncio.run(turn.finish_answer('AMD 收盘价为999美元[1]'))
+    assert calls==[1] and result['reason']=='unsupported_numeric_claim' and turn.audit['model_calls']==1
 
 def test_time_refinement_preserves_news_metric_scope_and_blocks_price_adapter():
     steps=iter([call('query_stock_prices',symbol='MU'),{'content':'没有可核验资料。'}]);executed=[]

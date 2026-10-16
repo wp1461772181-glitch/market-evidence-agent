@@ -184,11 +184,11 @@ def requested_result_count(words: str) -> int | None:
     return value if value is not None and 1 <= value <= 10 else None
 
 
-_MAGNITUDE = {"千万": 1e7, "百万": 1e6, "亿": 1e8, "万": 1e4, "千": 1e3, "trillion": 1e12, "billion": 1e9,
+_MAGNITUDE = {"万亿": 1e12, "千万": 1e7, "百万": 1e6, "亿": 1e8, "万": 1e4, "千": 1e3, "trillion": 1e12, "billion": 1e9,
               "million": 1e6, "thousand": 1e3, "bn": 1e9, "mn": 1e6, "b": 1e9, "k": 1e3, "m": 1e6}
 
 
-_FIGURE = re.compile(r"(\d+(?:\.\d+)?)\s*(千万|百万|亿|万|千|trillion|billion|million|thousand|bn|mn|b|k|m)?(?![A-Za-z])", re.I)
+_FIGURE = re.compile(r"(\d+(?:\.\d+)?)\s*(万亿|千万|百万|亿|万|千|trillion|billion|million|thousand|bn|mn|b|k|m)?(?![A-Za-z])", re.I)
 
 
 def figure_values(text: str, *, zh: bool = False) -> set[float]:
