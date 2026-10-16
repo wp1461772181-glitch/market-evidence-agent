@@ -51,3 +51,14 @@ def test_time_refinement_of_a_price_task_still_allows_price_reads():
     ctx=AgentRuntimeContext('custom','test','dummy')
     turn=direct.Turn('近15天',ctx,emit,[],{});turn.refinement=True;turn.scope={'symbol':'MU','metrics':['price']}
     turn.ground_arguments('query_stock_prices',{'symbol':'MU'})
+
+@pytest.mark.parametrize('question',['改成看过去15天股价','now show Micron stock price over 15 days'])
+def test_explicit_price_switch_survives_an_incorrect_refinement_label(question):
+    steps=iter([call('query_stock_prices',symbol='MU'),{'content':'MU 收盘价为100美元[1]。'}]);executed=[]
+    ctx=AgentRuntimeContext('custom','test','dummy',
+        resolver=lambda _:{'relationship':'refinement','canonical_question':question},
+        classifier=lambda _:{'category':'A','company':'Micron','symbol':'MU','metrics':['price'],'days_back':15},
+        decider=lambda *_:next(steps),executor=lambda n,a:executed.append(n) or {'ok':True,'data':[] if n=='search_knowledge' else [{'id':'p','symbol':'MU','close':100}]})
+    result=asyncio.run(direct.run_direct_turn(question,ctx,emit=emit,messages=[{'role':'user','content':'Micron 最近新闻'}],state={'previous_scope':{'company':'Micron','symbol':'MU','metrics':[]}}))
+    assert executed==['search_knowledge','query_stock_prices'] and result['status']=='succeeded'
+    assert result['previous_scope']['metrics']==['price'] and result['audit']['explicit_task_change']

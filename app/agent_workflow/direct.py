@@ -182,6 +182,10 @@ class Turn:
         self.route=routing.category;self.scope=routing.model_dump();self.audit['route']=self.route
         previous=self.state.get('previous_scope',{});previous_symbol=previous.get('symbol')
         if self.refinement:
+            from .routing import explicit_metric_change
+            if explicit_metric_change(routing.metrics,previous.get('metrics',[]),self.original):
+                self.refinement=False;self.audit['explicit_task_change']=True
+        if self.refinement:
             for field in ('metrics','financial_only','form','period'):
                 if field in previous:self.scope[field]=copy.deepcopy(previous[field])
             self.audit['preserved_task_scope']=True
