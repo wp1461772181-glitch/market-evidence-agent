@@ -58,6 +58,12 @@ def test_fullwidth_and_whitespace_copy_is_valid():
     result,_=run('解释第二个',resolver=resolver,answers=['期货是合约。'],messages=history)
     assert result['status']=='succeeded'
 
+def test_historical_mention_is_descriptive_but_source_text_still_must_be_exact():
+    from app.agent_workflow.references import Referent,validate_referents
+    refs=[Referent(mention='美光的新闻',text='帮我搜两条美光的新闻',source='user_history')]
+    result=validate_referents(refs,'它的最新新闻呢',[{'role':'user','content':'帮我搜两条美光的新闻'}],[])
+    assert result[0]['text']=='帮我搜两条美光的新闻'
+
 def test_b_c_do_not_run_business_company_or_number_grounding():
     for category in ['B','C']:
         resolver=lambda _:{'relationship':'followup','canonical_question':'解释Futures及100美元的例子','referents':[]}

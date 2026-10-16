@@ -15,13 +15,23 @@ def ticker_records():
     _cache=rows;_cached_at=time.monotonic()
     return rows
 
+def issuer_words(value):
+    legal={'inc','incorporated','corp','corporation','ltd','limited','plc','sa'}
+    words=re.findall(r'[a-z0-9]+',normalized(value).casefold())
+    while words and words[-1] in legal:words.pop()
+    return words
+
+def resolve_ticker(company):
+    """Fill an omitted code only for one unambiguous official issuer match."""
+    words=issuer_words(company)
+    if not words or len(words[0])<3:return None
+    try:
+        symbols={r['ticker'] for r in ticker_records() if issuer_words(r['title'])[:len(words)]==words}
+        return next(iter(symbols)) if len(symbols)==1 else None
+    except Exception:return None
+
 def verified_pair(company,symbol):
     if not company or not symbol:return False
-    legal={'inc','incorporated','corp','corporation','ltd','limited','plc','sa'}
-    def issuer_words(value):
-        words=re.findall(r'[a-z0-9]+',normalized(value).casefold())
-        while words and words[-1] in legal:words.pop()
-        return words
     words=issuer_words(company)
     # A literal issuer prefix is checked against that exact ticker's official title.
     # The original-language mention is separately grounded by the caller.

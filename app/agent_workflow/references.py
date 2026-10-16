@@ -16,7 +16,6 @@ def validate_referents(referents,original,messages,sets):
     users='\n'.join(str(m.get('content','')) for m in messages if m.get('role')=='user')
     verified=[]
     for ref in referents:
-        if normalized(ref.mention) not in normalized(original):raise ValueError('reference_mention_unbound')
         if ref.source=='assistant_previous':source=previous
         elif ref.source=='user_history':source=users
         else:

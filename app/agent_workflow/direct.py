@@ -174,11 +174,16 @@ class Turn:
         trusted=' '.join(str(m.get('content','')) for m in relevant)+' '+self.original+' '+json.dumps([s.get('scope') for s in self.sets],ensure_ascii=False)
         trusted+=' '+json.dumps(self.state.get('previous_scope',{}),ensure_ascii=False)
         trusted+=' '+' '.join(r['text'] for r in self.verified_referents)
+        if self.scope.get('company') and not self.scope.get('symbol') and normalized(self.scope['company']).casefold() not in normalized(trusted).casefold():
+            from .entities import resolve_ticker
+            candidate=await asyncio.to_thread(resolve_ticker,self.scope['company'])
+            if candidate:self.scope['symbol']=candidate
         entities=[v for k in ('symbol','company') if (v:=self.scope.get(k)) and normalized(v).casefold() not in normalized(trusted).casefold()]
         if entities:
             from .entities import verified_pair
             mention=self.scope.get('company_mention') or self.scope.get('company') or ''
-            literal_issuer_ok=not re.search(r'[A-Za-z]',mention) or await asyncio.to_thread(verified_pair,mention,self.scope.get('symbol'))
+            literal_ticker=normalized(mention).casefold()==str(self.scope.get('symbol') or '').casefold()
+            literal_issuer_ok=literal_ticker or not re.search(r'[A-Za-z]',mention) or await asyncio.to_thread(verified_pair,mention,self.scope.get('symbol'))
             if literal_issuer_ok and mention and normalized(mention).casefold() in normalized(trusted).casefold() and await asyncio.to_thread(verified_pair,self.scope.get('company'),self.scope.get('symbol')):
                 entities=[];self.audit['entity_mapping_verified']=True
         if entities:

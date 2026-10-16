@@ -21,3 +21,21 @@ def test_shared_first_word_does_not_verify_a_different_issuer(monkeypatch):
     monkeypatch.setattr(entities,'ticker_records',lambda:[{'ticker':'BNS','title':'BANK OF NOVA SCOTIA'},{'ticker':'BAC','title':'BANK OF AMERICA CORP'}])
     assert not entities.verified_pair('Bank of America','BNS')
     assert entities.verified_pair('Bank of America Corporation','BAC')
+
+@pytest.mark.parametrize('company,symbol,mention,question,expected',[
+ ('Advanced Micro Devices, Inc.','AMD','AMD','抓取AMD的SEC原文','AMD'),
+ ('Micron Technology',None,'美光','查美光最近的新闻','MU'),
+])
+def test_literal_ticker_or_unique_official_issuer_does_not_force_company_card(monkeypatch,company,symbol,mention,question,expected):
+    from app.agent_workflow import entities
+    monkeypatch.setattr(entities,'ticker_records',lambda:[{'ticker':'AMD','title':'ADVANCED MICRO DEVICES INC'},{'ticker':'MU','title':'MICRON TECHNOLOGY INC'}])
+    async def execute(*_):return {'ok':True,'data':[]}
+    context=AgentRuntimeContext('custom','test','dummy',classifier=lambda _:{'category':'A','company':company,'symbol':symbol,'company_mention':mention},executor=execute,decider=lambda *_:{'content':'没有可核验资料。'})
+    async def emit(_):pass
+    result=asyncio.run(run_direct_turn(question,context,emit=emit))
+    assert not result['pending_request'] and result['previous_scope']['symbol']==expected
+
+def test_ambiguous_official_issuer_does_not_guess_ticker(monkeypatch):
+    from app.agent_workflow import entities
+    monkeypatch.setattr(entities,'ticker_records',lambda:[{'ticker':'GOOG','title':'ALPHABET INC'},{'ticker':'GOOGL','title':'ALPHABET INC'}])
+    assert entities.resolve_ticker('Alphabet') is None
