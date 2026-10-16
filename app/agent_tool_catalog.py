@@ -19,7 +19,7 @@ class CalculateArgs(Args):
     decimals:int=Field(default=2,ge=0,le=8)
 class KnowledgeArgs(Args):
     query:str=Field(min_length=1,max_length=400)
-    symbol:str|None=Field(default=None,pattern=r'^[A-Z]{1,5}(?:\.[A-Z]{1,2})?$')
+    symbol:str|None=Field(default=None,pattern=r'^[A-Za-z]{1,5}(?:[.-][A-Za-z]{1,2})?$')
     company:str|None=Field(default=None,max_length=160)
     financial_only:bool=False
     latest:bool=False
@@ -29,7 +29,7 @@ class KnowledgeArgs(Args):
 class QueueArgs(SymbolArgs):pass
 class StatusArgs(Args):
     kind:Literal['jobs','monitor','evaluations','replays','knowledge']
-    symbol:str|None=Field(default=None,pattern=r'^[A-Z]{1,5}(?:\.[A-Z]{1,2})?$')
+    symbol:str|None=Field(default=None,pattern=r'^[A-Za-z]{1,5}(?:[.-][A-Za-z]{1,2})?$')
     job_id:str|None=Field(default=None,pattern=r'^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$')
     limit:int=Field(default=5,ge=1,le=20)
 class FilingWriteArgs(SymbolArgs):

@@ -190,12 +190,16 @@ def execute_costly(operation,key,context):
         page=freeze_snapshot(snapshot)
         if page['content_hash']!=snapshot.get('content_hash') or canonical_url(args['url'])!=page['url']:raise ValueError('confirmation_snapshot_mismatch')
         from .evidence import gate_row
-        accepted,_=gate_row('',{**page,'source_type':'web'},company=args.get('company'),symbol=args.get('symbol'),metrics=[],entity_aliases=operation.get('entity_aliases',[]))
+        aliases = list(operation.get('entity_aliases', []))
+        if args.get('company') and args['company'] not in aliases: aliases.append(args['company'])
+        if args.get('symbol') and args['symbol'] not in aliases: aliases.append(args['symbol'])
+        accepted,_=gate_row('',{**page,'source_type':'web'},company=args.get('company'),symbol=args.get('symbol'),metrics=[],entity_aliases=aliases)
         if not accepted:raise ValueError('requested_entity_missing')
         if operation.get('condition'):
             from .web_sources import timestamp
             before=timestamp(operation['condition'].get('saved_date'));after=timestamp(page.get('published_at'))
-            if not before or not after or after<=before:raise ValueError('comparison_condition_failed')
+            if not before or not after or after<before:
+                return {'ok':True,'status':'completed_without_write','reason':'not_newer'}
         with SessionLocal() as db:
             value=save_snapshot(db,context.owner_hash,page,symbol=args.get('symbol'),company=args.get('company'));db.commit()
             return value

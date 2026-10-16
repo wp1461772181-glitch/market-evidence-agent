@@ -23,13 +23,13 @@ class ActionError(ValueError):
 
 def _word(token: str) -> str:
     """An ASCII word that is not part of a longer one (CJK neighbours are fine)."""
-    return rf"(?<![a-z]){token}(?![a-z])"
+    return rf"(?<![a-z])(?:{token})(?![a-z])"
 
 
 _ACCESSION_NO = r"\d{10}-\d{2}-\d{6}"
 _UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 _FORM = r"(?<![a-z0-9])(?:10-[kq]|8-k)(?![a-z0-9])"
-_IMPORT_OBJECT = "|".join(["资料", "材料", "来源", r"(?<![a-z])(?:source|material|filing|accession)", _ACCESSION_NO, _UUID])
+_IMPORT_OBJECT = "|".join(["资料(?!库)", "材料(?!库)", "来源", r"(?<![a-z])(?:source|material|filing|accession)", _ACCESSION_NO, _UUID])
 # A pointer at records the user was given earlier ("刚刚那两条", "第二份", "those two"): what a write
 # may name instead of a noun, its records then being resolved from the saved result set.
 _COUNT = r"[一二两三四五六七八九十\d]{1,3}"
@@ -46,6 +46,8 @@ _ANALYZE_OBJECT = "|".join([r"(?<![a-z])(?:accession|filing|report|source)", _FO
 _INDEX_OBJECT = "|".join(["资料", "材料", r"(?<![a-z])(?:source|material|filing|document)"])
 _ANALYZE_PHRASE = re.compile(r"(?:生成|创建|重新|开始|" + _word("(?:request|run)") + r").{0,20}?"
                              r"(?:ai\s*分析|分析|" + _word("analysis") + ")")
+_IMPORT_ITEM = rf"(?:{_POINTER}|{_IMPORT_OBJECT}|{_FORM}|财报|年报|季报)"
+_IMPORT_VERBS = rf"(?:导入|存入|存到|放入|放进|加入|收录|录入|保存|{_word('import|save|ingest')})"
 
 
 def _requested_action_words(question: str) -> str | None:
@@ -55,18 +57,15 @@ def _requested_action_words(question: str) -> str | None:
     lower = question.lower()
     if re.search(r"(?:查看|查询|" + _word("(?:read|check)") + r").{0,12}(?:任务状态|" + _word("job status") + "|进度)", lower): return "status"
     if re.search(r"(?:刷新|" + _word("refresh") + r").{0,25}(?:原文|" + _word("(?:sec|filing)") + "|资料)", lower): return "refresh_sec"
-    if re.search(r"(?:抓取|获取|" + _word("fetch") + r").{0,25}(?:" + _word("(?:sec|filing)") + "|原文)", lower): return "fetch_sec"
+    if re.search(r"(?:抓取|获取|拉取|下载|同步|搜寻|" + _word("(?:fetch|download|pull|sync)") + r").{0,25}(?:" + _word("(?:sec|filing)") + "|原文|申报|财报|年报|季报)", lower): return "fetch_sec"
+    if re.search(r"(?:送给|送去|交由|让|进行|做个|生成|开始).{0,15}?(?:ai\s*分析|分析|解读|研报)", lower) or re.search(r"(?:分析|解读|研报).{0,20}(?:财报|年报|季报|申报)", lower): return "analyze"
     for phrase in _ANALYZE_PHRASE.finditer(lower):
         # The object lies in the phrase or at most 25 characters before or after it.
         if any(hit.end() >= phrase.start() - 25 and hit.start() <= phrase.end() + 25
                for hit in re.finditer(_ANALYZE_OBJECT, lower)): return "analyze"
     if re.search(r"(?:^|\s)(?:分析|" + _word("analyze") + r")\s+(?:accession|\d{10}-)", lower): return "analyze"
-    if (re.search(r"(?:导入|" + _word("import") + r").{0,25}(?:" + _IMPORT_OBJECT + ")", lower)
-            or re.search(r"(?:" + _IMPORT_OBJECT + r").{0,25}加入资料库|加入资料库.{0,25}(?:" + _IMPORT_OBJECT + ")", lower)
-            # the object is a pointer: "导入刚刚那两条", or "把刚刚那两条导入" (把/将 makes the order safe)
-            or re.search(r"(?:导入|" + _word("import") + r").{0,12}(?:" + _POINTER + ")", lower)
-            or re.search(r"(?:把|将).{0,20}(?:" + _POINTER + "|" + _IMPORT_OBJECT + "|" + _FORM + r"|财报|年报|季报)"
-                         r".{0,10}(?:导入|" + _word("import") + ")", lower)):
+    if (re.search(rf"(?:{_IMPORT_VERBS}.{{0,25}}{_IMPORT_ITEM}|{_IMPORT_ITEM}.{{0,25}}{_IMPORT_VERBS})", lower)
+            or re.search(rf"(?:把|将).{{0,20}}{_IMPORT_ITEM}.{{0,15}}(?:{_IMPORT_VERBS}|资料库|材料库)", lower)):
         return "import"
     if (re.search(r"建立索引|重建索引", lower)
             or re.search(_word("(?:re-?)?index(?:ing)?") + r".{0,20}(?:" + _INDEX_OBJECT + ")", lower)): return "index"
@@ -100,7 +99,8 @@ def requested_action(question: str) -> str | None:
     sentence is negated or only asks about it.  Without a plain request there is no authority,
     whatever the intent model made of the sentence."""
     action = _requested_action_words(question)
-    if action and (_NEGATED_ACTION.search(question) or _MENTIONED_ACTION.search(question)):
+    clean_q = re.sub(r'不用客气|别客气|不用担心|别担心|无需确认|不需确认|无需向我确认|不用多说', '', question)
+    if action and (_NEGATED_ACTION.search(clean_q) or _MENTIONED_ACTION.search(clean_q)):
         return None
     return action
 

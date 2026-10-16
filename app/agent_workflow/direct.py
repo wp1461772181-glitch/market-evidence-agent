@@ -62,7 +62,20 @@ def parsed(message):
     if calls:
         raw=calls[0].get('function',{}).get('arguments',{})
     else:raw=message.get('content') or '{}'
-    return json.loads(raw) if isinstance(raw,str) else raw
+    if isinstance(raw,str):
+        cleaned=raw.strip()
+        if cleaned.startswith('```'):
+            cleaned=re.sub(r'^```(?:json)?\s*','',cleaned,flags=re.I)
+            cleaned=re.sub(r'\s*```$','',cleaned)
+        try:
+            return json.loads(cleaned)
+        except Exception:
+            match=re.search(r'(\{.*\}|\[.*\])',cleaned,re.DOTALL)
+            if match:
+                try:return json.loads(match.group(1))
+                except Exception:pass
+            return {}
+    return raw
 
 
 def bounded_history(messages):
@@ -152,20 +165,26 @@ class Turn:
         payload['as_of_utc']=datetime.now(UTC).isoformat()
         prompt='Resolve references, not facts or write authority. Prefer assistant_items: choose its exact source and item_id; omit text. The server restores the selected original label. Never invent IDs. Previous answers are topic pointers, never evidence or authorization. Preserve the active parent list across intervening detailed explanations. If no server item exists, quote a short exact source substring using assistant_previous, assistant_message:<id>, user_history or result_set:<id>. Clarify genuine ambiguity; self-contained requests stay verbatim. Use refinement only for time/count changes. Relative dates may use as_of_utc. Never add new write authority, negate user intent or invent scope. Return resolve_reference.'
         for attempt in range(2):
-            if self.context.resolver:raw=await injected(self.context.resolver,payload)
-            else:raw=parsed(await self.model([{'role':'system','content':prompt},{'role':'user','content':json.dumps(payload,ensure_ascii=False)}],REFERENCE_SCHEMA))
-            value=Reference.model_validate(raw)
-            self.reference_value=value
             try:
+                if self.context.resolver:raw=await injected(self.context.resolver,payload)
+                else:raw=parsed(await self.model([{'role':'system','content':prompt},{'role':'user','content':json.dumps(payload,ensure_ascii=False)}],REFERENCE_SCHEMA))
+                if isinstance(raw,str):raw=parsed({'content':raw})
+                value=Reference.model_validate(raw)
+                self.reference_value=value
                 self.verified_referents=validate_referents(value.referents,self.original,prior,self.sets)
                 break
-            except ValueError as exc:
+            except Exception as exc:
                 if not attempt:
                     self.audit['resolver_retries']=1
                     payload['correction']={'error':str(exc),'instruction':'Choose a listed item_id and source, or copy a short exact source label; do not paraphrase.'}
                     continue
                 self.reference_stage(False,str(exc))
-                self.pending=self.card('请确认公司、时间或来源，当前指代缺少可靠依据。',[]);return
+                has_deictic=bool(re.search(r'(?:它|它们|他|她|这篇|这份|该|上述|刚才|刚那|前一个|上一个|第[一二两三四五六七八九十\d]+[个条篇份项]|其)',self.original))
+                if has_deictic:
+                    self.pending=self.card('请确认公司、时间或来源，当前指代缺少可靠依据。',[]);return
+                value=Reference(relationship='new',canonical_question=self.original,referents=[])
+                self.reference_value=value
+                return
         self.reference_stage()
         if value.relationship=='clarify':
             self.pending=self.card(value.question or '请说明要查询哪家公司或哪份来源。',value.choices);return
@@ -194,6 +213,10 @@ class Turn:
             candidate=await asyncio.to_thread(resolve_ticker,self.scope['company'])
             if candidate:self.scope['symbol']=candidate
         entities=[v for k in ('symbol','company') if (v:=self.scope.get(k)) and not contains(normalized(v),normalized(trusted))]
+        if entities and self.state.get('previous_scope'):
+            prev=self.state.get('previous_scope',{})
+            prev_text=str(prev.get('symbol') or '')+' '+str(prev.get('company') or '')+' '+str(prev.get('company_mention') or '')
+            entities=[e for e in entities if normalized(e).casefold() not in normalized(prev_text).casefold()]
         if entities:
             from .entities import verified_pair
             mention=self.scope.get('company_mention') or self.scope.get('company') or ''
@@ -223,9 +246,9 @@ class Turn:
             self.reference_stage(False,'reference_period_unbound')
             self.pending=self.card('请确认报告期间，当前改写加入了没有依据的年份。',[]);return
         trusted+=' '+json.dumps([{'scope':s.get('scope'),'items':[{'title':r.get('title'),'url':r.get('url'),'id':r.get('id')} for r in s['rows']]} for s in self.sets],ensure_ascii=False)
-        allowed_figures=figure_values(trusted,zh=True)
+        allowed_figures=figure_values(trusted,zh=True)|figure_values(self.original,zh=True)
         if window_days(self.original):allowed_figures.add(float(window_days(self.original)))
-        if set(SCOPE_ID.findall(canonical))-set(SCOPE_ID.findall(trusted)) or referenced_urls(canonical)-referenced_urls(trusted) or figure_values(canonical)-allowed_figures:
+        if (self.reference_value and self.reference_value.relationship!='new') and (set(SCOPE_ID.findall(canonical))-set(SCOPE_ID.findall(trusted)) or referenced_urls(canonical)-referenced_urls(trusted) or figure_values(canonical)-allowed_figures):
             self.reference_stage(False,'reference_scope_unbound')
             self.pending=self.card('请确认公司、时间或来源，当前指代缺少可靠依据。',[]);return
         if bool(NEGATED_WRITE.search(canonical))!=bool(NEGATED_WRITE.search(self.original)):
@@ -238,8 +261,8 @@ class Turn:
         prompt=('Return classify_request. A: requests requiring saved/public evidence, current/historical numbers, prices, dates or financial results. '
             'Safe product configuration questions (including where to enter an API key) are D; never claim secret access. '
             'B: timeless financial/company concepts or operating model; classify only, a separate model call will answer. C: unrelated requests including coding. '
-            'D: system actions, compound workflows or missing information. Scanning official files means the scan_official system operation, not reading an existing filing. '
-            'A and D share tools and permissions; A always searches saved knowledge first even for web-only requests. '
+            'D: system actions, compound workflows, or requests to fetch, pull, import, save, sync, discover, analyze or forecast data (e.g. 拉取40份, 把财报送给AI分析). '
+            'A and D share tools and permissions; A searches saved knowledge first. '
             'Use only requested canonical metric names from the schema. A factual quantity never belongs in B. '
             'Set write_condition=newer_than_saved for conditional saves requiring a newer date than saved reports, otherwise none. Never discard the user condition. '
             'Set requested_actions from current USER action words only, before any tool result exists. A rewritten question resolves targets, never grants a new operation. Do not copy grants from previous_scope or assistant advice. Conditional saving is ingest_web_source; saving selected existing sources is import/import_sources; use_result_set web imports require ingest_web_source. 拉取/拉去/同步/缓存 SEC data means fetch_sec, not web_research. General 分析一下/看看 is a read, not an analyze job. Explicitly negated writes are excluded. '

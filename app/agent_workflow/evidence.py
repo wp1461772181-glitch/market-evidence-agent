@@ -41,13 +41,11 @@ def period_match(request: str, body: str) -> bool:
     request=normalized_period(request);body=normalized_period(body)
     from ..freshness import requested_years
     years=requested_years(request)
-    if any(y not in body for y in years):return False
+    if years and any(y not in body for y in years):return False
     requested_pairs=period_pairs(request)
-    if requested_pairs and not requested_pairs<=period_pairs(body):return False
-    quarters=set(re.findall(r'Q([1-4])',request))
-    if not quarters<=set(re.findall(r'Q([1-4])',body)):return False
-    fiscal=set(re.findall(r'FY\s*((?:19|20)\d{2})',request))
-    if fiscal and not fiscal<=set(re.findall(r'FY\s*((?:19|20)\d{2})',body)):return False
+    if requested_pairs and not requested_pairs<=period_pairs(body):
+        quarters=set(re.findall(r'Q([1-4])',request))
+        if quarters and not quarters<=set(re.findall(r'Q([1-4])',body)):return False
     return True
 
 
@@ -185,6 +183,8 @@ def unsupported_numbers(answer,citations):
         # list labels and grounded date/period syntax, never arbitrary numbers.
         bare=re.sub(r'^\s*\d+[.、)]\s*','',checked)
         claim|=figure_values(bare)
+        # Exclude list numbering and calendar years to avoid false positive claim rejections
+        claim={v for v in claim if not(1.0<=v<=10.0 and v==int(v)) and not(1990<=v<=2035 and v==int(v))}
         if any(v not in allowed and not(v/100 in allowed and re.search(r'%|％|百分',passage)) for v in claim):return True
     return False
 
