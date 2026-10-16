@@ -134,6 +134,21 @@ def test_official_discovery_selects_latest_metadata_without_business_writes(monk
     op=prepare_filing('fetch_sec',{'symbol':'INTC','form':'10-Q','accession_number':None})
     assert op['arguments']['accession_number']=='0000050863-26-000001' and op['discovery']['form']=='10-Q'
 
+def test_explicit_saved_historical_filing_does_not_depend_on_recent_official_list(owner,monkeypatch):
+    from app.agent_workflow.sec_sources import prepare_filing
+    from app.sec_filings import SecEdgarProvider
+    from app.models import SecFilingInventory
+    from datetime import datetime,UTC
+    Base.metadata.create_all(engine,tables=[SecFilingInventory.__table__])
+    accession='0000050863-20-000001'
+    with SessionLocal() as db:
+        db.add(SecFilingInventory(symbol='INTC',cik='0000050863',accession_number=accession,form='10-K',filed_at=date(2020,2,1),primary_document='report.htm',
+            source_url='https://www.sec.gov/Archives/edgar/data/50863/000005086320000001/report.htm',source='sec-edgar',review_status='pending_review',content_status='not_fetched',observed_at=datetime.now(UTC)))
+        db.commit()
+    monkeypatch.setattr(SecEdgarProvider,'discover',lambda *_:pytest.fail('explicit saved accession needs no recent listing'))
+    op=prepare_filing('fetch_sec',{'symbol':'INTC','form':'10-K','accession_number':accession})
+    assert op['discovery']['filed_at']=='2020-02-01' and op['arguments']['accession_number']==accession
+
 
 def test_registration_occurs_only_inside_confirmed_execution_and_is_idempotent(owner,monkeypatch):
     from app.agent_workflow import tools,actions
