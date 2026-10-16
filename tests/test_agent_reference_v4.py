@@ -69,6 +69,12 @@ def test_a_rejects_ungrounded_classifier_company_before_tools():
     result,_=run('查它的营收',category='A',resolver=resolver,messages=HISTORY,scope={'company':'Palantir','symbol':'PLTR'})
     assert result['status']=='waiting_for_input' and result['pending_request']
 
+def test_official_pair_does_not_bind_a_different_literal_issuer(monkeypatch):
+    from app.agent_workflow import entities
+    monkeypatch.setattr(entities,'ticker_records',lambda:[{'ticker':'AAPL','title':'APPLE INC'},{'ticker':'INTC','title':'INTEL CORP'}])
+    result,_=run('查询Intel的营收',category='A',scope={'company':'Apple','symbol':'AAPL','company_mention':'Intel'})
+    assert result['status']=='waiting_for_input' and result['pending_request']
+
 def test_long_reference_audit_is_bounded_and_does_not_include_api_key():
     resolver=lambda _:{'relationship':'followup','canonical_question':'解释'+('期货'*300)+'dummy','referents':[]}
     result,_=run('详细解释',resolver=resolver,answers=['期货是合约。'],messages=HISTORY)

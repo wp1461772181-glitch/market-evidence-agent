@@ -660,7 +660,8 @@ class Turn:
         if entities:
             from .entities import verified_pair
             mention=self.scope.get('company_mention') or self.scope.get('company') or ''
-            if mention and normalized(mention).casefold() in normalized(trusted).casefold() and await asyncio.to_thread(verified_pair,self.scope.get('company'),self.scope.get('symbol')):
+            literal_issuer_ok=not re.search(r'[A-Za-z]',mention) or await asyncio.to_thread(verified_pair,mention,self.scope.get('symbol'))
+            if literal_issuer_ok and mention and normalized(mention).casefold() in normalized(trusted).casefold() and await asyncio.to_thread(verified_pair,self.scope.get('company'),self.scope.get('symbol')):
                 entities=[];self.audit['entity_mapping_verified']=True
         if entities:
             self.reference_stage(False,'classifier_entity_unbound',skipped=self.reference_value is None)
