@@ -182,12 +182,18 @@ class Turn:
         self.route=routing.category;self.scope=routing.model_dump();self.audit['route']=self.route
         previous=self.state.get('previous_scope',{});previous_symbol=previous.get('symbol')
         if self.refinement:
-            from .routing import explicit_metric_change
-            if explicit_metric_change(routing.metrics,previous.get('metrics',[]),self.original):
-                self.refinement=False;self.audit['explicit_task_change']=True
-        if self.refinement:
-            for field in ('metrics','financial_only','form','period'):
-                if field in previous:self.scope[field]=copy.deepcopy(previous[field])
+            fields=('metrics','financial_only','form','period')
+            conflicts=[]
+            for field in fields:
+                if field not in previous:continue
+                current,old=self.scope.get(field),previous[field]
+                if (set(current or [])!=set(old or []) if field=='metrics' else current!=old):conflicts.append(field)
+            if conflicts:
+                self.audit['refinement_scope_conflict']=True
+                self.pending=self.card('需要确认本轮查询范围：是继续上一轮任务只调整时间或数量，还是改查新的指标？请明确说明。',[])
+                return
+            for field in fields:
+                if field in previous:self.scope[field]=copy.deepcopy(previous[field] or [] if field=='metrics' else previous[field])
             self.audit['preserved_task_scope']=True
         if self.followup and previous_symbol:
             explicit=any(contains(value,self.original) for value in (routing.symbol,routing.company) if value)

@@ -40,7 +40,7 @@ def test_time_refinement_preserves_news_metric_scope_and_blocks_price_adapter():
     steps=iter([call('query_stock_prices',symbol='MU'),{'content':'没有可核验资料。'}]);executed=[]
     ctx=AgentRuntimeContext('custom','test','dummy',
         resolver=lambda _:{'relationship':'refinement','canonical_question':'Micron 最近15天新闻'},
-        classifier=lambda _:{'category':'A','company':'Micron','symbol':'MU','metrics':['price'],'days_back':15},
+        classifier=lambda _:{'category':'A','company':'Micron','symbol':'MU','metrics':[],'days_back':15},
         decider=lambda *_:next(steps),executor=lambda n,a:executed.append(n) or {'ok':True,'data':[]})
     result=asyncio.run(direct.run_direct_turn('我要最近的行情，也就是半个月之内的',ctx,emit=emit,
         messages=[{'role':'user','content':'Micron 最近新闻'}],state={'previous_scope':{'company':'Micron','symbol':'MU','metrics':[]}}))
@@ -53,12 +53,29 @@ def test_time_refinement_of_a_price_task_still_allows_price_reads():
     turn.ground_arguments('query_stock_prices',{'symbol':'MU'})
 
 @pytest.mark.parametrize('question',['改成看过去15天股价','now show Micron stock price over 15 days'])
-def test_explicit_price_switch_survives_an_incorrect_refinement_label(question):
+def test_conflicting_refinement_is_clarified_instead_of_erasing_explicit_switch(question):
     steps=iter([call('query_stock_prices',symbol='MU'),{'content':'MU 收盘价为100美元[1]。'}]);executed=[]
     ctx=AgentRuntimeContext('custom','test','dummy',
         resolver=lambda _:{'relationship':'refinement','canonical_question':question},
         classifier=lambda _:{'category':'A','company':'Micron','symbol':'MU','metrics':['price'],'days_back':15},
         decider=lambda *_:next(steps),executor=lambda n,a:executed.append(n) or {'ok':True,'data':[] if n=='search_knowledge' else [{'id':'p','symbol':'MU','close':100}]})
     result=asyncio.run(direct.run_direct_turn(question,ctx,emit=emit,messages=[{'role':'user','content':'Micron 最近新闻'}],state={'previous_scope':{'company':'Micron','symbol':'MU','metrics':[]}}))
+    assert not executed and result['status']=='waiting_for_input'
+    assert result['pending_request']['reason']=='missing_information' and result['audit']['refinement_scope_conflict']
+
+@pytest.mark.parametrize('question',['不要股价，只看最近15天新闻','do not show stock prices; only news in the last 15 days','股价这个词不要纳入检索','Do not include the word price in the search'])
+def test_negative_or_metalinguistic_metric_mentions_cannot_override_conflicting_scope(question):
+    executed=[]
+    ctx=AgentRuntimeContext('custom','test','dummy',resolver=lambda _:{'relationship':'refinement','canonical_question':question},
+        classifier=lambda _:{'category':'A','company':'Micron','symbol':'MU','metrics':['price'],'days_back':15},executor=lambda n,a:executed.append(n))
+    result=asyncio.run(direct.run_direct_turn(question,ctx,emit=emit,messages=[{'role':'user','content':'Micron 最近新闻'}],state={'previous_scope':{'metrics':[]}}))
+    assert not executed and result['status']=='waiting_for_input'
+
+@pytest.mark.parametrize('relationship',['new','followup'])
+def test_explicit_task_switch_with_consistent_semantic_stages_reads_prices(relationship):
+    steps=iter([call('query_stock_prices',symbol='MU'),{'content':'MU 收盘价为100美元[1]。'}]);executed=[]
+    ctx=AgentRuntimeContext('custom','test','dummy',resolver=lambda _:{'relationship':relationship,'canonical_question':'Micron 过去15天股价'},
+        classifier=lambda _:{'category':'A','company':'Micron','symbol':'MU','metrics':['price'],'days_back':15},decider=lambda *_:next(steps),
+        executor=lambda n,a:executed.append(n) or {'ok':True,'data':[] if n=='search_knowledge' else [{'id':'p','symbol':'MU','close':100}]})
+    result=asyncio.run(direct.run_direct_turn('改成看 Micron 过去15天股价',ctx,emit=emit,messages=[{'role':'user','content':'Micron 最近新闻'}],state={'previous_scope':{'company':'Micron','symbol':'MU','metrics':[]}}))
     assert executed==['search_knowledge','query_stock_prices'] and result['status']=='succeeded'
-    assert result['previous_scope']['metrics']==['price'] and result['audit']['explicit_task_change']

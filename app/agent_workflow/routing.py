@@ -4,20 +4,6 @@ import json
 from typing import Literal
 from pydantic import BaseModel,ConfigDict,Field
 
-def explicit_metric_change(metrics,previous,text):
-    """Guard against a resolver erasing an explicitly requested new metric.
-
-    These terms validate a conflicting semantic rewrite; they never select a
-    category or choose a tool. Financial aliases come from the shared source.
-    """
-    from ..agent_web_research import METRIC_GROUPS
-    from .evidence import contains
-    from .language import simplified
-    terms={**METRIC_GROUPS,'price':('股价','价格','收盘','price','prices','quote','quotes'),
-           'date':('日期','date'),'forecast':('预测','forecast')}
-    text=simplified(text)
-    return any(metric not in previous and any(contains(term,text) for term in terms.get(metric,())) for metric in metrics)
-
 class Routing(BaseModel):
     model_config=ConfigDict(extra='forbid')
     category:str=Field(pattern='^[ABCD]$')
