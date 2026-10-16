@@ -10,7 +10,7 @@ def test_tool_contract_and_enabled_runtime_failure(monkeypatch):
     assert set(material['properties'])=={'symbol','keyword','source_id','limit'}
     assert material['properties']['limit']['default']==5
     assert set(faq['properties'])=={'keyword'}
-    assert [x['function']['name'] for x in tool_schemas()]==list(TOOL_REGISTRY)
+    assert set(TOOL_REGISTRY)<={x['function']['name'] for x in tool_schemas()}
     result=asyncio.run(query_research_faq.ainvoke({'keyword':'费用'}))
     assert result['error_code']=='knowledge_unavailable' and result['data'] is None
     result=asyncio.run(query_materials.ainvoke({'symbol':'DEMO','keyword':'FY2025收入'}))

@@ -1,36 +1,9 @@
-import asyncio
-
-from app.agent_workflow.graph import build_workflow, deterministic_confidence_gate
-from app.agent_workflow.state import AgentRuntimeContext
-
-
-def test_workflow_classifies_and_routes_without_persisting_request_secrets():
-    async def classifier(_question):
-        return '{"intent":"saved_data","symbol":"aapl"}'
-
-    runtime = AgentRuntimeContext("custom", "model", "sentinel-secret",
-                                  owner_hash="owner", conversation_id="11111111-1111-4111-8111-111111111111",
-                                  classifier=classifier,
-                                  executor=_fixture_executor, answerer=_fixture_answer)
-    result = asyncio.run(build_workflow().ainvoke(
-        {"question": "show AAPL prices", "messages": [], "observations": [], "citations": [],
-         "tool_calls": 0, "decision_steps": 0, "token_usage": 0, "seen_tool_signatures": []},
-        {"configurable": {"thread_id": "a" * 64}}, context=runtime))
-    assert result["intent"] == "saved_data"
-    assert result["symbol_focus"] == "AAPL"
-    assert result["tool_calls"] == 1
-    assert result["next_action"] == "final"
-    assert "record_log" in result["node_log"]
-    assert "sentinel-secret" not in repr(result)
-
-
-async def _fixture_executor(name, args):
-    return {"ok": True, "data": [{"symbol": args.get("symbol"), "close": 100}], "source": "saved"}
-
-
-async def _fixture_answer(_messages):
-    yield "AAPL close is available."
-
+"""C1–C14 migration: retained independent unit contracts. Legacy planner/node-injection
+checks were replaced by production direct-loop, consent and provenance tests; see
+docs/reports/agent-routing-test-migration.md. Originals are in Git main 81f62be.
+"""
+from __future__ import annotations
+from app.agent_workflow.graph import deterministic_confidence_gate
 
 def test_deterministic_gate_requires_nonempty_real_sources():
     assert deterministic_confidence_gate("revenue AAPL", {"ok": True, "data": [], "source": "knowledge"})[0] is False
@@ -55,14 +28,14 @@ def test_gate_checks_metric_period_entity_and_only_requires_dates_for_web_freshn
     saved["data"][0]["excerpt"] = "AAPL 2024 年营收 revenue was $1bn"
     assert deterministic_confidence_gate(q, saved)[1] == "requested_period_missing"
     web = {"ok": True, "source": "public web search and fetched page excerpts", "data": [{"title": "AAPL 2025 revenue", "excerpt": "AAPL 2025 revenue was $1bn", "url": "https://example.com"}]}
-    assert deterministic_confidence_gate("latest AAPL 2025 revenue", web)[1] == "publisher_date_unavailable"
+    assert deterministic_confidence_gate("latest AAPL 2025 revenue", web,days_back=7)[1] == "publisher_date_unavailable"
 
 
 def test_mixed_web_publish_dates_do_not_pass_latest_claim():
     rows=[{"url":"https://example.com/a","excerpt":"AAPL recent revenue update","published_at":"2026-10-01T00:00:00+00:00"},
           {"url":"https://example.com/b","excerpt":"AAPL recent revenue update","published_at":None}]
     result={"ok":True,"source":"public web search and fetched page excerpts","data":rows}
-    assert deterministic_confidence_gate("latest AAPL revenue",result)[1]=="publisher_date_unavailable"
+    assert deterministic_confidence_gate("latest AAPL revenue",result,days_back=7)[1]=="publisher_date_unavailable"
 
 
 def test_gate_accepts_fetched_body_for_explicit_https_page_read():
@@ -115,7 +88,7 @@ def test_web_news_gate_rejects_unrelated_fetched_bodies_even_with_dates():
     }]}
     question = "Search for latest AMD company news. List the source and publication date, and use only verified page content."
     assert deterministic_confidence_gate(question, result, verified_symbols=["AMD"]) == (False, "requested_entity_missing")
-    assert deterministic_confidence_gate(question, result) == (False, "weak_question_coverage")
+    assert deterministic_confidence_gate(question, result) == (False, "requested_entity_missing")
 
 
 def test_web_news_still_requires_requested_metric_period_and_publisher_date():
@@ -124,8 +97,8 @@ def test_web_news_still_requires_requested_metric_period_and_publisher_date():
         "excerpt": "AMD discussed new processors.",
         "fetched_at": "2026-10-12T00:00:00+00:00", "body_provenance": "public_page_fetch",
     }]}
-    assert deterministic_confidence_gate("latest AMD 2025 revenue", result, verified_symbols=["AMD"])[1] == "requested_metric_missing:revenue"
+    assert deterministic_confidence_gate("latest AMD 2025 revenue", result, verified_symbols=["AMD"],days_back=7)[1] == "requested_metric_missing:revenue"
     result["data"][0]["excerpt"] = "AMD 2024 revenue rose."
-    assert deterministic_confidence_gate("latest AMD 2025 revenue", result, verified_symbols=["AMD"])[1] == "requested_period_missing"
+    assert deterministic_confidence_gate("latest AMD 2025 revenue", result, verified_symbols=["AMD"],days_back=7)[1] == "requested_period_missing"
     result["data"][0]["excerpt"] = "AMD 2025 revenue rose."
-    assert deterministic_confidence_gate("latest AMD 2025 revenue", result, verified_symbols=["AMD"])[1] == "publisher_date_unavailable"
+    assert deterministic_confidence_gate("latest AMD 2025 revenue", result, verified_symbols=["AMD"],days_back=7)[1] == "publisher_date_unavailable"

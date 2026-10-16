@@ -25,7 +25,7 @@ def sync_source_batch(session_factory, tokenizer, generation: str, *, source_typ
     from ..models import SecFilingInventory, UploadedEvidence
     from ..material_analysis_models import MaterialAnalysisVersion
 
-    if source_type not in {"sec", "faq", "upload", "analysis"}:
+    if source_type not in {"sec", "faq", "upload", "analysis", "web"}:
         raise ValueError("unsupported source type")
     batch_size = max(1, min(10, int(batch_size)))
     scope_key = f"material_sync.{source_type}"
@@ -35,7 +35,17 @@ def sync_source_batch(session_factory, tokenizer, generation: str, *, source_typ
             state = KnowledgeExtractionRun(scope_key=scope_key, batch_status="running", processed_count=0)
             session.add(state); session.flush()
         cursor = state.cursor
-        if source_type == "faq":
+        if source_type == "web":
+            from ..agent_workflow.models import AgentWebSource
+            from ..agent_workflow.web_sources import as_document
+            last=UUID(cursor) if cursor else UUID(int=0)
+            from .models import KnowledgeChunk
+            chunked=select(KnowledgeChunk.id).join(KnowledgeDocument,KnowledgeDocument.id==KnowledgeChunk.document_id).where(
+                KnowledgeDocument.source_table=='agent_web_sources',KnowledgeDocument.source_id==__import__('sqlalchemy').cast(AgentWebSource.id,__import__('sqlalchemy').String),KnowledgeChunk.generation==generation).correlate(AgentWebSource).exists()
+            rows=session.scalars(select(AgentWebSource).where(~chunked).order_by(AgentWebSource.fetched_at).limit(batch_size)).all()
+            docs=[as_document(row) for row in rows]
+            next_cursor=str(rows[-1].id) if rows else None
+        elif source_type == "faq":
             last = int(cursor or 0)
             rows = session.scalars(select(AgentFAQ).where(AgentFAQ.id > last).order_by(AgentFAQ.id).limit(batch_size)).all()
             docs = [adapt_faq({"id": r.id, "question": r.question, "answer": r.answer, "category": r.category}) for r in rows]
@@ -94,7 +104,7 @@ def sync_source_batch(session_factory, tokenizer, generation: str, *, source_typ
 def sync_sources_once(session_factory, runtime, tokenizer) -> None:
     """Advance each source cursor, then optionally index one leased task."""
     settings = runtime.settings
-    for kind in ("faq", "sec", "upload", "analysis"):
+    for kind in ("faq", "sec", "upload", "analysis", "web"):
         sync_source_batch(session_factory, tokenizer, settings.generation, source_type=kind, batch_size=5)
     if os.getenv("RAG_INDEXING_ENABLED", "false").strip().lower() in {"1", "true", "yes"}:
         from .indexing import index_pending

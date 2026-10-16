@@ -29,23 +29,22 @@ GDELT_ABOUT_URL = "https://gdeltproject.org/about.html"
 TECHCRUNCH_RSS_TERMS_URL = "https://techcrunch.com/rss-terms-of-use/"
 TECHCRUNCH_RSS_BASE_URL = "https://techcrunch.com/tag"
 
-# These are discovery terms, not a claim that every matching article is about
-# the listed company.  Candidates remain review-pending by design.
-_SYMBOL_QUERIES = {
-    "AAPL": ("Apple", ("apple", "iphone", "ipad", "mac", "app store")),
-    "MSFT": ("Microsoft", ("microsoft", "azure", "xbox", "windows", "linkedin")),
-    "GOOGL": ("Google OR Alphabet", ("google", "alphabet", "youtube", "android", "waymo")),
-    "AMZN": ("Amazon", ("amazon", "aws", "amazon.com", "prime video")),
-    "NVDA": ("NVIDIA", ("nvidia", "geforce", "cuda", "jensen huang")),
-    "META": ("Meta Platforms", ("meta platforms", "facebook", "instagram", "threads", "whatsapp")),
-    "TSLA": ("Tesla", ("tesla", "electric vehicle", "ev", "elon musk")),
-}
+# Company terms are explicit caller configuration, never a built-in routing/filter list.
 _TRACKING_QUERY_PARAMETERS = frozenset({"fbclid", "gclid", "mc_cid", "mc_eid"})
-_OBVIOUS_FALSE_POSITIVES = {
-    "AMZN": ("rainforest", "rain forest", "amazon river"),
-    "AAPL": ("apple pie", "apple tree", "apple orchard"),
-}
-_TECHCRUNCH_TAGS = {"AAPL": "apple", "MSFT": "microsoft", "GOOGL": "google", "AMZN": "amazon", "NVDA": "nvidia", "META": "meta", "TSLA": "tesla"}
+
+@dataclass(frozen=True)
+class DiscoveryScope:
+    query: str
+    match_terms: tuple[str, ...]
+    excluded_terms: tuple[str, ...] = ()
+    rss_tag: str | None = None
+
+    def __post_init__(self):
+        import re
+        if not self.query.strip() or len(self.query)>400 or not self.match_terms:
+            raise ValueError("Supply a query and literal company/product matching terms")
+        if self.rss_tag is not None and not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,79}",self.rss_tag):
+            raise ValueError("Invalid RSS tag")
 
 AttemptStatus = Literal["success", "empty", "error", "unsupported"]
 HttpGet = Callable[[str, float], bytes]
@@ -131,16 +130,18 @@ class GdeltDocSource:
 
     name = "gdelt_doc"
 
-    def __init__(self, *, timeout_seconds: float = 8.0, max_records: int = 10, http_get: HttpGet | None = None) -> None:
+    def __init__(self, *, timeout_seconds: float = 8.0, max_records: int = 10, http_get: HttpGet | None = None, scopes: dict[str, DiscoveryScope] | None = None) -> None:
         if not 1 <= max_records <= 250:
             raise ValueError("max_records must be between 1 and 250")
         self.timeout_seconds = timeout_seconds
         self.max_records = max_records
         self._http_get = http_get or _default_http_get
+        self.scopes = {normalize_market_symbol(key):value for key,value in (scopes or {}).items()}
 
     def discover(self, *, symbol: str, discovered_at: datetime) -> SourceAttempt:
         normalized_symbol = _validate_symbol(symbol)
-        query, terms = _SYMBOL_QUERIES.get(normalized_symbol, (f'"{normalized_symbol}"', (normalized_symbol.lower(),)))
+        scope=self.scopes.get(normalized_symbol)
+        query,terms=(scope.query,tuple(t.casefold() for t in scope.match_terms)) if scope else (f'"{normalized_symbol}"',(normalized_symbol.casefold(),))
         request_url = self._request_url(query)
         try:
             payload = json.loads(self._http_get(request_url, self.timeout_seconds).decode("utf-8"))
@@ -168,7 +169,7 @@ class GdeltDocSource:
                 _candidate_from_gdelt_article(
                     article=article,
                     symbol=normalized_symbol,
-                    matched_terms=terms,
+                    matched_terms=terms,excluded_terms=scope.excluded_terms if scope else (),
                     discovered_at=discovered_at,
                 )
                 for article in articles
@@ -204,15 +205,17 @@ class TechCrunchRssSource:
 
     name = "techcrunch_rss"
 
-    def __init__(self, *, timeout_seconds: float = 15.0, http_get: HttpGet | None = None) -> None:
+    def __init__(self, *, timeout_seconds: float = 15.0, http_get: HttpGet | None = None, scopes: dict[str, DiscoveryScope] | None = None) -> None:
         self.timeout_seconds = timeout_seconds
         self._http_get = http_get or _default_http_get
+        self.scopes = {normalize_market_symbol(key):value for key,value in (scopes or {}).items()}
 
     def discover(self, *, symbol: str, discovered_at: datetime) -> SourceAttempt:
         normalized_symbol = _validate_symbol(symbol)
-        if normalized_symbol not in _TECHCRUNCH_TAGS:
+        scope=self.scopes.get(normalized_symbol)
+        if scope is None or not scope.rss_tag:
             return SourceAttempt(source_name=self.name, symbol=normalized_symbol, status="unsupported", source_url=None, detail="No company-specific TechCrunch tag is configured; generic symbol search remains available.")
-        request_url = f"{TECHCRUNCH_RSS_BASE_URL}/{_TECHCRUNCH_TAGS[normalized_symbol]}/feed/"
+        request_url = f"{TECHCRUNCH_RSS_BASE_URL}/{scope.rss_tag}/feed/"
         try:
             root = ElementTree.fromstring(self._http_get(request_url, self.timeout_seconds))
         except (HTTPError, URLError, TimeoutError, OSError, ElementTree.ParseError) as exc:
@@ -226,7 +229,7 @@ class TechCrunchRssSource:
         candidates = tuple(
             candidate
             for candidate in (
-                _candidate_from_techcrunch_item(item=item, symbol=normalized_symbol, discovered_at=discovered_at)
+                _candidate_from_techcrunch_item(item=item, symbol=normalized_symbol, discovered_at=discovered_at, terms=tuple(t.casefold() for t in scope.match_terms), excluded_terms=scope.excluded_terms)
                 for item in root.findall("./channel/item")
             )
             if candidate is not None
@@ -283,7 +286,7 @@ def discover_news_candidates(
 
 
 def _candidate_from_gdelt_article(
-    *, article: object, symbol: str, matched_terms: tuple[str, ...], discovered_at: datetime
+    *, article: object, symbol: str, matched_terms: tuple[str, ...], discovered_at: datetime, excluded_terms: tuple[str,...] = ()
 ) -> NewsCandidate | None:
     if not isinstance(article, dict):
         return None
@@ -292,7 +295,7 @@ def _candidate_from_gdelt_article(
     if not isinstance(title, str) or not title.strip() or not isinstance(raw_url, str) or not raw_url.strip():
         return None
     dedup_key = _canonical_url(raw_url)
-    if dedup_key is None or not _title_is_relevant(symbol=symbol, title=title, terms=matched_terms):
+    if dedup_key is None or not _title_is_relevant(title=title, terms=matched_terms, excluded_terms=excluded_terms):
         return None
     source_url = raw_url
     outlet = article.get("domain")
@@ -317,7 +320,7 @@ def _candidate_from_gdelt_article(
 
 
 def _candidate_from_techcrunch_item(
-    *, item: ElementTree.Element, symbol: str, discovered_at: datetime
+    *, item: ElementTree.Element, symbol: str, discovered_at: datetime, terms: tuple[str,...], excluded_terms: tuple[str,...] = ()
 ) -> NewsCandidate | None:
     title = item.findtext("title")
     raw_url = item.findtext("link")
@@ -326,8 +329,7 @@ def _candidate_from_techcrunch_item(
     dedup_key = _canonical_url(raw_url)
     if dedup_key is None:
         return None
-    terms = _SYMBOL_QUERIES[symbol][1]
-    if not _title_is_relevant(symbol=symbol, title=title, terms=terms):
+    if not _title_is_relevant(title=title, terms=terms, excluded_terms=excluded_terms):
         return None
     source_url = raw_url
     published_at = _parse_rss_published_at(item.findtext("pubDate"))
@@ -347,9 +349,9 @@ def _candidate_from_techcrunch_item(
     )
 
 
-def _title_is_relevant(*, symbol: str, title: str, terms: tuple[str, ...]) -> bool:
+def _title_is_relevant(*, title: str, terms: tuple[str, ...], excluded_terms: tuple[str,...] = ()) -> bool:
     normalized = " ".join(title.casefold().split())
-    if any(phrase in normalized for phrase in _OBVIOUS_FALSE_POSITIVES.get(symbol, ())):
+    if any(phrase.casefold() in normalized for phrase in excluded_terms):
         return False
     return any(term in normalized for term in terms)
 

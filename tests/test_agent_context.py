@@ -216,13 +216,15 @@ def test_the_model_gets_the_note_then_the_older_turns_then_the_recent_ones(strea
 
     monkeypatch.setattr(stream, "conversation_context", context)
     asyncio.run(send("Explain prime numbers"))
-    sent = next(messages for messages, _s, _b in reversed(requests) if any(m.get("content") == "近处的问题" for m in messages))
-    contents = [m["content"] for m in sent]
-    note = next(c for c in contents if c.startswith(layers.MEMORY_MARKER))
-    assert "更早：用户只看 10-Q" in note
-    assert contents.index(note) < contents.index("很早的问题 苹果") < contents.index("近处的问题") \
-        < contents.index("Explain prime numbers")
-    assert next(m for m in sent if m["content"] == note)["role"] == "system"       # memory is never a user turn
+    # C1/C12: stages receive the same layered history as a labelled JSON field.
+    payloads=[json.loads(messages[-1]['content']) for messages,_schemas,_base in requests if messages[-1]['content'].startswith('{')]
+    payload=next(value for value in payloads if 'history' in value and '近处的问题' in value['history'])
+    sent=json.loads(payload['history']);contents=[m['content'] for m in sent]
+    note=next(c for c in contents if c.startswith(layers.MEMORY_MARKER))
+    assert '更早：用户只看 10-Q' in note
+    assert contents.index(note)<contents.index('很早的问题 苹果')<contents.index('近处的问题')
+    assert next(m for m in sent if m['content']==note)['role']=='system'
+
 
 
 def test_the_system_prompt_says_the_memory_note_is_not_evidence():

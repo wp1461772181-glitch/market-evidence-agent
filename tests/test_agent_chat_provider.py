@@ -127,8 +127,9 @@ def test_openrouter_requests_ask_for_low_reasoning_effort_in_stages_and_answers(
     assert provider.REASONING_EFFORT == "low"
 
 
-def test_other_providers_and_the_default_setting_send_no_reasoning_parameter(monkeypatch):
-    assert provider.reasoning_options("deepseek") == {} and provider.reasoning_options("custom") == {}
+def test_provider_specific_effort_and_default_setting(monkeypatch):
+    assert provider.reasoning_options("deepseek") == {"thinking":{"type":"enabled"},"reasoning_effort":"low"}
+    assert provider.reasoning_options("custom") == {}
     assert provider.reasoning_options("openrouter") == {"reasoning": {"effort": provider.REASONING_EFFORT}}
     monkeypatch.setattr(provider, "REASONING_EFFORT", "default")
     assert provider.reasoning_options("openrouter") == {}
@@ -138,7 +139,7 @@ def test_other_providers_and_the_default_setting_send_no_reasoning_parameter(mon
     assert provider.reasoning_options("openrouter") == {}
 
 
-def test_a_decision_request_body_carries_the_effort_only_for_openrouter(monkeypatch):
+def test_decision_request_uses_each_providers_native_effort_format(monkeypatch):
     bodies = []
 
     async def fake_post(name, key, body, base_url=None):
@@ -156,3 +157,49 @@ def test_a_decision_request_body_carries_the_effort_only_for_openrouter(monkeypa
     assert by_name["openrouter"]["reasoning"] == {"effort": provider.REASONING_EFFORT}
     assert "reasoning" not in by_name["deepseek"] and "reasoning" not in by_name["minimax"]
     assert by_name["minimax"]["reasoning_split"] is True                          # the existing special case stays
+
+def test_deepseek_flash_honors_configured_effort_for_native_and_stream_requests(monkeypatch):
+    seen=_capture_bodies(monkeypatch)
+    monkeypatch.setattr(provider,'REASONING_EFFORT','low')
+    async def exercise():
+        await provider.decision_request('deepseek','deepseek-flash','synthetic',[],[])
+        async for _ in provider.stream_answer('deepseek','deepseek-flash','synthetic',[]):pass
+    asyncio.run(exercise())
+    assert all(body.get('thinking')=={'type':'enabled'} and body.get('reasoning_effort')=='low' for body in seen)
+
+
+def test_turn_reuses_transport_without_sharing_request_authorization(monkeypatch):
+    created=[];headers=[];real_client=httpx.AsyncClient
+    def respond(request):
+        headers.append(request.headers['authorization'])
+        return httpx.Response(200,json={'choices':[{'finish_reason':'stop','message':{'role':'assistant','content':'ok'}}]})
+    def client(**options):
+        value=real_client(**{**options,'transport':httpx.MockTransport(respond)})
+        created.append(value);return value
+    monkeypatch.setattr(provider.httpx,'AsyncClient',client)
+    async def exercise():
+        async with provider.decision_session():
+            for key in ('first','second','third'):
+                await provider.decision_request('deepseek','test',key,[],[])
+    asyncio.run(exercise())
+    assert len(created)==1 and created[0].is_closed
+    assert headers==['Bearer first','Bearer second','Bearer third']
+
+
+def test_concurrent_turn_transport_scopes_close_independently(monkeypatch):
+    created=[];real_client=httpx.AsyncClient
+    def client(**options):
+        value=real_client(**{**options,'transport':httpx.MockTransport(lambda _:httpx.Response(200,json={'choices':[{'finish_reason':'stop','message':{'content':'ok'}}]}))})
+        created.append(value);return value
+    monkeypatch.setattr(provider.httpx,'AsyncClient',client)
+    async def turn(fail=False):
+        try:
+            async with provider.decision_session():
+                await provider.decision_request('deepseek','test','synthetic',[],[])
+                await asyncio.sleep(0)
+                if fail:raise RuntimeError('synthetic')
+                await provider.decision_request('deepseek','test','synthetic',[],[])
+        except RuntimeError:pass
+    async def exercise():await asyncio.gather(turn(),turn(True))
+    asyncio.run(exercise())
+    assert len(created)==2 and all(c.is_closed for c in created)

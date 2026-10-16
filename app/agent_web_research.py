@@ -15,9 +15,8 @@ from urllib.parse import quote_plus, urljoin, urlsplit
 
 import httpx
 from langchain_core.tools import tool
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
-from .company_directory import COMPANIES
 from .freshness import published_within, search_time_range, window_days
 
 MAX_PAGE_BYTES = 1_000_000
@@ -28,9 +27,12 @@ MAX_REDIRECTS = 2
 
 class WebResearchArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    query_or_url: str = Field(min_length=1, max_length=512)
+    query: str = Field(min_length=1, max_length=512, validation_alias=AliasChoices("query", "query_or_url"))
+    company: str | None = Field(default=None,max_length=160)
+    days_back: int | None = Field(default=None, ge=1, le=366, description="News time window in days. Recent/latest means 7; half a month means 15. Omit only if the user requested no freshness window.")
+    max_results: int = Field(default=5, ge=1, le=5)
 
-    @field_validator("query_or_url")
+    @field_validator("query")
     @classmethod
     def bounded_input(cls, value: str) -> str:
         value = value.strip()
@@ -139,7 +141,6 @@ METRIC_GROUPS = {
     "cash_flow": ("cash flow", "现金流"),
     "debt": ("debt", "借款", "负债"),
 }
-ENTITY_ALIASES = COMPANIES  # the companies this product knows by name (app/company_directory.py)
 _GENERIC_LATIN = frozenset((
     "a an the and or of in on at to by for with from about into over than then that this these those is are was "
     "were be been has have had do does did can will would not no but its it as if so up what when where which "
@@ -158,16 +159,6 @@ _MAX_GROUPS = 12
 
 # A company the sentence names that the query did not ask for: its figures are not the asked company's,
 # whatever sentence or headline comes before them.
-_OTHER_COMPANY = re.compile(
-    r"\b(?:samsung|huawei|xiaomi|intel|qualcomm|sony|toyota|tsmc|oracle|ibm|netflix|uber|alibaba|tencent|baidu"
-    r"|bytedance|byd|nokia|ericsson|cisco|adobe|salesforce|paypal|mastercard|disney|walmart|boeing|pfizer"
-    r"|moderna|nike|starbucks|honda|nissan|asml|broadcom|micron|spacex|openai|anthropic|shopify|airbnb)\b"
-    r"|三星|华为|小米|英特尔|高通|索尼|丰田|台积电|甲骨文|奈飞|优步|阿里巴巴|阿里|腾讯|百度|字节跳动|比亚迪|诺基亚"
-    r"|思科|沃尔玛|波音|辉瑞|耐克|星巴克|本田|日产|博通|美光|英飞凌"
-    + "|" + "|".join(r"\b" + re.escape(alias) + r"\b" if alias.isascii() else re.escape(alias)
-                     for aliases in ENTITY_ALIASES.values() for alias in aliases), re.I)
-
-
 def _member_pattern(member: str, *, whole_word: bool = False) -> str:
     escaped = re.escape(member)
     if not member.isascii():
@@ -181,7 +172,7 @@ def _term_regex(term: str) -> re.Pattern:
                       else r"(?<![a-z0-9])" + re.escape(term) + r"(?![a-z0-9])")
 
 
-def _query_groups(query: str) -> tuple[list[re.Pattern], list[str]]:
+def _query_groups(query: str, company: str | None = None) -> tuple[list[re.Pattern], list[str]]:
     """One pattern per distinct thing the query asks for, with its role: a "metric" group, an
     "entity" group (a company the gate knows) or a plain "term"."""
     lowered = query.lower()
@@ -193,12 +184,6 @@ def _query_groups(query: str) -> tuple[list[re.Pattern], list[str]]:
         if found:
             groups[members] = "metric"
             asked += found
-    for symbol, aliases in ENTITY_ALIASES.items():
-        members = (symbol.lower(), *aliases)
-        found = [member for member in members if _term_regex(member).search(lowered)]
-        if found:
-            groups[members] = "entity"
-            asked += found
     working = lowered
     for member in sorted(set(asked), key=len, reverse=True):
         working = _term_regex(member).sub(" ", working)
@@ -207,11 +192,12 @@ def _query_groups(query: str) -> tuple[list[re.Pattern], list[str]]:
         if token.endswith(("'s", "’s")):
             token = token[:-2]
         if len(token) >= 2 and token not in _GENERIC_LATIN:
-            groups.setdefault((token,), "term")
+            groups.setdefault((token,), "entity" if any(c.isalpha() for c in token) else "term")
     for run in _CJK_RUN.findall(working):
         for piece in _GENERIC_CJK.split(run):
             if len(piece) >= 2:
-                groups.setdefault((piece,), "term")
+                groups.setdefault((piece,), "entity")
+    if company:groups[(company.lower(),)]="entity"
     kept = list(groups.items())[:_MAX_GROUPS]
     return ([re.compile("|".join(_member_pattern(member, whole_word=role == "entity") for member in members), re.I)
              for members, role in kept], [role for _, role in kept])
@@ -250,7 +236,7 @@ def _passage_spans(text: str, cap: int, guard: re.Pattern) -> list[tuple[int, in
     return spans
 
 
-def focus_excerpt(text: str, query: str, limit: int = FOCUS_LIMIT, heading: str = "") -> str:
+def focus_excerpt(text: str, query: str, limit: int = FOCUS_LIMIT, heading: str = "", company: str | None = None) -> str:
     """The passages of text that best match query, in original order, within limit characters.
 
     Sentences and lines are scored by the distinct query terms they hold (case-insensitive; CJK
@@ -274,10 +260,12 @@ def focus_excerpt(text: str, query: str, limit: int = FOCUS_LIMIT, heading: str 
     if not isinstance(text, str) or not isinstance(query, str):
         return text
     fits = len(text) <= limit
-    groups, roles = _query_groups(query)
+    groups, roles = _query_groups(query,company)
     if not groups:
         return text
-    entity = frozenset(n for n, role in enumerate(roles) if role == "entity")
+    # Company filtering is grounded in the explicit query terms. There is no global
+    # company directory or "other company" list in this retrieval path.
+    entity = frozenset(n for n,role in enumerate(roles) if role=="entity")
     metric = frozenset(n for n, role in enumerate(roles) if role == "metric")
     strict = bool(entity and metric)
     if fits and not strict:
@@ -297,7 +285,9 @@ def focus_excerpt(text: str, query: str, limit: int = FOCUS_LIMIT, heading: str 
     def other_company(index: int) -> bool:
         """The sentence names a company the query did not ask for (and not the asked one)."""
         start, end = spans[index]
-        return bool(_OTHER_COMPANY.search(text, start, end))
+        passage=text[start:end]
+        subjects=re.findall(r"\b([A-Z][A-Za-z]+)(?:'s)?\s+(?:said|reported|revenue|sales|earnings|announced|introduced)\b",passage)
+        return any(not any(groups[n].search(subject) for n in entity) and subject.casefold() not in _GENERIC_LATIN for subject in subjects)
 
     def eligible(index: int) -> bool:
         if not needs_neighbour(index):
@@ -347,12 +337,12 @@ def focus_excerpt(text: str, query: str, limit: int = FOCUS_LIMIT, heading: str 
     return render(sorted(chosen))
 
 
-def _focus_source(source: dict, query: str | None) -> None:
+def _focus_source(source: dict, query: str | None, company: str | None = None) -> None:
     """Replace a search row's leading-characters excerpt by the passages that match the query."""
     text = source.get("excerpt")
     if not query or not isinstance(text, str):
         return
-    focused = focus_excerpt(text, query, heading=str(source.get("title") or ""))
+    focused = focus_excerpt(text, query, heading=str(source.get("title") or ""),company=company)
     if focused != text:
         source["excerpt"] = focused
         source["truncated"] = True            # a selection: the page text is no longer complete
@@ -444,16 +434,16 @@ async def _get_public(url: str, *, limit: int) -> tuple[str, str, bytes]:
     raise ValueError("upstream_unavailable")
 
 
-def _tavily_body(query: str, include_raw_content: bool) -> dict:
+def _tavily_body(query: str, include_raw_content: bool, max_results: int = 5, days_back: int | None = None) -> dict:
     """The search request.  A question for the recent end of the news (or for a named span) carries the
     backend's nearest time range, so that old articles are not what comes back."""
-    time_range = search_time_range(query)
-    return {"query": query[:300], "max_results": 5, "search_depth": "basic",
+    time_range = ("day" if days_back <= 1 else "week" if days_back <= 7 else "month" if days_back <= 31 else "year") if days_back else None
+    return {"query": query[:300], "max_results": max_results, "search_depth": "basic",
             "include_raw_content": include_raw_content, "topic": "news",
             **({"time_range": time_range} if time_range else {})}
 
 
-async def _search(query: str, include_raw_content: bool = True) -> list[dict]:
+async def _search(query: str, include_raw_content: bool = True, max_results: int = 5, days_back: int | None = None) -> list[dict]:
     backend = os.getenv("WEB_RESEARCH_BACKEND", "tavily").strip().lower()
     if backend == "tavily":
         key = os.getenv("TAVILY_API_KEY")
@@ -464,9 +454,10 @@ async def _search(query: str, include_raw_content: bool = True) -> list[dict]:
                                      trust_env=False, transport=PinnedPublicTransport(allow_internal_query=True)) as client:
             async with client.stream("POST", "https://api.tavily.com/search",
                                      headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                                     json=_tavily_body(query, include_raw_content)) as response:
-                if response.status_code >= 400:
-                    raise ValueError("search_backend_unavailable")
+                                     json=_tavily_body(query, include_raw_content, max_results, days_back)) as response:
+                if response.status_code == 429:raise ValueError("rate_limited")
+                if response.status_code >= 500:raise ValueError("http_5xx")
+                if response.status_code >= 400:raise ValueError("search_backend_invalid_request_or_key")
                 raw = await _read_bounded(response, MAX_SEARCH_BYTES)
         payload = json.loads(raw)
         rows = payload.get("results", []) if isinstance(payload, dict) else []
@@ -480,7 +471,7 @@ async def _search(query: str, include_raw_content: bool = True) -> list[dict]:
                  "published_at": _valid_timestamp(row.get("published_date") or ""),
                  **({"raw_content_truncated": True} if isinstance(row.get("raw_content"), str)
                     and len(row["raw_content"]) > MAX_EXCERPT else {})}
-                for row in rows[:5] if isinstance(row, dict)]
+                for row in rows[:max_results] if isinstance(row, dict)]
     if backend != "bing_rss":
         raise ValueError("search_backend_unavailable")
     url = "https://www.bing.com/search?q=" + quote_plus(query[:300]) + "&format=rss"
@@ -500,24 +491,26 @@ async def _search(query: str, include_raw_content: bool = True) -> list[dict]:
     return rows
 
 
-async def _research(query_or_url: str) -> dict:
+async def _research(query_or_url: str, days_back: int | None = None, max_results: int = 5, company: str | None = None) -> dict:
     fetched_at = datetime.now(UTC)
     is_url = query_or_url.lower().startswith("https://")
     if is_url:
         candidates = [{"url": validate_public_url(query_or_url), "title": "", "snippet": ""}]
     else:
         try:
-            candidates = await _search(query_or_url)
+            candidates = await _search(query_or_url, max_results=max_results, days_back=days_back)
         except ValueError as exc:
             if str(exc) != "response_too_large":
                 raise
             # One long article can push Tavily's raw_content past the response cap; ask for
             # snippets only and read each page through the normal bounded public fetch.
-            candidates = await _search(query_or_url, include_raw_content=False)
-    if not is_url and window_days(query_or_url) is not None:
+            candidates = await _search(query_or_url, include_raw_content=False, max_results=max_results, days_back=days_back)
+    # Time filtering is controlled by the model's validated days_back argument.
+    # freshness.py remains the bounded parser fallback for legacy direct callers.
+    span = days_back if days_back is not None else window_days(query_or_url)
+    if not is_url and span is not None:
         # A span the user named ("半个月内"): the search backend's range is only the nearest one that holds it,
         # so what is older than the span, or cannot be dated, is left out.
-        span = window_days(query_or_url)
         candidates = [item for item in candidates if published_within(item.get("published_at"), span, fetched_at)]
         if not candidates:
             return {"ok": True, "data": [], "source": "public web search and fetched page excerpts",
@@ -527,7 +520,7 @@ async def _research(query_or_url: str) -> dict:
     started = time.monotonic()
     for result in candidates[:5]:
         usable = sum(1 for source in sources if not source.get("fetch_error"))
-        if usable >= 3 or (usable and len(sources) >= 3 and time.monotonic() - started > 24):
+        if usable >= max_results or (usable and len(sources) >= max_results and time.monotonic() - started > 24):
             break
         try:
             _url, content_type, raw = await _get_public(result["url"], limit=MAX_PAGE_BYTES)
@@ -545,7 +538,7 @@ async def _research(query_or_url: str) -> dict:
             if is_boilerplate_page(page["excerpt"]):
                 raise ValueError("boilerplate_page")
             page["published_at"] = page.get("published_at") or result.get("published_at")
-            _focus_source(page, focus_query)
+            _focus_source(page, focus_query,company)
             sources.append(page)
         except asyncio.CancelledError:
             raise
@@ -559,7 +552,7 @@ async def _research(query_or_url: str) -> dict:
                             "fetched_at": fetched_at.isoformat(), "published_at": result.get("published_at"),
                             "truncated": bool(result.get("raw_content_truncated")) or len(raw_content) > MAX_EXCERPT,
                             "body_provenance": "tavily_extracted_content"}
-                _focus_source(fallback, focus_query)
+                _focus_source(fallback, focus_query,company)
                 sources.append(fallback)
                 continue
             failure=str(exc) if str(exc) in {"challenge_page", "boilerplate_page"} else "page_unavailable"
@@ -567,23 +560,25 @@ async def _research(query_or_url: str) -> dict:
                             "excerpt": "", "search_snippet": result.get("snippet") or None,
                             "fetched_at": fetched_at.isoformat(), "published_at": result.get("published_at"), "fetch_error": failure})
     # Pages that gave text come first (at most three); a failed one is reported only to fill the list.
-    sources = ([source for source in sources if not source.get("fetch_error")][:3]
-               + [source for source in sources if source.get("fetch_error")])[:3]
+    sources = ([source for source in sources if not source.get("fetch_error")][:max_results]
+               + [source for source in sources if source.get("fetch_error")])[:max_results]
+    if span is not None:
+        sources=[r for r in sources if published_within(r.get("published_at"),span,fetched_at)]
     return {"ok": bool(sources), "data": sources,
             "source": "public web search and fetched page excerpts" if not is_url else "public webpage excerpt",
             "as_of": fetched_at.isoformat(), "error_code": None if sources else "web_research_unavailable"}
 
 
 @tool(args_schema=WebResearchArgs)
-async def web_research(query_or_url: str) -> dict:
-    """Search public web sources or read a public HTTPS webpage excerpt. Search snippets are leads, not full-source evidence."""
+async def web_research(query: str = "", days_back: int | None = None, max_results: int = 5, company: str | None = None, query_or_url: str | None = None) -> dict:
+    """Search public web sources or read a public HTTPS page. ALWAYS set days_back for news freshness: recent/latest=7, half a month=15; preserve the interpreted request window. Supply company as named in page text. Search snippets are leads, not evidence."""
     try:
         async with asyncio.timeout(40):
-            return await _research(query_or_url)
+            return await _research(query or query_or_url or "", days_back=days_back, max_results=max_results,company=company)
     except asyncio.CancelledError:
         raise
     except TimeoutError:
         return {"ok": False, "data": [], "source": "public web research", "as_of": None, "error_code": "web_research_timeout"}
     except Exception as exc:
-        code = str(exc) if str(exc) in {"search_backend_key_missing", "search_backend_unavailable", "web_research_unavailable", "web_page_unavailable"} else "web_research_unavailable"
+        code = str(exc) if str(exc) in {"search_backend_key_missing", "search_backend_unavailable", "web_research_unavailable", "web_page_unavailable", "rate_limited", "http_5xx", "search_backend_invalid_request_or_key"} else "web_research_unavailable"
         return {"ok": False, "data": [], "source": "public web research", "as_of": None, "error_code": code}

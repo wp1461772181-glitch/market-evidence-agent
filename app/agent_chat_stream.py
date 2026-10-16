@@ -4,7 +4,7 @@ from urllib.parse import urlsplit, urlunsplit
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from starlette.background import BackgroundTask
-from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
+from pydantic import model_validator, BaseModel, Field, SecretStr, field_validator, model_validator
 from .agent_chat_provider import decision_request, stream_answer
 from .agent_chat_provider import ProviderFailure
 from .agent_chat_api import REQUEST_SLOTS
@@ -60,19 +60,48 @@ def _restore_citations(items,credential):
  from .knowledge.retrieval import _source_hash
  verified=[]; owner=owner_hash(credential); now=datetime.now(UTC)
  with SessionLocal() as session:
-  for fallback_ordinal,item in enumerate(items[:10],1):
+  for fallback_ordinal,item in enumerate(items,1):
    ordinal=item.get('ordinal',fallback_ordinal)
-   if item.get('source_type') in {'saved_filing','saved_ai_analysis'}:
+   if item.get('source_type')=='saved_price':
+    from .models import MarketPrice
+    try:
+     identity=UUID(item.get('source_id',''))
+     source=session.get(MarketPrice,identity)
+     valid=bool(source and source.symbol==item.get('symbol') and source.trading_date.isoformat()==item.get('trading_date')
+       and source.source==item.get('source') and __import__('decimal').Decimal(str(source.close))==__import__('decimal').Decimal(item.get('quote',''))
+       and source.fetched_at.isoformat()==item.get('fetched_at'))
+     if valid:verified.append({**item,'chunk_id':None,'document_id':None,'source_url':None})
+     else:verified.append({'ordinal':ordinal,'chunk_id':None,'title':'来源已失效','section':'','source_url':None,'source_type':'unavailable','truncated':False})
+    except (ValueError,TypeError,AttributeError,ArithmeticError):
+     verified.append({'ordinal':ordinal,'chunk_id':None,'title':'来源已失效','section':'','source_url':None,'source_type':'unavailable','truncated':False})
+    continue
+   if item.get('source_type') in {'research_faq','saved_forecast'} and not item.get('chunk_id'):
+    try:
+     if item['source_type']=='research_faq':
+      from .agent_chat_models import AgentFAQ
+      source=session.scalar(select(AgentFAQ).where(AgentFAQ.question==item.get('question')))
+      valid=bool(source and source.answer==item.get('quote'))
+     else:
+      from .forecast_v2_models import ForecastVersionV2
+      from .agent_tools import forecast_snapshot
+      source=session.get(ForecastVersionV2,UUID(item.get('source_id','')))
+      payload={key:getattr(source,key) for key in ('id','root_id','version_no','decision_at','model_status','decision_probabilities','joint_probabilities','baseline_probabilities','research_brief','created_at')} if source else {}
+      valid=bool(source and source.symbol==item.get('symbol') and forecast_snapshot(payload)==json.loads(item.get('quote','{}')))
+     verified.append(item if valid else {'ordinal':ordinal,'source_type':'unavailable','title':'来源已失效','section':'','truncated':False})
+    except (ValueError,TypeError):verified.append({'ordinal':ordinal,'source_type':'unavailable','title':'来源已失效','section':'','truncated':False})
+    continue
+   if item.get('source_type') in {'saved_filing','saved_ai_analysis','official_filing','ai_analysis'} and not item.get('chunk_id'):
     from .models import SecFilingInventory
     from .models import UploadedEvidence
     from .material_analysis_models import MaterialAnalysisVersion
     from .knowledge.models import KnowledgeUploadOwner
     try:
      identity=UUID(item.get('source_id',''))
-     if item['source_type']=='saved_filing':
+     if item['source_type'] in {'saved_filing','official_filing'}:
       source=session.get(SecFilingInventory,identity)
       valid=bool(source and source.content_status=='fetched' and source.content_excerpt and source.content_excerpt_sha256
-                 and hashlib.sha256(source.content_excerpt.encode()).hexdigest()==source.content_excerpt_sha256)
+                 and hashlib.sha256(source.content_excerpt.encode()).hexdigest()==source.content_excerpt_sha256
+                 and item.get('quote')==__import__('app.agent_tools',fromlist=['_substantive_excerpt'])._substantive_excerpt(source.content_excerpt))
       if valid:
        verified.append({**item,'chunk_id':None,'document_id':None,'source_url':source.content_source_url or source.source_url,
                         'published_at':source.filed_at.isoformat(),'observed_at':source.content_observed_at.isoformat() if source.content_observed_at else None})
@@ -95,6 +124,25 @@ def _restore_citations(items,credential):
     except (ValueError,TypeError):
      verified.append({'ordinal':ordinal,'chunk_id':None,'title':'来源已失效','section':'','source_url':None,'source_type':'unavailable','truncated':False})
     continue
+   if item.get('source_type')=='saved_workspace':
+    from .agent_workflow.workspace_tools import read_workspace
+    from .agent_workflow.state import AgentRuntimeContext
+    try:
+     context=AgentRuntimeContext('custom','restore','',owner_hash=owner,identity_credential=credential)
+     current=read_workspace(item['tool_arguments'],context)
+     if current.get('data') and current['data'][0]['excerpt']==item.get('quote'):verified.append(item)
+     else:verified.append({'ordinal':ordinal,'source_type':'unavailable','title':'来源已失效','section':'','truncated':False})
+    except Exception:verified.append({'ordinal':ordinal,'source_type':'unavailable','title':'来源已失效','section':'','truncated':False})
+    continue
+   if item.get('source_type')=='web_news' and not item.get('chunk_id'):
+    from .agent_workflow.models import AgentWebSource
+    try:
+     source=session.get(AgentWebSource,UUID(item.get('source_id','')))
+     if source and source.owner_hash==owner and source.excerpt==item.get('quote'):
+      verified.append({**item,'source_url':source.source_url,'source_type':'web_news','published_at':source.published_at.isoformat() if source.published_at else None})
+     else:verified.append({'ordinal':ordinal,'source_type':'unavailable','title':'来源已失效','section':'','truncated':False})
+    except (ValueError,TypeError):pass
+    continue
    if item.get('source_type')=='web':
     from .agent_web_research import validate_public_url
     try:
@@ -116,19 +164,18 @@ def _restore_citations(items,credential):
     verified.append({'ordinal':ordinal,'chunk_id':str(chunk_id),'title':'来源已失效','section':'','source_url':None,'observed_at':None,'source_type':'unavailable','truncated':False});continue
    chunk,doc=pair
    permitted=chunk.scope=='public' and doc.scope=='public' and chunk.visibility=='public' and doc.visibility=='public' or chunk.scope=='private' and doc.scope=='private' and chunk.visibility=='private' and doc.visibility=='private' and chunk.owner_hash==owner and doc.owner_hash==owner
-   valid=permitted and str(chunk.document_id)==item.get('document_id') and doc.active and doc.status=='active' and chunk.status=='ready' and not chunk.needs_review and chunk.available_at is not None and chunk.available_at<=now and doc.snapshot_integrity and document_integrity(doc)==doc.snapshot_integrity and chunk.source_hash==doc.source_hash and _source_hash(session,doc)==doc.source_hash and hashlib.sha256(chunk.answer.encode()).hexdigest()==chunk.content_hash and chunk.generation==item.get('generation') and chunk.content_hash==item.get('content_hash') and doc.source_hash==item.get('source_hash') and doc.title[:180]==item.get('title') and chunk.section_path[:180]==item.get('section') and doc.source_type==item.get('source_type') and (doc.source_url==item.get('source_url') and item.get('analysis_version')==doc.source_version and item.get('derived') is True if doc.source_type=='ai_analysis' else item.get('source_url') is None)
-   if valid:verified.append(item)
+   valid=permitted and str(chunk.document_id)==item.get('document_id') and doc.active and doc.status=='active' and chunk.status=='ready' and not chunk.needs_review and chunk.available_at is not None and chunk.available_at<=now and doc.snapshot_integrity and document_integrity(doc)==doc.snapshot_integrity and chunk.source_hash==doc.source_hash and _source_hash(session,doc)==doc.source_hash and hashlib.sha256(chunk.answer.encode()).hexdigest()==chunk.content_hash and chunk.generation==item.get('generation') and chunk.content_hash==item.get('content_hash') and doc.source_hash==item.get('source_hash') and doc.title[:180]==item.get('title') and chunk.section_path[:180]==item.get('section') and doc.source_type==item.get('source_type') and (doc.source_url==item.get('source_url') and item.get('analysis_version')==doc.source_version and item.get('derived') is True if doc.source_type=='ai_analysis' else (doc.source_url==item.get('source_url') if doc.source_type=='web_news' else item.get('source_url') is None))
+   if valid and (not item.get('quote') or item['quote']==chunk.answer[:5000]):verified.append(item)
    else:verified.append({'ordinal':ordinal,'chunk_id':str(chunk.id),'title':'来源已失效','section':'','source_url':None,'observed_at':None,'source_type':'unavailable','truncated':False})
  return verified
 class StreamRequest(BaseModel):
- provider:str=Field(pattern="^(deepseek|kimi|minimax|qwen|zhipu|doubao|hunyuan|baidu|siliconflow|openrouter|custom)$"); base_url:str|None=Field(default=None,max_length=2048); model:str=Field(min_length=1,max_length=160,pattern=r"^[A-Za-z0-9._:/-]+$"); api_key:SecretStr; message:str=Field(min_length=1,max_length=4000); conversation_id:str|None=None; pending_request_id:str|None=Field(default=None,max_length=36); display_message:str|None=Field(default=None,max_length=120); watchlist:list[str]|None=Field(default=None,max_length=30)
- @field_validator("watchlist")
+ @model_validator(mode="before")
  @classmethod
- def clean_watchlist(cls,value):
-  # The research queue the client holds, only to decide whether a company needs the add-or-not card.
-  if value is None:return None
-  from .agent_chat_store import clean_queue
-  return clean_queue(value)
+ def ignore_legacy_queue(cls,value):
+  if isinstance(value,dict):return {key:item for key,item in value.items() if key!='watchlist'}
+  return value
+
+ provider:str=Field(pattern="^(deepseek|kimi|minimax|qwen|zhipu|doubao|hunyuan|baidu|siliconflow|openrouter|custom)$"); base_url:str|None=Field(default=None,max_length=2048); model:str=Field(min_length=1,max_length=160,pattern=r"^[A-Za-z0-9._:/-]+$"); api_key:SecretStr; message:str=Field(min_length=1,max_length=4000); conversation_id:str|None=None; pending_request_id:str|None=Field(default=None,max_length=36); display_message:str|None=Field(default=None,max_length=120)
  @field_validator("base_url")
  @classmethod
  def valid_endpoint(cls,value):
@@ -306,7 +353,7 @@ async def stream_chat(payload:StreamRequest,request:Request,x_chat_session:str|N
    async for event in stream_workflow(question=payload.message,messages=messages,provider=payload.provider,model=payload.model,
      api_key=payload.api_key.get_secret_value(),base_url=payload.base_url,owner_hash=owner_hash(x_chat_session),
      conversation_id=cid,identity_credential=x_chat_session,turn_id=turn,pending_request_id=payload.pending_request_id,
-     legacy_result_sets=legacy_result_sets,legacy_source_choices=legacy_source_choices,watchlist=payload.watchlist):
+     legacy_result_sets=legacy_result_sets,legacy_source_choices=legacy_source_choices):
     kind=event.get("event")
     if kind=="assistant_tool_request":
      await append_message(cid,turn,"assistant","",tool_calls=event["protocol"])
@@ -323,13 +370,15 @@ async def stream_chat(payload:StreamRequest,request:Request,x_chat_session:str|N
      yield frame("tool_result",{key:event[key] for key in ("call_id","name","result")})
     elif kind=="tool_start":
      yield frame("tool_start",{key:event[key] for key in ("call_id","name","arguments")})
+    elif kind=="client_action":
+     yield frame("client_action",{key:value for key,value in event.items() if key!="event"})
     elif kind=="delta":
      text_out+=event["text"]
      yield frame("delta",{"text":event["text"]})
     elif kind=="status":
      yield frame("status",{"status":event["status"],**({"step":event["step"]} if "step" in event else {})})
     elif kind=="clarification":
-     yield frame("clarification",{key:event[key] for key in ("request_id","reason","choices")})
+     yield frame("clarification",{key:event.get(key) for key in ("request_id","reason","choices","display","question")})
     elif kind=="done":
      terminal=True
      citation_sidecar=event.get("citations",[])
@@ -339,11 +388,11 @@ async def stream_chat(payload:StreamRequest,request:Request,x_chat_session:str|N
      if event.get("pending_request"):
       pending=event["pending_request"]
       protocol["clarification"]={"request_id":pending["id"],"reason":pending.get("reason"),
-                                 "choices":pending.get("choices") or _legacy_clarification_choices(pending.get("reason"))}
+                                 "choices":pending.get("choices") or _legacy_clarification_choices(pending.get("reason")),"display":pending.get("display"),"question":pending.get("question")}
      if restored:protocol["citations"]=restored
      if event.get("reason") in {"retrieval_unavailable","zero_evidence","web_page_excerpt_unavailable","missing_source_coverage","publisher_date_unavailable"} or str(event.get("reason","")).startswith(("requested_","weak_")):
       await asyncio.to_thread(_record_low_confidence,payload.message,cid,turn,owner_hash(x_chat_session),event["reason"])
-     await append_message(cid,turn,"assistant",text_out,tool_calls=protocol)
+     await append_message(cid,turn,"assistant",text_out,tool_calls=protocol,status="failed" if event.get("status")=="failed" else "complete")
      await finish_conversation(cid,"active")
      from .agent_context_summary import schedule_summary
      schedule_summary(cid,x_chat_session,provider=payload.provider,model=payload.model,

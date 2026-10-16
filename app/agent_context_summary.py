@@ -96,7 +96,7 @@ def validate_summary(raw, source: str) -> str:
         raise SummaryRejected("empty")
     if len(text) > SEGMENT_MAX_CHARS:
         raise SummaryRejected("too_long")
-    if named_companies(text, _COMPANY_LIMIT) - named_companies(source, _COMPANY_LIMIT):
+    if any(entity.casefold() not in source.casefold() for entity in named_companies(text, _COMPANY_LIMIT)):
         raise SummaryRejected("ungrounded_company")
     # A time of day is a way of writing what the user said ("下午三点" as "15:00"), not an amount.
     if figure_values(_CLOCK_TIME.sub(" ", text)) - figure_values(source, zh=True):

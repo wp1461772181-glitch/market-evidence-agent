@@ -58,6 +58,10 @@ jobs:
         working-directory: frontend
         run: npm ci
 
+      - name: Test frontend behavior and translations
+        working-directory: frontend
+        run: npm run test:i18n
+
       - name: Build frontend
         working-directory: frontend
         run: npm run build

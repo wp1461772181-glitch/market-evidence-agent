@@ -1110,5 +1110,8 @@
   "“剩余”指本产品的上下文预算，不是模型窗口；token 为按 字节÷4 的估算。": "“Free” is this product's context budget, not the model's window. Tokens are estimated as bytes ÷ 4.",
   "这只股票不在研究队列里": "This stock is not in your research queue",
   "加入研究队列并查询": "Add to the research queue and search",
-  "不加入，只看这次": "Don't add, just this once"
+  "不加入，只看这次": "Don't add, just this once",
+  "知识库日期": "Saved source date",
+  "网页日期": "Web publication date",
+  "确认有效期为十分钟；改变目标需要重新确认。": "Confirmation expires in ten minutes. Changed targets require a new confirmation."
 }

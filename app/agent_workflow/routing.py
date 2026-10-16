@@ -1,74 +1,22 @@
+"""Validated four-class routing contract; tool choice belongs to the agent."""
 from __future__ import annotations
-
 import json
-import re
-from typing import Any
+from typing import Literal
+from pydantic import BaseModel,ConfigDict,Field
+class Routing(BaseModel):
+    model_config=ConfigDict(extra='forbid')
+    category:str=Field(pattern='^[ABCD]$')
+    query:str=Field(default='',max_length=400)
+    symbol:str|None=None
+    company:str|None=None
+    metrics:list[Literal['revenue','profit','eps','cash_flow','debt','price','date','forecast']]=Field(default_factory=list,max_length=6,description='Canonical requested metrics only. Publication/report dates use date; saved stock prices use price. Do not invent metric names or infer profit merely from earnings-news wording.')
+    period:str|None=Field(default=None,max_length=160,description='Only a fiscal/report period explicitly requested by the user. Do not infer a current year or quarter from latest/recent; publication freshness belongs in days_back.')
+    financial_only:bool=Field(default=False,description="True for financial reports/财报; restrict saved latest report to 10-K or 10-Q, excluding 8-K notices.")
+    latest:bool=False
+    form:Literal['10-K','10-Q','8-K']|None=Field(default=None,description='Only an explicitly requested form. For latest 财报 with no form, leave null and use financial_only=true to compare 10-K and 10-Q together.')
+    days_back:int|None=Field(...,ge=1,le=366,description='Required. For recent/latest news use 7; half a month uses 15; explicit duration overrides; null only if no news freshness window was requested.')
+    max_results:int=Field(default=5,ge=1,le=5)
+    answer:str|None=None
 
-from ..symbols import normalize_market_symbol
-
-INTENTS = frozenset({
-    "saved_data", "source_qa", "analysis_qa", "faq_qa",
-    "compound_research", "web_research", "general", "unsupported_action",
-})
-ROUTES = {
-    "saved_data": ("query_stock_prices", False),
-    "source_qa": ("query_materials", True),
-    "analysis_qa": ("search_material_analysis", True),
-    "faq_qa": ("query_research_faq", True),
-    "compound_research": ("query_materials", True),
-    "web_research": ("web_research", True),
-    "general": (None, False),
-    "unsupported_action": (None, False),
-}
-
-
-def classify_intent(raw: str) -> dict[str, Any]:
-    """Parse the model's constrained classifier response; malformed labels clarify."""
-    try:
-        value = json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
-        return {"intent": "clarify", "symbol": None, "material_id": None}
-    if not isinstance(value, dict) or value.get("intent") not in INTENTS:
-        return {"intent": "clarify", "symbol": None, "material_id": None}
-    symbol = value.get("symbol")
-    if symbol is not None:
-        if not isinstance(symbol, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9.-]{0,11}", symbol):
-            return {"intent": "clarify", "symbol": None, "material_id": None}
-        try:
-            symbol = normalize_market_symbol(symbol)
-        except (ValueError, TypeError):
-            return {"intent": "clarify", "symbol": None, "material_id": None}
-    material_id = value.get("material_id")
-    if material_id is not None and (not isinstance(material_id, str) or len(material_id) > 128):
-        return {"intent": "clarify", "symbol": None, "material_id": None}
-    symbols = value.get("symbols") or ([symbol] if symbol else [])
-    if not isinstance(symbols, list) or len(symbols) > 5:
-        return {"intent": "clarify", "symbol": None, "material_id": None}
-    try:
-        symbols = list(dict.fromkeys(normalize_market_symbol(item) for item in symbols
-                                      if isinstance(item, str) and re.fullmatch(r"[A-Za-z][A-Za-z0-9.-]{0,11}", item)))
-    except (ValueError, TypeError):
-        return {"intent": "clarify", "symbol": None, "material_id": None}
-    if symbol and symbol not in symbols:
-        symbols.insert(0, symbol)
-    if symbol is None and len(symbols) == 1:
-        symbol = symbols[0]
-    return {"intent": value["intent"], "symbol": symbol, "symbols": symbols, "material_id": material_id,
-            "web_required": value.get("web_required") is True,
-            "original_required": value.get("original_required", value["intent"] == "compound_research") is True,
-            "analysis_required": value.get("analysis_required") is True}
-
-
-def route_for_intent(intent: str) -> tuple[str | None, bool]:
-    return ROUTES.get(intent, (None, False))
-
-
-def resolve_focus(current_symbol: str | None, current_material: str | None,
-                  entities: dict[str, Any]) -> tuple[str | None, str | None]:
-    symbol = entities.get("symbol") or current_symbol
-    material_id = entities.get("material_id")
-    if material_id is None and entities.get("symbol") and entities["symbol"] != current_symbol:
-        material_id = None
-    elif material_id is None:
-        material_id = current_material
-    return symbol, material_id
+def parse_route(value):
+    return Routing.model_validate(json.loads(value) if isinstance(value,str) else value)

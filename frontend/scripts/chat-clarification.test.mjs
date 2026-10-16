@@ -58,12 +58,24 @@ test('only the last waiting live card can submit', () => {
   assert.equal(isActiveClarification([{...card,status:'cancelled'}],0,false),false);
 });
 
-test('the research-queue card keeps its two server-made buttons and a title', () => {
+test('legacy research-queue clarification payload is tolerated without a dedicated route', () => {
   const card=normalizeClarification({request_id:'11111111-1111-4111-8111-111111111111',reason:'company_not_in_queue',
     choices:[{label:'加入研究队列并查询',value:'queue_add:MU'},{label:'不加入，只看这次',value:'queue_view:MU'}]});
   assert.equal(card.choices.length,2);
-  assert.equal(clarificationTitle(card),'这只股票不在研究队列里');
+  assert.equal(clarificationTitle(card),'请补充信息');
   assert.deepEqual(selectedClarification(card,'queue_view:MU'),
     {message:'queue_view:MU',pendingRequestId:'11111111-1111-4111-8111-111111111111'});
   assert.throws(() => selectedClarification(card,'queue_add:AMD'), /invalid_clarification_choice/);
+});
+
+test('new confirmation cards retain reviewable dates, URL and frozen targets',()=>{
+ const card=normalizeClarification({request_id:'11111111-1111-4111-8111-111111111111',reason:'write_confirmation',display:{title:'保存网页',saved_date:'2026-10-01',web_date:'2026-10-14',url:'https://example.org/news',alternative:'也可抓取 SEC',targets:[{symbol:'AMD',days:366}]},choices:[{label:'同意',value:'confirm:abcdefghijklmnopqrstuv0123456789-abcd'}]});
+ assert.equal(card.display.saved_date,'2026-10-01');assert.equal(card.display.web_date,'2026-10-14');
+ assert.equal(card.display.targets[0].days,'366');assert.equal(card.choices.length,1);
+});
+
+test('a batch confirmation keeps the dates beside each individual target',()=>{
+ const card=normalizeClarification({request_id:'11111111-1111-4111-8111-111111111111',reason:'write_confirmation',display:{targets:[{title:'First',url:'https://example.org/1',saved_date:'2026-10-01',web_date:'2026-10-14'},{title:'Second',url:'https://example.org/2',saved_date:'2026-10-02',web_date:'2026-10-15'}]},choices:[]});
+ assert.equal(card.display.targets[0].saved_date,'2026-10-01');
+ assert.equal(card.display.targets[1].web_date,'2026-10-15');
 });

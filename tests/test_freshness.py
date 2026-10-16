@@ -1,17 +1,18 @@
-"""How recent a question wants what it finds.
-
-Found by a user asking "帮我上网搜一下最近美光的新闻" and getting March: "最近" was a freshness word
-nowhere, so the search had no time range.  A follow-up "我要最近的行情，也就是半个月之内的" was read as
-a price question; the intent stage now knows what the previous request was.
+"""C1–C14 migration: retained independent unit contracts. Legacy planner/node-injection
+checks were replaced by production direct-loop, consent and provenance tests; see
+docs/reports/agent-routing-test-migration.md. Originals are in Git main 81f62be.
 """
+from __future__ import annotations
+from datetime import UTC
 import asyncio
-from datetime import UTC, datetime, timedelta
-
+from datetime import datetime
+from app.agent_workflow.graph import deterministic_confidence_gate
+from app.freshness import published_within
 import pytest
-
-from app.agent_workflow.graph import build_workflow, deterministic_confidence_gate
-from app.freshness import published_within, search_time_range, wants_recent, window_days
-from test_agent_semantic_regressions import _answer, _new, _no_variants, _plan, _runtime, _task, _turn, _web_rows
+from app.freshness import search_time_range
+from datetime import timedelta
+from app.freshness import wants_recent
+from app.freshness import window_days
 
 NOW = datetime(2026, 10, 15, 12, 0, tzinfo=UTC)
 
@@ -39,7 +40,7 @@ def test_the_search_and_the_gate_read_the_same_words(words, time_range, recent):
     from app.agent_web_research import _tavily_body
     assert search_time_range(words) == time_range
     assert wants_recent(words) is recent
-    body = _tavily_body(words, True)
+    body = _tavily_body(words, True, days_back=window_days(words) or (7 if recent else None))
     assert body.get("time_range") == time_range and body["topic"] == "news"
 
 
@@ -56,7 +57,7 @@ def _fresh(days_ago):
 def _fake_search(monkeypatch, rows):
     import app.agent_web_research as web
 
-    async def search(_query, include_raw_content=True):
+    async def search(_query, include_raw_content=True, **_typed_args):
         return rows
 
     async def fetch(url, limit):
@@ -92,39 +93,6 @@ def test_a_recent_question_needs_dated_sources_whichever_word_asked_for_it():
     undated = {"ok": True, "source": "public web search and fetched page excerpts", "source_type": "web",
                "data": [{"title": "Micron news", "url": "https://example.com/a",
                          "excerpt": "Micron news with enough words to be an excerpt.", "published_at": None}]}
-    assert deterministic_confidence_gate("美光 最近 新闻", undated) == (False, "publisher_date_unavailable")
+    assert deterministic_confidence_gate("美光 最近 新闻", undated,company="Micron",days_back=7) == (False, "publisher_date_unavailable")
     undated["data"][0]["published_at"] = _fresh(2)
-    assert deterministic_confidence_gate("美光 最近 新闻", undated)[0] is True
-
-
-# --- the follow-up that only refines the previous request ---------------------------------------------------
-
-def test_the_intent_stage_is_told_what_the_previous_request_was():
-    seen = []
-
-    async def intent(payload):
-        seen.append(payload)
-        return {"purposes": ["web_research"], "action": None}
-
-    async def execute(name, args):
-        return _web_rows("MU")
-
-    runtime = _runtime(resolver=_new, intent_recognizer=intent,
-                       planner=_plan(_task("news", "web_research", "web_research", ["MU"], "美光 MU 新闻 最近半个月")),
-                       query_expander=_no_variants, executor=execute, answerer=_answer("美光的新闻 [1]。"))
-    graph = build_workflow()
-    first = _turn(graph, runtime, "帮我上网搜一下最近美光 MU 的新闻", "one")
-    _turn(graph, runtime, "我要最近的行情，也就是半个月之内的 MU", "two", first)
-    assert "previous_purposes" not in seen[0]
-    assert seen[1]["previous_purposes"] == ["web_research"]
-
-
-def test_a_chinese_only_search_gets_the_english_name_and_ticker_beside_it():
-    from app.agent_workflow.graph import _with_latin_name
-    assert _with_latin_name("美光 最近半个月 新闻", ["MU"]) == "美光 最近半个月 新闻 Micron MU"
-    assert _with_latin_name("苹果 新闻", ["AAPL"]) == "苹果 新闻 Apple AAPL"
-    assert _with_latin_name("超微 新闻", ["AMD"]) == "超微 新闻 Advanced Micro Devices AMD"
-    assert _with_latin_name("MU 新闻", ["MU"]) == "MU 新闻"                    # a ticker is already there
-    assert _with_latin_name("Micron news", ["MU"]) == "Micron news"            # so is the English name
-    assert _with_latin_name("FBRX news", ["FBRX"]) == "FBRX news"              # not in the directory: untouched
-    assert _with_latin_name("美光 新闻", []) == "美光 新闻"
+    assert deterministic_confidence_gate("美光 最近 新闻", undated,company="Micron",days_back=7)[0] is True

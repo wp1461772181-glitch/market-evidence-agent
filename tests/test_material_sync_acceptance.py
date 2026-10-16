@@ -100,7 +100,7 @@ def test_indexing_disabled_still_advances_all_material_sources(monkeypatch):
         executor=SimpleNamespace(run_background_sync=lambda *_: (_ for _ in ()).throw(AssertionError("indexing must be disabled"))),
         embedder=object(),index=object())
     source_sync.sync_sources_once(lambda:None,runtime,object())
-    assert seen == [("faq",5),("sec",5),("upload",5),("analysis",5)]
+    assert seen == [("faq",5),("sec",5),("upload",5),("analysis",5),("web",5)]
 
 
 def test_recovery_cannot_start_a_new_runtime_after_shutdown(monkeypatch):

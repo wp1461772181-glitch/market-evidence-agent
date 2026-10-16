@@ -21,10 +21,6 @@ class ActionError(ValueError):
         self.code = code
 
 
-def is_unsupported_news_upload(question: str) -> bool:
-    return bool(re.search(r"(?:上传|导入|保存|upload|import|save).{0,40}(?:新闻|网页|web\s*news|web\s*url)|(?:新闻|网页|web\s*news).{0,40}(?:上传|导入|保存|upload|import|save)", question, re.I))
-
-
 def _word(token: str) -> str:
     """An ASCII word that is not part of a longer one (CJK neighbours are fine)."""
     return rf"(?<![a-z]){token}(?![a-z])"
@@ -300,6 +296,11 @@ def execute_action(*, credential: str, request_key: str, action: str,
                 # A source id never widens a request scoped to another stock (the accession path
                 # above already enforces this).
                 if symbol and found != symbol: raise ActionError("source_symbol_mismatch")
+            elif source_type == "ai_analysis" and action == "import":
+                from ..knowledge.analysis_sources import load_analysis_document
+                document=load_analysis_document(db,source_id)
+                if not document or (document.scope=='private' and document.owner_hash!=identity):raise ActionError("source_not_owned")
+                if symbol and document.symbol!=symbol:raise ActionError("source_symbol_mismatch")
             else: raise ActionError("unsupported_source_type")
         row_id = uuid.uuid4()
         db.execute(text("""INSERT INTO agent_action_requests

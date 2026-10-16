@@ -5,13 +5,29 @@ from urllib.parse import unquote
 from urllib.error import HTTPError
 
 from app.news_discovery import (
-    GdeltDocSource,
+    GdeltDocSource as _GdeltDocSource,
+    DiscoveryScope,
     SourceAttempt,
-    TechCrunchRssSource,
+    TechCrunchRssSource as _TechCrunchRssSource,
     discover_news_candidates,
 )
 from app.news_discovery import _validate_symbol
 
+
+
+# Synthetic caller configuration, not a production company directory.
+TEST_SCOPES={
+    'AAPL': DiscoveryScope(**{'query': 'Apple', 'match_terms': ('apple', 'iphone', 'ipad', 'mac', 'app store'), 'excluded_terms': ('apple pie', 'apple tree', 'apple orchard'), 'rss_tag': 'apple'}),
+    'MSFT': DiscoveryScope(**{'query': 'Microsoft', 'match_terms': ('microsoft', 'azure', 'xbox', 'windows', 'linkedin'), 'excluded_terms': (), 'rss_tag': 'microsoft'}),
+    'GOOGL': DiscoveryScope(**{'query': 'Google OR Alphabet', 'match_terms': ('google', 'alphabet', 'youtube', 'android', 'waymo'), 'excluded_terms': (), 'rss_tag': 'google'}),
+    'AMZN': DiscoveryScope(**{'query': 'Amazon', 'match_terms': ('amazon', 'aws', 'amazon.com', 'prime video'), 'excluded_terms': ('rainforest', 'rain forest', 'amazon river'), 'rss_tag': 'amazon'}),
+    'NVDA': DiscoveryScope(**{'query': 'NVIDIA', 'match_terms': ('nvidia', 'geforce', 'cuda', 'jensen huang'), 'excluded_terms': (), 'rss_tag': 'nvidia'}),
+    'META': DiscoveryScope(**{'query': 'Meta Platforms', 'match_terms': ('meta platforms', 'facebook', 'instagram', 'threads', 'whatsapp'), 'excluded_terms': (), 'rss_tag': 'meta'}),
+    'TSLA': DiscoveryScope(**{'query': 'Tesla', 'match_terms': ('tesla', 'electric vehicle', 'ev', 'elon musk'), 'excluded_terms': (), 'rss_tag': 'tesla'}),
+}
+
+def GdeltDocSource(**kwargs):return _GdeltDocSource(scopes=TEST_SCOPES,**kwargs)
+def TechCrunchRssSource(**kwargs):return _TechCrunchRssSource(scopes=TEST_SCOPES,**kwargs)
 
 RUN_AT = datetime(2026, 9, 25, 2, 5, tzinfo=UTC)
 
@@ -198,3 +214,12 @@ def test_candidates_are_newest_first_by_published_or_seen_time_with_undated_last
         "Apple announces the older update",
         "Apple announces an undated update",
     ]
+
+
+def test_default_metadata_discovery_does_not_know_company_aliases_or_tags():
+    urls=[]
+    source=_GdeltDocSource(http_get=lambda url,_:(urls.append(url) or _gdelt_payload([])))
+    assert source.discover(symbol='AAPL',discovered_at=RUN_AT).status=='empty'
+    assert '"AAPL"' in unquote(urls[0]) and 'Apple' not in unquote(urls[0])
+    tag=_TechCrunchRssSource(http_get=lambda *_:(_ for _ in ()).throw(AssertionError('unconfigured tag fetched')))
+    assert tag.discover(symbol='AAPL',discovered_at=RUN_AT).status=='unsupported'

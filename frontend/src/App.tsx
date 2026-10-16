@@ -54,6 +54,18 @@ function WorkspaceApp({onModeChange}:{onModeChange:(mode:"guest"|"personal")=>vo
     const ticker = normalizeTicker(raw);
     if (ticker) setSymbols(items => items.includes(ticker) || items.length >= MAX_WATCHLIST ? items : [...items, ticker]);
   }), []);
+  useEffect(() => {
+    const receive = (event: Event) => {
+      const action = (event as CustomEvent).detail;
+      if (action.action === "queue_add") setSymbols(items => items.includes(action.symbol) || items.length >= MAX_WATCHLIST ? items : [...items, action.symbol]);
+      if (action.action === "queue_remove") setSymbols(items => items.filter(item => item !== action.symbol));
+      if (action.action === "queue_sync") setSymbols(action.symbols);
+      if (action.action === "select_stock") setRequestedSymbol(action.symbol);
+      if (action.action === "open_page") window.location.hash = ({predictions:"forecast",sec:"evidence",knowledge:"admin"} as Record<string,string>)[action.page] ?? action.page;
+    };
+    window.addEventListener("market-evidence-agent:client-action", receive);
+    return () => window.removeEventListener("market-evidence-agent:client-action", receive);
+  }, []);
   // The owner's queue lives in the database (clearing the browser must not clear it); a guest's stays in the
   // browser.  The browser copy is the cache: it shows at once, and the server's copy replaces it when read.
   const personal = getChatMode() === "personal";

@@ -4,7 +4,7 @@ import asyncio
 
 def test_fixed_read_only_registry_and_provider_schemas():
     assert set(TOOL_REGISTRY) == {"query_stock_prices", "query_latest_forecast", "query_materials", "query_sec_filings", "query_research_faq", "query_material_analysis", "search_material_analysis", "web_research"}
-    assert {x["function"]["name"] for x in tool_schemas()} == set(TOOL_REGISTRY)
+    assert set(TOOL_REGISTRY) <= {x["function"]["name"] for x in tool_schemas()}
     assert normalize_agent_symbol(" brk-b ") == "BRK.B"
     assert normalize_agent_symbol("amd") == "AMD"
 
@@ -19,7 +19,7 @@ def test_tool_schemas_are_strict_and_limited():
     else:
         raise AssertionError("unknown fields must be rejected")
     assert price.model_validate({"symbol": "BRK-B"}).symbol == "BRK.B"
-    assert price.model_json_schema()["properties"]["limit"]["maximum"] == 30
+    assert price.model_json_schema()["properties"]["limit"]["maximum"] == 366
 
 
 def test_sec_without_form_omits_nullable_parameter(monkeypatch):

@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "test:i18n": "node --test scripts/i18n.test.mjs scripts/model-profiles.test.mjs scripts/model-profile-backup.test.mjs scripts/model-discovery.test.mjs scripts/model-profiles-parent.test.mjs scripts/agent-chat-lifecycle.test.mjs scripts/agent-chat-url.test.mjs scripts/watchlist.test.mjs scripts/chat-archive.test.mjs scripts/chat-identity.test.mjs scripts/chat-mode-switch.test.mjs scripts/chat-session.test.mjs scripts/markdown-render.test.mjs scripts/chat-thread.test.mjs scripts/api-errors.test.mjs scripts/chat-clarification.test.mjs scripts/context-usage.test.mjs scripts/watchlist-bridge.test.mjs"
+    "test:i18n": "node --test scripts/i18n.test.mjs scripts/model-profiles.test.mjs scripts/model-profile-backup.test.mjs scripts/model-discovery.test.mjs scripts/model-profiles-parent.test.mjs scripts/agent-chat-lifecycle.test.mjs scripts/agent-chat-url.test.mjs scripts/watchlist.test.mjs scripts/chat-archive.test.mjs scripts/chat-identity.test.mjs scripts/chat-mode-switch.test.mjs scripts/chat-session.test.mjs scripts/markdown-render.test.mjs scripts/chat-thread.test.mjs scripts/api-errors.test.mjs scripts/chat-clarification.test.mjs scripts/context-usage.test.mjs scripts/watchlist-bridge.test.mjs scripts/agent-client-actions.test.mjs"
   },
   "dependencies": {
     "react": "19.3.0",

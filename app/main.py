@@ -36,6 +36,7 @@ from .agent_chat_stream import router as agent_chat_stream_router
 from .knowledge.api import router as knowledge_router
 from .agent_chat_identity import router as agent_chat_identity_router
 from .agent_chat_models import AgentConversation, AgentMessage, AgentFAQ
+from .agent_workflow.models import AgentConsent, AgentWebSource
 from .agent_faq_seed import seed_faq
 from .material_analysis_api import router as material_analysis_router
 from .localization_api import router as localization_router

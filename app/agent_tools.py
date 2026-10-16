@@ -96,7 +96,10 @@ class SymbolArgs(BaseModel):
     @classmethod
     def valid(cls, value): return normalize_agent_symbol(value)
 class PriceArgs(SymbolArgs):
-    limit: int = Field(default=5, ge=1, le=30)
+    limit: int = Field(default=5, ge=1, le=366)
+    days: int | None = Field(default=None,ge=1,le=3660)
+    start: str | None = Field(default=None,pattern=r"^\d{4}-\d{2}-\d{2}$")
+    end: str | None = Field(default=None,pattern=r"^\d{4}-\d{2}-\d{2}$")
 class MaterialArgs(SymbolArgs):
     keyword: str = Field(min_length=1, max_length=80)
     source_id: str | None = Field(default=None, max_length=36)
@@ -107,6 +110,7 @@ class FilingArgs(SymbolArgs):
     source_id: str | None = Field(default=None, max_length=36)
     filed_year: int | None = Field(default=None, ge=1990, le=2100)
     financial_only: bool = False
+    latest: bool = False
     limit: int = Field(default=5, ge=1, le=10)
 class FAQArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -144,10 +148,26 @@ async def _expanded_retrieval(function, symbol: str, keyword: str, limit: int, s
     return {**first,"data":rows[:limit],"as_of":max((str(row.get("observed_at")) for row in rows if isinstance(row,dict) and row.get("observed_at")),default=first.get("as_of"))}
 
 @tool(args_schema=PriceArgs)
-async def query_stock_prices(symbol: str, limit: int = 5) -> dict:
+async def query_stock_prices(symbol: str, limit: int = 5, days: int | None = None, start: str | None = None, end: str | None = None) -> dict:
     """Read saved daily stock prices; this is not a live quote."""
-    rows = await _query("SELECT symbol, trading_date, open, high, low, close, volume, source, fetched_at FROM market_prices WHERE symbol=:symbol ORDER BY trading_date DESC LIMIT :limit", {"symbol":symbol,"limit":limit})
+    from datetime import date,timedelta
+    try:
+        lower=date.fromisoformat(start) if start else (datetime.now(UTC).date()-timedelta(days=days) if days else None)
+        upper=date.fromisoformat(end) if end else datetime.now(UTC).date()
+        if (days and start) or (lower and lower>upper):raise ValueError
+    except ValueError:return {"ok":False,"data":[],"error_code":"invalid_date_range"}
+    filters=" AND trading_date<=CAST(:upper AS date)"+(" AND trading_date>=CAST(:lower AS date)" if lower else "")
+    rows = await _query("SELECT id, symbol, trading_date, open, high, low, close, volume, source, fetched_at FROM market_prices WHERE symbol=:symbol"+filters+" ORDER BY trading_date DESC LIMIT :limit", {"symbol":symbol,"limit":limit,"lower":str(lower) if lower else None,"upper":str(upper)})
     return {"ok":True,"data":[{k:_json(v) for k,v in r.items()} for r in rows],"source":"market_prices","as_of":_json(rows[0]["fetched_at"]) if rows else None}
+
+def forecast_snapshot(row):
+    """The exact saved forecast projection shared by read tools and citation restore."""
+    brief=row.get('research_brief')
+    probabilities=next((row.get(k) for k in ('decision_probabilities','joint_probabilities','baseline_probabilities') if row.get(k) not in (None,'null')),None)
+    data={k:_json(v) for k,v in row.items() if k not in ('research_brief','decision_probabilities','joint_probabilities','baseline_probabilities')}
+    data['probabilities']=probabilities
+    data['research_brief_summary']=str(brief)[:1200] if brief is not None else None
+    return data
 
 @tool(args_schema=SymbolArgs)
 async def query_latest_forecast(symbol: str) -> dict:
@@ -156,11 +176,7 @@ async def query_latest_forecast(symbol: str) -> dict:
         rows = await _query("SELECT id, root_id, version_no, decision_at, model_status, decision_probabilities, joint_probabilities, baseline_probabilities, research_brief, created_at FROM forecast_versions_v2 WHERE symbol=:symbol AND root_id IN (SELECT id FROM forecast_versions_v2 WHERE symbol=:symbol AND root_id=id ORDER BY created_at DESC, id DESC LIMIT 1) ORDER BY version_no DESC, created_at DESC, id DESC LIMIT 1", {"symbol":symbol})
         if rows:
             row=rows[0]
-            brief=row.get("research_brief")
-            probabilities=next((row.get(k) for k in ("decision_probabilities","joint_probabilities","baseline_probabilities") if row.get(k) not in (None, "null")),None)
-            data={k:_json(v) for k,v in row.items() if k not in ("research_brief","decision_probabilities","joint_probabilities","baseline_probabilities")}
-            data["probabilities"] = probabilities
-            data["research_brief_summary"]=(str(brief)[:1200] if brief is not None else None)
+            data=forecast_snapshot(row)
             return {"ok":True,"data":[data],"source":"forecast_versions_v2 workspace current root","as_of":_json(row["created_at"])}
         return {"ok":True,"data":[],"source":"forecast_versions_v2 workspace current root","as_of":None}
     except Exception:
@@ -207,11 +223,12 @@ async def search_material_analysis(symbol: str, keyword: str, source_id: str | N
 @tool(args_schema=FilingArgs)
 async def query_sec_filings(symbol: str, form: str | None = None, accession_number: str | None = None,
                             source_id: str | None = None, filed_year: int | None = None,
-                            financial_only: bool = False, limit: int = 5) -> dict:
+                            financial_only: bool = False, latest: bool = False, limit: int = 5) -> dict:
     """Read saved SEC filing inventory without contacting SEC."""
     from .knowledge.runtime import current_research_context
     context=current_research_context()
     cutoff=context.cutoff if context and context.cutoff else datetime.now(UTC)
+    if latest:limit=1
     filters=""
     params={"symbol":symbol,"limit":min(50,max(20,limit*5)),"cutoff":cutoff}
     if form is not None: filters+=" AND form=:form";params["form"]=form
@@ -222,7 +239,7 @@ async def query_sec_filings(symbol: str, form: str | None = None, accession_numb
         filters+=" AND id=CAST(:source_id AS uuid)";params["source_id"]=source_id
     if filed_year is not None: filters+=" AND EXTRACT(YEAR FROM filed_at)=:year";params["year"]=filed_year
     if financial_only: filters+=" AND form IN ('10-K','10-Q')"
-    rows=await _query("SELECT id, accession_number, form, filed_at, source_url, content_source_url, content_status, content_truncated, content_excerpt_sha256, content_excerpt, observed_at FROM sec_filing_inventory WHERE symbol=:symbol AND content_status='fetched' AND observed_at<=:cutoff AND content_observed_at<=:cutoff AND filed_at<=CAST(:cutoff AS date)"+filters+" ORDER BY filed_at DESC, accession_number DESC LIMIT :limit",params)
+    rows=await _query("SELECT id, symbol, accession_number, form, filed_at, source_url, content_source_url, content_status, content_truncated, content_excerpt_sha256, content_excerpt, observed_at FROM sec_filing_inventory WHERE symbol=:symbol AND content_status='fetched' AND observed_at<=:cutoff AND content_observed_at<=:cutoff AND filed_at<=CAST(:cutoff AS date)"+filters+" ORDER BY filed_at DESC, accession_number DESC LIMIT :limit",params)
     import hashlib
     for row in rows:
         body=row.get("content_excerpt") or ""
@@ -389,5 +406,6 @@ async def query_material_analysis(symbol: str, accession_number: str | None = No
 from .agent_web_research import web_research
 
 TOOL_REGISTRY={item.name:item for item in [query_stock_prices,query_latest_forecast,query_materials,query_sec_filings,query_research_faq,query_material_analysis,search_material_analysis,web_research]}
-def tool_schemas():
-    return [{"type":"function","function":{"name":name,"description":item.description,"parameters":item.args_schema.model_json_schema()}} for name,item in TOOL_REGISTRY.items()]
+def tool_schemas(*, owner: bool = True):
+    from .agent_tool_catalog import schemas
+    return schemas(owner=owner)

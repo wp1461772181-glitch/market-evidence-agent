@@ -87,4 +87,12 @@ def published_within(published_at: object, days: int, now: datetime) -> bool:
         return False
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=now.tzinfo)
-    return now - timedelta(days=days + 1) <= moment <= now + timedelta(days=1)
+    return now - timedelta(days=days) <= moment <= now
+
+
+def requested_years(text: str, now: datetime | None = None) -> set[str]:
+    """Literal/relative year grounding for validation; never selects a route or tool."""
+    from datetime import UTC
+    years=set(re.findall(r'(?<!\d)(?:19|20)\d{2}(?!\d)',text or ''))
+    if re.search(r'去年|\bLAST YEAR\b',text or '',re.I):years.add(str((now or datetime.now(UTC)).year-1))
+    return years

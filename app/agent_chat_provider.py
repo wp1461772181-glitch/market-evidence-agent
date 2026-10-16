@@ -3,9 +3,33 @@ import asyncio
 import json
 import httpx
 import os
+from contextlib import AsyncExitStack,asynccontextmanager
+from contextvars import ContextVar
 from fastapi import HTTPException
 from .agent_chat_api import PROVIDERS, BASE_URLS, PinnedPublicTransport
 
+_DECISION_SESSION=ContextVar('agent_decision_session',default=None)
+
+@asynccontextmanager
+async def decision_session(base_url=None):
+    # One lazy pool per turn. Headers/keys remain on individual requests, and
+    # ContextVar prevents concurrent conversations from sharing session state.
+    async with AsyncExitStack() as stack:
+        token=_DECISION_SESSION.set({'base_url':base_url,'stack':stack,'client':None})
+        try:yield
+        finally:_DECISION_SESSION.reset(token)
+
+@asynccontextmanager
+async def _decision_client(base_url):
+    options={'timeout':httpx.Timeout(PROVIDER_REQUEST_SECONDS),'follow_redirects':False,'trust_env':False}
+    if base_url:options['transport']=PinnedPublicTransport()
+    session=_DECISION_SESSION.get()
+    if session is not None and session['base_url']==base_url:
+        if session['client'] is None:
+            session['client']=await session['stack'].enter_async_context(httpx.AsyncClient(**options))
+        yield session['client']
+    else:
+        async with httpx.AsyncClient(**options) as client:yield client
 
 def _bounded_seconds(name: str, default: float, low: float, high: float) -> float:
     try:
@@ -30,9 +54,14 @@ _REASONING_EFFORTS = {"minimal", "low", "medium", "high"}
 
 
 def reasoning_options(provider: str) -> dict:
-    if provider != "openrouter" or REASONING_EFFORT not in _REASONING_EFFORTS:
+    if REASONING_EFFORT not in _REASONING_EFFORTS:
         return {}
-    return {"reasoning": {"effort": REASONING_EFFORT}}
+    if provider == "deepseek":
+        effort={"minimal":"low","medium":"high"}.get(REASONING_EFFORT,REASONING_EFFORT)
+        return {"thinking":{"type":"enabled"},"reasoning_effort":effort}
+    if provider == "openrouter":
+        return {"reasoning": {"effort": REASONING_EFFORT}}
+    return {}
 
 
 class ProviderFailure(HTTPException):
@@ -80,9 +109,7 @@ async def _post(provider,key,body,base_url=None):
     if provider=="openrouter":headers["X-Title"]="Market Evidence Agent"
     try:
         async with asyncio.timeout(PROVIDER_REQUEST_SECONDS):
-          options={"timeout":httpx.Timeout(PROVIDER_REQUEST_SECONDS),"follow_redirects":False,"trust_env":False}
-          if base_url: options["transport"]=PinnedPublicTransport()
-          async with httpx.AsyncClient(**options) as client:
+          async with _decision_client(base_url) as client:
             async with client.stream("POST",endpoint(provider,base_url),headers=headers,json=body) as r:
                 if 300 <= r.status_code < 400: raise HTTPException(502,"provider_redirect_rejected")
                 if r.status_code>=400:
@@ -99,6 +126,7 @@ async def _post(provider,key,body,base_url=None):
     try:
         data=json.loads(raw); choice=data["choices"][0]; msg=choice["message"]
     except (ValueError,KeyError,IndexError,TypeError) as e: raise HTTPException(502,"provider_incompatible_response") from e
+    if choice.get("finish_reason") in {"length","content_filter"}:raise HTTPException(502,"provider_incomplete_response")
     if not isinstance(msg,dict):raise HTTPException(502,"provider_incompatible_response")
     return data,msg
 

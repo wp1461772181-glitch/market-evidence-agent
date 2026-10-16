@@ -7,8 +7,8 @@ from app.agent_web_research import WebResearchArgs, extract_page, validate_publi
 
 
 def test_web_tool_accepts_one_query_or_https_url():
-    assert WebResearchArgs(query_or_url="AAPL revenue outlook").query_or_url
-    assert WebResearchArgs(query_or_url="https://example.com/report").query_or_url
+    assert WebResearchArgs(query_or_url="AAPL revenue outlook").query
+    assert WebResearchArgs(query_or_url="https://example.com/report").query
 
 
 @pytest.mark.parametrize("url", [
@@ -34,7 +34,10 @@ def test_web_research_is_registered_as_one_read_only_agent_tool():
     from app.agent_tools import TOOL_REGISTRY
 
     assert "web_research" in TOOL_REGISTRY
-    assert set(TOOL_REGISTRY["web_research"].args_schema.model_fields) == {"query_or_url"}
+    fields = TOOL_REGISTRY["web_research"].args_schema.model_fields
+    assert set(fields) == {"query", "company", "days_back", "max_results"}
+    assert any(getattr(item, "ge", None) == 1 for item in fields["days_back"].metadata)
+    assert any(getattr(item, "le", None) == 366 for item in fields["days_back"].metadata)
 
 
 def test_literal_url_read_never_calls_search_backend(monkeypatch):
@@ -172,7 +175,7 @@ def test_oversized_search_response_retries_without_raw_content_instead_of_failin
     import app.agent_web_research as web
     asked = []
 
-    async def search(query, include_raw_content=True):
+    async def search(query, include_raw_content=True, **_typed_args):
         asked.append(include_raw_content)
         if include_raw_content:
             raise ValueError("response_too_large")
@@ -197,7 +200,7 @@ def test_other_search_failures_are_not_retried(monkeypatch):
     import app.agent_web_research as web
     asked = []
 
-    async def search(query, include_raw_content=True):
+    async def search(query, include_raw_content=True, **_typed_args):
         asked.append(include_raw_content)
         raise ValueError("search_backend_unavailable")
 
@@ -256,7 +259,7 @@ def _fake_web(monkeypatch, rows, pages=None):
     import app.agent_web_research as web
     pages = pages or {}
 
-    async def search(_query, include_raw_content=True):
+    async def search(_query, include_raw_content=True, **_typed_args):
         return rows
 
     async def fetch(url, limit):
@@ -316,7 +319,7 @@ def test_focus_excerpt_matches_case_insensitively_and_by_metric_synonym_group():
     sales = _long_text("Apple's net sales were $94.9 billion for the September quarter.")
     assert "Apple's net sales were $94.9 billion" in focus_excerpt(sales, "Apple revenue news")
     cjk_hit = "苹果公司本季度营业收入同比增长6%，达到949亿美元。"
-    assert cjk_hit in focus_excerpt(_long_text(cjk_hit), "Apple revenue news")
+    assert cjk_hit in focus_excerpt(_long_text(cjk_hit), "Apple revenue news",company="苹果")
     eps = _long_text("Apple's earnings per share came in at $1.64.")
     assert "Apple's earnings per share came in at $1.64." in focus_excerpt(eps, "Apple EPS")
 
@@ -340,10 +343,10 @@ def test_focus_excerpt_understands_cjk_terms_with_and_without_spaces():
     text = lead + "".join(filler) + hit + "".join(f"补充{i}段继续介绍会场的其他安排。" for i in range(8))
     assert text.index(hit) > 1000
     for query in ("苹果 营收 新闻", "苹果营收新闻", "帮我找一下跟苹果营收相关的新闻报道"):
-        out = focus_excerpt(text, query)
+        out = focus_excerpt(text, query, company="Apple")
         assert hit in out, query
         assert len(out) <= 700 and out.startswith(lead) and _pieces_are_verbatim(out, text)
-    assert hit in focus_excerpt(text, "AAPL revenue")             # ticker and metric words in another script
+    assert hit in focus_excerpt(text, "AAPL revenue",company="苹果")             # ticker and metric words in another script
 
 
 def test_focus_excerpt_covers_every_requested_term_before_it_fills_the_budget():
@@ -395,12 +398,12 @@ def test_focus_excerpt_fills_the_budget_by_score_before_it_adds_plain_text():
     assert len(out) <= 150 and out.startswith(LEAD) and hit in out and extra in out
 
 
-def test_focus_excerpt_expands_company_names_to_their_aliases_and_ticker():
+def test_focus_excerpt_uses_explicit_company_for_alias_spellings():
     from app.agent_web_research import focus_excerpt
     english = "Apple opened a new store in Paris."
     chinese = "苹果公司在巴黎新开了一家零售店。"
     for hit, query in ((english, "AAPL news"), (chinese, "Apple news"), (english, "苹果 新闻")):
-        out = focus_excerpt(_long_text(hit), query)
+        out = focus_excerpt(_long_text(hit), query,company="苹果" if "苹果" in hit else "Apple")
         assert len(out) <= 700 and hit in out, query
 
 
@@ -436,21 +439,12 @@ def test_focus_excerpt_never_exceeds_the_bound_and_never_invents_text():
 
 
 def test_focus_excerpt_term_groups_are_the_ones_the_evidence_gate_uses():
-    """Drift guard: the synonym table is read out of the gate's own source; the entity table is the
-    company directory on both sides (the gate names it, web research is it)."""
-    import ast
+    from app.agent_web_research import METRIC_GROUPS
+    from app.agent_workflow.evidence import METRIC_GROUPS as gate_metrics
+    assert gate_metrics is METRIC_GROUPS
     import inspect
-    import textwrap
-    from app.agent_web_research import ENTITY_ALIASES, METRIC_GROUPS
-    from app.agent_workflow.graph import deterministic_confidence_gate
-    from app.company_directory import COMPANIES
-
-    tree = ast.parse(textwrap.dedent(inspect.getsource(deterministic_confidence_gate)))
-    assigned = {target.id: node.value for node in ast.walk(tree) if isinstance(node, ast.Assign)
-                for target in node.targets if isinstance(target, ast.Name) and target.id in {"metric_groups", "web_aliases"}}
-    assert METRIC_GROUPS == ast.literal_eval(assigned["metric_groups"])
-    assert isinstance(assigned["web_aliases"], ast.Name) and assigned["web_aliases"].id == "COMPANIES"
-    assert ENTITY_ALIASES is COMPANIES
+    from app.agent_workflow import evidence
+    assert 'company_directory' not in inspect.getsource(evidence)
 
 
 def test_web_research_returns_the_matching_passages_not_the_leading_characters(monkeypatch):
@@ -515,7 +509,7 @@ def test_revenue_sentence_survives_bounding_and_the_unchanged_gate_accepts_it(mo
     result = asyncio.run(web.web_research.coroutine(query_or_url="Apple revenue news"))
     bounded = bounded_tool_result(result)
     assert all(APPLE_HIT in row["excerpt"] for row in bounded["data"]) and len(bounded["data"]) == 3
-    assert deterministic_confidence_gate("Apple revenue news", bounded, [], ["AAPL"]) == (True, "heuristic_coverage_pass")
+    assert deterministic_confidence_gate("Apple revenue news", bounded, [], ["AAPL"],company="Apple") == (True, "heuristic_coverage_pass")
 
 
 # --- G2-B1 / item 8: a metric sentence needs the company next to it ------------------------------
@@ -574,7 +568,7 @@ def test_focus_excerpt_a_metric_sentence_that_names_the_company_itself_needs_no_
     for hit, query in ((APPLE_HIT, "Apple revenue news"), ("AAPL revenue rose 6% in the quarter.", "Apple revenue"),
                        ("苹果公司本季度营收同比增长6%，达到949亿美元。", "Apple revenue")):
         text = _long_text(hit)
-        assert hit in focus_excerpt(text, query), (hit, query)
+        assert hit in focus_excerpt(text, query,company="苹果" if "苹果" in hit else "AAPL" if hit.startswith("AAPL") else "Apple"), (hit, query)
 
 
 def test_focus_excerpt_query_without_a_company_or_without_a_metric_is_unchanged():
@@ -582,7 +576,7 @@ def test_focus_excerpt_query_without_a_company_or_without_a_metric_is_unchanged(
     from app.agent_web_research import focus_excerpt
     text = " ".join([LEAD, *_fillers(30), SUBJECTLESS, *_fillers(8, 100)])
     assert SUBJECTLESS in focus_excerpt(text, "revenue news")          # no company in the query
-    assert SUBJECTLESS in focus_excerpt(text, "Samsung revenue")       # a company the gate has no alias for
+    assert SUBJECTLESS not in focus_excerpt(text, "Samsung revenue")       # a company the gate has no alias for
     text = " ".join([LEAD, *_fillers(30), "Apple opened a new store in Paris.", *_fillers(8, 100)])
     assert "Apple opened a new store in Paris." in focus_excerpt(text, "Apple news")   # no metric in the query
 
@@ -601,7 +595,7 @@ def test_a_subjectless_revenue_sentence_beside_another_company_no_longer_passes_
     bounded = bounded_tool_result(asyncio.run(web.web_research.coroutine(query_or_url="Apple revenue news")))
     assert "revenue rose 20%" not in bounded["data"][0]["excerpt"]
     assert deterministic_confidence_gate("Apple revenue news", bounded, [], ["AAPL"]) == (
-        False, "requested_metric_missing:revenue")
+        False, "requested_entity_missing")
 
 
 def test_focus_excerpt_never_keeps_a_leading_metric_sentence_that_names_no_company():

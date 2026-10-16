@@ -1,28 +1,22 @@
-import asyncio
-import json
-
-from app.agent_workflow.graph import build_workflow
+import asyncio,json
+from app.agent_workflow.direct import run_direct_turn
 from app.agent_workflow.state import AgentRuntimeContext
 
 
-def test_genuine_multi_tool_reply_keeps_ids_and_reasoning_pairing():
-    async def classify(_): return '{"intent":"compound_research","symbol":"AMD","original_required":false}'
-    calls=[{"id":f"provider-{number}","type":"function","function":{
-        "name":"query_stock_prices","arguments":json.dumps({"symbol":symbol})}}
-        for number,symbol in enumerate(("AMD","AAPL"),1)]
-    async def decide(_messages,_schemas):
-        return {"usage":{"total_tokens":20}}, {"content":None,"reasoning_content":"genuine-provider-reasoning",
-                                               "tool_calls":calls}
-    async def execute(_name,args):
-        return {"ok":True,"data":[{"symbol":args["symbol"],"close":100}],"source":"fixture"}
-    async def answer(messages):
-        assistant=next(item for item in messages if item.get("tool_calls"))
-        assert assistant["tool_calls"]==calls
-        assert assistant["reasoning_content"]=="genuine-provider-reasoning"
-        assert [item["tool_call_id"] for item in messages if item["role"]=="tool"]==["provider-1","provider-2"]
-        yield "Both observations were read."
-    context=AgentRuntimeContext("deepseek","deepseek-flash","synthetic",classifier=classify,
-                                decider=decide,executor=execute,answerer=answer)
-    state=asyncio.run(build_workflow().ainvoke({"question":"AMD AAPL prices","messages":[]},
-        {"configurable":{"thread_id":"genuine-multiple"}},context=context))
-    assert state["terminal_status"]=="succeeded" and state["tool_calls"]==2
+def test_native_multi_tool_ids_and_reasoning_stay_paired():
+    calls=[{'id':'one','type':'function','function':{'name':'query_stock_prices','arguments':'{"symbol":"AMD"}'}},
+           {'id':'two','type':'function','function':{'name':'query_stock_prices','arguments':'{"symbol":"AAPL"}'}}]
+    seen=[]
+    async def decide(messages,schemas):
+        seen.append(messages)
+        if len(seen)==1:return {},{'content':None,'reasoning_content':'PRIVATE_REASONING','tool_calls':calls}
+        assistant=next(m for m in messages if m.get('tool_calls'))
+        assert assistant['tool_calls']==calls and assistant['reasoning_content']=='PRIVATE_REASONING'
+        assert [m['tool_call_id'] for m in messages if m['role']=='tool']==['one','two']
+        return {'content':'两家公司行情已读取 [1] [2]。'}
+    async def execute(name,args):return {'ok':True,'data':[{'id':args['symbol'],'symbol':args['symbol'],'close':100,'trading_date':'2026-10-14','fetched_at':'2026-10-15T00:00:00Z'}]}
+    async def emit(_):pass
+    ctx=AgentRuntimeContext('custom','test','dummy',classifier=lambda _:'D',decider=decide,executor=execute)
+    result=asyncio.run(run_direct_turn('AMD AAPL prices',ctx,emit=emit))
+    assert result['status']=='succeeded' and result['audit']['tool_calls']==2
+    assert 'PRIVATE_REASONING' not in result['answer']

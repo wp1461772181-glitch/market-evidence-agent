@@ -3,7 +3,6 @@ import { agentChatUrl } from "./agent-chat-url.mjs";
 import { fetchAgentChatModels } from "./agent-chat-models.mjs";
 import { apiErrorMessage } from "./api-errors.mjs";
 import { normalizeContextUsage, type ContextUsage } from "./context-usage.mjs";
-import { watchlistSnapshot } from "./watchlist-bridge.mjs";
 import { activeChatCredential, applyChatIdentity, changeChatMode, currentChatMode, conversationCreatedAtForMode, conversationForMode, selectConversationForMode } from "./chat-identity.mjs";
 
 export const configuredApiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/+$/, "");
@@ -25,7 +24,8 @@ export type AgentChatConfig = { provider: AgentChatProvider; base_url?: string; 
 export type AgentCitation = { ordinal?:number; chunk_id?: string | null; document_id?: string | null; title: string; section: string; source_url?: string | null; observed_at?: string | null; published_at?:string|null; quote?:string; source_type: string; truncated: boolean; derived?:boolean };
 export type KnowledgeDocumentSummary = { id:string; title:string; symbol:string|null; source_type:string; observed_at:string|null; available_at:string|null; status:string; active:boolean; owner_scope:string; chunks:number };
 export type KnowledgeChunkDetail = { id:string; ordinal:number; section:string; answer:string; status:string; needs_review:boolean };
-export type AgentChatMessage = { role: "user" | "assistant" | "tool"; content: string; status?: string; turn_id?: string; reused_sources?: boolean; citations?: AgentCitation[]; clarification?: {request_id:string;reason:string;choices:Array<{label:string;value:string}>}; tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }>; tool_call_id?: string; tool_trace?: Array<{ call_id?: string; name: string; arguments?: unknown; result?: unknown; status: string }> };
+export type AgentClarification = {request_id:string;reason:string;question?:string;display?:{title?:string;saved_date?:string;web_date?:string;url?:string;alternative?:string;targets?:Array<Record<string,string>>};choices:Array<{label:string;value:string}>};
+export type AgentChatMessage = { role: "user" | "assistant" | "tool"; content: string; status?: string; turn_id?: string; reused_sources?: boolean; citations?: AgentCitation[]; clarification?: AgentClarification; tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }>; tool_call_id?: string; tool_trace?: Array<{ call_id?: string; name: string; arguments?: unknown; result?: unknown; status: string }> };
 export type AgentChatEvent = { event: string; data: Record<string, unknown> };
 const chatConversationKey = "market-evidence-agent:chat-conversation:v1";
 export type ChatMode = "guest" | "personal";
@@ -95,7 +95,7 @@ export async function restoreAgentChat(selectedId?: string | null, signal?: Abor
 export function clearAgentConversation(): void { selectConversationForMode(window.localStorage,window.sessionStorage,null); }
 export function selectAgentConversation(id:string|null,createdAt?:string|null):void { selectConversationForMode(window.localStorage,window.sessionStorage,id,undefined,createdAt); }
 export async function agentChatStream(config: AgentChatConfig, message: string, conversationId: string | null, signal: AbortSignal, onEvent: (event: AgentChatEvent) => boolean | void, pendingRequestId?:string, displayMessage?:string): Promise<string> {
-  const response = await fetch(agentChatUrl("stream", configuredApiBaseUrl), { method: "POST", signal, cache: "no-store", headers: { Accept: "text/event-stream", "Content-Type": "application/json", "X-Chat-Session": chatCredential() }, body: JSON.stringify({ ...config, message, conversation_id: conversationId, ...(watchlistSnapshot()?{watchlist:watchlistSnapshot()}:{}), ...(pendingRequestId?{pending_request_id:pendingRequestId,...(displayMessage?{display_message:displayMessage}:{})}:{}) }) });
+  const response = await fetch(agentChatUrl("stream", configuredApiBaseUrl), { method: "POST", signal, cache: "no-store", headers: { Accept: "text/event-stream", "Content-Type": "application/json", "X-Chat-Session": chatCredential() }, body: JSON.stringify({ ...config, message, conversation_id: conversationId, ...(pendingRequestId?{pending_request_id:pendingRequestId,...(displayMessage?{display_message:displayMessage}:{})}:{}) }) });
   if (!response.ok) { const payload = await response.json().catch(() => null); throw apiErrorFromPayload(payload, response.status); }
   const reader = response.body?.getReader(); if (!reader) throw new ApiError("服务未返回流式响应。");
   const decoder = new TextDecoder(); let buffer = "", answer = "", eventName = "message", receivedDone = false;
