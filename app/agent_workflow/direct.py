@@ -364,10 +364,10 @@ class Turn:
             # Same URL/body was already ingested: no additional write proposal needed.
             from .models import AgentWebSource
             from .web_sources import canonical_url
-            from sqlalchemy import select
+            from sqlalchemy import select,or_
             from ..database import SessionLocal
             with SessionLocal() as db:
-                existing=db.scalar(select(AgentWebSource).where(AgentWebSource.owner_hash==self.context.owner_hash,AgentWebSource.source_url==canonical_url(args['url'])))
+                existing=db.scalar(select(AgentWebSource).where(AgentWebSource.owner_hash==self.context.owner_hash,or_(AgentWebSource.source_url==canonical_url(args['url']),AgentWebSource.content_hash==operation['snapshot']['content_hash'])))
                 if existing:return {'ok':True,'data':[{'status':'already_exists','source_id':str(existing.id)}]}
         if name in {'fetch_sec','refresh_sec'} and not args.get('accession_number'):
             from sqlalchemy import select

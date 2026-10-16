@@ -223,6 +223,17 @@ def test_model_budget_exhaustion_after_a_read_preserves_partial_evidence():
     assert r['citations'] and '[1]' in r['answer'] and '部分完成' in r['answer']
 
 
+def test_same_web_body_at_another_url_does_not_create_a_new_confirmation(owned):
+    from app.agent_workflow.web_sources import save_snapshot
+    p=page('BodyDuplicateCo');other={**p,'url':'https://other.example.org/same-body'}
+    with SessionLocal() as db:
+        save_snapshot(db,owner_hash('owner'),p,company='BodyDuplicateCo');db.commit()
+    r,_,_,_=run('搜索 BodyDuplicateCo 新闻然后保存',owner=True,scope={'company':'BodyDuplicateCo'},
+        steps=[call('web_research',query='BodyDuplicateCo news',company='BodyDuplicateCo'),call('ingest_web_source',url=other['url']),{'content':'资料已存在，无需再次入库。'}],
+        answers={'web_research':{'ok':True,'data':[other]}})
+    assert r['pending_request'] is None and r['status']=='succeeded'
+
+
 def test_transient_tool_retries_twice_then_stops(owned):
     r,c,_,_=run('Micron news',route='D',steps=[call('web_research',query='Micron news',company='Micron')],answers={'web_research':{'ok':False,'data':[],'error_code':'tool_timeout'}})
     assert len(c)==3 and r['reason']=='tool_failures' and '3 次' in r['answer']
