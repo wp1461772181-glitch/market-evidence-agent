@@ -64,6 +64,11 @@ async def evaluate(args):
     if args.phase=='after':
         from app.agent_workflow import direct,consent,tools
         for module in (direct,consent,tools):module.owner_credential_matches=identity.owner_credential_matches
+        if args.issuer_metadata:
+            from app.agent_workflow import entities
+            from routing_fixtures import load_issuer_records
+            issuer=load_issuer_records(args.issuer_metadata)
+            entities.ticker_records=lambda:issuer
         # Defence in depth: never execute a production business adapter in evaluation.
         def no_business(operation,key,context):
             active.writes.append(operation);raise AssertionError('business_write_forbidden_in_evaluation')
@@ -148,6 +153,6 @@ async def evaluate(args):
     Path(args.output).write_text(json.dumps(value,ensure_ascii=False,indent=2));print(value['summary'])
 
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument('--provider',choices=['deepseek','openrouter'],default='deepseek');parser.add_argument('--model',default='deepseek-flash');parser.add_argument('--key-name');parser.add_argument('--effort',choices=['low','high'],default='low');parser.add_argument('--ledger');parser.add_argument('--budget-usd',type=float,default=.5);parser.add_argument('--phase',choices=['after','baseline'],required=True);parser.add_argument('--cases',default=str(Path(__file__).with_name('cases')/'agent-routing-v3.jsonl'));parser.add_argument('--output',required=True);parser.add_argument('--limit',type=int,default=50);parser.add_argument('--ids');args=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument('--provider',choices=['deepseek','openrouter'],default='deepseek');parser.add_argument('--model',default='deepseek-flash');parser.add_argument('--key-name');parser.add_argument('--effort',choices=['low','high'],default='low');parser.add_argument('--ledger');parser.add_argument('--issuer-metadata');parser.add_argument('--budget-usd',type=float,default=.5);parser.add_argument('--phase',choices=['after','baseline'],required=True);parser.add_argument('--cases',default=str(Path(__file__).with_name('cases')/'agent-routing-v3.jsonl'));parser.add_argument('--output',required=True);parser.add_argument('--limit',type=int,default=50);parser.add_argument('--ids');args=parser.parse_args()
     with database():asyncio.run(evaluate(args))
 if __name__=='__main__':main()

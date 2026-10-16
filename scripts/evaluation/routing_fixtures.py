@@ -8,6 +8,12 @@ import asyncio,json,uuid
 from datetime import UTC,datetime,timedelta
 from pathlib import Path
 
+def load_issuer_records(path):
+    value=json.loads(Path(path).read_text())
+    rows=list(value.values()) if isinstance(value,dict) else value
+    if not isinstance(rows,list) or not rows or any(not isinstance(r,dict) or not r.get('ticker') or not r.get('title') for r in rows):raise ValueError('invalid_official_issuer_fixture')
+    return rows
+
 class Fixture:
     def __init__(self,case,phase="after"):
         from app.agent_chat_store import owner_hash
@@ -115,6 +121,8 @@ class Fixture:
                 proposal=pending.get('proposal',{});targets=proposal.get('targets')
                 count=len(targets.get('items',[])) if isinstance(targets,dict) else 1 if proposal.get('action') else 0
             if count!=e['frozen_operations']:errors.append('frozen_count')
+            if e.get('operation_names') and self.phase=='after' and pending.get('reason')=='write_confirmation':
+                if [op['name'] for op in saved['operations']]!=e['operation_names']:errors.append('operation_names')
         if e.get('comparison_dates') and pending:
             if not all(pending.get('display',{}).get(k) for k in ('saved_date','web_date','title','url','alternative')):errors.append('comparison_display')
         return {'passed':not errors,'errors':errors,'route':route,'reason':reason,'answer':answer,'citations':citations,'pending_reason':pending.get('reason') if pending else None,'tools':self.calls,'audit':audit,'model_stages':self.model_stages,'pending_display':pending.get('display') if pending else None}
