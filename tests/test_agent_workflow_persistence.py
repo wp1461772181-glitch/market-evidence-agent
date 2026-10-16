@@ -33,7 +33,7 @@ def test_postgres_reopen_preserves_context_but_never_runtime_key(disposable_data
     async def exercise():
         async with open_postgres_checkpointer(checkpoint_database_url()) as saver:
             await saver.setup();g=build_workflow(saver)
-            ctx=AgentRuntimeContext('custom','test',key,owner_hash='owner-a',conversation_id=chat,classifier=lambda _:{'category':'B','answer':'公司销售产品和服务。'})
+            ctx=AgentRuntimeContext('custom','test',key,owner_hash='owner-a',conversation_id=chat,classifier=lambda _:{'category':'B'},answerer=lambda _:'公司销售产品和服务。')
             value=await g.ainvoke({'question':'运营模式','messages':[]},{'configurable':{'thread_id':thread}},context=ctx)
             assert value['answer']=='公司销售产品和服务。'
         async with open_postgres_checkpointer(checkpoint_database_url()) as saver:
@@ -55,7 +55,7 @@ def test_invalid_second_classifier_cannot_reuse_old_answer_or_authority(disposab
     async def exercise():
         async with open_postgres_checkpointer(checkpoint_database_url()) as saver:
             await saver.setup();g=build_workflow(saver);config={'configurable':{'thread_id':str(uuid4())}}
-            first=AgentRuntimeContext('custom','test','dummy',classifier=lambda _:{'category':'B','answer':'OLD_ANSWER'})
+            first=AgentRuntimeContext('custom','test','dummy',classifier=lambda _:{'category':'B'},answerer=lambda _:'OLD_ANSWER')
             await g.ainvoke({'question':'旧问题','messages':[]},config,context=first)
             second=AgentRuntimeContext('custom','test','dummy',classifier=lambda _:{'category':'INVALID','answer':'PRIVATE_RAW_PROVIDER_OUTPUT'})
             result=await g.ainvoke({'question':'新问题','messages':[]},config,context=second)

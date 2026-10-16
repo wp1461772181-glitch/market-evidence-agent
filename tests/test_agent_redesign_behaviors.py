@@ -17,6 +17,10 @@ from app.agent_workflow import direct,consent,tools
 from app.agent_tool_catalog import definitions,schemas
 
 NOW=datetime.now(UTC)
+@pytest.fixture(autouse=True)
+def official_entity_metadata(monkeypatch):
+    from app.agent_workflow import entities
+    monkeypatch.setattr(entities,'ticker_records',lambda:[{'ticker':'AAPL','title':'APPLE INC'},{'ticker':'MU','title':'MICRON TECHNOLOGY INC'},{'ticker':'MSFT','title':'MICROSOFT CORP'}])
 def page(company='Micron',days=1,n=1):return {'url':f'https://example.org/{company}/{n}','title':company+' news','excerpt':company+' released a new product.','published_at':(NOW-timedelta(days=days)).isoformat(),'fetched_at':NOW.isoformat(),'body_provenance':'public_page_fetch'}
 def call(name,**args):return {'tool_calls':[{'id':uuid.uuid4().hex,'function':{'name':name,'arguments':json.dumps(args)}}]}
 
@@ -36,7 +40,7 @@ async def turn(question,*,route='A',scope=None,steps=(),answers=None,owner=False
         return copy.deepcopy(value)
     async def decide(*_):return next(steps,{'content':'已完成，来源见 [1]。' if any(n=='web_research' for n,_ in calls) else '没有可核验资料。'})
     context=AgentRuntimeContext('custom','test','dummy',owner_hash=owner_hash('owner' if owner else 'guest'),conversation_id='c',identity_credential='owner' if owner else 'guest',
-        classifier=lambda q:{'category':route,**(scope or {})},decider=decide,executor=execute,answerer=lambda *_:(scope or {}).get('answer') or '已完成：已返回证据；未完成：剩余请求。',resolver=resolver)
+        classifier=lambda q:{'category':route,**{k:v for k,v in (scope or {}).items() if k!='answer'}},decider=decide,executor=execute,answerer=lambda *_:(scope or {}).get('answer') or '已完成：已返回证据；未完成：剩余请求。',resolver=resolver)
     async def emit(e):events.append(e)
     result=await run_direct_turn(question,context,emit=emit,state={**(state or {}),'requested_pending_id':pending},messages=messages)
     return result,calls,events,context
@@ -46,7 +50,7 @@ def run(*args,**kwargs):return asyncio.run(turn(*args,**kwargs))
 @pytest.mark.parametrize('company,symbol',[('Micron','MU'),('Roblox','RBLX'),('Unknown Public Company','ZZZZ'),('美光','MU')])
 @pytest.mark.parametrize('days',[7,15])
 def test_arbitrary_company_news_search_has_explicit_window_no_queue_card(company,symbol,days):
-    r,c,e,_=run('请联网搜'+company+'最近新闻',scope={'company':company,'symbol':symbol,'days_back':days},steps=[call('web_research',query=company+' news',company=company,days_back=days,max_results=2),{'content':'新消息 [1]'}],answers={'web_research':{'ok':True,'data':[page(company)]}})
+    r,c,e,_=run('请联网搜'+company+'（'+symbol+'）最近新闻',scope={'company':company,'symbol':symbol,'days_back':days},steps=[call('web_research',query=company+' news',company=company,days_back=days,max_results=2),{'content':'新消息 [1]'}],answers={'web_research':{'ok':True,'data':[page(company)]}})
     assert r['status']=='succeeded' and r['pending_request'] is None
     assert c[0][0]=='search_knowledge' and c[1][0]=='web_research'
     assert c[1][1]['days_back']==days and not any(n=='query_stock_prices' for n,_ in c)
@@ -93,7 +97,7 @@ def test_conditional_web_save_compares_frozen_dates_before_card(owned,newer):
     filing_date=(NOW-timedelta(days=5 if newer else 0)).isoformat()
     filing={'id':str(uuid.uuid4()),'symbol':'AAPL','source_type':'official_filing','title':'Apple filing','excerpt':'Apple revenue increased.','filed_at':filing_date}
     p=page('Apple',1)
-    r,_,_,_=run('比较苹果营收新闻和财报的日期，新闻更新就放入知识库',owner=True,scope={'company':'Apple','symbol':'AAPL','query':'revenue'},
+    r,_,_,_=run('比较苹果营收新闻和财报的日期，新闻更新就放入知识库',owner=True,scope={'company':'Apple','symbol':'AAPL','company_mention':'苹果','query':'revenue'},
         steps=[call('web_research',query='Apple revenue news',company='Apple'),call('ingest_web_source',url=p['url'],newer_than=1),{'content':'两个日期已比较 [1] [2]'}],
         answers={'search_knowledge':{'ok':True,'data':[filing]},'web_research':{'ok':True,'data':[{**p,'excerpt':'Apple revenue increased in the news.'}]}})
     assert bool(r['pending_request'])==newer
@@ -269,7 +273,7 @@ def test_web_consent_saves_the_exact_reviewed_snapshot_without_refetch(owned,mon
         assert source.title==original['title'] and source.excerpt==original['excerpt']
 
 def test_time_scope_prose_is_not_mistaken_for_a_new_company():
-    r,c,_,_=run('半个月之内的呢',scope={'company':'Micron','symbol':'MU','days_back':15},
+    r,c,_,_=run('半个月之内的呢',scope={'company':'Micron','symbol':'MU','company_mention':'美光','days_back':15},
         messages=[{'role':'user','content':'搜美光新闻'}],
         resolver=lambda _:{'relationship':'followup','canonical_question':'搜美光的新闻，时间范围限定在最近半个月之内。'},
         steps=[call('web_research',query='Micron news',company='Micron',days_back=15),{'content':'消息 [1]'}],
@@ -283,21 +287,21 @@ def test_resolver_cannot_invent_a_fiscal_year_removed_by_numeric_parser():
 
 def test_conditional_newer_save_requires_an_explicit_comparison_ordinal(owned):
     p=page('Apple',1)
-    r,_,_,_=run('如果苹果的网页新闻日期更新就放入知识库',owner=True,scope={'company':'Apple','symbol':'AAPL'},
+    r,_,_,_=run('如果苹果的网页新闻日期更新就放入知识库',owner=True,scope={'company':'Apple','symbol':'AAPL','company_mention':'苹果'},
         steps=[call('web_research',query='Apple news',company='Apple'),call('ingest_web_source',url=p['url']),{'content':'日期比较尚未完成。'}],
         answers={'web_research':{'ok':True,'data':[p]}})
     assert r['pending_request'] is None
 
 def test_confirmation_previews_original_title_without_treating_it_as_an_answer_claim(owned):
     p=page('Apple');p['title']='Apple acquired ExampleCo for $100 million'
-    r,_,_,_=run('搜索苹果网页然后保存',owner=True,scope={'company':'Apple'},
+    r,_,_,_=run('搜索苹果网页然后保存',owner=True,scope={'company':'Apple','symbol':'AAPL','company_mention':'苹果'},
         steps=[call('web_research',query='Apple news',company='Apple'),call('ingest_web_source',url=p['url'])],answers={'web_research':{'ok':True,'data':[p]}})
     assert r['status']=='waiting_for_input'
     assert r['pending_request']['display']['title']==p['title']
 
 @pytest.mark.parametrize('original,blocked',[('它的营收呢',True),('微软的营收呢',False)])
 def test_followup_cannot_change_known_symbol_without_an_explicit_new_entity(original,blocked):
-    r,c,_,_=run(original,scope={'company':'微软','symbol':'MSFT'},state={'previous_scope':{'company':'Micron','symbol':'MU'}},
+    r,c,_,_=run(original,scope={'company':'Microsoft','symbol':'MSFT','company_mention':'微软'},state={'previous_scope':{'company':'Micron','symbol':'MU'}},
         messages=[{'role':'user','content':'Micron 营收'}],resolver=lambda _:{'relationship':'followup','canonical_question':'微软的营收'})
     assert bool(r['pending_request'])==blocked
     if blocked:assert not c

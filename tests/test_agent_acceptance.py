@@ -102,7 +102,7 @@ def provider_fixture(monkeypatch, decision=None, chunks=None):
         elif 'classify_request' in names:
             payload=json.loads(body['messages'][-1]['content']);question=payload['question'].lower()
             category='A' if 'aapl' in question else 'B'
-            message={'role':'assistant','content':json.dumps({'category':category,'symbol':'AAPL' if category=='A' else None,'days_back':None,'answer':final['content'] if category=='B' else None})}
+            message={'role':'assistant','content':json.dumps({'category':category,'symbol':'AAPL' if category=='A' else None,'days_back':None})}
             for field in ('reasoning_content','reasoning_details'):
                 if field in final:message[field]=final[field]
         elif body.get('tools') and not any(m.get('role')=='tool' for m in body['messages']):message=decision
@@ -295,7 +295,7 @@ def test_current_message_is_sent_and_no_tool_path_streams(monkeypatch):
     with TestClient(main.app) as client:
         events=frames(send(client,message='parent-current-message'))
     assert events[-1][0]=='done'
-    assert len(requests)==1  # A standalone B answer is produced by the classifier.
+    assert len(requests)==2  # Classification and independent tool-free B generation.
     assert requests[0]['messages'][-1]['role']=='user'
     assert json.loads(requests[0]['messages'][-1]['content'])['question']=='parent-current-message'
     assert not any(e[0]=='tool_start' for e in events)

@@ -38,8 +38,9 @@ def stream_fixture(monkeypatch):
         if 'classify_request' in names:
             # Legacy fixture callers can still set intent; the test fixture translates it.
             category={'general':'B','unsupported_action':'C','system_action':'D','compound_research':'D'}.get(classification.get('intent'),classification.get('category','A'))
-            value={'days_back':None,'category':category,'symbol':classification.get('symbol'),'answer':'First increment' if category=='B' else None}
+            value={'days_back':None,'category':category,'symbol':classification.get('symbol')}
             return {},{'content':json.dumps(value)}
+        if not schemas:return {},{'content':'First increment'}
         if decisions:return {'usage':{'total_tokens':5}},decisions.pop(0)
         if any(m.get('role')=='tool' for m in messages):return {},{'content':'First increment [1]'}
         return {},{'content':None,'tool_calls':[{'id':uuid4().hex,'function':{'name':'query_stock_prices','arguments':'{"symbol":"AAPL"}'}}]}
@@ -69,7 +70,7 @@ def test_invalid_citation_is_rejected_before_any_answer_delta(stream_fixture):
 
 def test_ask_user_card_survives_sse_and_history(stream_fixture,monkeypatch):
     import app.agent_chat_stream as stream
-    send,classification,_,_,stored,_,decisions=stream_fixture;classification['category']='D'
+    send,classification,_,_,stored,_,decisions=stream_fixture;classification['category']='D';classification['symbol']=None
     decisions.append({'tool_calls':[{'id':'ask','function':{'name':'ask_user','arguments':json.dumps({'question':'哪家公司？','options':['Apple','Micron']})}}]})
     events=frames(asyncio.run(send('它的营收？')));card=next(d for e,d in events if e=='clarification')
     assert card['choices'][0]['value']=='reply:Apple'
