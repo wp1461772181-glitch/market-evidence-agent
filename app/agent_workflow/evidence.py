@@ -176,8 +176,10 @@ def unsupported_numbers(answer,citations):
         body=' '.join(str(indexed[r].get('quote',''))+' '+str(indexed[r].get('published_at','')) for r in refs if r in indexed)
         allowed=figure_values(body)
         checked=re.sub(r'\[\d+\]','',passage)
-        amounts=re.findall(r'\d+(?:\.\d+)?\s*(?:千万|百万|亿|万|千|trillion|billion|million|thousand|bn|mn)?\s*(?:美元|元|dollars?|USD|%|％)',checked,re.I)
-        amounts+=re.findall(r'\$\s*\d+(?:\.\d+)?\s*(?:billion|million|bn|mn)?',checked,re.I)
+        number=r'\d+(?:,\d{3})*(?:\.\d+)?'
+        magnitude=r'(?:千万|百万|亿|万|千|trillion|billion|million|thousand|bn|mn|b|m|k)?'
+        amounts=re.findall(number+r'\s*'+magnitude+r'\s*(?:美元|元|dollars?|USD|%|％)',checked,re.I)
+        amounts+=re.findall(r'\$\s*'+number+r'\s*'+magnitude,checked,re.I)
         claim=figure_values(' '.join(amounts))
         if any(v not in allowed and not(v/100 in allowed and re.search(r'%|％|百分',passage)) for v in claim):return True
     return False

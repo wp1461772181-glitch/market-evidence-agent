@@ -65,3 +65,22 @@ def test_missing_marker_cannot_bypass_amount_or_event_validation(claim):
     from app.agent_workflow.evidence import unsupported_numbers,unsupported_claims
     citations=[{'ordinal':1,'source_type':'saved_price','quote':'100'}]
     assert unsupported_numbers(claim,citations) or unsupported_claims(claim,citations)
+
+
+@pytest.mark.parametrize('quote,claim',[
+ ('$54.2B','营收为 542 亿美元 [1]。'),
+ ('$68.3B','净现金为 683 亿美元 [1]。'),
+ ('$1.5M','收入为 150 万美元 [1]。'),
+ ('$2.5K','金额为 2500 美元 [1]。'),
+ ('$54,200M','营收为 $54.2B [1]。'),
+ ('54.2 billion dollars','营收为 $54,200M [1]。'),
+])
+def test_financial_currency_suffixes_preserve_units_across_languages(quote,claim):
+    from app.agent_workflow.evidence import unsupported_numbers
+    assert not unsupported_numbers(claim,[{'ordinal':1,'source_type':'web','quote':quote}])
+
+
+@pytest.mark.parametrize('claim',['营收为 $99B [1]。','营收为 54.2 万美元 [1]。','营收为 54.2 美元 [1]。'])
+def test_currency_suffix_support_does_not_allow_a_changed_value_or_unit(claim):
+    from app.agent_workflow.evidence import unsupported_numbers
+    assert unsupported_numbers(claim,[{'ordinal':1,'source_type':'web','quote':'Revenue was $54.2B.'}])
