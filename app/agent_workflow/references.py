@@ -76,7 +76,8 @@ def bounded_stage(value,key):
         return item
     result=redact(result)
     def size():return len(json.dumps(result,ensure_ascii=False,separators=(',',':')))
-    while size()>400:
+    for _ in range(50):
+        if size()<=400:break
         strings=[];lists=[]
         def visit(item):
             if isinstance(item,dict):
@@ -89,7 +90,10 @@ def bounded_stage(value,key):
                     if isinstance(v,(dict,list)):visit(v)
         visit(result)
         if strings:
-            parent,name,text=max(strings,key=lambda v:len(v[2]));parent[name]=text[:max(12,len(text)//2)]+'…'
+            parent,name,text=max(strings,key=lambda v:len(v[2]))
+            target=max(6,len(text)//2)
+            if target>=len(text):target=max(0,len(text)-1)
+            parent[name]=text[:target]+'…'
         elif lists:max(lists,key=len).pop()
         else:break
     return result
