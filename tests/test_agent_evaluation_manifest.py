@@ -17,3 +17,17 @@ def test_controlled_tool_probe_retains_native_thinking_protocol():
         if case['setup']['scenario'] not in {'limit','no_progress','repair'}:continue
         message=fixture(case).forced_decision([{'function':{'name':'web_research'}}])
         assert isinstance(message.get('reasoning_content'),str) and message['tool_calls']
+
+def test_injected_probe_does_not_consume_real_model_token_budget(monkeypatch):
+    import asyncio,runpy
+    from app.agent_workflow import direct
+    from app.agent_workflow.state import AgentRuntimeContext
+    runner=runpy.run_path(str(Path(__file__).resolve().parents[1]/'scripts/evaluation/routing_acceptance.py'))
+    selected={'reasoning_content':'','content':'controlled'}
+    async def response(*_,**__):return runner['controlled_response'](selected)
+    monkeypatch.setattr(direct,'decision_request',response)
+    turn=direct.Turn('probe',AgentRuntimeContext('custom','test','synthetic'),lambda _:asyncio.sleep(0),[],{})
+    async def exercise():
+        for _ in range(8):await turn.model([{'role':'user','content':'probe'}],[])
+    asyncio.run(exercise())
+    assert turn.audit['token_usage']==0 and turn.audit['usage_mode']=='actual'

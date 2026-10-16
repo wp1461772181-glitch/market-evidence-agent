@@ -27,6 +27,11 @@ def database():
 
 class EvaluationBudgetExceeded(BaseException):pass
 
+def controlled_response(message):
+    # A synthetic controller probe makes no provider request. Missing usage
+    # would charge the fallback prompt estimate and test the wrong budget.
+    return {'usage':{'total_tokens':0}},message
+
 def charge(identity,amount,path,limit=.5):
     with path.open('a+') as handle:
         fcntl.flock(handle,fcntl.LOCK_EX);handle.seek(0)
@@ -77,7 +82,8 @@ async def evaluate(args):
     async def decision(*pos,**kwargs):
         selected=active.forced_decision(pos[4])
         if selected is not None:
-            active.native_tape.append({'controlled':True,'message':selected,'usage':{}});return {},selected
+            response,message=controlled_response(selected)
+            active.native_tape.append({'controlled':True,'message':message,'usage':response['usage']});return response,message
         request_id=uuid.uuid4().hex;bill(request_id,reserve);current.append(1)
         response,message=await original_decision(*pos,**kwargs)
         stage_names={tool['function']['name'] for tool in pos[4]}
