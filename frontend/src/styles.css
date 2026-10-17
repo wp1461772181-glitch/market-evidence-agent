@@ -826,6 +826,25 @@ body{background:var(--canvas);color:var(--ink)}
 
 .v2-revision-form select{width:100%;padding:9px;border:1px solid var(--edge);border-radius:6px;background:#fff;color:var(--ink);font:12px var(--sans)}
 
+.v2-revision-sources-field{grid-column:1/-1;display:flex;flex-direction:column;gap:8px}
+.v2-revision-sources-header{display:flex;justify-content:space-between;align-items:center;color:var(--muted);font-size:11px}
+.v2-selection-actions{display:flex;gap:8px}
+.v2-revision-sources-header .text-button{background:none;border:none;color:var(--brand,#2c7669);cursor:pointer;font-size:11px;padding:0;text-decoration:underline}
+.v2-revision-sources-list{display:flex;flex-direction:column;gap:6px;max-height:280px;overflow-y:auto;border:1px solid #e1e7e4;border-radius:6px;padding:8px;background:#fafbfc}
+.v2-revision-source-item{display:grid;grid-template-columns:18px 1fr;gap:10px;align-items:flex-start;padding:8px 10px;background:#fff;border:1px solid #e9eee9;border-radius:6px;cursor:pointer;transition:border-color .15s}
+.v2-revision-source-item:hover{border-color:#b8cbbf}
+.v2-revision-source-item.is-selected{border-color:#2c7669;background:#f3f8f6}
+.v2-revision-source-item input[type="checkbox"]{margin-top:3px;cursor:pointer}
+.v2-source-content{display:flex;flex-direction:column;gap:3px;overflow:hidden}
+.v2-source-title-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.v2-source-title{font-size:12px;font-weight:500;color:var(--ink);overflow-wrap:anywhere}
+.v2-source-meta-row{font-size:10px;color:#738177}
+.revision-type-badge{font-size:10px;padding:1px 6px;border-radius:4px;font-weight:600;white-space:nowrap}
+.badge-new{background:#e6f4ea;color:#137333;border:1px solid #ceead6}
+.badge-backfilled{background:#fef7e0;color:#b06000;border:1px solid #feefc3}
+.badge-updated{background:#e8f0fe;color:#1a73e8;border:1px solid #d2e3fc}
+.v2-hint-text{font-size:12px;color:var(--muted);margin:6px 0;padding:10px;background:#f8f9fa;border-radius:6px;border:1px dashed #d1d5db}
+
 .v2-form-footer{grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;gap:16px}
 
 .v2-form-footer p{margin:0;color:var(--muted);font-size:11px;line-height:1.5}

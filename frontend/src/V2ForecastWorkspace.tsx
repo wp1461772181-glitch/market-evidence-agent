@@ -121,7 +121,7 @@ export function V2ForecastWorkspace({ symbol, filings, priceHistory, mode, onOpe
   const [uploaded, setUploaded] = useState<ResourceState<UploadedEvidence[]>>({ kind: "loading" });
   const [revisionOpen, setRevisionOpen] = useState(false);
   const [parentVersionId, setParentVersionId] = useState("");
-  const [sourceKey, setSourceKey] = useState("");
+  const [selectedSourceKeys, setSelectedSourceKeys] = useState<string[]>([]);
   const [selectedVersionId, setSelectedVersionId] = useState("");
   const [versionDetails, setVersionDetails] = useState<ResourceState<{ current: V2VersionDetail; parent: V2VersionDetail | null }> | null>(null);
   const [revisionParentDetail, setRevisionParentDetail] = useState<ResourceState<V2VersionDetail> | null>(null);
@@ -167,7 +167,7 @@ export function V2ForecastWorkspace({ symbol, filings, priceHistory, mode, onOpe
     setActionError(null);
     setRevisionOpen(false);
     setParentVersionId("");
-    setSourceKey("");
+    setSelectedSourceKeys([]);
     setSelectedRootId("");
     setWorkspace({ kind: "loading" });
     setRoots({ kind: "loading" });
@@ -219,7 +219,7 @@ export function V2ForecastWorkspace({ symbol, filings, priceHistory, mode, onOpe
     const controller = new AbortController();
     setParentVersionId("");
     setRevisionOpen(false);
-    setSourceKey("");
+    setSelectedSourceKeys([]);
     setRevisionMaterialMetadata(null);
     setTimeline({ kind: "loading" });
     getV2Timeline(selectedRootId, controller.signal)
@@ -338,7 +338,7 @@ export function V2ForecastWorkspace({ symbol, filings, priceHistory, mode, onOpe
     };
   }, [revisionOpen, symbol, chosenVersionId]);
 
-  const revisionSourceOptions = useMemo<Array<SourceOption & { revisionType: "new" | "updated" | "reanalyzed" }>>(() => {
+  const revisionSourceOptions = useMemo<Array<SourceOption & { revisionType: "new" | "backfilled" | "updated" | "reanalyzed" }>>(() => {
     if (!matchingRevisionParent) return [];
     const parentSources = matchingRevisionParent.evidence_version_manifest;
     const priorBySource = new Map<string, Record<string, unknown>>();
@@ -349,19 +349,31 @@ export function V2ForecastWorkspace({ symbol, filings, priceHistory, mode, onOpe
     });
     const priorContentHashes = new Set(parentSources.flatMap((item) => typeof item.content_sha256 === "string" ? [item.content_sha256] : []));
     const parentDecisionAt = Date.parse(matchingRevisionParent.decision_at);
+    const maxForwardTime = parentDecisionAt + 3 * 24 * 60 * 60 * 1000;
+    const minBackwardTime = parentDecisionAt - 30 * 24 * 60 * 60 * 1000;
+
     const analysisItems = revisionMaterialMetadata?.parentVersionId === chosenVersionId ? revisionMaterialMetadata.items : [];
     const analysesBySource = new Map(analysisItems.map((item) => [`${item.source_type}:${item.source_id}`, item]));
-    const eligible: Array<SourceOption & { revisionType: "new" | "updated" | "reanalyzed" }> = [];
+    const eligible: Array<SourceOption & { revisionType: "new" | "backfilled" | "updated" | "reanalyzed" }> = [];
     for (const source of sourceOptions) {
       const publishedAt = source.publishedAt;
       const observedAt = source.observedAt;
       if (!source.contentHash || typeof publishedAt !== "string" || typeof observedAt !== "string"
         || !isTimezoneAwareTimestamp(publishedAt) || !isTimezoneAwareTimestamp(observedAt)) continue;
+      const pubTime = Date.parse(publishedAt);
+      const obsTime = Date.parse(observedAt);
       const key = `${source.source_type}:${source.source_id}`;
       const previous = priorBySource.get(key);
       if (!previous) {
-        const newlyAvailable = Date.parse(publishedAt) > parentDecisionAt || Date.parse(observedAt) > parentDecisionAt;
-        if (newlyAvailable && !priorContentHashes.has(source.contentHash)) eligible.push({ ...source, revisionType: "new" });
+        if (priorContentHashes.has(source.contentHash)) continue;
+        if (pubTime >= parentDecisionAt && pubTime <= maxForwardTime) {
+          eligible.push({ ...source, revisionType: "new" });
+          continue;
+        }
+        if (obsTime > parentDecisionAt && pubTime >= minBackwardTime && pubTime < parentDecisionAt) {
+          eligible.push({ ...source, revisionType: "backfilled" });
+          continue;
+        }
         continue;
       }
 
@@ -386,9 +398,14 @@ export function V2ForecastWorkspace({ symbol, filings, priceHistory, mode, onOpe
       if (contentChanged || reviewChanged || reviewedAfterParent || ratingChanged) eligible.push({ ...source, revisionType: "updated" });
       else if (analysisCompletedAfterParent) eligible.push({ ...source, revisionType: "reanalyzed" });
     }
+    eligible.sort((a, b) => {
+      const timeA = a.publishedAt ? Date.parse(a.publishedAt) : 0;
+      const timeB = b.publishedAt ? Date.parse(b.publishedAt) : 0;
+      return timeB - timeA;
+    });
     return eligible;
   }, [sourceOptions, matchingRevisionParent, revisionMaterialMetadata, chosenVersionId]);
-  const chosenSource = revisionSourceOptions.find((source) => `${source.source_type}:${source.source_id}` === sourceKey);
+  const chosenSources = revisionSourceOptions.filter((source) => selectedSourceKeys.includes(`${source.source_type}:${source.source_id}`));
 
   async function createForecast() {
     setActionError(null);
@@ -403,17 +420,17 @@ export function V2ForecastWorkspace({ symbol, filings, priceHistory, mode, onOpe
   }
 
   async function createRevision() {
-    if (!chosenVersion || !matchingRevisionParent || !chosenSource) return;
+    if (!chosenVersion || !matchingRevisionParent || chosenSources.length === 0) return;
     setActionError(null);
     try {
-      const job = await createV2ManualRevisionJob(chosenVersion.id, [{
-        source_type: chosenSource.source_type,
-        source_id: chosenSource.source_id,
-      }]);
+      const job = await createV2ManualRevisionJob(chosenVersion.id, chosenSources.map((source) => ({
+        source_type: source.source_type,
+        source_id: source.source_id,
+      })));
       setActiveJob(job);
       saveJob(symbol, job);
       setRevisionOpen(false);
-      setSourceKey("");
+      setSelectedSourceKeys([]);
       void refresh();
     } catch (error) {
       setActionError(errorMessage(error, "无法创建手动修订任务。"));
@@ -425,7 +442,7 @@ export function V2ForecastWorkspace({ symbol, filings, priceHistory, mode, onOpe
   const selectedCalibration = selectedCurrentVersion?.model_manifest.local_calibration as Record<string, unknown> | undefined;
   const rootIsRevisable = selectedRoot?.expired === false;
   const revisionDisabledReason = selectedRoot?.expired === true ? t("该预测的目标已到期，只能查看历史版本。") : selectedRoot?.expired === null ? t("该预测的目标合同无效，只能查看历史版本。") : null;
-  const canCreateRevision = Boolean(chosenVersion && matchingRevisionParent && chosenSource && !isActiveJob(activeJob));
+  const canCreateRevision = Boolean(chosenVersion && matchingRevisionParent && chosenSources.length > 0 && chosenSources.length <= 10 && !isActiveJob(activeJob));
 
   const hasNoRevisionRoot = roots.kind === "ready" && roots.data.roots.length === 0;
 
@@ -505,16 +522,83 @@ export function V2ForecastWorkspace({ symbol, filings, priceHistory, mode, onOpe
       {revisionDisabledReason && <p className="v2-root-warning" role="status">{revisionDisabledReason}</p>}
 
       {revisionOpen && <section className="v2-revision-form" aria-label={t("创建手动修订")}>
-        <label>{<Tx text={"修订哪一个预测版本"} />}<select value={parentVersionId} onChange={(event) => { setParentVersionId(event.target.value); setSourceKey(""); }}>
+        <label>{<Tx text={"修订哪一个预测版本"} />}<select value={parentVersionId} onChange={(event) => { setParentVersionId(event.target.value); setSelectedSourceKeys([]); }}>
             <option value="">{<Tx text={"默认最新版本"} />}</option>
             {versions.map((version) => <option value={version.id} key={version.id}>{t("第")} {version.version_no} {t("版")} · {formatTime(version.decision_at)}</option>)}
           </select>
         </label>
-        <label>{<Tx text={"用于本次修订的材料"} />}<select value={sourceKey} disabled={!matchingRevisionParent || revisionSourceOptions.length === 0} onChange={(event) => setSourceKey(event.target.value)}>
-            <option value="">{t(matchingRevisionParent ? "选择新材料、来源更新或补齐分析的旧材料" : revisionParentDetail?.kind === "error" ? "基准版本材料读取失败" : "正在核对基准版本材料…")}</option>
-            {revisionSourceOptions.map((source) => <option value={`${source.source_type}:${source.source_id}`} key={`${source.source_type}:${source.source_id}`}>{source.label} · {t(source.revisionType === "new" ? "新材料" : source.revisionType === "reanalyzed" ? "新成功分析" : "来源状态更新")}</option>)}
-          </select>
-        </label>
+        <div className="v2-revision-sources-field">
+          <div className="v2-revision-sources-header">
+            <span>{<Tx text={"用于本次修订的材料"} />}（{t("已选")} {selectedSourceKeys.length} / {t("最多 10 份")}）</span>
+            {revisionSourceOptions.length > 0 && (
+              <div className="v2-selection-actions">
+                <button
+                  type="button"
+                  className="text-button"
+                  onClick={() => setSelectedSourceKeys(revisionSourceOptions.slice(0, 10).map((s) => `${s.source_type}:${s.source_id}`))}
+                >
+                  {t("全选前10项")}
+                </button>
+                {selectedSourceKeys.length > 0 && (
+                  <button
+                    type="button"
+                    className="text-button"
+                    onClick={() => setSelectedSourceKeys([])}
+                  >
+                    {t("清空已选")}
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+          {!matchingRevisionParent ? (
+            <p className="v2-hint-text">{revisionParentDetail?.kind === "error" ? t("基准版本材料读取失败") : t("正在核对基准版本材料…")}</p>
+          ) : revisionSourceOptions.length === 0 ? (
+            <p className="v2-hint-text">{<Tx text={"当前没有可用于修订的材料。符合条件的材料包括：基准版本发布后 3 天内的新材料，或基准版本前 30 天内发布但事后才录入的补充材料。"} />}</p>
+          ) : (
+            <div className="v2-revision-sources-list">
+              {revisionSourceOptions.map((source) => {
+                const key = `${source.source_type}:${source.source_id}`;
+                const isChecked = selectedSourceKeys.includes(key);
+                const tagColor = source.revisionType === "new" ? "badge-new" : source.revisionType === "backfilled" ? "badge-backfilled" : "badge-updated";
+                const typeLabel = source.revisionType === "new"
+                  ? t("新发布材料")
+                  : source.revisionType === "backfilled"
+                    ? t("过往补充材料")
+                    : source.revisionType === "reanalyzed"
+                      ? t("新完成分析")
+                      : t("来源状态更新");
+                return (
+                  <label key={key} className={`v2-revision-source-item ${isChecked ? "is-selected" : ""}`}>
+                    <input
+                      type="checkbox"
+                      checked={isChecked}
+                      disabled={!isChecked && selectedSourceKeys.length >= 10}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          if (selectedSourceKeys.length < 10) setSelectedSourceKeys([...selectedSourceKeys, key]);
+                        } else {
+                          setSelectedSourceKeys(selectedSourceKeys.filter((k) => k !== key));
+                        }
+                      }}
+                    />
+                    <div className="v2-source-content">
+                      <div className="v2-source-title-row">
+                        <span className={`revision-type-badge ${tagColor}`}>{typeLabel}</span>
+                        <span className="v2-source-title">{source.label}</span>
+                      </div>
+                      <div className="v2-source-meta-row">
+                        <span>{t("发布时间")}：{formatTime(source.publishedAt)}</span>
+                        {source.observedAt && <span> · {t("入库时间")}：{formatTime(source.observedAt)}</span>}
+                        {typeof source.userRatingStars === "number" && <span> · {source.userRatingStars}★</span>}
+                      </div>
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
+          )}
+        </div>
         <div className="v2-form-footer">
           {revisionParentDetail?.kind === "loading" && <p>{<Tx text={"正在核对所选版本已经使用的材料…"} />}</p>}
           {revisionParentDetail?.kind === "error" && <p role="alert">{t("无法读取基准版本材料清单：")}{revisionParentDetail.message}</p>}
@@ -522,8 +606,9 @@ export function V2ForecastWorkspace({ symbol, filings, priceHistory, mode, onOpe
           {revisionMaterialMetadataError && <p role="status">{t("分析状态读取失败，系统会继续重试：")}{revisionMaterialMetadataError}</p>}
           {matchingRevisionParent && uploaded.kind === "loading" && <p>{<Tx text={"正在读取已上传媒体材料…"} />}</p>}
           {matchingRevisionParent && uploaded.kind === "error" && <p role="status">{t("媒体材料列表暂不可用：")}{uploaded.message} {t("SEC 材料仍可继续检查。")}</p>}
-          {matchingRevisionParent && uploaded.kind !== "loading" && !revisionMaterialMetadataLoading && revisionSourceOptions.length === 0 && <p>{<Tx text={"当前没有可用于修订的材料。冻结但未进入简报、或分析失败的来源，在材料库补做分析并成功后会自动出现在这里；新发布材料和状态更新也会列出。"} />}</p>}
-          <button className="primary-action" type="button" onClick={createRevision} disabled={!canCreateRevision || !rootIsRevisable}>{<Tx text={"创建人工修订任务"} />}</button>
+          <button className="primary-action" type="button" onClick={createRevision} disabled={!canCreateRevision || !rootIsRevisable}>
+            {<Tx text={"创建人工修订任务"} />}{selectedSourceKeys.length > 0 ? ` (${selectedSourceKeys.length})` : ""}
+          </button>
         </div>
       </section>}
     </>}
