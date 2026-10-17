@@ -35,7 +35,14 @@ def assistant_item_catalogue(messages):
         items=[]
         for line in content.splitlines():
             match=re.match(r'^\s*(?:#{1,6}\s*)?(?:\*\*)?(?:(?:\d{1,3}[.、)）]|[（(]\d{1,3}[)）])|[-*•·])\s*(.+)',line)
-            if not match:continue
+            if not match:
+                match_title=re.match(r'^\s*(?:注[：:])?\s*(?:\*\*(.+?)\*\*|《(.+?)》)',line)
+                if match_title:
+                    title_text=match_title.group(1) or match_title.group(2)
+                    text=title_text.strip()[:400]
+                    identity=hashlib.sha256(json.dumps([source,len(items),text],ensure_ascii=False).encode()).hexdigest()[:20]
+                    items.append({'position':len(items)+1,'item_id':identity,'text':text})
+                continue
             # A label is an exact source substring; the ID binds message and text.
             text=match.group(1).strip().strip('*').strip()[:400]
             identity=hashlib.sha256(json.dumps([source,len(items),text],ensure_ascii=False).encode()).hexdigest()[:20]
@@ -67,11 +74,17 @@ def validate_referents(referents,original,messages,sets):
         else:
             saved=next((s for s in sets if s['id']==ref.source.split(':',1)[1]),None)
             source=json.dumps(saved['rows'],ensure_ascii=False,default=str) if saved else ''
-        if not source or not ref.text or normalized(ref.text) not in normalized(source):raise ValueError('reference_text_unbound')
+        target_text=ref.text or ref.mention or ''
+        source_norm=normalized(source)
+        if not source or not target_text or (normalized(target_text) not in source_norm and (not ref.mention or normalized(ref.mention) not in source_norm)):
+            raise ValueError('reference_text_unbound')
+        ref_dict=ref.model_dump()
+        if not ref_dict.get('text'):
+            ref_dict['text']=target_text if normalized(target_text) in source_norm else (ref.mention if normalized(ref.mention) in source_norm else target_text)
         if wanted is not None:
-            candidates=[item for item in listing if normalized(ref.text) in normalized(item['text'])]
+            candidates=[item for item in listing if normalized(ref_dict['text']) in normalized(item['text'])]
             if not candidates or not any(item['position'] in wanted for item in candidates):raise ValueError('reference_position_mismatch')
-        verified.append(ref.model_dump())
+        verified.append(ref_dict)
     return verified
 
 def bounded_stage(value,key):

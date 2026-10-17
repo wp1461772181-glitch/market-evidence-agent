@@ -49,6 +49,21 @@ def period_match(request: str, body: str) -> bool:
     return True
 
 
+COMPANY_ALIASES = {
+    'Alphabet Inc.': ('Google', '谷歌', 'Alphabet'),
+    'Alphabet': ('Google', '谷歌', 'Alphabet'),
+    'Advanced Micro Devices': ('AMD', '超威', '超微'),
+    'Advanced Micro Devices, Inc.': ('AMD', '超威', '超微'),
+    'Apple Inc.': ('Apple', '苹果'),
+    'Microsoft Corporation': ('Microsoft', '微软'),
+    'NVIDIA Corporation': ('Nvidia', '英伟达'),
+    'Intel Corporation': ('Intel', '英特尔'),
+    'Tesla, Inc.': ('Tesla', '特斯拉'),
+    'Meta Platforms, Inc.': ('Meta', 'Facebook'),
+    'Amazon.com, Inc.': ('Amazon', '亚马逊'),
+}
+
+
 def gate_row(question: str, row: dict, *, symbol: str | None=None, company: str | None=None,
              metrics: list[str] | None=None, period: str | None=None, days_back: int | None=None,
              official_only: bool=False, now: datetime | None=None, entity_aliases: list[str] | None=None) -> tuple[bool,str]:
@@ -62,11 +77,18 @@ def gate_row(question: str, row: dict, *, symbol: str | None=None, company: str 
         metric=next((key for key,terms in METRIC_GROUPS.items() if any(contains(t,question) for t in terms)),None)
         return False,('requested_metric_missing:'+metric if metric else 'zero_evidence')
     if symbol and row.get('symbol') and row['symbol'].upper()!=symbol.upper():return False,'requested_entity_missing'
+    allowed_entities = [x for x in (company, symbol, *(entity_aliases or [])) if x]
+    if company:
+        for k, v in COMPANY_ALIASES.items():
+            if k.lower() in company.lower() or company.lower() in k.lower():
+                for alias in v:
+                    if alias not in allowed_entities:
+                        allowed_entities.append(alias)
     # Saved rows are verified by their query's symbol filter. Public pages must name the
     # entity in body text; a forged headline by itself is never sufficient.
-    if web and (company or symbol) and not any(contains(x,body+' '+title) for x in (company,symbol,*(entity_aliases or [])) if x):
+    if web and (company or symbol) and not any(contains(x,body+' '+title) for x in allowed_entities):
         return False,'requested_entity_missing'
-    if not web and symbol and not row.get('symbol') and not row.get('_verified_symbol') and not any(contains(x,body+' '+title) for x in (company,symbol) if x):
+    if not web and symbol and not row.get('symbol') and not row.get('_verified_symbol') and not any(contains(x,body+' '+title) for x in allowed_entities):
         return False,'requested_entity_missing'
     needed=metrics if metrics is not None else [key for key,terms in METRIC_GROUPS.items() if any(contains(t,question) for t in terms)]
     for key in needed:
@@ -80,7 +102,7 @@ def gate_row(question: str, row: dict, *, symbol: str | None=None, company: str 
         if key=='forecast' and row.get('probabilities'):continue
         terms=METRIC_GROUPS.get(key,(key,))
         passages=re.split(r'[。！？\n]|(?<=[.!?])\s+',body)
-        relevant=[part for part in passages if any(contains(t,part) for t in terms) and (not web or not(company or symbol) or any(contains(x,part) for x in (company,symbol) if x))]
+        relevant=[part for part in passages if any(contains(t,part) for t in terms) and (not web or not(company or symbol) or any(contains(x,part) for x in allowed_entities))]
         if not relevant:return False,'requested_metric_missing:'+key
         if not any(period_match(period or question,part) for part in relevant):return False,'requested_period_missing'
     requested=period or question
@@ -199,7 +221,7 @@ CLAIM_FEATURES=(
  RESIGNATION_TERMS,
  APPOINTMENT_TERMS,
  ('bankruptcy','bankrupt','破产'),
- ('acquisition','acquire','acquired','收购'),
+ ('acquisition','acquire','acquired','收购','buy','bought','purchased','purchase','merger','merged','买入'),
  DEPARTURE_TERMS,
  ROLE_START_TERMS,
 )

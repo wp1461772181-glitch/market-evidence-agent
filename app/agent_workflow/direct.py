@@ -253,9 +253,11 @@ class Turn:
                 has_deictic=bool(re.search(r'(?:它|它们|他|她|这篇|这份|该|上述|刚才|刚那|前一个|上一个|第[一二两三四五六七八九十\d]+[个条篇份项]|其)',self.original))
                 if has_deictic:
                     self.pending=self.card('请确认公司、时间或来源，当前指代缺少可靠依据。',[]);return
-                value=Reference(relationship='new',canonical_question=self.original,referents=[])
+                canonical=value.canonical_question if (value and value.canonical_question and value.relationship in {'followup','refinement'}) else self.original
+                relationship=value.relationship if (value and value.relationship in {'followup','refinement'}) else 'new'
+                value=Reference(relationship=relationship,canonical_question=canonical,referents=[])
                 self.reference_value=value
-                return
+                if relationship=='new':return
         self.reference_stage()
         if value.relationship=='clarify':
             self.pending=self.card(value.question or '请说明要查询哪家公司或哪份来源。',value.choices);return
@@ -333,10 +335,10 @@ class Turn:
     async def classify(self):
         self.audit['nodes'].append('classify_intent')
         payload={'question':self.question,'original':self.original,'user_action_words':self.authorization_question,'previous_category':self.state.get('previous_category'),'history':self.history,'previous_scope':self.state.get('previous_scope'),'as_of_utc':datetime.now(UTC).isoformat()}
-        prompt=('Return classify_request. A: requests requiring saved/public evidence, current/historical numbers, prices, dates or financial results. '
+        prompt=('Return classify_request. A: requests verifying facts against the local material library or saved knowledge, querying historical metrics, prices, filings or local saved evidence (A searches saved knowledge first; for local RAG questions). '
             'Safe product configuration questions (including where to enter an API key) are D; never claim secret access. '
             'B: timeless financial/company concepts or operating model; classify only, a separate model call will answer. C: unrelated requests including coding. '
-            'D: system actions, compound workflows, or requests to fetch, pull, import, save, sync, discover, analyze, forecast, replay, revise, withdraw or initialize data (e.g. 拉取40份, 把财报送给AI分析, 修订预测, 上传媒体材料, 撤回文档, 初始化行情, 发起回测). '
+            'D: system actions, compound workflows, write operations, OR explicit external web search/research requests (e.g. 联网搜索, 查外网新闻, 找最新资讯, 网上搜, 调研公开动态, fetch, pull, import, save, sync, discover, analyze, forecast, replay, revise, withdraw, initialize data). When the user explicitly requests searching the web or finding recent external/public news, classify as D. '
             'A and D share tools and permissions; A searches saved knowledge first. '
             'Use only requested canonical metric names from the schema. A factual quantity never belongs in B. '
             'Set write_condition=newer_than_saved for conditional saves requiring a newer date than saved reports, otherwise none. Never discard the user condition. '

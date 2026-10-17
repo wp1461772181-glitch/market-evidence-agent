@@ -196,6 +196,7 @@ def figure_values(text: str, *, zh: bool = False) -> set[float]:
     that are no part of a report period, an accession, a source id or a task id.  ``zh`` also reads
     Chinese numerals ("两条" is 2): used for what the user wrote, never for the words to be kept."""
     text = unicodedata.normalize("NFKC", text).replace("萬", "万").replace("億", "亿")
+    text = re.sub(r"(?<=\d)T(?=\d{2}:)", " ", text)
     text = PERIOD_TEXT.sub(" ", ACCESSION.sub(" ", SOURCE_ID.sub(" ", TASK_ID.sub(" ", text))))
     text = re.sub(r"(?<=\d),(?=\d{3}(?!\d))", "", text)
     values = {round(float(number) * _MAGNITUDE.get(unit.lower(), 1.0), 4) for number, unit in _FIGURE.findall(text)}
