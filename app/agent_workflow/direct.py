@@ -328,7 +328,7 @@ class Turn:
         prompt=('Return classify_request. Decide by what the request needs, in this order:\n'
             'D — the user wants this product to do something: a write (import, save, fetch, scan, index, analyse, forecast, replay, revise, withdraw, initialise, translate, review, queue change), reading or changing system state such as the research queue, task status or a workspace page, an explicit request to search the public web, or a question about how to use this product.\n'
             'A — answering needs data this product stores: prices, SEC filings, uploaded materials, saved AI analysis, saved FAQ, saved forecasts, or a specific saved source.\n'
-            'B — finance, markets or company knowledge that needs no stored data and no current fact: concepts, definitions, how something works, a business model.\n'
+            'B — finance, markets or company knowledge you can explain without any data this system stores: concepts, definitions, how something works, a business model, a worked example. It may reason with general or illustrative numbers; what makes it B is that it needs none of this system\'s records.\n'
             'C — anything else this product does not do; coding included.\n'
             'A write that also needs saved data to name its target is still D. A and D share tools and permissions; A searches saved knowledge first.\n'
             'Fill the retrieval scope from the request only: symbol, company, company_mention, metrics, period, form, financial_only, latest, days_back, max_results. Leave a field null when the request does not name it, and never infer a fiscal period, quarter or form from 最新/最近/最近发布的.\n'

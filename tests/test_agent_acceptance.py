@@ -198,7 +198,7 @@ def test_disabled_rag_materials_allow_approved_public_sec_only(monkeypatch):
     now=datetime.now(UTC)
     content='UniqueAcceptedSECExcerpt revenue fact'
     import hashlib
-    obj=SecFilingInventory(symbol='TSTU',cik='0000320193',accession_number=f'0000320193-26-{uuid4().int % 1000000:06d}',form='10-Q',filed_at=date.today(),primary_document='q.htm',source_url='https://www.sec.gov/Archives/accepted-q.htm',source='sec-edgar',review_status='accepted',reviewed_at=now,observed_at=now,content_status='fetched',content_observed_at=now,content_excerpt=content,content_excerpt_sha256=hashlib.sha256(content.encode()).hexdigest())
+    obj=SecFilingInventory(symbol='TSTU',cik='0000320193',accession_number=f'0000320193-26-{uuid4().int % 1000000:06d}',form='10-Q',filed_at=datetime.now(UTC).date(),primary_document='q.htm',source_url='https://www.sec.gov/Archives/accepted-q.htm',source='sec-edgar',review_status='accepted',reviewed_at=now,observed_at=now,content_status='fetched',content_observed_at=now,content_excerpt=content,content_excerpt_sha256=hashlib.sha256(content.encode()).hexdigest())
     with SessionLocal() as s:s.add(obj);s.commit()
     result=run(tools.query_materials.ainvoke({'symbol':'TSTU','keyword':'UniqueAcceptedSECExcerpt'}))
     assert result['ok'] and len(result['data'])==1 and result['data'][0]['material_type']=='official_filing'
