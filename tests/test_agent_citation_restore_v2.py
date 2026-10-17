@@ -13,14 +13,20 @@ def schema(disposable_database):Base.metadata.create_all(engine)
 
 def test_price_citation_round_trips_and_tamper_is_rejected():
     now=datetime.now(UTC)
+    trading_date = date(2026, 10, 16)
     with SessionLocal() as db:
-        row=MarketPrice(symbol='CIT',trading_date=date.today(),open=10,high=11,low=9,close=10.5,volume=50,source='citation-test',fetched_at=now)
+        row=MarketPrice(symbol='CIT',trading_date=trading_date,open=10,high=11,low=9,close=10.5,volume=50,source='citation-test',fetched_at=now)
         db.add(row);db.commit();identity=str(row.id)
-    citations=[]
-    number_rows('query_stock_prices',[{'id':identity,'symbol':'CIT','close':10.5,'trading_date':date.today().isoformat(),'source':'citation-test','fetched_at':now.isoformat()}],citations,{})
-    assert _restore_citations(citations,'guest')[0]['source_type']=='saved_price'
-    bad=copy.deepcopy(citations);bad[0]['quote']='999'
-    assert _restore_citations(bad,'guest')[0]['source_type']=='unavailable'
+    try:
+        citations=[]
+        number_rows('query_stock_prices',[{'id':identity,'symbol':'CIT','close':10.5,'trading_date':trading_date.isoformat(),'source':'citation-test','fetched_at':now.isoformat()}],citations,{})
+        assert _restore_citations(citations,'guest')[0]['source_type']=='saved_price'
+        bad=copy.deepcopy(citations);bad[0]['quote']='999'
+        assert _restore_citations(bad,'guest')[0]['source_type']=='unavailable'
+    finally:
+        with SessionLocal() as db:
+            to_del = db.get(MarketPrice, uuid.UUID(identity) if isinstance(identity, str) and len(identity) == 36 else row.id)
+            if to_del: db.delete(to_del); db.commit()
 
 def test_legacy_faq_round_trips_but_answer_change_invalidates_it():
     question='Unique citation '+uuid.uuid4().hex
