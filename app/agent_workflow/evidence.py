@@ -290,6 +290,21 @@ def unsupported_claims(answer,citations):
     return False
 
 
+# A claim is only factual when it states an amount, a rate or a named event. A bare digit, a year,
+# a count of results and a form label ("10-K") are none of them, so they must not each demand a
+# citation: that rule used to reject most ordinary sentences and turn good turns into partial ones.
+_CLAIM_AMOUNT = re.compile(
+    r'\d[\d,.]*\s*(?:万亿|千万|百万|亿|万|千|trillion|billion|million|thousand|bn|mn|b\b|k\b)'
+    r'|\d[\d,.]*\s*(?:%|％|美元|元|dollars?|USD)', re.I)
+
+
+def factual_claim(text):
+    """Whether this passage states something that needs a source rather than ordinary wording."""
+    if _CLAIM_AMOUNT.search(text):return True
+    if any(any(contains(k, text) for k in group) for group in CLAIM_FEATURES):return True
+    return any(any(contains(t, text) for t in terms) for terms in METRIC_GROUPS.values())
+
+
 def reviewed_passages(answer,citations,*,require_citations=False,check_claims=True):
     """Diagnostics apply to affected passages, never erase other verified content."""
     accepted=[];issues=[]
@@ -298,7 +313,7 @@ def reviewed_passages(answer,citations,*,require_citations=False,check_claims=Tr
         if not stripped:continue
         uncertainty=bool(re.search(r'没有(?:可核验)?(?:资料|证据)|无法(?:核实|确认)|no (?:verified )?evidence',stripped,re.I))
         is_leadin = bool(re.match(r'^(?:以下|根据|综上|总结|如上|经查询|查询结果|核验结果|提示|注意|说明|确认后|请核对|已为您|请注意)[^。！？\n]{0,35}[：:\n]?', stripped)) or (len(stripped) < 35 and stripped.endswith(('：', ':')))
-        has_factual_content = bool(re.search(r'\d', stripped) or any(any(contains(k, stripped) for k in group) for group in CLAIM_FEATURES) or any(any(contains(t, stripped) for t in terms) for terms in METRIC_GROUPS.values()))
+        has_factual_content = factual_claim(stripped)
         code=('invalid_citation' if citation_errors(stripped,citations) else
               'missing_citation' if require_citations and has_factual_content and not re.search(r'\[\d+\]',stripped) and not uncertainty and not (is_leadin and not re.search(r'\d', stripped)) else
               'unsupported_numeric_claim' if check_claims and unsupported_numbers(stripped,citations) else
@@ -306,3 +321,31 @@ def reviewed_passages(answer,citations,*,require_citations=False,check_claims=Tr
         if code:issues.append(code)
         else:accepted.append(stripped)
     return accepted,issues
+
+
+_ATOMIC_LINE = re.compile(r'^[|>#]|^[-*+]\s|^\d+[.)]\s')
+_TABLE_RULE = re.compile(r'^\|?[\s:|-]+\|?$')
+
+
+def reviewed_answer(answer,citations,*,require_citations=False,check_claims=True):
+    """Drop only what cannot be supported, line by line, so the answer keeps its formatting.
+
+    ``reviewed_passages`` reads sentences; the answer is written in lines.  A rejected passage used
+    to be handled by splitting the whole answer and rejoining the survivors with '。', which turned a
+    Markdown table's separator row into '| --- | --- |。' and broke the table.  Here the line is the
+    unit: a table row, list item, heading or quote is dropped whole (its syntax cannot survive half a
+    sentence), and a prose line keeps the sentences that passed.
+    """
+    kept=[];issues=[]
+    for line in answer.splitlines():
+        stripped=line.strip()
+        if not stripped or _TABLE_RULE.match(stripped):
+            kept.append(line);continue
+        accepted,line_issues=reviewed_passages(stripped,citations,require_citations=require_citations,check_claims=check_claims)
+        if not line_issues:
+            kept.append(line);continue
+        issues.extend(line_issues)
+        if _ATOMIC_LINE.match(stripped):continue
+        if accepted:kept.append('。'.join(accepted))
+    text='\n'.join(kept).strip()
+    return text,issues

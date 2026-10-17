@@ -62,9 +62,15 @@ def test_time_window_excludes_old_pages(days,accepted):
     assert bool(r['citations'])==accepted
     if not accepted:assert r['reason']=='zero_evidence' and '[1]' not in r['answer']
 
-@pytest.mark.parametrize('question',['给我写一个冒泡排序','tell me a joke','write a shell script'])
-def test_outside_product_uses_fixed_script_without_tools(question):
-    r,c,_,_=run(question,route='C');assert not c and not r['citations'] and '功能范围' in r['answer']
+@pytest.mark.parametrize('question,phrase',[
+    ('给我写一个冒泡排序','功能范围'),          # the refusal is server-owned, in the question's language
+    ('tell me a joke','outside what Market Evidence Agent does'),
+    ('write a shell script','outside what Market Evidence Agent does'),
+])
+def test_outside_product_uses_fixed_script_without_tools(question,phrase):
+    """The scope sentence stays in code; the model may only add what the product can do instead."""
+    r,c,_,_=run(question,route='C')
+    assert not c and not r['citations'] and phrase in r['answer']
 
 @pytest.mark.parametrize('answer,disclaimer',[('苹果的商业模式包括硬件与服务。',False),('Apple earns 12 dollars.',True),('2025 年，公司提供服务。',True)])
 def test_finance_general_answer_is_model_knowledge_without_tools(answer,disclaimer):

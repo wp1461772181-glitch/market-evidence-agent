@@ -16,6 +16,18 @@ from .references import Referent,validate_referents,bounded_stage,normalized,ass
 MAX_RETRIES=2
 IDLE_SECONDS=120
 TOOL_IDLE_SECONDS=45
+# The ceiling on model decisions in one turn, and on distinct calls the server refused. Inactivity
+# and repeated identical work stop a turn earlier; these only keep a model that keeps inventing new
+# invalid calls from running forever (each decision is a paid provider request). Spend, elapsed time
+# and the number of successful tool calls never stop a healthy turn.
+MAX_DECISION_STEPS=30
+MAX_INVALID_CALLS=6
+# The server-owned refusal of an out-of-scope turn, per answer language. The route decision is
+# code's; this sentence is the floor the user always gets, and the model may only add next steps.
+SCOPE_NOTICE={
+ 'zh':'这个请求不在 Market Evidence Agent 的功能范围内。我可以协助查证市场资料、公开新闻和已保存证据。',
+ 'en':'This request is outside what Market Evidence Agent does. I can help verify saved market data, public news and saved evidence.',
+}
 MARKERS=('<｜｜DSML｜｜','<|tool_calls|>','<|python|>')
 TRANSIENT={'tool_timeout','provider_timeout','provider_network_error','rate_limited','http_5xx','web_research_timeout'}
 # Authorization guards only: these words never select a route or tool.
@@ -94,75 +106,39 @@ def bounded_history(messages):
     return json.dumps(list(reversed(selected)),ensure_ascii=False)
 
 
-def format_confirmed_execution_summary(value: dict) -> str:
-    raw_data = value.get('data') or []
-    flat_data = []
-    for item in raw_data:
-        if isinstance(item, dict) and isinstance(item.get('data'), list):
-            flat_data.extend(item['data'])
-        elif isinstance(item, dict):
-            flat_data.append(item)
-    if not flat_data and value.get('status') == 'succeeded':
-        return '已成功执行确认的操作。'
-    parts = []
-    uploaded_items = []
-    other_items = []
-    for item in flat_data:
-        if not isinstance(item, dict): continue
-        outcome = item.get('outcome') or item
-        status = outcome.get('status') or item.get('status') or ''
-        if 'title' in item and 'symbol' in item and ('created' in item or status in {'created', 'already_exists'}):
-            uploaded_items.append(item)
-        else:
-            other_items.append(item)
+EXECUTION_FACT_KEYS=('action','status','ok','error_code','title','symbol','created','inserted',
+                     'indexed','queued_chunks','job_id','reason','message')
 
-    if uploaded_items:
-        if len(uploaded_items) == 1:
-            u = uploaded_items[0]
-            state_text = '已保存入库' if u.get('created', True) else '资料已存在，无需重复入库'
-            parts.append(f"**材料上传完成**\n已将材料《{u['title']}》（{u['symbol']}）成功上传至材料库。\n- 处理状态：{state_text}")
-        else:
-            bullets = '\n'.join(f"- {i+1}. 《{u['title']}》（{u['symbol']}）" for i, u in enumerate(uploaded_items))
-            parts.append(f"**材料上传完成**\n已成功将以下 {len(uploaded_items)} 篇材料上传至材料库：\n{bullets}")
 
-    for item in other_items:
-        outcome = item.get('outcome') or item
-        action = outcome.get('action') or item.get('name') or ''
-        status = outcome.get('status') or item.get('status') or ''
-        if 'inserted' in outcome:
-            parts.append(f"**行情初始化完成**\n已成功获取历史日 K 线数据，共入库 {outcome.get('inserted', 0)} 条记录。")
-        elif 'revision_id' in outcome or 'branch_version_id' in outcome or (action == 'forecast' and 'manual_revision' in str(outcome)):
-            job_id = outcome.get('job_id') or outcome.get('id') or ''
-            parts.append(f"**预测修订任务已提交**\n已基于选定材料创建预测修订任务" + (f"（任务 ID: `{job_id}`）" if job_id else "") + "，正在后台分析并生成新预测分支。")
-        elif action == 'start_historical_replay' or 'replay' in str(outcome.get('job_kind', '')):
-            job_id = outcome.get('job_id') or outcome.get('id') or ''
-            parts.append(f"**历史回放任务已提交**\n历史回放任务已在后台启动" + (f"（任务 ID: `{job_id}`）" if job_id else "") + "。")
-        elif status == 'withdrawn':
-            parts.append(f"**文档已成功撤回**\n已将目标文档从知识库中撤回，该文档将不再参与后续向量检索。")
-        elif 'queued_chunks' in outcome:
-            parts.append(f"**索引重试已排队**\n已重新为文档切片排队嵌入任务，待处理切片数：{outcome.get('queued_chunks', 0)}。")
-        elif 'approved' in str(outcome.get('status', '')):
-            parts.append(f"**知识候选审核已完成**\n已审核通过并排队建立索引。")
-        elif 'rejected' in str(outcome.get('status', '')):
-            parts.append(f"**知识候选审核已完成**\n已驳回该知识候选。")
-        elif action == 'forecast' or outcome.get('job_kind') == 'forecast':
-            job_id = outcome.get('job_id') or outcome.get('id') or ''
-            parts.append(f"**预测任务已发起**\n已成功提交预测任务" + (f"（任务 ID: `{job_id}`）" if job_id else "") + "，正在生成最新预测。")
-        elif action == 'analyze' or outcome.get('job_kind') == 'analysis':
-            job_id = outcome.get('job_id') or outcome.get('id') or ''
-            parts.append(f"**研报分析任务已提交**\n已成功提交 AI 研报分析任务" + (f"（任务 ID: `{job_id}`）" if job_id else "") + "，分析完成后可在研报列表中查看。")
-        elif action in {'fetch_sec', 'refresh_sec'}:
-            parts.append(f"**SEC 原文同步已完成**\n已成功下载并缓存 SEC 申报原文。")
-        elif action == 'import':
-            parts.append(f"**材料入库已完成**\n已成功将资料导入知识库。")
-        elif action == 'index':
-            indexed = outcome.get('indexed', 0)
-            parts.append(f"**向量索引构建已完成**\n已成功完成 {indexed} 个切片的向量化嵌入。")
-        else:
-            desc = outcome.get('message') or outcome.get('title') or status
-            parts.append(f"已执行确认的操作" + (f"：{desc}" if desc else "。"))
-    return '\n\n'.join(parts) if parts else '已执行确认的操作。'
+def execution_facts(value: dict) -> list[dict]:
+    """The facts of a confirmed execution, flattened, with no prose of any kind.
 
+    A consent result is ``{data:[{outcome:{data:[...]}}]}`` for batched writes and a flat row for a
+    single one, so each fact is merged most-specific-last.  The model narrates these; the key list
+    above is the whole vocabulary it may use, so a report cannot invent an outcome.
+    """
+    rows=[]
+    for item in value.get('data') or []:
+        if not isinstance(item, dict):continue
+        outcome=item.get('outcome') if isinstance(item.get('outcome'),dict) else {}
+        nested=outcome.get('data') if isinstance(outcome.get('data'),list) else (
+            item.get('data') if isinstance(item.get('data'),list) else [])
+        for entry in nested or [{}]:
+            source=entry if isinstance(entry,dict) else {}
+            merged={**item,**outcome,**source}
+            fact={k:merged[k] for k in EXECUTION_FACT_KEYS if merged.get(k) is not None}
+            if fact:rows.append(fact)
+    return rows or [{'status':'complete','ok':value.get('ok',True)}]
+
+
+def execution_fallback(facts: list[dict]) -> str:
+    """What the user gets when the model cannot phrase the report. Never the only report."""
+    lines=[]
+    for fact in facts:
+        detail='；'.join(f'{k}={v}' for k,v in fact.items() if k in {'status','error_code','inserted','indexed','queued_chunks','created','reason'} and v is not None)
+        label=fact.get('title') or fact.get('action') or fact.get('job_id') or '操作'
+        lines.append('- '+str(label)+(f'（{detail}）' if detail else ''))
+    return '已执行确认的操作：\n'+'\n'.join(lines)
 
 
 class Turn:
@@ -196,7 +172,10 @@ class Turn:
         value=self.reference_value
         self.stage('resolver',{'skipped':skipped,'relationship':value.relationship if value else 'new','canonical_question':value.canonical_question if value else self.original,'referents':[r.model_dump() for r in value.referents] if value else [],'validator':{'passed':passed,'rejected_reason':reason}})
     def budget(self):
-        # Accounting is cumulative; only inactivity/invalid repetition stops work.
+        # Returns a stop reason (truthy) or None. Cumulative spend and successful work never stop a
+        # turn; the decision ceiling and repeated server-refused calls do.
+        if self.audit['decision_steps']>=MAX_DECISION_STEPS:return 'no_progress'
+        if len(self.invalid_calls)>=MAX_INVALID_CALLS:return 'no_progress'
         return None
 
     async def model(self,messages,tool_schemas,*,protocol_retries=1):
@@ -427,6 +406,32 @@ class Turn:
                 self.audit['source']='model_knowledge';return self.finish(answer,generated=True)
             except Exception:continue
         return self.finish('这次没有生成回答，请重试',status='failed',reason='empty_b_answer',generated=True)
+
+    async def answer_c(self):
+        """Out of scope: the refusal is server-owned, the model may only add concrete next steps.
+
+        The route decision already says the request is outside this product, so the turn must
+        never answer it.  The scope sentence itself stays in code (one per language) so that an
+        out-of-scope turn is always refused and never mis-localised; the model is asked only for
+        what this product *can* do instead, and its words are dropped if they are unusable.
+        """
+        fixed=SCOPE_NOTICE['zh' if re.search(r'[\u3400-\u9fff]',self.original) else 'en']
+        messages=[{'role':'system','content':('The request below is outside what this product does. Do NOT answer it, '
+            'not even partly, and do not restate it at length. Write at most two sentences, in the language of the '
+            'request, naming two or three things this product can do instead: saved price history, saved SEC filings '
+            'and uploaded materials, saved AI analysis of those materials, public web research with citations, and '
+            'saved research forecasts. No greetings, no headings, no figures, no promises.')},
+            {'role':'user','content':json.dumps({'out_of_scope_request':self.original},ensure_ascii=False)}]
+        for attempt in range(2):
+            try:
+                async with progress_watchdog(IDLE_SECONDS):message=await self.model(messages,[],protocol_retries=0)
+                extra=message.get('content')
+                if not isinstance(extra,str) or not extra.strip() or message.get('tool_calls'):continue
+                extra=extra.strip()
+                if any(m in extra for m in MARKERS) or len(extra)>400:continue
+                self.audit['source']='model_scope_notice';return self.finish(fixed+'\n\n'+extra,generated=True)
+            except Exception:continue
+        self.audit['source']='fixed_scope_notice';return self.finish(fixed,generated=True)
 
     def partial_failure(self,code):
         notes={'no_progress':'长时间没有实际进展，已停止。'}
@@ -853,7 +858,30 @@ class Turn:
             }
             self.sets = [*self.sets, executed_set][-6:]
             self.new_sets.append(executed_set)
-        return self.finish(format_confirmed_execution_summary(value),generated=True)
+        return await self.report_execution(value)
+
+    async def report_execution(self,value):
+        """Report a completed write in the user's language from the facts the server recorded."""
+        facts=execution_facts(value)
+        fallback=execution_fallback(facts)
+        messages=[{'role':'system','content':('The operations below were already executed and the user '
+            'approved them. Report the result to the user. Use ONLY these facts: what succeeded, what was '
+            'skipped or already existed and why, and what failed and why. Never add a number, title, id or '
+            'outcome that is not stated here, never promise a further action, and do not mention internal '
+            'status names in English. Answer in the language of the user\'s request, at most six sentences.')},
+            {'role':'user','content':json.dumps({'executed_operations':facts},ensure_ascii=False,default=str)}]
+        for attempt in range(2):
+            try:
+                async with progress_watchdog(IDLE_SECONDS):message=await self.model(messages,[],protocol_retries=0)
+                text=message.get('content')
+                if not isinstance(text,str) or not text.strip() or message.get('tool_calls'):continue
+                text=text.strip()
+                if any(m in text for m in MARKERS) or len(text)>2000:continue
+                self.audit['source']='model_execution_report'
+                return self.finish(text,generated=True)
+            except Exception:continue
+        self.audit['source']='fixed_execution_report'
+        return self.finish(fallback,generated=True)
 
     def finish(self,answer,*,status='succeeded',reason=None,generated=False):
         from .language import format_answer
@@ -879,16 +907,17 @@ class Turn:
                     return "操作已完成。"
                 answer='\n\n'.join(_fmt_op(f) for f in operational)
         if self.route in {'A','D'}:
-            from .evidence import reviewed_passages
+            from .evidence import reviewed_answer
             is_web = any(getattr(obs,'tool_name',None) in {'web_research','ingest_web_source'} or (isinstance(obs,dict) and (obs.get('name') in {'web_research','ingest_web_source'} or obs.get('route')=='public_web_research')) for obs in self.observations) or any(c.get('source_type')=='web' for c in self.citations)
             check_claims = not generated and (self.route=='A' or not is_web)
             require_citations = not generated and (self.route=='A' or (bool(self.observations) and not is_web and not self.pending))
-            accepted,issues=reviewed_passages(answer,self.citations,require_citations=require_citations,check_claims=check_claims)
+            kept,issues=reviewed_answer(answer,self.citations,require_citations=require_citations,check_claims=check_claims)
             if issues:
                 self.audit['answer_issues']=issues
                 reason=issues[0]
-                answer='。\n'.join(accepted)
-                if accepted:
+                # Only the unsupported line is dropped; the rest keeps its own formatting.
+                if kept:
+                    answer=kept
                     status='partially_succeeded'
                 else:
                     answer='本次表述暂无法与来源核实，请缩小问题或补充资料。'
@@ -953,7 +982,7 @@ class Turn:
         if self.pending:return self.finish('需要补充信息：'+self.pending.get('question',''),status='waiting_for_input',generated=True)
         await self.classify()
         if self.pending:return self.finish('需要补充信息：'+self.pending['question'],status='waiting_for_input',generated=True)
-        if self.route=='C':return self.finish('这个请求不在 Market Evidence Agent 的功能范围内。我可以协助查证市场资料、公开新闻和已保存证据。',generated=True)
+        if self.route=='C':return await self.answer_c()
         if self.route=='B':
             return await self.answer_b()
         if self.route=='A':

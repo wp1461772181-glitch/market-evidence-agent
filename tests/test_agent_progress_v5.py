@@ -14,8 +14,21 @@ from app.agent_workflow.state import AgentRuntimeContext
 def test_cumulative_work_does_not_exhaust_healthy_turn():
     turn = direct.Turn('hello', AgentRuntimeContext('custom', 'test', 'dummy'), None, [], {})
     turn.started -= 10000
-    turn.audit.update(token_usage=10_000_000, tool_calls=500, distinct_successful_calls=500, decision_steps=500)
+    turn.audit.update(token_usage=10_000_000, tool_calls=500, distinct_successful_calls=500)
     assert turn.budget() is None
+
+
+def test_decision_and_refused_call_ceilings_stop_a_runaway_turn():
+    """A turn ends on the decision ceiling or on repeated server-refused calls, never on spend."""
+    spent = direct.Turn('hello', AgentRuntimeContext('custom', 'test', 'dummy'), None, [], {})
+    spent.audit['decision_steps'] = direct.MAX_DECISION_STEPS
+    assert spent.budget() == 'no_progress'
+    refused = direct.Turn('hello', AgentRuntimeContext('custom', 'test', 'dummy'), None, [], {})
+    refused.invalid_calls = {f'bad-{i}' for i in range(direct.MAX_INVALID_CALLS)}
+    assert refused.budget() == 'no_progress'
+    healthy = direct.Turn('hello', AgentRuntimeContext('custom', 'test', 'dummy'), None, [], {})
+    healthy.audit['decision_steps'] = direct.MAX_DECISION_STEPS - 1
+    assert healthy.budget() is None
 
 
 def test_model_usage_is_recorded_after_old_cumulative_limit(monkeypatch):

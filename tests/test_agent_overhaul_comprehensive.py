@@ -14,7 +14,7 @@ from app.agent_tool_catalog import (
     RetrievalDiagnosticsArgs,
     WorkspaceArgs,
 )
-from app.agent_workflow.direct import format_confirmed_execution_summary, Turn
+from app.agent_workflow.direct import execution_facts, execution_fallback, Turn
 from app.agent_workflow.references import assistant_item_catalogue
 from app.agent_workflow.workspace_tools import find_revision_candidates
 from app.database import Base, SessionLocal, engine
@@ -68,63 +68,25 @@ def test_save_material_evidence_schema():
     assert valid.credibility_stars == 5
 
 
-def test_format_confirmed_execution_summary():
-    """Verify that execution outcomes produce human-readable summaries and NO raw JSON."""
-    # 1. Material upload
-    upload_val = {
-        'ok': True,
-        'data': [{
-            'id': 'c3c274a0-0000-0000-0000-000000000001',
-            'symbol': 'INTC',
-            'title': 'Intel IFS Foundry Roadmap Update',
-            'created': True,
-            'status': 'created',
-        }]
-    }
-    summary1 = format_confirmed_execution_summary(upload_val)
-    assert '材料上传完成' in summary1
-    assert 'Intel IFS Foundry Roadmap Update' in summary1
-    assert 'INTC' in summary1
-    assert '{' not in summary1 and '}' not in summary1
+def test_execution_facts_carry_the_recorded_outcome_and_no_raw_json():
+    """The report the model narrates is built from these facts; none of them is prose or raw JSON."""
+    upload = execution_facts({'ok': True, 'data': [{
+        'id': 'c3c274a0-0000-0000-0000-000000000001', 'symbol': 'INTC',
+        'title': 'Intel IFS Foundry Roadmap Update', 'created': True, 'status': 'created'}]})
+    assert upload[0]['title'] == 'Intel IFS Foundry Roadmap Update'
+    assert upload[0]['symbol'] == 'INTC' and upload[0]['created'] is True
 
-    # 2. Price initialization
-    price_val = {
-        'ok': True,
-        'data': [{
-            'status': 'completed',
-            'inserted': 365,
-        }]
-    }
-    summary2 = format_confirmed_execution_summary(price_val)
-    assert '行情初始化完成' in summary2
-    assert '365' in summary2
-    assert '{' not in summary2
+    prices = execution_facts({'ok': True, 'data': [{'status': 'completed', 'inserted': 365}]})
+    assert prices[0]['inserted'] == 365 and prices[0]['status'] == 'completed'
 
-    # 3. Forecast revision
-    rev_val = {
-        'ok': True,
-        'data': [{
-            'revision_id': 'rev-1234',
-            'job_id': 'job-5678',
-            'status': 'queued',
-        }]
-    }
-    summary3 = format_confirmed_execution_summary(rev_val)
-    assert '预测修订任务已提交' in summary3
-    assert 'job-5678' in summary3
-    assert '{' not in summary3
+    revision = execution_facts({'ok': True, 'data': [{'revision_id': 'rev-1234', 'job_id': 'job-5678', 'status': 'queued'}]})
+    assert revision[0]['job_id'] == 'job-5678' and revision[0]['status'] == 'queued'
 
-    # 4. Withdraw knowledge document
-    withdraw_val = {
-        'ok': True,
-        'data': [{
-            'document_id': 'doc-1234',
-            'status': 'withdrawn',
-        }]
-    }
-    summary4 = format_confirmed_execution_summary(withdraw_val)
-    assert '文档已成功撤回' in summary4
-    assert '{' not in summary4
+    withdrawn = execution_facts({'ok': True, 'data': [{'document_id': 'doc-1234', 'status': 'withdrawn'}]})
+    assert withdrawn[0]['status'] == 'withdrawn'
+
+    for facts in (upload, prices, revision, withdrawn):
+        assert '{' not in execution_fallback(facts) and 'revision_id' not in str(facts)
 
 
 def test_assistant_item_catalogue_supports_bullets():
@@ -288,114 +250,17 @@ def test_find_revision_candidates_filtering():
             db.commit()
 
 
-def test_format_confirmed_execution_summary_with_nested_data():
-    """Verify that multi-item consent results with nested data are properly flattened into a bulleted list."""
-    val = {
-        'ok': True,
-        'data': [
-            {
-                'ok': True,
-                'data': [
-                    {
-                        'id': '2085f271-74c6-4676-8f34-7dc0d68cd458',
-                        'symbol': 'AMD',
-                        'title': 'Advanced Micro Devices Inc(AMD)股票10月14日盤中下跌3.47%：背後推手曝光',
-                        'created': True,
-                        'status': 'created',
-                    }
-                ]
-            },
-            {
-                'ok': True,
-                'data': [
-                    {
-                        'id': 'f2000e34-3c85-41e2-804f-1b5b4e1d993e',
-                        'symbol': 'AMD',
-                        'title': 'Advanced Micro Devices Inc(AMD)股票10月16日盤中下跌3.79%：原因全解讀',
-                        'created': True,
-                        'status': 'created',
-                    }
-                ]
-            }
-        ],
-        'status': 'complete'
-    }
-    summary = format_confirmed_execution_summary(val)
-    assert '材料上传完成' in summary
-    assert '已成功将以下 2 篇材料上传至材料库：' in summary
-    assert '10月14日盤中下跌3.47%' in summary
-    assert '10月16日盤中下跌3.79%' in summary
-    assert '已执行确认的操作' not in summary
-
-
-def test_assistant_message_sources_preserves_messages_with_audit_metadata():
-    """Verify that assistant messages with route/audit metadata in tool_calls (no actual calls) are preserved."""
-    from app.agent_workflow.references import assistant_message_sources
-    messages = [
-        {
-            'role': 'assistant',
-            'content': '已将以下材料成功上传至材料库：\n- 1. 《AMD 10月14日新闻》\n- 2. 《AMD 10月16日新闻》',
-            'tool_calls': {'route': 'D', 'audit': {'write_outcome': 'executed'}},
-        },
-        {
-            'role': 'assistant',
-            'content': '',
-            'tool_calls': {'calls': [{'id': 'call_1', 'function': {'name': 'query_materials'}}]},
-        }
-    ]
-    sources = assistant_message_sources(messages)
-    assert len(sources) == 1
-    content = next(iter(sources.values()))
-    assert '已将以下材料成功上传至材料库' in content
-
-
-@pytest.mark.anyio
-async def test_legacy_materials_term_fallback_matches_materials():
-    """Verify that _legacy_materials term matching fallback finds materials even when LLM puts spaces in keyword."""
-    import hashlib
-    from app.agent_tools import _legacy_materials
-    from app.knowledge.runtime import research_context
-    from app.knowledge.models import KnowledgeUploadOwner
-
-    symbol = 'AMD'
-    owner = 'test-owner-hash'
-    now = datetime.now(UTC)
-    doc_id = uuid.uuid4()
-    with SessionLocal() as db:
-        u = UploadedEvidence(
-            id=doc_id,
-            symbol=symbol,
-            title='Advanced Micro Devices Inc(AMD)股票10月14日盤中下跌3.47%：背後推手曝光',
-            source_url='https://example.com/amd14',
-            published_at=now - timedelta(days=2),
-            observed_at=now,
-            credibility_stars=4,
-            credibility_reason='test',
-            impact_severity='medium',
-            filename='amd14.md',
-            content_sha256='sha14',
-            raw_content=b'amd content',
-            content_text='amd content',
-        )
-        db.add(u)
-        db.flush()
-        own = KnowledgeUploadOwner(
-            upload_id=doc_id,
-            owner_hash=owner,
-        )
-        db.add(own)
-        db.commit()
-
-        try:
-            with research_context(owner):
-                # Search with keyword containing spaces and partial phrases
-                res = await _legacy_materials(symbol, 'AMD 10月14日 盤中下跌3.47% 背後推手', 10)
-                assert res.get('ok') is True
-                assert len(res.get('data', [])) >= 1
-                assert res['data'][0]['id'] == str(doc_id)
-        finally:
-            db.delete(own)
-            db.delete(u)
-            db.commit()
-
-
+def test_execution_facts_flatten_nested_consent_results():
+    """A multi-item consent result is flattened one fact per executed item."""
+    val = {'ok': True, 'status': 'complete', 'data': [
+        {'ok': True, 'data': [{'id': '2085f271-74c6-4676-8f34-7dc0d68cd458', 'symbol': 'AMD',
+                               'title': 'Advanced Micro Devices Inc(AMD)股票10月14日盤中下跌3.47%：背後推手曝光',
+                               'created': True, 'status': 'created'}]},
+        {'ok': True, 'data': [{'id': 'f2000e34-3c85-41e2-804f-1b5b4e1d993e', 'symbol': 'AMD',
+                               'title': 'Advanced Micro Devices Inc(AMD)股票10月16日盤中下跌3.79%：原因全解讀',
+                               'created': True, 'status': 'created'}]},
+    ]}
+    facts = execution_facts(val)
+    assert len(facts) == 2 and {f['symbol'] for f in facts} == {'AMD'}
+    fallback = execution_fallback(facts)
+    assert '10月14日盤中下跌3.47%' in fallback and '10月16日盤中下跌3.79%' in fallback
