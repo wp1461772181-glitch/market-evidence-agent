@@ -120,6 +120,44 @@ def bounded_history(messages):
     return json.dumps(list(reversed(selected)),ensure_ascii=False)
 
 
+# Display copy only: these never choose a route or a tool.  The confirmation card used to show the
+# tool identifier and the raw arguments, so the user read "title: analyze" and a bare UUID.
+WRITE_TITLES={
+ 'analyze':'AI 材料分析','import':'导入知识库','index':'构建向量索引','fetch_sec':'拉取 SEC 原文',
+ 'refresh_sec':'刷新 SEC 原文','forecast':'生成研究预测','revise_forecast':'修正预测',
+ 'start_historical_replay':'历史回放','ingest_web_source':'保存网页为来源',
+ 'save_material_evidence':'保存上传材料','withdraw_knowledge_document':'撤回知识文档',
+ 'initialize_prices':'初始化历史行情','scan_official':'扫描官方申报目录',
+ 'translate_content':'翻译内容','review_knowledge_candidate':'审核知识候选',
+ 'retry_document_index':'重试文档索引','import_sources':'批量导入来源',
+ 'add_to_research_queue':'加入研究队列','remove_from_research_queue':'移出研究队列',
+ 'review_filing':'申报相关性核验',
+}
+SOURCE_KIND_TITLES={'official_filing':'SEC 申报','uploaded_media':'上传材料','ai_analysis':'已保存的 AI 分析',
+ 'faq':'研究问答','upload':'上传材料','sec':'SEC 申报','analysis':'AI 分析'}
+
+
+def source_display_title(source_type,source_id):
+    """The saved title of a source, for the confirmation card.  Never a bare identifier."""
+    from ..database import SessionLocal
+    try:identity=uuid.UUID(str(source_id))
+    except (TypeError,ValueError):return None
+    try:
+        with SessionLocal() as db:
+            if source_type=='uploaded_media':
+                from ..models import UploadedEvidence
+                row=db.get(UploadedEvidence,identity);return row.title if row else None
+            if source_type=='official_filing':
+                from ..models import SecFilingInventory
+                row=db.get(SecFilingInventory,identity)
+                return (row.content_document_name or row.primary_document or row.form) if row else None
+            if source_type=='ai_analysis':
+                from ..material_analysis_models import MaterialAnalysisVersion
+                row=db.get(MaterialAnalysisVersion,identity);return f"AI 分析 v{row.version_no}" if row else None
+    except Exception:return None
+    return None
+
+
 EXECUTION_FACT_KEYS=('action','status','ok','error_code','title','symbol','created','inserted',
                      'indexed','queued_chunks','job_id','reason','message')
 
@@ -145,14 +183,22 @@ def execution_facts(value: dict) -> list[dict]:
     return rows or [{'status':'complete','ok':value.get('ok',True)}]
 
 
-def execution_fallback(facts: list[dict]) -> str:
-    """What the user gets when the model cannot phrase the report. Never the only report."""
+def execution_fallback(facts: list[dict],question: str='') -> str:
+    """What the user gets when the model cannot phrase the report: the same facts, plainly."""
+    zh=bool(re.search(r'[\u3400-\u9fff]',question or ''))
+    done={'created','complete','completed','succeeded','succeeded_no_change'}
     lines=[]
     for fact in facts:
-        detail='；'.join(f'{k}={v}' for k,v in fact.items() if k in {'status','error_code','inserted','indexed','queued_chunks','created','reason'} and v is not None)
-        label=fact.get('title') or fact.get('action') or fact.get('job_id') or '操作'
-        lines.append('- '+str(label)+(f'（{detail}）' if detail else ''))
-    return '已执行确认的操作：\n'+'\n'.join(lines)
+        name=fact.get('title') or fact.get('symbol') or fact.get('action') or ''
+        status=fact.get('status');error=fact.get('error_code')
+        if error:detail=('未成功：'+error) if zh else ('failed: '+error)
+        elif status in done:detail='已完成' if zh else 'done'
+        elif status=='already_exists':detail='已存在，无需重复' if zh else 'already exists'
+        elif status in {'queued','running','pending'}:detail='已提交，正在处理' if zh else 'submitted, in progress'
+        else:detail=str(status or '')
+        lines.append(f"- {name}（{detail}）" if zh else f"- {name} ({detail})")
+    head='已完成你确认的操作：' if zh else 'The operations you approved finished:'
+    return head+'\n'+'\n'.join(lines)
 
 
 class Turn:
@@ -658,10 +704,28 @@ class Turn:
             'rows':accepted,'scope':{k:v for k,v in requirements.items() if v is not None},'tool':name,'created_at':datetime.now(UTC).isoformat()}
         self.sets=[*self.sets,saved][-6:];self.new_sets.append(saved)
 
+    async def describe_targets(self,name,args):
+        """Human rows for the confirmation card: company, what it is, and its kind. Never a raw id."""
+        symbol=args.get('symbol') or self.scope.get('symbol')
+        kind=args.get('source_type') or 'official_filing'
+        row={}
+        if symbol:row['symbol']=symbol
+        if args.get('url'):row['url']=args['url']
+        if name in {'analyze','import','index'} and args.get('source_id'):
+            row['title']=await asyncio.to_thread(source_display_title,kind,args['source_id']) or '所选来源'
+            row['source_type']=SOURCE_KIND_TITLES.get(kind,kind)
+        if args.get('accession_number'):row['accession_number']=args['accession_number']
+        if args.get('form'):row['form']=args['form']
+        if args.get('days'):row['days']=args['days']
+        if args.get('max_tasks'):row['max_tasks']=args['max_tasks']
+        if args.get('decision_date'):row['decision_date']=args['decision_date']
+        return [row] if row else [{'symbol':symbol}]
+
     async def propose(self,name,args):
         if not self.owner:return self.write_error(name,'owner_login_required')
         if not self.write_allowed(name):return self.write_error(name,'write_negated' if name in self.granted_actions else 'write_tool_not_granted')
-        operation={'name':name,'arguments':copy.deepcopy(args)};display={'title':name,'targets':[args]}
+        operation={'name':name,'arguments':copy.deepcopy(args)}
+        display={'title':WRITE_TITLES.get(name,name),'targets':await self.describe_targets(name,args)}
         if name=='ingest_web_source':
             # Guard an explicit newer-date condition; never choose a route or tool.
             if args.get('newer_than') is None and self.scope.get('write_condition')=='newer_than_saved':return tools.error('comparison_citation_required')
@@ -909,18 +973,29 @@ class Turn:
             }
             self.sets = [*self.sets, executed_set][-6:]
             self.new_sets.append(executed_set)
-        return await self.report_execution(value)
+        return await self.report_execution(value,(self.pending or {}).get('display',{}).get('targets'))
 
-    async def report_execution(self,value):
-        """Report a completed write in the user's language from the facts the server recorded."""
+    async def report_execution(self,value,targets=None):
+        """Report a completed write in the user's language from the facts the server recorded.
+
+        The request itself travels with the facts: without it the model has nothing to infer the answer
+        language from and answers in the language of the English prompt.
+        """
         facts=execution_facts(value)
-        fallback=execution_fallback(facts)
-        messages=[{'role':'system','content':('The operations below were already executed and the user '
-            'approved them. Report the result to the user. Use ONLY these facts: what succeeded, what was '
-            'skipped or already existed and why, and what failed and why. Never add a number, title, id or '
-            'outcome that is not stated here, never promise a further action, and do not mention internal '
-            'status names in English. Answer in the language of the user\'s request, at most six sentences.')},
-            {'role':'user','content':json.dumps({'executed_operations':facts},ensure_ascii=False,default=str)}]
+        fallback=execution_fallback(facts,self.original)
+        language='Chinese' if re.search(r'[\u3400-\u9fff]',self.original) else 'English'
+        payload={'user_request':self.original,'executed_operations':facts}
+        if targets:
+            payload['what_was_targeted']=[{k:v for k,v in row.items() if v is not None}
+                                         for row in targets if isinstance(row,dict)]
+        messages=[{'role':'system','content':(
+            f'The operations below were already executed and the user approved them. Report the result to the '
+            f'user in {language}, at most six sentences. Use ONLY these facts: what succeeded, what was skipped '
+            f'or already existed and why, and what failed and why. Name the company and the material by the '
+            f'titles in what_was_targeted. Never print a job identifier, a source identifier or an internal '
+            f'status word (created, completed, ok, queued): describe in plain words what happened. Never add an '
+            f'outcome that is not stated here, and never promise a further action.')},
+            {'role':'user','content':json.dumps(payload,ensure_ascii=False,default=str)}]
         for attempt in range(2):
             try:
                 async with progress_watchdog(IDLE_SECONDS):message=await self.model(messages,[],protocol_retries=0)
