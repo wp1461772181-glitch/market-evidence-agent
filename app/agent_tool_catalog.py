@@ -3,8 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 from typing import Literal,Annotated
-from uuid import UUID
-from pydantic import BaseModel,ConfigDict,Field,model_validator
+from pydantic import BaseModel,ConfigDict,Field
 from .agent_tools import SymbolArgs
 
 class Args(BaseModel):model_config=ConfigDict(extra='forbid',strict=True)
@@ -179,12 +178,3 @@ def validate(name,args):
     if policy is None:raise ValueError('unknown_tool')
     return policy.args_schema.model_validate(args).model_dump(mode='json')
 
-# Lazy consumers use definitions(); avoid duplicating a mutable registry at import time.
-def assert_catalog_complete(registry):
-    declared=definitions()
-    if not set(registry)<=set(declared):raise RuntimeError('tool_catalog_mismatch')
-
-def registered_tools(*,owner,registry):
-    return [t for n,t in registry.items() if n in definitions() and (owner or definitions()[n].guest)]
-
-POLICIES=definitions()

@@ -9,9 +9,7 @@ from datetime import datetime
 from app.agent_workflow.graph import deterministic_confidence_gate
 from app.freshness import published_within
 import pytest
-from app.freshness import search_time_range
 from datetime import timedelta
-from app.freshness import wants_recent
 from app.freshness import window_days
 
 NOW = datetime(2026, 10, 15, 12, 0, tzinfo=UTC)
@@ -27,21 +25,24 @@ def test_a_span_is_only_what_the_words_name_as_one(words, days):
     assert window_days(words) == days
 
 
-@pytest.mark.parametrize("words, time_range, recent", [
-    ("美光 最近 新闻", "week", True),                    # the user's first message: no range at all before
-    ("美光 新闻 近日", "week", True),
-    ("我要最近半个月的美光的新闻", "month", True),        # half a month is held by the month range, then cut exactly
-    ("last 3 days Micron news", "week", True),
-    ("latest Micron news", "week", True),
-    ("美光 新闻", None, False),
-    ("苹果 2025 财年第三季度 营收", None, False),
+@pytest.mark.parametrize("words, time_range", [
+    ("美光 最近 新闻", "week"),                    # the user's first message: no range at all before
+    ("美光 新闻 近日", "week"),
+    ("我要最近半个月的美光的新闻", "month"),        # half a month is held by the month range, then cut exactly
+    ("last 3 days Micron news", "week"),
+    ("latest Micron news", "week"),
 ])
-def test_the_search_and_the_gate_read_the_same_words(words, time_range, recent):
+def test_the_search_backend_range_follows_the_named_span(words, time_range):
     from app.agent_web_research import _tavily_body
-    assert search_time_range(words) == time_range
-    assert wants_recent(words) is recent
-    body = _tavily_body(words, True, days_back=window_days(words) or (7 if recent else None))
+    body = _tavily_body(words, True, days_back=window_days(words) or 7)
     assert body.get("time_range") == time_range and body["topic"] == "news"
+
+
+@pytest.mark.parametrize("words", ["美光 新闻", "苹果 2025 财年第三季度 营收"])
+def test_a_question_with_no_span_asks_for_no_range(words):
+    from app.agent_web_research import _tavily_body
+    body = _tavily_body(words, True, days_back=window_days(words))
+    assert body.get("time_range") is None
 
 
 def test_a_source_must_be_dated_and_inside_the_span():

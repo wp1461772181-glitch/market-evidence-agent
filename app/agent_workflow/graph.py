@@ -5,7 +5,6 @@ LangGraph/checkpoint and streaming API without retaining the former planner engi
 """
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 from langgraph.config import get_stream_writer
@@ -13,11 +12,6 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
 
 from .state import AgentRuntimeContext, AgentWorkflowState, checkpoint_thread_id
-
-CLASSIFIER_SYSTEM = "Classify the latest user message into A evidence, B ordinary in-scope explanation, C out of scope, or D system action. Return a route_request function call."
-OUT_OF_SCOPE_SCRIPT = "这个请求不在 Market Evidence Agent 的功能范围内。我可以协助查证市场资料、公开新闻和已保存证据。"
-WRITE_CANCELLED = "已取消，没有执行任何操作。"
-HISTORY_TOKEN_ALLOWANCE = 32000
 
 
 def _bytes(value: Any) -> int:
@@ -106,49 +100,3 @@ async def run_workflow(**kwargs) -> dict:
         return await graph.ainvoke({"question": kwargs["question"], "messages": kwargs["messages"]},
             {"configurable": {"thread_id": checkpoint_thread_id(kwargs["owner_hash"], kwargs["conversation_id"])},
              "recursion_limit": 30}, context=context)
-
-def _budget_reason(state: AgentWorkflowState, reserve: int = 1800) -> str | None:
-    if _bytes(state.get("messages", [])) > CONTEXT_GUARD_BYTES:
-        return "chat_context_too_large"
-    return None
-
-
-def _dialog_budget(budget_kb: int) -> int:
-    return max(9000, 9000 * budget_kb // 64)
-
-
-def _newest_lines(text: str, limit: int) -> str:
-    """The newest lines of a numbered list that fit ``limit`` characters (the oldest are dropped
-    first, whole lines; one line longer than the limit keeps its end)."""
-    lines = [line for line in text.split("\n") if line.strip()]
-    while len(lines) > 1 and len("\n".join(lines)) > limit:
-        lines.pop(0)
-    return "\n".join(lines)[-limit:]
-
-
-def _dialog_view(messages: list[dict]) -> list[dict]:
-    """The conversation the resolver reads: each user message and the start of each answer, newest
-    last, as much of it as the budget holds (the oldest turns are the first to go).  The resolver
-    completes the user's words from it, so the beginning of a long conversation must not drop out
-    while a budget is left."""
-    picked, used = [], 0
-    for message in reversed(messages):
-        role = message.get("role")
-        if role not in {"user", "assistant"}:
-            continue
-        text = str(message.get("content") or "")[:DIALOG_USER_CAP if role == "user" else DIALOG_ASSISTANT_CAP]
-        if picked and used + len(text) > DIALOG_BUDGET_CHARS:
-            break
-        picked.append({"role": role, "content": text})
-        used += len(text)
-    return list(reversed(picked))
-
-
-import time,os
-from .. import agent_context as _layers
-HISTORY_TOKEN_ALLOWANCE=_layers.HISTORY_TOKEN_ALLOWANCE
-DIALOG_BUDGET_CHARS=_layers.HISTORY_BUDGET
-
-CONTEXT_GUARD_BYTES=_layers.CONTEXT_GUARD_BYTES
-DIALOG_USER_CAP=4000
-DIALOG_ASSISTANT_CAP=900

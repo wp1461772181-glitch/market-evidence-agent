@@ -101,7 +101,7 @@ async def _legacy_faq(keyword: str) -> dict:
     rows=await _query("SELECT question, answer, category FROM agent_faq WHERE question ILIKE :pattern ESCAPE E'\\\\' OR category ILIKE :pattern ESCAPE E'\\\\' ORDER BY id LIMIT 5", {"pattern":pattern})
     return {"ok":True,"data":rows,"source":"agent_faq (saved FAQ)","as_of":None,"_retrieval_mode":"legacy"}
 
-ASYNC_URL = DATABASE_URL.replace("postgresql+psycopg://", "postgresql+psycopg://")
+ASYNC_URL = DATABASE_URL
 _async_engine = create_async_engine(ASYNC_URL, pool_pre_ping=True, connect_args={"connect_timeout": 3})
 _async_session = async_sessionmaker(_async_engine, expire_on_commit=False)
 

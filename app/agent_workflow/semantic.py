@@ -20,19 +20,6 @@ def _id(*parts: str) -> str:
     return hashlib.sha256("\x1f".join(parts).encode()).hexdigest()[:24]
 
 
-def catalog(result_sets: list[dict], owner: str, conversation: str) -> list[dict]:
-    """The conversation's saved result sets, oldest first, each labelled with its position and the
-    question that produced it so that 最开始 / 最近 can be read off the list."""
-    mine = [entry for entry in result_sets[-6:]
-            if entry.get("owner") == owner and entry.get("conversation") == conversation]
-    return [{"id": entry["id"], "position": number, "age": ("oldest" if number == 1 else "newest" if number == len(mine)
-                                                           else "middle"),
-             **({"asked": str(entry["asked"])[:120]} if entry.get("asked") else {}),
-             "scope": entry["scope"], "turn": entry["turn"],
-             "items": [{"id": item["id"], "title": item["title"][:80]} for item in entry["items"]]}
-            for number, entry in enumerate(mine, 1)]
-
-
 PERIOD_TEXT = re.compile(r"(?<![A-Za-z])FY\s?'?\d{2,4}(?!\d)|(?<!\d)(?:19|20)\d{2}\s*财年"
                          r"|(?<![A-Za-z])[QH][1-4](?![A-Za-z0-9])|第?[1-4]\s*季度|(?<!\d)(?:19|20)\d{2}(?!\d)", re.I)
 
@@ -208,27 +195,6 @@ def figure_values(text: str, *, zh: bool = False) -> set[float]:
     return values
 
 
-_CITATION_MARKER = re.compile(r"\[([0-9]{1,9})\]")
-
-
-_CARD_ORDINAL = re.compile(r"[0-9]{1,9}")
-
-
-def unmatched_citation_markers(answer: Any, citations: Any) -> list[int]:
-    """The distinct ``[n]`` markers of ``answer`` (ascending) that match no ordinal of ``citations``, the
-    cards of the turn.  It only reads: nothing is renumbered, stripped or re-linked, and no input makes
-    it raise.  The audit of a turn carries the result so that a marker pointing nowhere is visible."""
-    cards: set[int] = set()
-    for card in citations if isinstance(citations, list) else []:
-        ordinal = card.get("ordinal") if isinstance(card, dict) else None
-        if isinstance(ordinal, int) and not isinstance(ordinal, bool):
-            cards.add(ordinal)
-        elif isinstance(ordinal, str) and _CARD_ORDINAL.fullmatch(ordinal):
-            cards.add(int(ordinal))
-    text = answer if isinstance(answer, str) else ""
-    return sorted({int(found) for found in _CITATION_MARKER.findall(text)} - cards)
-
-
 def save_result_set(existing: list[dict], result: dict, citations: list[dict], *, owner: str,
                     conversation: str, turn: str, task: str, scope: dict, asked: str = "") -> list[dict]:
     if not result.get("ok") or not isinstance(result.get("data"), list):
@@ -276,17 +242,6 @@ def save_result_set(existing: list[dict], result: dict, citations: list[dict], *
     while saved and _json_size(saved) > 65536:
         saved.pop(0)
     return saved
-
-
-def select_result_items(result_sets: list[dict], set_id: str, item_ids: list[str], *, owner: str, conversation: str) -> list[dict]:
-    entry = next((item for item in result_sets if item.get("id") == set_id and item.get("owner") == owner
-                  and item.get("conversation") == conversation), None)
-    if entry is None:
-        raise SemanticError("reference_unavailable")
-    known = {item["id"]: item for item in entry["items"]}
-    if any(item not in known for item in item_ids):
-        raise SemanticError("reference_item_unavailable")
-    return [known[item] for item in (item_ids or list(known))]
 
 
 def hydrate_legacy_web_sets(rows: list[dict], *, owner: str, conversation: str) -> list[dict]:

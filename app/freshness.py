@@ -14,10 +14,6 @@ from __future__ import annotations
 import re
 from datetime import datetime, timedelta
 
-FRESH_WORDS = re.compile(
-    r"\b(?:latest|today|current|recent|recently|this week|this month|past (?:day|week|month)|last (?:week|month)"
-    r"|last few days)\b|最新|今天|今日|当前|近期|最近|近日|近几天|这几天|本周|本月", re.I)
-
 _ZH = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
 _UNIT_DAYS = {"天": 1, "周": 7, "星期": 7, "礼拜": 7, "个月": 30}
 _SPAN = re.compile(r"(?<![第\d.])(\d{1,3}|[一二两三四五六七八九十]{1,3})\s*(天|周|星期|礼拜|个月)(?!年|前|以前|之前)")
@@ -43,11 +39,6 @@ def _number(text: str) -> int | None:
     return None
 
 
-def wants_recent(text: str) -> bool:
-    """The words ask for the fresh end of the news (a span counts too)."""
-    return bool(FRESH_WORDS.search(text or "")) or window_days(text) is not None
-
-
 def window_days(text: str) -> int | None:
     """The span of days the words name ("半个月" 15, "两周" 14, "last 3 days" 3), else None."""
     text = text or ""
@@ -67,13 +58,6 @@ def window_days(text: str) -> int | None:
             days = span if days is None else max(days, span)
     return days if days and days <= 366 else None
 
-
-def search_time_range(query: str) -> str | None:
-    """The time range the search backend takes (day, week, month, year) that holds what was asked."""
-    days = window_days(query)
-    if days is not None:
-        return "day" if days <= 1 else "week" if days <= 7 else "month" if days <= 31 else "year"
-    return "week" if FRESH_WORDS.search(query or "") else None
 
 
 def published_within(published_at: object, days: int, now: datetime) -> bool:

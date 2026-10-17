@@ -11,10 +11,6 @@ def retrieval_query(query: str) -> str:
         elif en in folded and zh not in query:additions.append(zh)
     return query if not additions else query+' '+' '.join(additions)
 
-def protected_terms(query: str) -> tuple[str,...]:
-    return tuple(re.findall(r'(?<![\w])[A-Z]{1,5}(?:\.[A-Z])?|\b(?:19|20)\d{2}\b|\b\d+(?:\.\d+)?%?\b',query))
-
-
 def expanded_queries(query: str) -> list[str]:
     """Expand only a bounded two-topic financial question; never alter ingestion."""
     groups = (("营收", "现金流"), ("revenue", "cash flow"),

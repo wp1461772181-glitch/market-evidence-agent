@@ -1,4 +1,4 @@
-from app.agent_tool_catalog import definitions,schemas,validate,registered_tools
+from app.agent_tool_catalog import definitions,schemas,validate
 import pytest
 
 def test_catalogue_contains_executable_handlers_with_typed_permission_metadata():
@@ -18,10 +18,6 @@ def test_catalogue_contains_executable_handlers_with_typed_permission_metadata()
 def test_prohibited_tools_cannot_register_or_execute(name):
     assert name not in definitions()
     with pytest.raises(ValueError):validate(name,{})
-
-def test_unregistered_tool_cannot_be_exposed():
-    class Tool:name='undeclared'
-    assert registered_tools(owner=False,registry={'undeclared':Tool()})==[]
 
 WRITE_ARGUMENTS={
  'add_to_research_queue':{'symbol':'AMD'},'remove_from_research_queue':{'symbol':'AMD'},

@@ -7,7 +7,7 @@ from pydantic import BaseModel,ConfigDict,Field,StrictInt
 from ..agent_chat_provider import decision_request,decision_session
 from ..agent_progress import progress_watchdog,mark_progress
 from ..agent_chat_identity import owner_credential_matches
-from ..agent_tool_catalog import definitions,schemas,validate,KnowledgeArgs,write_tool_names
+from ..agent_tool_catalog import definitions,schemas,validate
 from .evidence import gate_row,number_rows,citation_errors,contains
 from . import tools,consent
 from .authorization import vetoed

@@ -1,16 +1,14 @@
 from __future__ import annotations
 import asyncio, hashlib, json, uuid, time
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlsplit
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from starlette.background import BackgroundTask
-from pydantic import model_validator, BaseModel, Field, SecretStr, field_validator, model_validator
-from .agent_chat_provider import decision_request, stream_answer
+from pydantic import model_validator, BaseModel, Field, SecretStr, field_validator
 from .agent_chat_provider import ProviderFailure
 from .agent_chat_api import REQUEST_SLOTS
 from .agent_tools import tool_schemas
-from .agent_tool_executor import execute_tool
-from .agent_workflow.graph import stream_workflow, mark_terminal_status, run_workflow
+from .agent_workflow.graph import stream_workflow, mark_terminal_status
 from .agent_chat_store import create_conversation,verify_conversation,append_message,owned_messages,history,finish_conversation,owner_hash
 from .agent_chat_store import conversation_context
 from . import agent_context as layers
@@ -202,46 +200,6 @@ class StreamRequest(BaseModel):
   return value
 
 def frame(event,data): return f"event: {event}\ndata: {json.dumps(data,ensure_ascii=False,separators=(',',':'))}\n\n"
-def _number_web_sources(result, citation_sidecar):
- if not isinstance(result,dict) or not result.get("ok"):return
- next_ordinal=max((int(item.get("ordinal",0)) for item in citation_sidecar),default=0)+1
- retained=[]
- for source in result.get("data",[]):
-  if not isinstance(source,dict) or source.get("fetch_error") or not source.get("excerpt"):continue
-  quote=str(source["excerpt"])[:5000]
-  existing=next((item for item in citation_sidecar if item.get("source_type")=="web" and item.get("source_url")==source.get("url") and item.get("quote")==quote),None)
-  if existing:
-   source["excerpt"]=f"[{existing['ordinal']}] {quote}"
-   retained.append(source)
-   continue
-  if next_ordinal>10:continue
-  source["excerpt"]=f"[{next_ordinal}] {quote}"
-  retained.append(source)
-  citation_sidecar.append({"ordinal":next_ordinal,"chunk_id":None,"document_id":None,
-   "title":str(source.get("title") or source.get("url") or "Public webpage")[:300],"section":"",
-   "source_url":source.get("url"),"quote":quote,"observed_at":source.get("fetched_at"),
-   "published_at":source.get("published_at"),"source_type":"web","truncated":bool(source.get("truncated"))})
-  next_ordinal+=1
- result["data"]=retained
- if not retained:
-  result.update(ok=False,error_code="citation_budget_exhausted")
-
-
-def _decision_token_cost(response, messages, decision):
- usage=response.get("usage") if isinstance(response,dict) else None
- actual=usage.get("total_tokens") if isinstance(usage,dict) else None
- if isinstance(actual,int) and actual>=0:return actual,"actual"
- output=json.dumps(decision,ensure_ascii=False,separators=(",",":"))
- input_bytes=_protocol_size({"messages":messages})
- return (input_bytes+3)//4+(len(output.encode("utf-8"))+3)//4,"estimated"
-
-def _bounded_protocol_meta(value):
- # Keep bounded provider continuation payloads for prior-turn compatibility.
- # They are never emitted in SSE, tool badges, or operational logs.
- if not isinstance(value,dict):return {}
- metadata={key:value[key] for key in ("reasoning_content","reasoning_details") if key in value}
- return metadata if _protocol_size(metadata)<=16000 else {}
-
 
 def bounded_tool_result(value, limit=8000):
  if len(json.dumps(value,ensure_ascii=False,separators=(",",":")).encode("utf-8"))<=limit:return value

@@ -53,16 +53,6 @@ def test_literal_url_read_never_calls_search_backend(monkeypatch):
     assert result["ok"] and result["data"][0]["url"]=="https://example.com/report"
 
 
-def test_web_citation_cap_never_leaks_uncited_excerpt():
-    from app.agent_chat_stream import _number_web_sources
-    citations=[{"ordinal":i,"source_type":"web","source_url":f"https://example.com/{i}","quote":"old"} for i in range(1,11)]
-    result={"ok":True,"data":[{"url":"https://example.com/new","excerpt":"UNCITED_BODY_SENTINEL","title":"new"}]}
-    _number_web_sources(result,citations)
-    assert "UNCITED_BODY_SENTINEL" not in repr(result)
-    assert result["error_code"]=="citation_budget_exhausted"
-    assert len(citations)==10
-
-
 def test_web_citation_history_restores_owned_snapshot_without_chunk_lookup(monkeypatch):
     from app.agent_chat_stream import _restore_citations
 

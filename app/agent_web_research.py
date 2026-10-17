@@ -17,7 +17,7 @@ import httpx
 from langchain_core.tools import tool
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
-from .freshness import published_within, search_time_range, window_days
+from .freshness import published_within, window_days
 
 def _body_limit(name,default):
     try:return max(32_000,min(10_000_000,int(os.getenv(name,default))))

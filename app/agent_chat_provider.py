@@ -226,7 +226,6 @@ async def _post(provider,key,body,base_url=None):
     except (httpx.TimeoutException,TimeoutError) as exc:raise HTTPException(504,'provider_timeout') from exc
     except httpx.HTTPError as exc:raise HTTPException(502,'provider_network_error') from exc
 
-
 async def stream_answer(provider,model,api_key,messages,reasoning_collector=None,base_url=None):
     body={'model':model,'messages':messages,'max_tokens':8192,'stream':True}
     if provider=='minimax':body['reasoning_split']=True

@@ -250,23 +250,6 @@ def test_the_request_guard_is_the_budget_not_a_fixed_forty_kilobytes(stream_fixt
     assert "event: error" in refused and "chat_context_too_large" in refused and "event: done" not in refused
 
 
-def test_cumulative_work_is_accounted_without_a_token_or_elapsed_time_stop():
-    from app.agent_workflow import graph
-    state={'token_usage':10**9,'messages':[],'started_at':0,'history_allowance':10**9}
-    assert graph._budget_reason(state) is None
-
-
-def test_the_request_guard_inside_the_workflow_follows_the_budget_too(monkeypatch):
-    import time
-    from app.agent_workflow import graph
-    state = {"messages": [{"role": "user", "content": "问" * 20_000}], "token_usage": 0, "started_at": time.monotonic(),
-             "history_allowance": layers.HISTORY_TOKEN_ALLOWANCE}
-    assert graph._bytes(state["messages"]) > 40_000                                  # the old guard would have stopped it
-    assert graph._budget_reason(state) is None
-    monkeypatch.setattr(graph, "CONTEXT_GUARD_BYTES", 30_000)
-    assert graph._budget_reason(state) == "chat_context_too_large"
-
-
 # --- the usage endpoint --------------------------------------------------------------------------------
 
 def test_the_usage_endpoint_reports_the_parts_and_refuses_strangers(monkeypatch):

@@ -4,18 +4,8 @@ docs/reports/agent-routing-test-migration.md. Originals are in Git main 81f62be.
 """
 from __future__ import annotations
 import asyncio
-from app.agent_workflow.semantic import catalog
 import pytest
 
-def test_the_catalog_says_which_set_is_the_oldest_and_what_each_answered():
-    sets = [{"id": f"s{index}", "owner": "o", "conversation": "c", "turn": f"t{index}", "task": "x",
-             "scope": {"symbols": [symbol]}, "asked": question,
-             "items": [{"id": f"i{index}", "title": f"title {index}"}]}
-            for index, (symbol, question) in enumerate([("AAPL", "找苹果新闻"), ("AAPL", "它的最新新闻呢"),
-                                                         ("NVDA", "英伟达的消息")])]
-    listed = catalog(sets, "o", "c")
-    assert [(entry["position"], entry["age"]) for entry in listed] == [(1, "oldest"), (2, "middle"), (3, "newest")]
-    assert listed[0]["asked"] == "找苹果新闻" and listed[2]["scope"] == {"symbols": ["NVDA"]}
 
 
 @pytest.mark.parametrize("code, fragment", [

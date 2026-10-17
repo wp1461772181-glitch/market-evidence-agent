@@ -349,15 +349,6 @@ def test_assistant_message_sources_preserves_messages_with_audit_metadata():
     assert '已将以下材料成功上传至材料库' in content
 
 
-def test_requested_action_words_recognizes_natural_analyze_phrases():
-    """Verify requested_action recognizes '把你刚刚上传的资料做一个 AI 分析' and similar natural phrases."""
-    from app.agent_workflow.actions import requested_action
-    assert requested_action('把你刚刚上传的资料做一个 AI 分析') == 'analyze'
-    assert requested_action('做个 AI 分析') == 'analyze'
-    assert requested_action('对刚才上传的材料进行 AI 分析') == 'analyze'
-    assert requested_action('帮我把那份财报送给 AI 分析') == 'analyze'
-
-
 @pytest.mark.anyio
 async def test_legacy_materials_term_fallback_matches_materials():
     """Verify that _legacy_materials term matching fallback finds materials even when LLM puts spaces in keyword."""
