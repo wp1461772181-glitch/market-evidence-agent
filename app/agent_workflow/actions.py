@@ -55,10 +55,16 @@ def _requested_action_words(question: str) -> str | None:
     'Nasdaq-100 index' is not an index job) and an import, an index job or an analysis must name
     what it works on (a noun, or a pointer at records the user was given)."""
     lower = question.lower()
+    if re.search(r"^(?:查看|查询|浏览|看下|看看)", lower):
+        if re.search(r"(?:查看|查询|" + _word("(?:read|check)") + r").{0,12}(?:任务状态|" + _word("job status") + "|进度)", lower): return "status"
+        return None
     if re.search(r"(?:查看|查询|" + _word("(?:read|check)") + r").{0,12}(?:任务状态|" + _word("job status") + "|进度)", lower): return "status"
     if re.search(r"(?:刷新|" + _word("refresh") + r").{0,25}(?:原文|" + _word("(?:sec|filing)") + "|资料)", lower): return "refresh_sec"
     if re.search(r"(?:抓取|获取|拉取|下载|同步|搜寻|" + _word("(?:fetch|download|pull|sync)") + r").{0,25}(?:" + _word("(?:sec|filing)") + "|原文|申报|财报|年报|季报)", lower): return "fetch_sec"
-    if re.search(r"(?:送给|送去|交由|让|进行|做个|生成|开始).{0,15}?(?:ai\s*分析|分析|解读|研报)", lower) or re.search(r"(?:分析|解读|研报).{0,20}(?:财报|年报|季报|申报)", lower): return "analyze"
+    if (re.search(r"(?:送给|送去|交由|让|进行|做[个一次下]?|生成|开始|帮我|请|帮|来[个]?).{0,15}?(?:ai\s*分析|分析|解读|研报)", lower)
+            or re.search(r"(?:分析|解读|研报).{0,20}(?:财报|年报|季报|申报)", lower)
+            or re.search(r"(?:这|那|刚刚|刚才|上述|所选|上传).{0,15}?(?:资料(?!库)|材料(?!库)|文章|新闻).{0,15}?(?:ai\s*分析|分析|解读|研报)", lower)):
+        return "analyze"
     for phrase in _ANALYZE_PHRASE.finditer(lower):
         # The object lies in the phrase or at most 25 characters before or after it.
         if any(hit.end() >= phrase.start() - 25 and hit.start() <= phrase.end() + 25

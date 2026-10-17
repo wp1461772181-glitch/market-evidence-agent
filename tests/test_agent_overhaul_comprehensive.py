@@ -287,3 +287,124 @@ def test_find_revision_candidates_filtering():
             db.delete(job)
             db.commit()
 
+
+def test_format_confirmed_execution_summary_with_nested_data():
+    """Verify that multi-item consent results with nested data are properly flattened into a bulleted list."""
+    val = {
+        'ok': True,
+        'data': [
+            {
+                'ok': True,
+                'data': [
+                    {
+                        'id': '2085f271-74c6-4676-8f34-7dc0d68cd458',
+                        'symbol': 'AMD',
+                        'title': 'Advanced Micro Devices Inc(AMD)股票10月14日盤中下跌3.47%：背後推手曝光',
+                        'created': True,
+                        'status': 'created',
+                    }
+                ]
+            },
+            {
+                'ok': True,
+                'data': [
+                    {
+                        'id': 'f2000e34-3c85-41e2-804f-1b5b4e1d993e',
+                        'symbol': 'AMD',
+                        'title': 'Advanced Micro Devices Inc(AMD)股票10月16日盤中下跌3.79%：原因全解讀',
+                        'created': True,
+                        'status': 'created',
+                    }
+                ]
+            }
+        ],
+        'status': 'complete'
+    }
+    summary = format_confirmed_execution_summary(val)
+    assert '材料上传完成' in summary
+    assert '已成功将以下 2 篇材料上传至材料库：' in summary
+    assert '10月14日盤中下跌3.47%' in summary
+    assert '10月16日盤中下跌3.79%' in summary
+    assert '已执行确认的操作' not in summary
+
+
+def test_assistant_message_sources_preserves_messages_with_audit_metadata():
+    """Verify that assistant messages with route/audit metadata in tool_calls (no actual calls) are preserved."""
+    from app.agent_workflow.references import assistant_message_sources
+    messages = [
+        {
+            'role': 'assistant',
+            'content': '已将以下材料成功上传至材料库：\n- 1. 《AMD 10月14日新闻》\n- 2. 《AMD 10月16日新闻》',
+            'tool_calls': {'route': 'D', 'audit': {'write_outcome': 'executed'}},
+        },
+        {
+            'role': 'assistant',
+            'content': '',
+            'tool_calls': {'calls': [{'id': 'call_1', 'function': {'name': 'query_materials'}}]},
+        }
+    ]
+    sources = assistant_message_sources(messages)
+    assert len(sources) == 1
+    content = next(iter(sources.values()))
+    assert '已将以下材料成功上传至材料库' in content
+
+
+def test_requested_action_words_recognizes_natural_analyze_phrases():
+    """Verify requested_action recognizes '把你刚刚上传的资料做一个 AI 分析' and similar natural phrases."""
+    from app.agent_workflow.actions import requested_action
+    assert requested_action('把你刚刚上传的资料做一个 AI 分析') == 'analyze'
+    assert requested_action('做个 AI 分析') == 'analyze'
+    assert requested_action('对刚才上传的材料进行 AI 分析') == 'analyze'
+    assert requested_action('帮我把那份财报送给 AI 分析') == 'analyze'
+
+
+@pytest.mark.anyio
+async def test_legacy_materials_term_fallback_matches_materials():
+    """Verify that _legacy_materials term matching fallback finds materials even when LLM puts spaces in keyword."""
+    import hashlib
+    from app.agent_tools import _legacy_materials
+    from app.knowledge.runtime import research_context
+    from app.knowledge.models import KnowledgeUploadOwner
+
+    symbol = 'AMD'
+    owner = 'test-owner-hash'
+    now = datetime.now(UTC)
+    doc_id = uuid.uuid4()
+    with SessionLocal() as db:
+        u = UploadedEvidence(
+            id=doc_id,
+            symbol=symbol,
+            title='Advanced Micro Devices Inc(AMD)股票10月14日盤中下跌3.47%：背後推手曝光',
+            source_url='https://example.com/amd14',
+            published_at=now - timedelta(days=2),
+            observed_at=now,
+            credibility_stars=4,
+            credibility_reason='test',
+            impact_severity='medium',
+            filename='amd14.md',
+            content_sha256='sha14',
+            raw_content=b'amd content',
+            content_text='amd content',
+        )
+        db.add(u)
+        db.flush()
+        own = KnowledgeUploadOwner(
+            upload_id=doc_id,
+            owner_hash=owner,
+        )
+        db.add(own)
+        db.commit()
+
+        try:
+            with research_context(owner):
+                # Search with keyword containing spaces and partial phrases
+                res = await _legacy_materials(symbol, 'AMD 10月14日 盤中下跌3.47% 背後推手', 10)
+                assert res.get('ok') is True
+                assert len(res.get('data', [])) >= 1
+                assert res['data'][0]['id'] == str(doc_id)
+        finally:
+            db.delete(own)
+            db.delete(u)
+            db.commit()
+
+

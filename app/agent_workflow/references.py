@@ -12,10 +12,18 @@ class Referent(BaseModel):
     item_id:str|None=Field(default=None,pattern=r'^[a-f0-9]{20}$')
     source:str=Field(pattern=r'^(assistant_previous|assistant_message:[a-f0-9]{20}|user_history|result_set:[A-Za-z0-9_-]{1,64})$')
 
+def _is_assistant_text_message(m):
+    if m.get('role') != 'assistant' or not m.get('content') or m.get('status') in {'failed', 'cancelled'}:
+        return False
+    tc = m.get('tool_calls')
+    if tc and isinstance(tc, dict) and tc.get('calls'):
+        return False
+    return True
+
 def assistant_message_sources(messages):
     sources={}
     for position,m in enumerate(messages):
-        if m.get('role')!='assistant' or not m.get('content') or m.get('tool_calls') or m.get('status') in {'failed','cancelled'}:continue
+        if not _is_assistant_text_message(m):continue
         content=str(m['content'])
         identity=hashlib.sha256(json.dumps([position,content],ensure_ascii=False).encode()).hexdigest()[:20]
         sources['assistant_message:'+identity]=content
@@ -36,7 +44,7 @@ def assistant_item_catalogue(messages):
     return catalogue
 
 def validate_referents(referents,original,messages,sets):
-    previous=next((str(m.get('content') or '') for m in reversed(messages) if m.get('role')=='assistant' and m.get('content') and not m.get('tool_calls') and m.get('status') not in {'failed','cancelled'}), '')
+    previous=next((str(m.get('content') or '') for m in reversed(messages) if _is_assistant_text_message(m)), '')
     users='\n'.join(str(m.get('content','')) for m in messages if m.get('role')=='user')
     earlier=assistant_message_sources(messages)
     catalogue=assistant_item_catalogue(messages)

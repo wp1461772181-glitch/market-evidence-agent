@@ -95,19 +95,41 @@ def bounded_history(messages):
 
 
 def format_confirmed_execution_summary(value: dict) -> str:
-    data = value.get('data') or []
-    if not data and value.get('status') == 'succeeded':
+    raw_data = value.get('data') or []
+    flat_data = []
+    for item in raw_data:
+        if isinstance(item, dict) and isinstance(item.get('data'), list):
+            flat_data.extend(item['data'])
+        elif isinstance(item, dict):
+            flat_data.append(item)
+    if not flat_data and value.get('status') == 'succeeded':
         return '已成功执行确认的操作。'
     parts = []
-    for item in data:
+    uploaded_items = []
+    other_items = []
+    for item in flat_data:
         if not isinstance(item, dict): continue
+        outcome = item.get('outcome') or item
+        status = outcome.get('status') or item.get('status') or ''
+        if 'title' in item and 'symbol' in item and ('created' in item or status in {'created', 'already_exists'}):
+            uploaded_items.append(item)
+        else:
+            other_items.append(item)
+
+    if uploaded_items:
+        if len(uploaded_items) == 1:
+            u = uploaded_items[0]
+            state_text = '已保存入库' if u.get('created', True) else '资料已存在，无需重复入库'
+            parts.append(f"**材料上传完成**\n已将材料《{u['title']}》（{u['symbol']}）成功上传至材料库。\n- 处理状态：{state_text}")
+        else:
+            bullets = '\n'.join(f"- {i+1}. 《{u['title']}》（{u['symbol']}）" for i, u in enumerate(uploaded_items))
+            parts.append(f"**材料上传完成**\n已成功将以下 {len(uploaded_items)} 篇材料上传至材料库：\n{bullets}")
+
+    for item in other_items:
         outcome = item.get('outcome') or item
         action = outcome.get('action') or item.get('name') or ''
         status = outcome.get('status') or item.get('status') or ''
-        if 'title' in item and 'symbol' in item and ('created' in item or status in {'created', 'already_exists'}):
-            state_text = '已保存入库' if item.get('created', True) else '资料已存在，无需重复入库'
-            parts.append(f"**材料上传完成**\n已将材料《{item['title']}》（{item['symbol']}）上传至材料库。\n- 处理状态：{state_text}")
-        elif 'inserted' in outcome:
+        if 'inserted' in outcome:
             parts.append(f"**行情初始化完成**\n已成功获取历史日 K 线数据，共入库 {outcome.get('inserted', 0)} 条记录。")
         elif 'revision_id' in outcome or 'branch_version_id' in outcome or (action == 'forecast' and 'manual_revision' in str(outcome)):
             job_id = outcome.get('job_id') or outcome.get('id') or ''
@@ -241,12 +263,14 @@ class Turn:
         self.followup=True
         self.refinement=value.relationship=='refinement'
         self.question=value.canonical_question or self.original
-        selected=[r for r in self.verified_referents if r.get('item_id')]
+        selected=[r for r in self.verified_referents if r.get('item_id') or r.get('text')]
         if selected:
             self.question=self.original
             for ref in selected:
-                if ref['mention'] in self.question:self.question=self.question.replace(ref['mention'],ref['text'],1)
-                else:self.question+=' '+ref['text']
+                target_text = ref.get('text') or ''
+                if not target_text: continue
+                if ref['mention'] in self.question:self.question=self.question.replace(ref['mention'],target_text,1)
+                else:self.question+=' '+target_text
         if self.state.get('requested_pending_id') and self.state.get('pending_request',{}).get('original_question'):
             self.authorization_question=self.state['pending_request']['original_question']+' '+self.original
 
@@ -316,7 +340,7 @@ class Turn:
             'A and D share tools and permissions; A searches saved knowledge first. '
             'Use only requested canonical metric names from the schema. A factual quantity never belongs in B. '
             'Set write_condition=newer_than_saved for conditional saves requiring a newer date than saved reports, otherwise none. Never discard the user condition. '
-            'Set requested_actions from current USER action words only, before any tool result exists. A rewritten question resolves targets, never grants a new operation. Do not copy grants from previous_scope or assistant advice. Conditional saving is ingest_web_source; saving user-provided media or articles is save_material_evidence; saving selected existing sources is import/import_sources; revising forecasts is revise_forecast; withdrawing documents is withdraw_knowledge_document; initializing prices is initialize_prices; historical replay is start_historical_replay; use_result_set web imports require ingest_web_source. 拉取/拉去/同步/缓存 SEC data means fetch_sec, not web_research. General 分析一下/看看 is a read, not an analyze job. Explicitly negated writes are excluded. '
+            'Set requested_actions from current USER action words only, before any tool result exists. A rewritten question resolves targets, never grants a new operation. Do not copy grants from previous_scope or assistant advice. Conditional saving is ingest_web_source; saving user-provided media or articles is save_material_evidence; saving selected existing sources is import/import_sources; revising forecasts is revise_forecast; withdrawing documents is withdraw_knowledge_document; initializing prices is initialize_prices; historical replay is start_historical_replay; use_result_set web imports require ingest_web_source. 拉取/拉去/同步/缓存 SEC data means fetch_sec, not web_research. Explicit requests to run AI analysis on reports, filings, or saved/uploaded materials (e.g. 做AI分析, 做个AI分析, 做一个AI分析, 送给AI分析, 分析这份材料) are analyze actions; passive read inquiries (e.g. 随便看看) are not. Explicitly negated writes are excluded. '
             'A time/count-only refinement preserves the previous source channel, task and target; news context stays public news unless the user explicitly switches. '
             'Recent/latest news uses days_back=7; half a month=15; explicit spans override. Do not infer a fiscal quarter/year/form from latest. '
             'Keep scope grounded in user intent; company aliases may be interpreted semantically without a fixed list. When translating a company name or interpreting a ticker, copy the original user company text into company_mention and put the corresponding English issuer name in company; the server verifies the issuer/ticker pair using official data. '
@@ -719,14 +743,14 @@ class Turn:
             if self.scope.get('days_back') is not None and wanted is None and count is None:return tools.error('fresh_window_requires_web_search')
             self.accept(saved['tool'],saved.get('scope',{}),{'ok':True,'data':chosen});self.audit['reused_sources']=True;return {'ok':True,'data':[{'status':'reused'}]}
         if not self.owner:return tools.error('owner_login_required')
-        required={'ingest_web_source' if r.get('url') else args['action'] for r in chosen}
+        required={'ingest_web_source' if (r.get('url') and not (r.get('id') or r.get('source_id'))) else args['action'] for r in chosen}
         if self.scope.get('write_condition')=='newer_than_saved' and 'ingest_web_source' in required:
             return tools.error('comparison_citation_required')
         for name in required:
             if not self.write_allowed(name):return self.write_error(name,'write_negated' if name in self.granted_actions else 'write_tool_not_granted')
         operations=[]
         for row in chosen:
-            if row.get('url'):
+            if row.get('url') and not (row.get('id') or row.get('source_id')):
                 if args['action']!='import':return tools.error('unsupported_source_action')
                 from .web_sources import freeze_snapshot
                 operations.append({'name':'ingest_web_source','arguments':{'url':row['url'],'symbol':saved.get('scope',{}).get('symbol'),'company':saved.get('scope',{}).get('company'),'newer_than':None},'snapshot':freeze_snapshot(row),'published_at':row.get('published_at'),'entity_aliases':saved.get('scope',{}).get('entity_aliases',[])})
@@ -790,6 +814,33 @@ class Turn:
             self.write_error('approved_operation',code)
             return self.finish('确认后的操作未能完成。',status='failed',reason=code,generated=True)
         self.audit['write_outcome']='executed'
+        flat_data = []
+        for it in value.get('data', []):
+            if isinstance(it, dict) and isinstance(it.get('data'), list):
+                flat_data.extend(it['data'])
+            elif isinstance(it, dict):
+                flat_data.append(it)
+        executed_rows = []
+        for it in flat_data:
+            if isinstance(it, dict) and ('id' in it or 'source_id' in it) and 'title' in it:
+                executed_rows.append({
+                    'id': str(it.get('id') or it.get('source_id')),
+                    'title': it['title'],
+                    'symbol': it.get('symbol') or self.scope.get('symbol'),
+                    'source_type': it.get('source_type', 'uploaded_media'),
+                })
+        if executed_rows:
+            executed_set = {
+                'id': uuid.uuid4().hex,
+                'owner': self.context.owner_hash,
+                'conversation': self.context.conversation_id,
+                'rows': executed_rows,
+                'scope': {'symbol': executed_rows[0].get('symbol')},
+                'tool': 'save_material_evidence',
+                'created_at': datetime.now(UTC).isoformat()
+            }
+            self.sets = [*self.sets, executed_set][-6:]
+            self.new_sets.append(executed_set)
         return self.finish(format_confirmed_execution_summary(value),generated=True)
 
     def finish(self,answer,*,status='succeeded',reason=None,generated=False):

@@ -43,6 +43,19 @@ async def _legacy_materials(symbol: str, keyword: str, limit: int) -> dict:
       AND u.observed_at<=:cutoff AND (u.published_at IS NULL OR u.published_at<=:cutoff)
       AND {owner_filter}
       ORDER BY u.published_at DESC NULLS LAST LIMIT :limit""", params)
+    if not uploaded:
+        terms = [t.strip() for t in re.split(r'[\s:：,，、]+', keyword) if len(t.strip()) >= 2 and t.strip().upper() != symbol]
+        if terms:
+            term_clauses = " OR ".join(f"(u.title ILIKE :t{i} ESCAPE E'\\\\' OR u.content_text ILIKE :t{i} ESCAPE E'\\\\')" for i in range(min(5, len(terms))))
+            term_params = {**params, **{f"t{i}": f"%{_like(t)}%" for i, t in enumerate(terms[:5])}}
+            uploaded = await _query(f"""SELECT u.id, u.title, u.source_url, u.published_at, u.observed_at,
+              left(u.content_text,1200) AS excerpt, length(u.content_text) AS body_length, false AS source_truncated,
+              'uploaded_media' AS material_type
+              FROM uploaded_evidence u {owner_join}
+              WHERE u.symbol=:symbol AND ({term_clauses})
+              AND u.observed_at<=:cutoff AND (u.published_at IS NULL OR u.published_at<=:cutoff)
+              AND {owner_filter}
+              ORDER BY u.published_at DESC NULLS LAST LIMIT :limit""", term_params)
     filings = await _query("""SELECT id, primary_document AS title, source_url, filed_at AS published_at,
       observed_at, content_observed_at, content_excerpt AS excerpt, length(content_excerpt) AS body_length,
       content_truncated AS source_truncated, content_excerpt_sha256, 'official_filing' AS material_type
@@ -52,6 +65,20 @@ async def _legacy_materials(symbol: str, keyword: str, limit: int) -> dict:
       AND (filed_at IS NULL OR filed_at<=CAST(:cutoff AS date))
       AND (primary_document ILIKE :pattern ESCAPE E'\\\\' OR COALESCE(content_excerpt,'') ILIKE :pattern ESCAPE E'\\\\')
       ORDER BY filed_at DESC LIMIT :limit""", params)
+    if not filings:
+        terms = [t.strip() for t in re.split(r'[\s:：,，、]+', keyword) if len(t.strip()) >= 2 and t.strip().upper() != symbol]
+        if terms:
+            f_clauses = " OR ".join(f"(primary_document ILIKE :t{i} ESCAPE E'\\\\' OR COALESCE(content_excerpt,'') ILIKE :t{i} ESCAPE E'\\\\')" for i in range(min(5, len(terms))))
+            f_params = {**params, **{f"t{i}": f"%{_like(t)}%" for i, t in enumerate(terms[:5])}}
+            filings = await _query(f"""SELECT id, primary_document AS title, source_url, filed_at AS published_at,
+              observed_at, content_observed_at, content_excerpt AS excerpt, length(content_excerpt) AS body_length,
+              content_truncated AS source_truncated, content_excerpt_sha256, 'official_filing' AS material_type
+              FROM sec_filing_inventory WHERE symbol=:symbol AND content_status='fetched'
+              AND content_excerpt IS NOT NULL AND content_observed_at IS NOT NULL AND content_observed_at<=:cutoff
+              AND content_observed_at<=:now AND observed_at<=:cutoff AND observed_at<=:now
+              AND (filed_at IS NULL OR filed_at<=CAST(:cutoff AS date))
+              AND ({f_clauses})
+              ORDER BY filed_at DESC LIMIT :limit""", f_params)
     import hashlib
     filings = [row for row in filings if row.get("excerpt") and row.get("content_excerpt_sha256")
                and hashlib.sha256(row["excerpt"].encode()).hexdigest()==row["content_excerpt_sha256"]]
