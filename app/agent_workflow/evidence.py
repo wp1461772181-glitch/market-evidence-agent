@@ -187,23 +187,45 @@ def unsupported_numbers(answer,citations):
     Unit-normalized amounts may be translated (10 billion / 100亿) and probabilities
     may be shown as percentages. This is a guard, not a semantic answer scorer.
     """
+    from datetime import datetime, timedelta
     from .semantic import figure_values
     from .language import simplified
     answer=simplified(answer)
+    date_pat = re.compile(
+        r'\b(?:\d{4}[-/年])?\d{1,2}[-/月]\d{1,2}日?\b|'
+        r'\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2}\b|'
+        r'\b\d{1,2}\s+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\b',
+        re.I
+    )
     indexed={str(c['ordinal']):c for c in citations}
     for passage in cited_passages(answer):
         refs=re.findall(r'\[(\d+)\]',passage)
-        body=' '.join(str(indexed[r].get('quote',''))+' '+str(indexed[r].get('published_at','')) for r in refs if r in indexed)
+        body=' '.join(str(indexed[r].get('quote',''))+' '+str(indexed[r].get('published_at',''))+' '+str(indexed[r].get('source_url',''))+' '+str(indexed[r].get('title','')) for r in refs if r in indexed)
         allowed=figure_values(body)
-        checked=re.sub(r'\[\d+\]','',passage)
+        for r in refs:
+            if r in indexed:
+                pub = indexed[r].get('published_at') or indexed[r].get('filed_at') or indexed[r].get('trading_date')
+                if pub and isinstance(pub, str):
+                    try:
+                        dt = datetime.fromisoformat(pub.replace('Z', '+00:00'))
+                        allowed.add(float(dt.day))
+                        allowed.add(float((dt + timedelta(hours=8)).day))
+                        allowed.add(float((dt - timedelta(hours=8)).day))
+                        allowed.add(float(dt.month))
+                        allowed.add(float((dt + timedelta(hours=8)).month))
+                    except (ValueError, TypeError):
+                        pass
+        checked=re.sub(r'\[\d+\](?:\([^)]*\))?','',passage)
+        checked=re.sub(r'https?://\S+','',checked)
         number=r'\d+(?:,\d{3})*(?:\.\d+)?'
-        magnitude=r'(?:万亿|千万|百万|亿|万|千|trillion|billion|million|thousand|bn|mn|b|m|k)?'
+        magnitude=r'(?:万亿|千万|百万|亿|万|千|trillion|billion|million|thousand|bn|mn|b|k|m)?'
         amounts=re.findall(number+r'\s*'+magnitude+r'\s*(?:美元|元|dollars?|USD|%|％)',checked,re.I)
         amounts+=re.findall(r'\$\s*'+number+r'\s*'+magnitude,checked,re.I)
         claim=figure_values(' '.join(amounts))
         # Bare financial amounts are also claims. Strip only citation identities,
         # list labels and grounded date/period syntax, never arbitrary numbers.
         bare=re.sub(r'^\s*\d+[.、)]\s*','',checked)
+        bare=date_pat.sub('',bare)
         claim|=figure_values(bare)
         # Exclude list numbering and calendar years to avoid false positive claim rejections
         claim={v for v in claim if not(1.0<=v<=10.0 and v==int(v)) and not(1990<=v<=2035 and v==int(v))}

@@ -111,3 +111,23 @@ def test_financial_currency_suffixes_preserve_units_across_languages(quote,claim
 def test_currency_suffix_support_does_not_allow_a_changed_value_or_unit(claim):
     from app.agent_workflow.evidence import unsupported_numbers
     assert unsupported_numbers(claim,[{'ordinal':1,'source_type':'web','quote':'Revenue was $54.2B.'}])
+
+
+def test_calendar_dates_and_citation_markdown_links_are_not_flagged_as_unsupported_numbers():
+    from app.agent_workflow.evidence import unsupported_numbers
+    passage = (
+        '**Meta推出最新AI模型Muse Wonder**（2026-10-13，新浪财经）：'
+        'Meta发布首款由自研芯片驱动的模型[2](https://wp1461772181-glitch.github.io/market-evidence-agent/#citation-2)。'
+    )
+    citations = [{
+        'ordinal': 2,
+        'source_type': 'web',
+        'title': 'Meta推出最新AI模型Muse Wonder_新浪财经_新浪网',
+        'source_url': 'https://finance.sina.com.cn/stock/usstock/c/2026-10-13/doc-iniuyxuz8302435.shtml',
+        'published_at': '2026-10-12T17:08:53+00:00',
+        'quote': 'Meta推出了其最新人工智能模型Muse Wonder，并称它是驱动数字助手的最先进选项。',
+    }]
+    assert not unsupported_numbers(passage, citations)
+    # But a fake financial claim in the same passage must still be blocked:
+    assert unsupported_numbers(passage + ' 营收为 999 亿美元[2]。', citations)
+
