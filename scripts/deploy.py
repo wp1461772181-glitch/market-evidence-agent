@@ -180,7 +180,29 @@ def deploy_backend(sha: str, *, dry_run: bool) -> bool:
     return False
 
 
-def wait_frontend(previous_bundle: str | None, seconds: int) -> None:
+def live_bundle_has(marker: str) -> bool:
+    """Whether the published bundle contains this string: proof the new code is live."""
+    name = bundle_name(PAGES)
+    if name is None:
+        return False
+    try:
+        with urllib.request.urlopen(PAGES + name, timeout=30) as response:
+            return marker in response.read().decode("utf-8", "ignore")
+    except (urllib.error.URLError, OSError):
+        return False
+
+
+def wait_frontend(previous_bundle: str | None, seconds: int, markers: list[str]) -> None:
+    if markers:
+        say("frontend", f"waiting until the published bundle contains {markers[0]!r}, up to {seconds}s")
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            if all(live_bundle_has(marker) for marker in markers):
+                say("frontend", "published — every marker is in the live bundle")
+                return
+            time.sleep(10)
+        say("frontend", f"markers still missing after {seconds}s; check the Actions run")
+        return
     if previous_bundle is None:
         say("frontend", f"could not read the current bundle; open {PAGES} in a minute")
         return
@@ -192,7 +214,9 @@ def wait_frontend(previous_bundle: str | None, seconds: int) -> None:
             say("frontend", f"published: {current}")
             return
         time.sleep(10)
-    say("frontend", "no change yet — check the Actions run; the bundle may legitimately be unchanged")
+    say("frontend", "bundle name unchanged after the wait. Either the live build was already up to date "
+                        "(a rebuild of identical sources keeps the same hash) or the run has not finished; "
+                        f"check {PAGES} and the Actions run, or pass --frontend-marker to assert a string")
 
 
 def main() -> int:
@@ -201,6 +225,8 @@ def main() -> int:
     parser.add_argument("--skip-tests", action="store_true", help="do not run the pytest suite")
     parser.add_argument("--backend-only", action="store_true", help="skip the push and the frontend wait")
     parser.add_argument("--frontend-wait", type=int, default=300, help="seconds to wait for Pages (default 300)")
+    parser.add_argument("--frontend-marker", action="append", default=[],
+                        help="string that must appear in the published bundle (repeatable); proves the push is live")
     args = parser.parse_args()
 
     if not (ROOT / ".git").exists():
@@ -222,7 +248,7 @@ def main() -> int:
 
     healthy = deploy_backend(sha, dry_run=args.dry_run)
     if not args.backend_only and frontend_touches and not args.dry_run:
-        wait_frontend(previous_bundle, args.frontend_wait)
+        wait_frontend(previous_bundle, args.frontend_wait, args.frontend_marker)
     elif not frontend_touches:
         say("frontend", "no frontend changes in this commit; nothing to publish")
 
