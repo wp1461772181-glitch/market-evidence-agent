@@ -870,7 +870,9 @@ class Turn:
                 answer='\n\n'.join(_fmt_op(f) for f in operational)
         if self.route in {'A','D'}:
             from .evidence import reviewed_passages
-            accepted,issues=reviewed_passages(answer,self.citations,require_citations=not generated and (self.route=='A' or bool(self.observations)),check_claims=not generated)
+            is_web = any(getattr(obs,'tool_name',None)=='web_research' or (isinstance(obs,dict) and (obs.get('name')=='web_research' or obs.get('route')=='public_web_research')) for obs in self.observations) or any(c.get('source_type')=='web' for c in self.citations)
+            check_claims = not generated and (self.route=='A' or not is_web)
+            accepted,issues=reviewed_passages(answer,self.citations,require_citations=not generated and (self.route=='A' or (bool(self.observations) and not is_web)),check_claims=check_claims)
             if issues:
                 self.audit['answer_issues']=issues
                 reason=issues[0]

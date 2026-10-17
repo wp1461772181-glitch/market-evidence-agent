@@ -49,21 +49,6 @@ def period_match(request: str, body: str) -> bool:
     return True
 
 
-COMPANY_ALIASES = {
-    'Alphabet Inc.': ('Google', '谷歌', 'Alphabet'),
-    'Alphabet': ('Google', '谷歌', 'Alphabet'),
-    'Advanced Micro Devices': ('AMD', '超威', '超微'),
-    'Advanced Micro Devices, Inc.': ('AMD', '超威', '超微'),
-    'Apple Inc.': ('Apple', '苹果'),
-    'Microsoft Corporation': ('Microsoft', '微软'),
-    'NVIDIA Corporation': ('Nvidia', '英伟达'),
-    'Intel Corporation': ('Intel', '英特尔'),
-    'Tesla, Inc.': ('Tesla', '特斯拉'),
-    'Meta Platforms, Inc.': ('Meta', 'Facebook'),
-    'Amazon.com, Inc.': ('Amazon', '亚马逊'),
-}
-
-
 def gate_row(question: str, row: dict, *, symbol: str | None=None, company: str | None=None,
              metrics: list[str] | None=None, period: str | None=None, days_back: int | None=None,
              official_only: bool=False, now: datetime | None=None, entity_aliases: list[str] | None=None) -> tuple[bool,str]:
@@ -79,11 +64,20 @@ def gate_row(question: str, row: dict, *, symbol: str | None=None, company: str 
     if symbol and row.get('symbol') and row['symbol'].upper()!=symbol.upper():return False,'requested_entity_missing'
     allowed_entities = [x for x in (company, symbol, *(entity_aliases or [])) if x]
     if company:
-        for k, v in COMPANY_ALIASES.items():
-            if k.lower() in company.lower() or company.lower() in k.lower():
-                for alias in v:
-                    if alias not in allowed_entities:
-                        allowed_entities.append(alias)
+        clean = re.sub(r'\b(Inc\.?|Corporation|Corp\.?|Platforms|Company|Co\.?|Ltd\.?|LLC|Group|Holdings|PLC)\b', '', company, flags=re.I).strip(' ,.')
+        if clean and clean not in allowed_entities:
+            allowed_entities.append(clean)
+        for part in re.split(r'[,/·\s]+', clean):
+            p = part.strip()
+            if len(p) >= 2 and p not in allowed_entities:
+                allowed_entities.append(p)
+        c_lower = company.lower()
+        if 'alphabet' in c_lower:
+            allowed_entities.extend(['Google', '谷歌'])
+        elif 'google' in c_lower:
+            allowed_entities.extend(['Alphabet'])
+        elif 'meta' in c_lower:
+            allowed_entities.extend(['Facebook'])
     # Saved rows are verified by their query's symbol filter. Public pages must name the
     # entity in body text; a forged headline by itself is never sufficient.
     if web and (company or symbol) and not any(contains(x,body+' '+title) for x in allowed_entities):

@@ -34,17 +34,18 @@ def assistant_item_catalogue(messages):
     for source,content in assistant_message_sources(messages).items():
         items=[]
         for line in content.splitlines():
-            match=re.match(r'^\s*(?:#{1,6}\s*)?(?:\*\*)?(?:(?:\d{1,3}[.、)）]|[（(]\d{1,3}[)）])|[-*•·])\s*(.+)',line)
-            if not match:
-                match_title=re.match(r'^\s*(?:注[：:])?\s*(?:\*\*(.+?)\*\*|《(.+?)》)',line)
+            line_str=line.strip()
+            if not line_str:continue
+            match=re.match(r'^\s*(?:#{1,6}\s*)?(?:\*\*)?(?:(?:\d{1,3}[.、)）]|[（(]\d{1,3}[)）])|[-*•·])\s*(.+)',line_str)
+            if match:
+                text=match.group(1).strip().strip('*').strip()[:400]
+            else:
+                match_title=re.match(r'^\s*(?:注[：:])?\s*(?:(?:\*\*(.+?)\*\*)|(?:《(.+?)》)|(?:[“"](.+?)[”"])|(?:#{1,6}\s*(.+)))',line_str)
                 if match_title:
-                    title_text=match_title.group(1) or match_title.group(2)
-                    text=title_text.strip()[:400]
-                    identity=hashlib.sha256(json.dumps([source,len(items),text],ensure_ascii=False).encode()).hexdigest()[:20]
-                    items.append({'position':len(items)+1,'item_id':identity,'text':text})
-                continue
-            # A label is an exact source substring; the ID binds message and text.
-            text=match.group(1).strip().strip('*').strip()[:400]
+                    text=next((g for g in match_title.groups() if g),None)
+                    if text: text=text.strip()[:400]
+                    else: continue
+                else: continue
             identity=hashlib.sha256(json.dumps([source,len(items),text],ensure_ascii=False).encode()).hexdigest()[:20]
             items.append({'position':len(items)+1,'item_id':identity,'text':text})
         if items:catalogue.append({'source':source,'items':items})
