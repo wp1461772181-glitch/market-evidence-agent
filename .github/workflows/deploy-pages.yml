@@ -1,6 +1,13 @@
 name: Deploy frontend to GitHub Pages
 
 on:
+  # Deploying the frontend is a consequence of merging to main, not a separate manual step.
+  # Only frontend build inputs (and this workflow) trigger a rebuild.
+  push:
+    branches: [main]
+    paths:
+      - "frontend/**"
+      - ".github/workflows/deploy-pages.yml"
   workflow_dispatch:
 
 permissions:
