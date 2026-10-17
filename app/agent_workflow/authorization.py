@@ -27,7 +27,7 @@ VERBS={
     'test_retrieval_diagnostics':r'诊断|测试|检索|diagnose|test',
 }
 NEGATION=re.compile(r'(?:不要|别|勿|无需|不用|不能|不想|禁止|切勿|请勿|千万别|do not|don.t|never|without)[^，。；;.!?\n]{0,35}',re.I)
-_POLITE_NON_NEGATION=re.compile(r'不用客气|别客气|不用担心|别担心|无需确认|不需确认|无需向我确认|不用多说|不要停|不要慌|不要犹豫|不要管其他|不要理会',re.I)
+_POLITE_NON_NEGATION=re.compile(r'不用(?:客气|担心|多说|慌|犹豫|管|急|在意|考虑|理会|查其他|看其他|管其他|确认)|别(?:客气|担心|急|管)|无需(?:向我)?确认|不需确认',re.I)
 
 def authorized(name,words):
     pattern=VERBS.get(name)

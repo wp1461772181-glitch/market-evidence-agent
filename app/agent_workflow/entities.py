@@ -36,8 +36,6 @@ def resolve_ticker(company):
 def verified_pair(company,symbol):
     if not company or not symbol:return False
     words=issuer_words(company)
-    # A literal issuer prefix is checked against that exact ticker's official title.
-    # The original-language mention is separately grounded by the caller.
     if not words or len(words[0])<3:return False
     try:
         return any(r['ticker'].casefold()==symbol.casefold() and issuer_words(r['title'])[:len(words)]==words for r in ticker_records())

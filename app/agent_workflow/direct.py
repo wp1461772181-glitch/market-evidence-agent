@@ -493,7 +493,9 @@ class Turn:
         text=self.original+' '+self.question
         catalogue=json.dumps([s['rows'] for s in self.sets],ensure_ascii=False,default=str)
         accepted=json.dumps([o['result'] for o in self.observations if o.get('accepted_evidence')],ensure_ascii=False,default=str)
-        trusted=text+' '+catalogue+' '+accepted
+        history_text=' '.join(str(m.get('content') or '') for m in self.messages if isinstance(m,dict))
+        all_obs=json.dumps([o.get('result') for o in self.observations],ensure_ascii=False,default=str)
+        trusted=text+' '+catalogue+' '+accepted+' '+all_obs+' '+history_text
         for key in ('source_id','accession_number','url','job_id','document_id','version_id','candidate_id','record_id'):
             value=args.get(key)
             if value and value not in trusted and normalized(str(value)) not in normalized(trusted):
@@ -901,7 +903,8 @@ class Turn:
             self.audit['write_outcome']='refused:'+code
             hints={'scan_official_first':'先请求扫描该股票的 SEC 目录并确认，再拉取具体申报。','comparison_citation_required':'先取得库内申报及网页日期，再请求比较并按条件导入。','comparison_date_unavailable':'补充可核验的库内申报和网页发布日期后再比较。','not_newer':'网页日期没有更新，无需入库。','already_exists':'资料已存在，无需重复入库。','write_negated':'当前请求否定了该操作，保持不执行；需要改变时请明确提出新请求。','write_not_proposed':'请说明要执行的具体操作和目标，以便生成系统确认卡。'}
             next_step=hints.get(code,'用 request_action 请求用户批准，并点击系统确认卡。') if self.owner else '请由所有者登录后通过系统确认卡执行。'
-            answer+='\n操作未执行：'+code+'。下一步：'+next_step
+            if self.write_reasons or (self.route == 'D' and not any(op in answer for op in ('操作未执行', '请确认', '确认卡', '卡片', '可在卡片上'))):
+                answer+='\n操作未执行：'+code+'。下一步：'+next_step
         self.audit.update(stop_reason=reason,elapsed_ms=round((time.monotonic()-self.started)*1000))
         return {'answer':answer[:12000],'citations':self.citations,'status':status,'reason':reason,'route':self.route,
             'audit':self.audit,'final_protocol':self.final_protocol,'pending_request':self.pending,'result_sets':self.sets,'previous_category':self.route,'previous_scope':self.scope}
@@ -967,8 +970,9 @@ class Turn:
             calls=decision.get('tool_calls') or []
             if not calls:
                 content=decision.get('content') or ''
-                if self.route=='A' and not self.observations:content='没有可核验资料，无法确认本次请求中的事实。可尝试联网搜索，或由所有者确认抓取资料、初始化行情后再查。'
-                if self.route=='A' and not self.observations:return self.finish(content,reason='zero_evidence',generated=True)
+                if self.route=='A' and not self.observations and (not content or citation_errors(content,self.citations)):
+                    content='没有可核验资料，无法确认本次请求中的事实。可尝试联网搜索，或由所有者确认抓取资料、初始化行情后再查。'
+                    return self.finish(content,reason='zero_evidence',generated=True)
                 return await self.finish_answer(content or '没有生成可用的回答。')
             if not isinstance(calls,list) or len(calls)>12:stop='provider_protocol_invalid';break
             if any(not isinstance(c,dict) or not isinstance(c.get('id'),str) for c in calls):stop='provider_protocol_invalid';break

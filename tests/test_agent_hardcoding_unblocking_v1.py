@@ -98,3 +98,30 @@ def test_is_challenge_page_does_not_discard_long_articles():
 def test_assistant_keep_chars_configured():
     """L2 dialogue history compression budget for assistant must be configured."""
     assert agent_context.ASSISTANT_KEEP_CHARS > 0
+
+def test_conversational_explanations_without_citations_are_not_pruned():
+    from app.agent_workflow.evidence import reviewed_passages
+    answer = "确认后才会写入资料库；如只想保留其中一两条，可在卡片上只确认对应项。"
+    accepted, issues = reviewed_passages(answer, [], require_citations=True)
+    assert answer.rstrip('。') in accepted, "Conversational instructions should not be pruned as missing_citation"
+    assert "missing_citation" not in issues
+
+def test_unsupported_numbers_does_not_flag_durations_or_item_counts():
+    from app.agent_workflow.evidence import unsupported_numbers
+    passage = "我们在最近15天内分析了前3项公开声明[1]。"
+    citations = [{'ordinal': 1, 'quote': 'Apple published its statements recently.', 'source_type': 'web'}]
+    assert not unsupported_numbers(passage, citations), "Durations (15天) and counts (前3项) must not trigger unsupported_numeric_claim"
+
+def test_event_features_recognize_natural_market_synonyms():
+    from app.agent_workflow.evidence import unsupported_claims
+    passage = "公司完成了对该初创企业的全资收购[1]。"
+    citations = [{'ordinal': 1, 'quote': 'The company finalized the deal and takeover.', 'source_type': 'web'}]
+    assert not unsupported_claims(passage, citations), "deal/takeover must support 收购"
+
+def test_reference_binding_tolerates_token_level_paraphrase():
+    from app.agent_workflow.references import validate_referents, Referent
+    messages = [{'role': 'assistant', 'content': '1. TSMC quarterly revenue grew strongly'}]
+    ref = Referent(mention='TSMC quarterly revenue', text='TSMC quarterly revenue grew', source='assistant_previous')
+    verified = validate_referents([ref], '解读第一项', messages, [])
+    assert len(verified) == 1
+    assert 'TSMC' in verified[0]['text']

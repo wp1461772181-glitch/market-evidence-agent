@@ -77,13 +77,17 @@ def validate_referents(referents,original,messages,sets):
             source=json.dumps(saved['rows'],ensure_ascii=False,default=str) if saved else ''
         target_text=ref.text or ref.mention or ''
         source_norm=normalized(source)
-        if not source or not target_text or (normalized(target_text) not in source_norm and (not ref.mention or normalized(ref.mention) not in source_norm)):
+        target_norm=normalized(target_text)
+        mention_norm=normalized(ref.mention) if ref.mention else ''
+        exact_found=(target_norm in source_norm) or (mention_norm and mention_norm in source_norm)
+        tokens=[t for t in re.findall(r'[\u4e00-\u9fa5]{2,}|[A-Za-z0-9]{3,}',target_norm) if t.casefold() not in {'http','https','www','com'}]
+        if not source or not target_text or (not exact_found and (not tokens or not any(t in source_norm for t in tokens))):
             raise ValueError('reference_text_unbound')
         ref_dict=ref.model_dump()
         if not ref_dict.get('text'):
-            ref_dict['text']=target_text if normalized(target_text) in source_norm else (ref.mention if normalized(ref.mention) in source_norm else target_text)
+            ref_dict['text']=target_text if exact_found else (ref.mention if mention_norm and mention_norm in source_norm else target_text)
         if wanted is not None:
-            candidates=[item for item in listing if normalized(ref_dict['text']) in normalized(item['text'])]
+            candidates=[item for item in listing if (target_norm in normalized(item['text'])) or any(t in normalized(item['text']) for t in tokens)]
             if not candidates or not any(item['position'] in wanted for item in candidates):raise ValueError('reference_position_mismatch')
         verified.append(ref_dict)
     return verified

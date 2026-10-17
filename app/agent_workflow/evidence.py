@@ -228,6 +228,7 @@ def unsupported_numbers(answer,citations):
         # list labels and grounded date/period syntax, never arbitrary numbers.
         bare=re.sub(r'^\s*\d+[.、)]\s*','',checked)
         bare=date_pat.sub('',bare)
+        bare=re.sub(r'\d+(?:\.\d+)?\s*(?:天|日|个月|年|周|条|篇|份|项|页|行|个|次|点|位|名|步|轮|倍|小时|分|秒|days?|hours?|items?|times?|points?)', ' ', bare)
         claim|=figure_values(bare)
         # Exclude list numbering and calendar years to avoid false positive claim rejections
         claim={v for v in claim if not(1.0<=v<=10.0 and v==int(v)) and not(1990<=v<=2035 and v==int(v))}
@@ -235,17 +236,17 @@ def unsupported_numbers(answer,citations):
     return False
 
 # Claim validation only. These concepts never route a request or choose a tool.
-RESIGNATION_TERMS=('resign','resigned','resignation','stepped down','辞职','辞任')
-DEPARTURE_TERMS=('departure','departed','departing','离任','卸任','退任')
-APPOINTMENT_TERMS=('appoint','appointed','appointment','named','任命','出任')
-ROLE_START_TERMS=('takes charge','took charge','taking charge','takes office','took office','上任','接任')
+RESIGNATION_TERMS=('resign','resigned','resignation','stepped down','stepping down','辞职','辞任','离职','退任')
+DEPARTURE_TERMS=('departure','departed','departing','left','leave','retired','retires','离任','卸任','退任','离职','走人')
+APPOINTMENT_TERMS=('appoint','appointed','appointment','named','promoted','elected','tapped','hired','join','joined','joins','任命','出任','就任','委任','担任')
+ROLE_START_TERMS=('takes charge','took charge','taking charge','takes office','took office','上任','接任','接棒')
 CLAIM_FEATURES=(
  ('CEO','chief executive','首席执行官','执行长'),
  ('CFO','chief financial','首席财务官','财务主管'),
  RESIGNATION_TERMS,
  APPOINTMENT_TERMS,
- ('bankruptcy','bankrupt','破产'),
- ('acquisition','acquire','acquired','收购','buy','bought','purchased','purchase','merger','merged','买入'),
+ ('bankruptcy','bankrupt','chapter 11','insolvent','insolvency','liquidation','破产','清算'),
+ ('acquisition','acquire','acquired','收购','buy','bought','purchased','purchase','merger','merged','deal','transaction','investment','invested','takeover','stake','买入','入股','全资','并入','买下'),
  DEPARTURE_TERMS,
  ROLE_START_TERMS,
 )
@@ -297,8 +298,9 @@ def reviewed_passages(answer,citations,*,require_citations=False,check_claims=Tr
         if not stripped:continue
         uncertainty=bool(re.search(r'没有(?:可核验)?(?:资料|证据)|无法(?:核实|确认)|no (?:verified )?evidence',stripped,re.I))
         is_leadin = bool(re.match(r'^(?:以下|根据|综上|总结|如上|经查询|查询结果|核验结果|提示|注意|说明|确认后|请核对|已为您|请注意)[^。！？\n]{0,35}[：:\n]?', stripped)) or (len(stripped) < 35 and stripped.endswith(('：', ':')))
+        has_factual_content = bool(re.search(r'\d', stripped) or any(any(contains(k, stripped) for k in group) for group in CLAIM_FEATURES) or any(any(contains(t, stripped) for t in terms) for terms in METRIC_GROUPS.values()))
         code=('invalid_citation' if citation_errors(stripped,citations) else
-              'missing_citation' if require_citations and not re.search(r'\[\d+\]',stripped) and not uncertainty and not (is_leadin and not re.search(r'\d', stripped)) else
+              'missing_citation' if require_citations and has_factual_content and not re.search(r'\[\d+\]',stripped) and not uncertainty and not (is_leadin and not re.search(r'\d', stripped)) else
               'unsupported_numeric_claim' if check_claims and unsupported_numbers(stripped,citations) else
               'unsupported_claim' if check_claims and unsupported_claims(stripped,citations) else None)
         if code:issues.append(code)
