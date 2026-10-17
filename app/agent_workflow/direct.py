@@ -29,7 +29,10 @@ SCOPE_NOTICE={
  'en':'This request is outside what Market Evidence Agent does. I can help verify saved market data, public news and saved evidence.',
 }
 MARKERS=('<｜｜DSML｜｜','<|tool_calls|>','<|python|>')
-TRANSIENT={'tool_timeout','provider_timeout','provider_network_error','rate_limited','http_5xx','web_research_timeout'}
+TRANSIENT={'tool_timeout','provider_timeout','provider_network_error','rate_limited','http_5xx'}
+# Each attempt of a slow-reachability tool costs a whole per-tool budget, so an immediate retry
+# turns one bad search into minutes of silence. Public web research gets a single attempt.
+MAX_ATTEMPTS={'web_research':1}
 # Authorization guards only: these words never select a route or tool.
 NEGATED_WRITE=re.compile(r'(?:不要|别|勿|无需|不用|不能|不想|禁止|do not|don.t|never|without)[^，。；;.!?\n]{0,35}(?:导入|入库|放入|保存|抓取|刷新|分析|索引|预测|初始化|扫描|加入|移除|import|save|ingest|fetch|refresh|analy[sz]e|forecast|scan|index|add|remove)',re.I)
 URL=re.compile(r'https://[^\s<>"）)]+',re.I)
@@ -451,6 +454,22 @@ class Turn:
             except Exception:continue
         self.audit['source']='fixed_scope_notice';return self.finish(fixed,generated=True)
 
+    def stalled_notice(self,code='no_progress'):
+        """What the user gets when a turn is stopped for lack of progress.
+
+        The old text was a dead end ("no progress, stopped").  A turn that got nowhere still knows
+        which tools it tried and which failed, and saying that lets the user narrow the question.
+        """
+        tried=[f['name'] for f in self.feedback if isinstance(f,dict) and f.get('name')]
+        failed=[f"{f.get('name')}:{f.get('error_code')}" for f in self.feedback
+                if isinstance(f,dict) and f.get('error_code')]
+        lines=[]
+        if tried:lines.append('本轮已尝试：'+'、'.join(dict.fromkeys(tried))+'。')
+        if failed:lines.append('其中未成功：'+'、'.join(dict.fromkeys(failed))+'。')
+        lines.append('没有取得可核验的结果，所以没有给出结论。可以缩小范围再问一次，'
+                     '例如指定具体公司、时间范围或要看的来源。')
+        return '长时间没有实际进展，已停止。\n'+'\n'.join(lines)
+
     def partial_failure(self,code):
         notes={'no_progress':'长时间没有实际进展，已停止。'}
         lines=[]
@@ -536,7 +555,8 @@ class Turn:
     async def execute_read(self,name,args):
         call_id=self.active_call_id or str(uuid.uuid4());await self.emit({'event':'tool_start','call_id':call_id,'name':name,'arguments':args})
         outcome=None
-        for attempt in range(MAX_RETRIES+1):
+        attempts=max(1,min(MAX_RETRIES+1,MAX_ATTEMPTS.get(name,MAX_RETRIES+1)))
+        for attempt in range(attempts):
             if self.budget():break
             self.audit['tool_calls']+=1
             try:
@@ -550,14 +570,21 @@ class Turn:
                     else:outcome=await tools.invoke(name,args,self.context,emit=self.emit)
             except (TimeoutError,ConnectionError):outcome=tools.error('tool_timeout')
             except Exception:outcome=tools.error('tool_failed')
+            # F2: a completed attempt — even a failed one — proves the turn is alive, so the
+            # inactivity clock is renewed here rather than only on success.
+            mark_progress()
             if outcome.get('ok') or outcome.get('error_code') not in TRANSIENT:break
-            if attempt==MAX_RETRIES:
-                self.audit['stop_reason']='tool_failures';self.audit['failed_tool']=name;self.audit['failed_attempts']=attempt+1;self.audit['failure_code']=outcome.get('error_code');break
+            if attempt+1>=attempts:
+                # Only an exhausted retry chain stops the turn.  A single-attempt tool reports the
+                # failure and lets the model choose another route instead of ending the turn.
+                if attempts>1:
+                    self.audit['stop_reason']='tool_failures';self.audit['failed_tool']=name
+                    self.audit['failed_attempts']=attempt+1;self.audit['failure_code']=outcome.get('error_code')
+                break
             self.audit['retry_count']+=1
         outcome=outcome or tools.error('tool_failed')
         if not outcome.get('ok'):outcome=tools.error(outcome.get('error_code') or 'tool_failed')
         if outcome.get('ok'):
-            mark_progress()
             signature=json.dumps([name,args],sort_keys=True,default=str)
             if signature not in self.completed:self.completed.add(signature);self.audit['distinct_successful_calls']+=1
         self.last_call_id=call_id
@@ -601,7 +628,9 @@ class Turn:
             from ..agent_web_research import METRIC_GROUPS
             requested=requirements.get('metrics') or [k for k,terms in METRIC_GROUPS.items() if any(contains(t,self.question) for t in terms)]
             requirements['metrics']=[k for k in requested if k not in METRIC_GROUPS or any(contains(t,args.get('query','')) for t in METRIC_GROUPS[k])]
-            requirements['period']=self.scope.get('period') or args.get('query','')
+# F3: the classifier's period only.  Using the model's own search string as the period made
+            # gate_row demand its year inside every page body, which discarded good web results.
+            requirements['period']=self.scope.get('period')
         accepted=[];reasons=[]
         for row in rows:
             if not isinstance(row,dict):continue
@@ -1147,7 +1176,8 @@ async def run_direct_turn(question,context,*,emit,messages=None,state=None):
         return turn.finish(_failure_notice(HTTPException(502,code)),status='failed',reason=code,generated=True)
     except Exception as exc:
         from fastapi import HTTPException
-        if isinstance(exc,TimeoutError):return turn.partial_failure('no_progress') if turn.observations else turn.finish('长时间没有实际进展，已停止。',status='failed',reason='no_progress',generated=True)
+        if isinstance(exc,TimeoutError):
+            return turn.partial_failure('no_progress') if turn.observations else turn.finish(turn.stalled_notice('no_progress'),status='failed',reason='no_progress',generated=True)
         code=exc.detail if isinstance(exc,HTTPException) and isinstance(exc.detail,str) and re.fullmatch(r'[a-z_]{3,80}',exc.detail) else 'provider_protocol_invalid'
         if turn.observations:return turn.partial_failure(code)
         from ..agent_chat_stream import _failure_notice

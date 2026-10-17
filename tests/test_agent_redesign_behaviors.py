@@ -272,8 +272,19 @@ def test_same_web_body_at_another_url_does_not_create_a_new_confirmation(owned):
 
 
 def test_transient_tool_retries_twice_then_stops(owned):
-    r,c,_,_=run('Micron news',route='D',steps=[call('web_research',query='Micron news',company='Micron')],answers={'web_research':{'ok':False,'data':[],'error_code':'tool_timeout'}})
+    r,c,_,_=run('Micron 价格',route='D',steps=[call('query_stock_prices',symbol='MU')],
+        answers={'query_stock_prices':{'ok':False,'data':[],'error_code':'tool_timeout'}})
     assert len(c)==3 and r['reason']=='tool_failures' and '3 次' in r['answer']
+
+
+def test_public_web_research_gets_one_attempt_and_does_not_end_the_turn(owned):
+    """A slow public search costs a whole per-tool budget, so a retry would silence the turn for
+    minutes.  It is attempted once and the failures are reported to the model instead."""
+    r,c,_,_=run('Micron news',route='D',
+        steps=[call('web_research',query='Micron news',company='Micron'),{'content':'没有可核验资料。'}],
+        answers={'web_research':{'ok':False,'data':[],'error_code':'tool_timeout'}})
+    assert len(c)==1                                   # one attempt, not three
+    assert r['reason']!='tool_failures'                # the turn was not ended by the retry chain
 
 
 def test_schema_error_can_be_repaired_without_service_call():
