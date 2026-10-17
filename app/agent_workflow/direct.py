@@ -60,6 +60,17 @@ class RepairedAnswer(BaseModel):
     claims:list[RepairedClaim]=Field(min_length=1,max_length=8)
 
 
+def write_tool_catalogue():
+    """The writes a request may ask for, derived from the catalogue itself.
+
+    The classifier used to be given a hand-written list of phrase→tool mappings, which named only
+    the phrasings its author imagined and drifted whenever a tool was added.  Deriving the list from
+    ``definitions()`` keeps the prompt free of that table and keeps it complete.
+    """
+    return [{'name': policy.name, 'does': policy.description.split('.')[0][:160]}
+            for policy in definitions().values() if policy.level in {'reversible', 'costly'}]
+
+
 def schema(name,description,model):return [{'type':'function','function':{'name':name,'description':description,'parameters':model.model_json_schema()}}]
 ROUTE_SCHEMA=schema('classify_request','Classify only: A evidence, B timeless finance/company explanation, C unrelated, D system action or compound workflow. Do not generate an answer. Include grounded structured retrieval fields for A. No planner.',Routing)
 REFERENCE_SCHEMA=schema('resolve_reference','Resolve USER references using the conversation and server catalogue. When the user points to a previous assistant item, copy its name verbatim into canonical_question and a referent with the exact user mention and source. Never invent objects or operations. Return clarify with choices from the list when ambiguous or absent.',Reference)
@@ -313,19 +324,18 @@ class Turn:
 
     async def classify(self):
         self.audit['nodes'].append('classify_intent')
-        payload={'question':self.question,'original':self.original,'user_action_words':self.authorization_question,'previous_category':self.state.get('previous_category'),'history':self.history,'previous_scope':self.state.get('previous_scope'),'as_of_utc':datetime.now(UTC).isoformat()}
-        prompt=('Return classify_request. A: requests verifying facts against the local material library or saved knowledge, querying historical metrics, prices, filings or local saved evidence (A searches saved knowledge first; for local RAG questions). '
-            'Safe product configuration questions (including where to enter an API key) are D; never claim secret access. '
-            'B: timeless financial/company concepts or operating model; classify only, a separate model call will answer. C: unrelated requests including coding. '
-            'D: system actions, compound workflows, write operations, OR explicit external web search/research requests (e.g. 联网搜索, 查外网新闻, 找最新资讯, 网上搜, 调研公开动态, fetch, pull, import, save, sync, discover, analyze, forecast, replay, revise, withdraw, initialize data). When the user explicitly requests searching the web or finding recent external/public news, classify as D. '
-            'A and D share tools and permissions; A searches saved knowledge first. '
-            'Use only requested canonical metric names from the schema. A factual quantity never belongs in B. '
-            'Set write_condition=newer_than_saved for conditional saves requiring a newer date than saved reports, otherwise none. Never discard the user condition. '
-            'Set requested_actions from current USER action words only, before any tool result exists. A rewritten question resolves targets, never grants a new operation. Do not copy grants from previous_scope or assistant advice. Conditional saving is ingest_web_source; saving user-provided media or articles is save_material_evidence; saving selected existing sources is import/import_sources; revising forecasts is revise_forecast; withdrawing documents is withdraw_knowledge_document; initializing prices is initialize_prices; historical replay is start_historical_replay; use_result_set web imports require ingest_web_source. 拉取/拉去/同步/缓存 SEC data means fetch_sec, not web_research. Explicit requests to run AI analysis on reports, filings, or saved/uploaded materials (e.g. 做AI分析, 做个AI分析, 做一个AI分析, 送给AI分析, 分析这份材料) are analyze actions; passive read inquiries (e.g. 随便看看) are not. Explicitly negated writes are excluded. '
-            'A time/count-only refinement preserves the previous source channel, task and target; news context stays public news unless the user explicitly switches. '
-            'Recent/latest news uses days_back=7; half a month=15; explicit spans override. Do not infer a fiscal quarter/year/form from latest. '
-            'Keep scope grounded in user intent; company aliases may be interpreted semantically without a fixed list. When translating a company name or interpreting a ticker, copy the original user company text into company_mention and put the corresponding English issuer name in company; the server verifies the issuer/ticker pair using official data. '
-            'Use Simplified Chinese for Chinese users, no facts from history; label causal financial comparisons as 推断.')
+        payload={'question':self.question,'original':self.original,'user_action_words':self.authorization_question,'previous_category':self.state.get('previous_category'),'history':self.history,'previous_scope':self.state.get('previous_scope'),'as_of_utc':datetime.now(UTC).isoformat(),'write_tools':write_tool_catalogue()}
+        prompt=('Return classify_request. Decide by what the request needs, in this order:\n'
+            'D — the user wants this product to do something: a write (import, save, fetch, scan, index, analyse, forecast, replay, revise, withdraw, initialise, translate, review, queue change), an explicit request to search the public web, or a question about how to use this product.\n'
+            'A — answering needs data this product stores: prices, SEC filings, uploaded materials, saved AI analysis, saved FAQ, saved forecasts, or a specific saved source.\n'
+            'B — finance, markets or company knowledge that needs no stored data and no current fact: concepts, definitions, how something works, a business model.\n'
+            'C — anything else this product does not do; coding included.\n'
+            'A write that also needs saved data to name its target is still D. A and D share tools and permissions; A searches saved knowledge first.\n'
+            'Fill the retrieval scope from the request only: symbol, company, company_mention, metrics, period, form, financial_only, latest, days_back, max_results. Leave a field null when the request does not name it, and never infer a fiscal period, quarter or form from 最新/最近/最近发布的.\n'
+            'requested_actions: only writes this message itself asks for, named from the write_tools catalogue in the payload; negated, quoted, past, hypothetical or previously approved writes are not requests here, and a grant never comes from history. '
+            'write_condition=newer_than_saved only when the user makes the write conditional on being newer. '
+            'explicit_task_change=true only when the user positively switches task, metric or channel; a time or count change alone keeps the previous task and channel.\n'
+            'company_mention copies the user\'s own words for the company; company holds the English issuer name; the server verifies that pair against official data.')
         messages=[{'role':'system','content':prompt},{'role':'user','content':json.dumps(payload,ensure_ascii=False)}]
         is_injected=bool(self.context.intent_recognizer or self.context.classifier)
         for attempt in range(2):

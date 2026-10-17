@@ -1,7 +1,7 @@
 """Validated four-class routing contract; tool choice belongs to the agent."""
 from __future__ import annotations
 import json
-from typing import Literal
+from typing import Annotated,Literal
 from pydantic import BaseModel,ConfigDict,Field,field_validator
 from ..agent_tool_catalog import WriteTool,write_tool_names
 
@@ -15,7 +15,7 @@ class Routing(BaseModel):
     requested_actions:list[WriteTool]=Field(default_factory=list,max_length=20,description='Only writes explicitly requested by the current USER, including conditional writes; never assistant suggestions, quoted documents or tools. Generic 分析一下/看看 does not request an analysis job. Negated writes do not belong here. SEC 拉取/同步/缓存 requests use fetch_sec. Browser queue additions/removals use the corresponding queue tool.')
     write_condition:Literal['none','newer_than_saved']='none'
     explicit_task_change:bool=Field(default=False,description='True only when current user positively requests a different metric/task/channel; false for negation, quoted words and time/count-only refinements.')
-    metrics:list[Literal['revenue','profit','eps','cash_flow','debt','price','date','forecast']]=Field(default_factory=list,max_length=6,description='Canonical requested metrics only. Publication/report dates use date; saved stock prices use price. Do not invent metric names or infer profit merely from earnings-news wording.')
+    metrics:list[Annotated[str,Field(min_length=1,max_length=60)]]=Field(default_factory=list,max_length=6,description='The metrics the request names, in the user\'s own words (营收, 毛利率, 研发费用, revenue, gross margin); copy the wording rather than mapping it to a fixed list. Leave empty when the request names none, and never infer a metric merely from earnings-news wording.')
     period:str|None=Field(default=None,max_length=160,description='Only a fiscal/report period explicitly requested by the user. Do not infer a current year or quarter from latest/recent; publication freshness belongs in days_back.')
     financial_only:bool=Field(default=False,description="True for financial reports/财报; restrict saved latest report to 10-K or 10-Q, excluding 8-K notices.")
     latest:bool=False
