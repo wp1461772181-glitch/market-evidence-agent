@@ -353,6 +353,8 @@ def _focus_source(source: dict, query: str | None, company: str | None = None) -
 
 
 def is_challenge_page(text: str) -> bool:
+    if len(text) > 1500:
+        return False
     lowered=text.lower()
     markers=("captcha", "verify you are human", "unusual traffic", "robot check",
              "checking your browser", "enable javascript to continue")
@@ -442,8 +444,9 @@ def _tavily_body(query: str, include_raw_content: bool, max_results: int = 5, da
     """The search request.  A question for the recent end of the news (or for a named span) carries the
     backend's nearest time range, so that old articles are not what comes back."""
     time_range = ("day" if days_back <= 1 else "week" if days_back <= 7 else "month" if days_back <= 31 else "year") if days_back else None
+    topic = "general" if any(k in query.lower() for k in ("sec", "filing", "10-k", "10-q", "wikipedia", "wiki", "definition", "overview")) else "news"
     return {"query": query[:300], "max_results": max_results, "search_depth": "basic",
-            "include_raw_content": include_raw_content, "topic": "news",
+            "include_raw_content": include_raw_content, "topic": topic,
             **({"time_range": time_range} if time_range else {})}
 
 
@@ -515,7 +518,7 @@ async def _research(query_or_url: str, days_back: int | None = None, max_results
     if not is_url and span is not None:
         # A span the user named ("半个月内"): the search backend's range is only the nearest one that holds it,
         # so what is older than the span, or cannot be dated, is left out.
-        candidates = [item for item in candidates if published_within(item.get("published_at"), span, fetched_at)]
+        candidates = [item for item in candidates if item.get("published_at") is None or published_within(item.get("published_at"), span, fetched_at)]
         if not candidates:
             return {"ok": True, "data": [], "source": "public web search and fetched page excerpts",
                     "as_of": fetched_at.isoformat(), "error_code": None}

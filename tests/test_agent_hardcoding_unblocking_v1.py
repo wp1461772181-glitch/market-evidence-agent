@@ -68,6 +68,33 @@ def test_system_prompt_does_not_contain_180_char_limit():
     assert "180 Chinese characters" not in system_prompt
     assert "120 English words" not in system_prompt
 
+def test_traditional_chinese_is_not_forced_to_simplified():
+    from app.agent_workflow.language import format_answer
+    text = "這是一份關於台積電的繁體中文分析報告。"
+    res = format_answer(text, "請用繁體中文回答", [])
+    assert res == text, "Should respect user's explicit request for Traditional Chinese"
+
+def test_protocol_markers_are_stripped_without_failing_answer():
+    ctx = AgentRuntimeContext('custom', 'test', 'dummy', identity_credential='owner', conversation_id='test-markers')
+    t = Turn('测试', ctx, None, [], {})
+    t.route = 'D'
+    raw = "这是有效回答内容。<|tool_calls|>其他说明"
+    res = t.finish(raw, generated=True)
+    assert "<|tool_calls|>" not in res['answer']
+    assert "这是有效回答内容" in res['answer']
+    assert res['status'] == 'succeeded'
+
+def test_authorization_negation_allows_affirmative_request_in_same_sentence():
+    from app.agent_workflow.authorization import vetoed
+    assert not vetoed('analyze', '不要分析旧报告，分析新报告')
+    assert not vetoed('ingest_web_source', '不要解释怎么保存，直接保存')
+
+def test_is_challenge_page_does_not_discard_long_articles():
+    from app.agent_web_research import is_challenge_page
+    article = "A comprehensive analysis on cybersecurity. The website uses captcha mechanisms to prevent robot check. " * 30
+    assert not is_challenge_page(article)
+
+
 def test_assistant_keep_chars_configured():
     """L2 dialogue history compression budget for assistant must be configured."""
     assert agent_context.ASSISTANT_KEEP_CHARS > 0

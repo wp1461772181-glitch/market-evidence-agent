@@ -381,7 +381,8 @@ def named_companies(text: str, limit: int = 64) -> set[str]:
     """Literal entity handles for summary grounding, without a company directory."""
     latin=set(re.findall(r"\b[A-Z][A-Za-z]+\b",text)) - {'The','This','User','Assistant','Revenue','FY','AM','PM','URL','HTTP','HTTPS','SEC','CEO','CFO','EPS','USD'}
     from ..agent_web_research import _GENERIC_LATIN
-    grammar=set(_GENERIC_LATIN)|{'summarize','summarise','explain','import','save','analyse','analyze','compare','review','read','fetch','refresh'}
+    common_words={'summarize','summarise','explain','import','save','analyse','analyze','compare','review','read','fetch','refresh','wants','wanted','wanting','asked','asks','asking','found','finds','finding','shows','showing','showed','tells','told','telling','looking','looks','looked','needed','needs','needing','reported','reports','reporting','said','says','saying','saw','seen','seeing','noted','notes','noting','stated','states','stating','beats','missed','beat'}
+    grammar=set(_GENERIC_LATIN)|common_words
     latin={word for word in latin if word.casefold() not in grammar}
     cjk=set()
     # Grammar anchors identify an entity span; no company alias or ticker table is used.

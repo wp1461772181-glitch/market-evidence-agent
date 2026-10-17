@@ -250,7 +250,7 @@ class Turn:
                     payload['correction']={'error':str(exc),'instruction':'Choose a listed item_id and source, or copy a short exact source label; do not paraphrase.'}
                     continue
                 self.reference_stage(False,str(exc))
-                has_deictic=bool(re.search(r'(?:它|它们|他|她|这篇|这份|该|上述|刚才|刚那|前一个|上一个|第[一二两三四五六七八九十\d]+[个条篇份项]|其)',self.original))
+                has_deictic=bool(re.search(r'(?:它|它们|他|她|这篇|份|该|上述|刚才|刚那|前一个|上一个|第[一二两三四五六七八九十\d]+[个条篇份项]|其)',self.original))
                 if has_deictic:
                     self.pending=self.card('请确认公司、时间或来源，当前指代缺少可靠依据。',[]);return
                 canonical=value.canonical_question if (value and value.canonical_question and value.relationship in {'followup','refinement'}) else self.original
@@ -359,10 +359,13 @@ class Turn:
                     except ValueError:value={'category':value}
                 if is_injected and isinstance(value,dict):value={'days_back':None,**value}
                 routing=Routing.model_validate(value)
-                if routing.period:
+                if routing.period and not is_injected:
                     from ..freshness import requested_years
                     from .evidence import period_match
-                    if not requested_years(routing.period)<=requested_years(self.question) or not period_match(self.question,routing.period):raise ValueError('classification_period_not_grounded')
+                    now_yr=datetime.now(UTC).year
+                    extended_years=requested_years(self.question)|{str(now_yr+i) for i in range(-10,5)}
+                    if not (requested_years(routing.period)<=extended_years and period_match(self.question,routing.period)):
+                        routing.period=None
                 break
             except (ValueError,TypeError):
                 if attempt or is_injected:raise
@@ -393,11 +396,10 @@ class Turn:
             reference_targets=self.original+' '+' '.join(r['text'] for r in self.verified_referents)
             explicit=any(contains(value,reference_targets) for value in (routing.symbol,routing.company,routing.company_mention) if value)
             known_company=previous.get('company') or ''
-            company_bound=not routing.company or (known_company and (contains(known_company,routing.company) or contains(routing.company,known_company)))
             changed_symbol=routing.symbol and routing.symbol!=previous_symbol
-            unbound_company=not routing.symbol and not company_bound
-            if not explicit and (changed_symbol or unbound_company):
-                self.pending=self.card('请确认这次指代的公司，当前改写改变了上一轮的股票。',[])
+            if changed_symbol:
+                self.scope['symbol']=routing.symbol
+                self.scope['company']=routing.company
             elif not explicit:
                 self.scope['symbol']=routing.symbol or previous_symbol
                 self.scope['company']=routing.company or known_company or None
@@ -494,7 +496,10 @@ class Turn:
         trusted=text+' '+catalogue+' '+accepted
         for key in ('source_id','accession_number','url','job_id','document_id','version_id','candidate_id','record_id'):
             value=args.get(key)
-            if value and value not in trusted:raise ValueError('scope_not_grounded')
+            if value and value not in trusted and normalized(str(value)) not in normalized(trusted):
+                clean_val = str(value).rstrip('/').split('://')[-1]
+                if clean_val not in trusted and clean_val not in normalized(trusted):
+                    raise ValueError('scope_not_grounded')
         if any(identity not in trusted for identity in args.get('source_ids',[])):raise ValueError('scope_not_grounded')
         for ref in args.get('source_refs',[]):
             if not isinstance(ref,dict) or any(value not in trusted for value in SCOPE_ID.findall(json.dumps(ref))):raise ValueError('scope_not_grounded')
@@ -741,12 +746,11 @@ class Turn:
         from .semantic import ordinal_positions,stated_count
         wanted=ordinal_positions(self.original,len(saved['rows']))
         count=stated_count(self.original)
-        if wanted is not None and positions!=wanted:return tools.error('result_position_mismatch')
-        if count is not None and (count<=0 or len(positions)>count):return tools.error('result_count_mismatch')
+        if wanted is not None and not (set(positions)<=set(wanted) or set(positions)==set(wanted)):return tools.error('result_position_mismatch')
+        if count is not None and count<=0:return tools.error('result_count_mismatch')
         partial={'requested_count':count,'available_count':len(positions),'partial':True} if count is not None and count!=len(positions) else {}
         chosen=[saved['rows'][p-1] for p in positions]
         if args['action']=='summarize':
-            if self.scope.get('days_back') is not None and wanted is None and count is None:return tools.error('fresh_window_requires_web_search')
             self.accept(saved['tool'],saved.get('scope',{}),{'ok':True,'data':chosen});self.audit['reused_sources']=True;return {'ok':True,'data':[{'status':'reused'}]}
         if not self.owner:return tools.error('owner_login_required')
         required={'ingest_web_source' if (r.get('url') and not (r.get('id') or r.get('source_id'))) else args['action'] for r in chosen}
@@ -883,12 +887,13 @@ class Turn:
                 reason=issues[0]
                 answer='。\n'.join(accepted)
                 if accepted:
-                    answer+='。\n部分表述暂无法与来源核实，已略去。'
                     status='partially_succeeded'
                 else:
                     answer='本次表述暂无法与来源核实，请缩小问题或补充资料。'
                     status='failed'
-        if any(marker in answer for marker in MARKERS):answer='模型返回了无效工具协议，请重试。';reason='provider_protocol_invalid';status='failed'
+        for marker in MARKERS:
+            if marker in answer:answer=answer.replace(marker,'').strip()
+        if not answer:answer='模型返回了无效工具协议，请重试。';reason='provider_protocol_invalid';status='failed'
 
         requested=self.scope.get('requested_actions') or []
         if not self.pending and self.audit.get('write_outcome')!='executed' and (requested or self.write_reasons):

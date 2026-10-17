@@ -97,6 +97,14 @@ def gate_row(question: str, row: dict, *, symbol: str | None=None, company: str 
         terms=METRIC_GROUPS.get(key,(key,))
         passages=re.split(r'[。！？\n]|(?<=[.!?])\s+',body)
         relevant=[part for part in passages if any(contains(t,part) for t in terms) and (not web or not(company or symbol) or any(contains(x,part) for x in allowed_entities))]
+        if not relevant:
+            for i, part in enumerate(passages):
+                if any(contains(t,part) for t in terms):
+                    prev = passages[i-1] if i > 0 else ''
+                    nxt = passages[i+1] if i + 1 < len(passages) else ''
+                    combined = prev + ' ' + part + ' ' + nxt
+                    if any(contains(x, combined) for x in allowed_entities) and not re.search(r'\b(?:Samsung|Google|Microsoft|Meta|Amazon|Intel|Nvidia|Tesla)\b', part, re.I):
+                        relevant.append(combined)
         if not relevant:return False,'requested_metric_missing:'+key
         if not any(period_match(period or question,part) for part in relevant):return False,'requested_period_missing'
     requested=period or question
@@ -256,7 +264,7 @@ def event_polarities(text,terms):
         if term.isascii():pattern=r'(?<![A-Za-z])'+pattern+r'(?![A-Za-z])'
         for match in re.finditer(pattern,text,re.I):
             prefix=re.split(r'[。！？;；.!?\n,，]',text[:match.start()])[-1][-80:]
-            negative=bool(re.search(r"(?:\b(?:not|never|no)|n.t)\s+(?:[A-Za-z]+\s+){0,2}$|(?:没有|并非|从未|未曾|未|不)[^，。；;.!?\n]{0,10}$",prefix,re.I))
+            negative=bool(re.search(r"(?:\b(?:not|never|no)|n.t)\s+(?:[A-Za-z]+\s+){0,2}$|(?:没有|并非|从未|未曾|并未|未有|不曾|不再|并不|未见|未|不)(?![来断论仅管])[^，。；;.!?\n]{0,10}$",prefix,re.I))
             states.add(negative)
     return states
 
@@ -285,12 +293,14 @@ def reviewed_passages(answer,citations,*,require_citations=False,check_claims=Tr
     """Diagnostics apply to affected passages, never erase other verified content."""
     accepted=[];issues=[]
     for passage in cited_passages(answer):
-        if not passage.strip():continue
-        uncertainty=bool(re.search(r'没有(?:可核验)?(?:资料|证据)|无法(?:核实|确认)|no (?:verified )?evidence',passage,re.I))
-        code=('invalid_citation' if citation_errors(passage,citations) else
-              'missing_citation' if require_citations and not re.search(r'\[\d+\]',passage) and not uncertainty else
-              'unsupported_numeric_claim' if check_claims and unsupported_numbers(passage,citations) else
-              'unsupported_claim' if check_claims and unsupported_claims(passage,citations) else None)
+        stripped = passage.strip()
+        if not stripped:continue
+        uncertainty=bool(re.search(r'没有(?:可核验)?(?:资料|证据)|无法(?:核实|确认)|no (?:verified )?evidence',stripped,re.I))
+        is_leadin = bool(re.match(r'^(?:以下|根据|综上|总结|如上|经查询|查询结果|核验结果|提示|注意|说明|确认后|请核对|已为您|请注意)[^。！？\n]{0,35}[：:\n]?', stripped)) or (len(stripped) < 35 and stripped.endswith(('：', ':')))
+        code=('invalid_citation' if citation_errors(stripped,citations) else
+              'missing_citation' if require_citations and not re.search(r'\[\d+\]',stripped) and not uncertainty and not (is_leadin and not re.search(r'\d', stripped)) else
+              'unsupported_numeric_claim' if check_claims and unsupported_numbers(stripped,citations) else
+              'unsupported_claim' if check_claims and unsupported_claims(stripped,citations) else None)
         if code:issues.append(code)
-        else:accepted.append(passage.strip())
+        else:accepted.append(stripped)
     return accepted,issues

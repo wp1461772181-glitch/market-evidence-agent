@@ -12,6 +12,7 @@ def simplified(text):
 
 def format_answer(text,question,citations):
     if not re.search(r'[\u3400-\u9fff]',question):return text
+    if re.search(r'繁[体體]|正[体體]|traditional\s+chinese', question, re.I):return text
     protected={}
     literals=[str(c.get('title') or '') for c in citations]
     literals+=re.findall(r'https?://[^\s<>）)]+',text)

@@ -37,7 +37,7 @@ def authorized(name,words):
     clean_words=_POLITE_NON_NEGATION.sub('',words)
     matches=list(verbs.finditer(clean_words))
     if not matches:return False
-    return all(not any(n.start()<=v.start()<n.end() for n in NEGATION.finditer(clean_words)) for v in matches)
+    return any(not any(n.start()<=v.start()<n.end() for n in NEGATION.finditer(clean_words)) for v in matches)
 
 def vetoed(name,words):
     """Negative veto only. This function can NEVER grant an operation."""
@@ -45,5 +45,8 @@ def vetoed(name,words):
     if not pattern:return False
     clean_words=_POLITE_NON_NEGATION.sub('',words)
     verb_pattern='|'.join(r'(?<![A-Za-z])'+p+r'(?![A-Za-z])' if p.isascii() else p for p in pattern.split('|'))
-    return any(re.search(verb_pattern,n.group(0),re.I) for n in NEGATION.finditer(clean_words))
+    has_negated = any(re.search(verb_pattern,n.group(0),re.I) for n in NEGATION.finditer(clean_words))
+    if has_negated and authorized(name, words):
+        return False
+    return has_negated
 

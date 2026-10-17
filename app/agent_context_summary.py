@@ -96,7 +96,21 @@ def validate_summary(raw, source: str) -> str:
         raise SummaryRejected("empty")
     if len(text) > SEGMENT_MAX_CHARS:
         raise SummaryRejected("too_long")
-    if any(entity.casefold() not in source.casefold() for entity in named_companies(text, _COMPANY_LIMIT)):
+    def _grounded(entity: str) -> bool:
+        if entity.casefold() in source.casefold():
+            return True
+        try:
+            from .agent_workflow.entities import ticker_records
+            for r in ticker_records():
+                if r['ticker'].casefold() == entity.casefold() and r['title'].casefold() in source.casefold():
+                    return True
+                if r['title'].casefold() == entity.casefold() and r['ticker'].casefold() in source.casefold():
+                    return True
+        except Exception:
+            pass
+        return False
+
+    if any(not _grounded(entity) for entity in named_companies(text, _COMPANY_LIMIT)):
         raise SummaryRejected("ungrounded_company")
     # A time of day is a way of writing what the user said ("下午三点" as "15:00"), not an amount.
     if figure_values(_CLOCK_TIME.sub(" ", text)) - figure_values(source, zh=True):
