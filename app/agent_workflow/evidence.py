@@ -298,8 +298,31 @@ _CLAIM_AMOUNT = re.compile(
     r'|\d[\d,.]*\s*(?:%|％|美元|元|dollars?|USD)', re.I)
 
 
+# A passage that reports what was NOT found states no fact, so it must not be asked for a
+# citation: "本次检索没有取得可核验资料" and "两次均未返回可引用的营收来源" are honest reports of an
+# absence.  The old two-form pattern recognised almost none of them, so those sentences were deleted
+# and an otherwise good turn ended as partial.
+_ABSENCE = re.compile(
+    r'没有[^。！？；\n]{0,12}?(?:可核验|可靠|可用)?[^。！？；\n]{0,8}?(?:资料|证据|来源|数据|记录|结果|内容)'
+    r'|(?:未|没能|均未|都未|全部未)(?:能)?(?:取得|找到|检索到|返回|核实|确认|读取)'
+    r'|无法(?:核实|确认|取得|读取|验证)'
+    r'|查无|暂无'
+    r'|no (?:verified |matching )?(?:evidence|data|sources?|records?|results?)', re.I)
+
+
+def reports_absence(text):
+    """Whether this passage reports that nothing was found, rather than asserting a fact."""
+    return bool(_ABSENCE.search(text))
+
+
 def factual_claim(text):
-    """Whether this passage states something that needs a source rather than ordinary wording."""
+    """Whether this passage states a fact that needs a source.
+
+    A stated amount or rate needs one; so does a named event (an acquisition, an appointment).
+    Merely naming a metric does not: "本次没有取得可核验的营收资料" mentions revenue while stating
+    that nothing was found, and demanding a citation for it used to delete the honest sentence and
+    end an otherwise good turn as partial.
+    """
     if _CLAIM_AMOUNT.search(text):return True
     if any(any(contains(k, text) for k in group) for group in CLAIM_FEATURES):return True
     return any(any(contains(t, text) for t in terms) for terms in METRIC_GROUPS.values())
@@ -311,7 +334,7 @@ def reviewed_passages(answer,citations,*,require_citations=False,check_claims=Tr
     for passage in cited_passages(answer):
         stripped = passage.strip()
         if not stripped:continue
-        uncertainty=bool(re.search(r'没有(?:可核验)?(?:资料|证据)|无法(?:核实|确认)|no (?:verified )?evidence',stripped,re.I))
+        uncertainty=reports_absence(stripped)
         is_leadin = bool(re.match(r'^(?:以下|根据|综上|总结|如上|经查询|查询结果|核验结果|提示|注意|说明|确认后|请核对|已为您|请注意)[^。！？\n]{0,35}[：:\n]?', stripped)) or (len(stripped) < 35 and stripped.endswith(('：', ':')))
         has_factual_content = factual_claim(stripped)
         code=('invalid_citation' if citation_errors(stripped,citations) else
