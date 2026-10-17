@@ -64,7 +64,7 @@ def gate_row(question: str, row: dict, *, symbol: str | None=None, company: str 
     if symbol and row.get('symbol') and row['symbol'].upper()!=symbol.upper():return False,'requested_entity_missing'
     # Saved rows are verified by their query's symbol filter. Public pages must name the
     # entity in body text; a forged headline by itself is never sufficient.
-    if web and (company or symbol) and not any(contains(x,body) for x in (company,symbol,*(entity_aliases or [])) if x):
+    if web and (company or symbol) and not any(contains(x,body+' '+title) for x in (company,symbol,*(entity_aliases or [])) if x):
         return False,'requested_entity_missing'
     if not web and symbol and not row.get('symbol') and not row.get('_verified_symbol') and not any(contains(x,body+' '+title) for x in (company,symbol) if x):
         return False,'requested_entity_missing'

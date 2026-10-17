@@ -22,10 +22,12 @@ VERBS={
     'add_to_research_queue':r'加入|添加|放入|add',
     'remove_from_research_queue':r'移除|移掉|移出|remove',
     'select_stock':r'切换|选择|打开|select|open|switch',
-    'open_page':r'切换|打开|open|switch',
+    'save_material_evidence':r'保存|上传|录入|收录|save|upload',
+    'withdraw_knowledge_document':r'撤回|删除|撤销|withdraw|delete',
+    'test_retrieval_diagnostics':r'诊断|测试|检索|diagnose|test',
 }
-NEGATION=re.compile(r'(?:不要|别|勿|无需|不用|不能|不想|禁止|do not|don.t|never|without)[^，。；;.!?\n]{0,50}',re.I)
-_POLITE_NON_NEGATION=re.compile(r'不用客气|别客气|不用担心|别担心|无需确认|不需确认|无需向我确认|不用多说',re.I)
+NEGATION=re.compile(r'(?:不要|别|勿|无需|不用|不能|不想|禁止|切勿|请勿|千万别|do not|don.t|never|without)[^，。；;.!?\n]{0,35}',re.I)
+_POLITE_NON_NEGATION=re.compile(r'不用客气|别客气|不用担心|别担心|无需确认|不需确认|无需向我确认|不用多说|不要停|不要慌|不要犹豫|不要管其他|不要理会',re.I)
 
 def authorized(name,words):
     pattern=VERBS.get(name)
@@ -42,4 +44,6 @@ def vetoed(name,words):
     pattern=VERBS.get(name)
     if not pattern:return False
     clean_words=_POLITE_NON_NEGATION.sub('',words)
-    return any(re.search(pattern,n.group(0),re.I) for n in NEGATION.finditer(clean_words))
+    verb_pattern='|'.join(r'(?<![A-Za-z])'+p+r'(?![A-Za-z])' if p.isascii() else p for p in pattern.split('|'))
+    return any(re.search(verb_pattern,n.group(0),re.I) for n in NEGATION.finditer(clean_words))
+

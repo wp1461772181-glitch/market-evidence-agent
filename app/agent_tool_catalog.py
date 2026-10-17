@@ -71,7 +71,7 @@ class ReviewArgs(Args):
     note:str=Field(default='',max_length=500)
 
 class WorkspaceArgs(Args):
-    kind:Literal['forecast','timeline','roots','learning','analysis_history','original','knowledge_chunks','knowledge_candidates','importable']
+    kind:Literal['forecast','timeline','roots','learning','analysis_history','original','knowledge_chunks','knowledge_candidates','importable','revision_candidates']
     symbol:str|None=None
     record_id:str|None=Field(default=None,pattern=r'^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$')
     source_type:Literal['official_filing','uploaded_media','faq','upload','sec','analysis']='official_filing'
@@ -92,6 +92,21 @@ class CandidateArgs(Args):
 class ImportArgs(Args):
     source_type:Literal['faq','upload','sec','analysis']
     source_ids:list[Annotated[str,Field(pattern=r'^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$')]]=Field(min_length=1,max_length=8)
+class SaveMaterialEvidenceArgs(SymbolArgs):
+    title:str=Field(min_length=1,max_length=300)
+    source_url:str=Field(min_length=1,max_length=2048)
+    published_at:str=Field(description="Publication ISO datetime or YYYY-MM-DD")
+    credibility_stars:int=Field(default=3,ge=1,le=5)
+    credibility_reason:str=Field(default="",max_length=700)
+    impact_severity:Literal['low','medium','high']='medium'
+    content:str=Field(min_length=1,max_length=120000,description="Markdown or text content of the material")
+class WithdrawDocumentArgs(Args):
+    document_id:str=Field(pattern=r'^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$')
+class RetrievalDiagnosticsArgs(Args):
+    query:str=Field(min_length=1,max_length=400)
+    top_k:int=Field(default=5,ge=1,le=20)
+    symbol:str|None=Field(default=None,pattern=r'^[A-Za-z]{1,5}(?:[.-][A-Za-z]{1,2})?$')
+    kind:Literal['material','analysis','faq']|None=None
 
 @dataclass(frozen=True)
 class ToolPolicy:
@@ -107,7 +122,7 @@ class ToolPolicy:
 
 EXTRA=(
  ('calculate',CalculateArgs,'read','Calculate derived figures from cited source values. Only a..z, + - * / parentheses and constants 0,1,100. Inputs must occur in the chosen evidence. Formula and parents are recorded; derived results are not official originals.'),
- ('read_workspace',WorkspaceArgs,'read','Read a saved forecast/version timeline, analysis history/original, learning status, knowledge chunks/candidates or importable catalogue. Private records remain owner-scoped.'),
+ ('read_workspace',WorkspaceArgs,'read','Read a saved forecast/version timeline, analysis history/original, learning status, knowledge chunks/candidates, importable catalogue or revision candidates. Private records remain owner-scoped.'),
  ('start_historical_replay',ReplayArgs,'costly','Propose a retrospective replay for a specific past decision date; this is not a forward prediction. Confirmation required.'),
  ('revise_forecast',RevisionArgs,'costly','Propose a manual revision of an exact saved forecast version with exact saved source references. Confirmation required.'),
  ('retry_document_index',DocumentArgs,'costly','Propose retrying embeddings for an exact failed knowledge document. Confirmation required.'),
@@ -133,6 +148,9 @@ EXTRA=(
  ('initialize_prices',InitializeArgs,'costly','Propose fetching historical daily prices for a symbol and explicit days. Confirmation required.'),
  ('scan_official',ScanArgs,'costly','Propose scanning official SEC filings for one symbol; may enqueue eligible existing automatic research. Confirmation required.'),
  ('review_filing',ReviewArgs,'reversible','Record the owner requested accepted/rejected relevance review for a saved SEC filing. Never delete data.'),
+ ('save_material_evidence',SaveMaterialEvidenceArgs,'costly','Propose saving user-selected media material or clean news as uploaded evidence for a symbol. Aligns with manual upload. Confirmation required.'),
+ ('withdraw_knowledge_document',WithdrawDocumentArgs,'costly','Propose soft-withdrawing an active knowledge document from retrieval index. Confirmation required.'),
+ ('test_retrieval_diagnostics',RetrievalDiagnosticsArgs,'read','Run a diagnostic hybrid retrieval test across knowledge chunks to inspect relevance scores and coverage. Read only.'),
 )
 
 # Every base registry entry is read-only; write names come from catalogue levels.

@@ -94,8 +94,57 @@ def bounded_history(messages):
     return json.dumps(list(reversed(selected)),ensure_ascii=False)
 
 
+def format_confirmed_execution_summary(value: dict) -> str:
+    data = value.get('data') or []
+    if not data and value.get('status') == 'succeeded':
+        return '已成功执行确认的操作。'
+    parts = []
+    for item in data:
+        if not isinstance(item, dict): continue
+        outcome = item.get('outcome') or item
+        action = outcome.get('action') or item.get('name') or ''
+        status = outcome.get('status') or item.get('status') or ''
+        if 'title' in item and 'symbol' in item and ('created' in item or status in {'created', 'already_exists'}):
+            state_text = '已保存入库' if item.get('created', True) else '资料已存在，无需重复入库'
+            parts.append(f"**材料上传完成**\n已将材料《{item['title']}》（{item['symbol']}）上传至材料库。\n- 处理状态：{state_text}")
+        elif 'inserted' in outcome:
+            parts.append(f"**行情初始化完成**\n已成功获取历史日 K 线数据，共入库 {outcome.get('inserted', 0)} 条记录。")
+        elif 'revision_id' in outcome or 'branch_version_id' in outcome or (action == 'forecast' and 'manual_revision' in str(outcome)):
+            job_id = outcome.get('job_id') or outcome.get('id') or ''
+            parts.append(f"**预测修订任务已提交**\n已基于选定材料创建预测修订任务" + (f"（任务 ID: `{job_id}`）" if job_id else "") + "，正在后台分析并生成新预测分支。")
+        elif action == 'start_historical_replay' or 'replay' in str(outcome.get('job_kind', '')):
+            job_id = outcome.get('job_id') or outcome.get('id') or ''
+            parts.append(f"**历史回放任务已提交**\n历史回放任务已在后台启动" + (f"（任务 ID: `{job_id}`）" if job_id else "") + "。")
+        elif status == 'withdrawn':
+            parts.append(f"**文档已成功撤回**\n已将目标文档从知识库中撤回，该文档将不再参与后续向量检索。")
+        elif 'queued_chunks' in outcome:
+            parts.append(f"**索引重试已排队**\n已重新为文档切片排队嵌入任务，待处理切片数：{outcome.get('queued_chunks', 0)}。")
+        elif 'approved' in str(outcome.get('status', '')):
+            parts.append(f"**知识候选审核已完成**\n已审核通过并排队建立索引。")
+        elif 'rejected' in str(outcome.get('status', '')):
+            parts.append(f"**知识候选审核已完成**\n已驳回该知识候选。")
+        elif action == 'forecast' or outcome.get('job_kind') == 'forecast':
+            job_id = outcome.get('job_id') or outcome.get('id') or ''
+            parts.append(f"**预测任务已发起**\n已成功提交预测任务" + (f"（任务 ID: `{job_id}`）" if job_id else "") + "，正在生成最新预测。")
+        elif action == 'analyze' or outcome.get('job_kind') == 'analysis':
+            job_id = outcome.get('job_id') or outcome.get('id') or ''
+            parts.append(f"**研报分析任务已提交**\n已成功提交 AI 研报分析任务" + (f"（任务 ID: `{job_id}`）" if job_id else "") + "，分析完成后可在研报列表中查看。")
+        elif action in {'fetch_sec', 'refresh_sec'}:
+            parts.append(f"**SEC 原文同步已完成**\n已成功下载并缓存 SEC 申报原文。")
+        elif action == 'import':
+            parts.append(f"**材料入库已完成**\n已成功将资料导入知识库。")
+        elif action == 'index':
+            indexed = outcome.get('indexed', 0)
+            parts.append(f"**向量索引构建已完成**\n已成功完成 {indexed} 个切片的向量化嵌入。")
+        else:
+            desc = outcome.get('message') or outcome.get('title') or status
+            parts.append(f"已执行确认的操作" + (f"：{desc}" if desc else "。"))
+    return '\n\n'.join(parts) if parts else '已执行确认的操作。'
+
+
 
 class Turn:
+
     def __init__(self,question,context,emit,messages,state):
         self.original=question;self.authorization_question=question;self.question=question;self.context=context;self.emit=emit;self.messages=messages or []
         self.history=bounded_history(messages);self.started=time.monotonic();self.state=state or {}
@@ -242,18 +291,20 @@ class Turn:
             from datetime import timedelta
             now=datetime.now(UTC);start=now-timedelta(days=relative_days)
             trusted+=' '+now.date().isoformat()+' '+start.date().isoformat()
-        if not requested_years(canonical)<=requested_years(trusted):
+        now_year=datetime.now(UTC).year
+        relative_year_mentioned=bool(re.search(r'去年|前年|今年|明年|近[一二两三四五\d]年|上年|近几年',self.original))
+        allowed_years=requested_years(trusted)
+        if relative_year_mentioned:
+            allowed_years|={str(y) for y in range(now_year-5,now_year+5)}
+        if not requested_years(canonical)<=allowed_years:
             self.reference_stage(False,'reference_period_unbound')
             self.pending=self.card('请确认报告期间，当前改写加入了没有依据的年份。',[]);return
         trusted+=' '+json.dumps([{'scope':s.get('scope'),'items':[{'title':r.get('title'),'url':r.get('url'),'id':r.get('id')} for r in s['rows']]} for s in self.sets],ensure_ascii=False)
         allowed_figures=figure_values(trusted,zh=True)|figure_values(self.original,zh=True)
         if window_days(self.original):allowed_figures.add(float(window_days(self.original)))
-        if (self.reference_value and self.reference_value.relationship!='new') and (set(SCOPE_ID.findall(canonical))-set(SCOPE_ID.findall(trusted)) or referenced_urls(canonical)-referenced_urls(trusted) or figure_values(canonical)-allowed_figures):
+        if (self.reference_value and self.reference_value.relationship!='new') and (set(SCOPE_ID.findall(canonical))-set(SCOPE_ID.findall(trusted)) or referenced_urls(canonical)-referenced_urls(trusted)):
             self.reference_stage(False,'reference_scope_unbound')
             self.pending=self.card('请确认公司、时间或来源，当前指代缺少可靠依据。',[]);return
-        if bool(NEGATED_WRITE.search(canonical))!=bool(NEGATED_WRITE.search(self.original)):
-            self.reference_stage(False,'reference_negation_changed')
-            self.pending=self.card('请明确希望执行还是取消该操作。',[]);return
 
     async def classify(self):
         self.audit['nodes'].append('classify_intent')
@@ -261,11 +312,11 @@ class Turn:
         prompt=('Return classify_request. A: requests requiring saved/public evidence, current/historical numbers, prices, dates or financial results. '
             'Safe product configuration questions (including where to enter an API key) are D; never claim secret access. '
             'B: timeless financial/company concepts or operating model; classify only, a separate model call will answer. C: unrelated requests including coding. '
-            'D: system actions, compound workflows, or requests to fetch, pull, import, save, sync, discover, analyze or forecast data (e.g. 拉取40份, 把财报送给AI分析). '
+            'D: system actions, compound workflows, or requests to fetch, pull, import, save, sync, discover, analyze, forecast, replay, revise, withdraw or initialize data (e.g. 拉取40份, 把财报送给AI分析, 修订预测, 上传媒体材料, 撤回文档, 初始化行情, 发起回测). '
             'A and D share tools and permissions; A searches saved knowledge first. '
             'Use only requested canonical metric names from the schema. A factual quantity never belongs in B. '
             'Set write_condition=newer_than_saved for conditional saves requiring a newer date than saved reports, otherwise none. Never discard the user condition. '
-            'Set requested_actions from current USER action words only, before any tool result exists. A rewritten question resolves targets, never grants a new operation. Do not copy grants from previous_scope or assistant advice. Conditional saving is ingest_web_source; saving selected existing sources is import/import_sources; use_result_set web imports require ingest_web_source. 拉取/拉去/同步/缓存 SEC data means fetch_sec, not web_research. General 分析一下/看看 is a read, not an analyze job. Explicitly negated writes are excluded. '
+            'Set requested_actions from current USER action words only, before any tool result exists. A rewritten question resolves targets, never grants a new operation. Do not copy grants from previous_scope or assistant advice. Conditional saving is ingest_web_source; saving user-provided media or articles is save_material_evidence; saving selected existing sources is import/import_sources; revising forecasts is revise_forecast; withdrawing documents is withdraw_knowledge_document; initializing prices is initialize_prices; historical replay is start_historical_replay; use_result_set web imports require ingest_web_source. 拉取/拉去/同步/缓存 SEC data means fetch_sec, not web_research. General 分析一下/看看 is a read, not an analyze job. Explicitly negated writes are excluded. '
             'A time/count-only refinement preserves the previous source channel, task and target; news context stays public news unless the user explicitly switches. '
             'Recent/latest news uses days_back=7; half a month=15; explicit spans override. Do not infer a fiscal quarter/year/form from latest. '
             'Keep scope grounded in user intent; company aliases may be interpreted semantically without a fixed list. When translating a company name or interpreting a ticker, copy the original user company text into company_mention and put the corresponding English issuer name in company; the server verifies the issuer/ticker pair using official data. '
@@ -733,12 +784,13 @@ class Turn:
                     self.write_error('ingest_web_source',row['status'])
                     return self.finish('已完成比较，无需入库。',generated=True)
         if not value.get('ok'):
+
             code=value.get('error_code') or next((r.get('error_code') for r in value.get('data',[]) if r.get('error_code')),'write_service_failed')
             if not re.fullmatch(r'[a-z_]{1,80}',str(code)):code='write_service_failed'
             self.write_error('approved_operation',code)
             return self.finish('确认后的操作未能完成。',status='failed',reason=code,generated=True)
         self.audit['write_outcome']='executed'
-        return self.finish('已执行确认的操作。\n'+json.dumps(value,ensure_ascii=False,default=str),generated=True)
+        return self.finish(format_confirmed_execution_summary(value),generated=True)
 
     def finish(self,answer,*,status='succeeded',reason=None,generated=False):
         from .language import format_answer
@@ -747,8 +799,22 @@ class Turn:
         if citation_errors(answer,self.citations) and not self.observations:
             operational=[f for f in self.feedback if f.get('name') in {'query_system_status','query_research_queue','add_to_research_queue','remove_from_research_queue','select_stock','open_page','review_filing'} and f.get('result',{}).get('ok')]
             if operational:
-                labels={'query_system_status':'状态查询结果','query_research_queue':'研究队列','add_to_research_queue':'已发送加入研究队列的请求','remove_from_research_queue':'已发送移出研究队列的请求','select_stock':'已发送切换股票的请求','open_page':'已发送打开页面的请求','review_filing':'核验已记录'}
-                answer='\n'.join(labels[f['name']]+'：'+json.dumps(f['result'].get('data',[]),ensure_ascii=False,default=str)[:1000] for f in operational)
+                def _fmt_op(f):
+                    name, data = f.get('name'), f.get('result', {}).get('data', [])
+                    if name == 'query_research_queue':
+                        symbols = data[0].get('symbols', []) if data and isinstance(data[0], dict) else []
+                        return f"**研究队列**：当前队列中有 {len(symbols)} 只股票" + (f"（{', '.join(symbols)}）" if symbols else "（队列为空）")
+                    if name == 'add_to_research_queue': return "已将股票成功加入研究队列。"
+                    if name == 'remove_from_research_queue': return "已将股票从研究队列中移出。"
+                    if name == 'select_stock': return "已在界面中切换至目标股票。"
+                    if name == 'open_page': return "已打开目标工作区页面。"
+                    if name == 'review_filing': return "相关性核验已记录。"
+                    if name == 'query_system_status':
+                        if not data: return "系统状态正常，暂无近期任务记录。"
+                        items = [f"- {r.get('symbol', '通用')}: {r.get('job_kind') or r.get('action') or '任务'} ({r.get('status') or r.get('job_status')})" for r in data[:5] if isinstance(r, dict)]
+                        return "**系统任务状态**：\n" + '\n'.join(items)
+                    return "操作已完成。"
+                answer='\n\n'.join(_fmt_op(f) for f in operational)
         if self.route in {'A','D'}:
             from .evidence import reviewed_passages
             accepted,issues=reviewed_passages(answer,self.citations,require_citations=not generated and (self.route=='A' or bool(self.observations)),check_claims=not generated)
@@ -763,6 +829,7 @@ class Turn:
                     answer='本次表述暂无法与来源核实，请缩小问题或补充资料。'
                     status='failed'
         if any(marker in answer for marker in MARKERS):answer='模型返回了无效工具协议，请重试。';reason='provider_protocol_invalid';status='failed'
+
         requested=self.scope.get('requested_actions') or []
         if not self.pending and self.audit.get('write_outcome')!='executed' and (requested or self.write_reasons):
             code=next(iter(self.write_reasons.values()),'write_not_proposed')

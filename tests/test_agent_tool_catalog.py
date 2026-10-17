@@ -38,7 +38,10 @@ WRITE_ARGUMENTS={
  'translate_content':{'kind':'analysis','record_id':'11111111-1111-4111-8111-111111111111'},
  'review_knowledge_candidate':{'candidate_id':'11111111-1111-4111-8111-111111111111','approved':True},
  'import_sources':{'source_type':'sec','source_ids':['11111111-1111-4111-8111-111111111111']},
+ 'save_material_evidence':{'symbol':'AMD','title':'Test Title','source_url':'https://example.com','published_at':'2026-10-10','content':'Test Content'},
+ 'withdraw_knowledge_document':{'document_id':'11111111-1111-4111-8111-111111111111'},
 }
+
 
 def test_every_server_write_has_a_tokenless_security_probe():
     assert set(WRITE_ARGUMENTS)=={p.name for p in definitions().values() if p.level in {'reversible','costly'}}

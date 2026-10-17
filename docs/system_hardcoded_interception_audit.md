@@ -297,14 +297,14 @@ flowchart TD
     
     S1_Found --> Step2["步骤二：按 3 天窗口筛选材料"]
     
-    subgraph Step2["步骤二：按 3 天窗口筛选材料 (Material Discovery & 3-Day Window)"]
-        S2_Search["查询库内材料: 严格限定材料日期范围<br>version_date <= material_date <= version_date + 3 days"]
-        S2_Search --> S2_Cond{"是否在 3 天内找到可用材料?"}
+    subgraph Step2["步骤二：按时间窗口与入库时效筛选材料 (Material Discovery & 双轨窗口)"]
+        S2_Search["查询库内材料: 严格区分新材料与过往补充材料<br>1. 新发布材料: version_date <= pub <= version_date + 3 days<br>2. 过往补充材料: 入库日期(obs) > version_date 且 version_date - 30 days <= pub < version_date"]
+        S2_Search --> S2_Cond{"是否在窗口内找到可用材料?"}
         S2_Cond -->|找到材料| S2_UserSpecified{"用户是否在原句中<br>明确指定了特定材料?"}
         S2_UserSpecified -->|已明确指定| S2_AutoSelect["Agent 自动匹配材料并锁定 source_refs"]
-        S2_UserSpecified -->|未明确指定| S2_Card["前端弹出材料选择卡片:<br>列出候选材料(标题、日期、来源)<br>用户勾选要加入修订的材料"]
+        S2_UserSpecified -->|未明确指定| S2_Card["前端弹出材料选择卡片:<br>合并展示带分类标签的候选材料（新发布材料 / 过往补充材料）<br>按时间顺序排列，用户勾选要加入修订的材料"]
         S2_Cond -->|未找到材料| S2_Empty["大模型自主判断缺料策略"]
-        S2_Empty --> S2_FallbackCard["前端弹出自愈卡片:<br>A. 立即联网搜索并抓取近 3 天最新资料入库<br>B. 扩大搜索时间窗口<br>C. 取消本次修订任务<br>D. 用户自定义输入选项"]
+        S2_Empty --> S2_FallbackCard["前端弹出自愈卡片:<br>A. 立即联网搜索并抓取最新资料入库<br>B. 扩大搜索时间窗口<br>C. 取消本次修订任务<br>D. 用户自定义输入选项"]
     end
     
     S2_AutoSelect --> Step3["步骤三：执行修订与自然语言总结"]
@@ -322,15 +322,17 @@ flowchart TD
    - Agent 识别用户意图中的股票代码（如 `INTC`）。
    - 自动查询当前股票在 `ForecastVersionV2` 中的最新活跃版本（需满足 `root_id == id` 且未过期）。
    - 若系统内无此股票、无预测或版本已锁定，Agent 不报错中断，而是组织自愈选项（如引导初始化行情并创建首个预测）生成卡片，同时附带自定义文本框。
-2. **步骤二（3 天材料窗口严格过滤与多轮交互）**：
+2. **步骤二（新材料 3 天与过往补充 30 天双轨过滤与多轮交互）**：
    - 取得版本的基准决策时间 `parent.decision_at`（例如 `2026-10-10`）。
-   - 仅筛选符合以下时间窗口的材料：
-     $$\text{decision\_at} \le \text{material.published\_at} \le \text{decision\_at} + 3\text{ days}$$
-   - **若材料充足但用户未指明**：弹出卡片展示材料列表（包含勾选框、材料标题、来源媒体、评级星级），由用户点选后触发。
-   - **若材料为空（缺料）**：Agent 给出自愈选择卡片（例如推荐“去联网抓取该时间段英特尔新闻后入库”，或者“结束当前任务”）。
+   - **双轨筛选与分类徽标**：
+     - **新发布材料**：$\text{decision\_at} \le \text{material.published\_at} \le \text{decision\_at} + 3\text{ 天}$；
+     - **过往补充材料**：入库时间 $\text{observed\_at} > \text{decision\_at}$ 且 $\text{decision\_at} - 30\text{ 天} \le \text{material.published\_at} < \text{decision\_at}$；
+     - 两者在一个列表中按发布时间倒序排列，分别标注 `[新发布材料]` 与 `[过往补充材料]` 徽章。
+   - **若材料充足但用户未指明**：弹出卡片展示材料列表（包含多选勾选框、材料标题、来源媒体、评级星级、类别徽标），由用户点选后触发。
+   - **若材料为空（缺料）**：Agent 自主决策并给出自愈选择卡片（例如推荐“去联网抓取该时间段英特尔新闻后入库”，或者“结束当前任务”）。
 3. **步骤三（执行与汇报）**：
    - 将用户确认的 `source_refs` 提交至后端接口。
-   - 任务进入异步队列，Agent 向用户汇报任务详情。
+   - 任务进入异步队列，Agent 消化返回值，向用户汇报自然语言任务详情。
 
 ---
 

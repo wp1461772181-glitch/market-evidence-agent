@@ -26,7 +26,7 @@ def assistant_item_catalogue(messages):
     for source,content in assistant_message_sources(messages).items():
         items=[]
         for line in content.splitlines():
-            match=re.match(r'^\s*(?:#{1,6}\s*)?(?:\*\*)?(?:\d{1,3}[.、)）]|[（(]\d{1,3}[)）])\s*(.+)',line)
+            match=re.match(r'^\s*(?:#{1,6}\s*)?(?:\*\*)?(?:(?:\d{1,3}[.、)）]|[（(]\d{1,3}[)）])|[-*•·])\s*(.+)',line)
             if not match:continue
             # A label is an exact source substring; the ID binds message and text.
             text=match.group(1).strip().strip('*').strip()[:400]

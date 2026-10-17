@@ -84,6 +84,21 @@ async def _dispatch(name,args,context,is_owner,emit):
         with research_context(context.owner_hash,citations=citations):value=await TOOL_REGISTRY[name].ainvoke(args)
         return {**value,'_citations':citations}
     if name=='search_knowledge':return await search_knowledge(args,context)
+    if name=='test_retrieval_diagnostics':
+        from ..knowledge.retrieval import retrieve_materials,retrieve_analysis,retrieve_faq
+        citations=[]
+        symbol=(args.get('symbol') or '').upper()
+        query=args['query']
+        kind=args.get('kind') or ('material' if symbol else 'faq')
+        limit=args.get('top_k',5)
+        with research_context(context.owner_hash,citations=citations):
+            if kind=='analysis' and symbol:
+                res=await retrieve_analysis(symbol,query,limit=limit)
+            elif kind=='material' and symbol:
+                res=await retrieve_materials(symbol,query,limit=limit)
+            else:
+                res=await retrieve_faq(query)
+        return {**res,'_citations':citations}
     if name=='read_workspace':
         from .workspace_tools import read_workspace
         return await asyncio.to_thread(read_workspace,args,context)
@@ -180,9 +195,47 @@ def execute_costly(operation,key,context):
         payload={k:v for k,v in args.items() if v is not None and k!='form'}
         value=execute_action(credential=credential,request_key=key,action=name,payload=payload)
         return {'ok':value.get('status') not in {'failed','blocked_data'},**value}
-    if name in {'start_historical_replay','revise_forecast','retry_document_index','translate_content','review_knowledge_candidate','import_sources'}:
+    if name in {'start_historical_replay','revise_forecast','retry_document_index','translate_content','review_knowledge_candidate','import_sources','withdraw_knowledge_document'}:
         from .workspace_tools import write_workspace
         return write_workspace(name,args,key,context)
+    if name=='save_material_evidence':
+        from ..manual_evidence import create_uploaded_evidence
+        from ..knowledge.models import KnowledgeUploadOwner
+        from datetime import datetime
+        raw_pub=args['published_at']
+        try:
+            pub_dt=datetime.fromisoformat(raw_pub.replace('Z','+00:00'))
+        except Exception:
+            pub_dt=datetime.now(UTC)
+        content_bytes=args['content'].encode('utf-8')
+        title=args['title']
+        filename=f"{title[:50].replace('/','_')}.md"
+        with SessionLocal() as db:
+            evidence,created=create_uploaded_evidence(
+                symbol=args['symbol'],
+                title=title,
+                source_url=args['source_url'],
+                published_at=pub_dt,
+                credibility_stars=args.get('credibility_stars',3),
+                credibility_reason=args.get('credibility_reason',''),
+                impact_severity=args.get('impact_severity','medium'),
+                filename=filename,
+                content=content_bytes,
+                db=db,
+            )
+            if created and context.identity_credential:
+                db.add(KnowledgeUploadOwner(upload_id=evidence.id,owner_hash=context.owner_hash))
+                db.commit()
+            return {
+                'ok':True,
+                'data':[{
+                    'id':str(evidence.id),
+                    'symbol':evidence.symbol,
+                    'title':evidence.title,
+                    'created':created,
+                    'status':'created' if created else 'already_exists'
+                }]
+            }
     if name=='ingest_web_source':
         from .web_sources import freeze_snapshot,save_snapshot,canonical_url
         snapshot=operation.get('snapshot')

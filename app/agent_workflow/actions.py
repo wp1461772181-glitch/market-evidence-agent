@@ -47,7 +47,7 @@ _INDEX_OBJECT = "|".join(["资料", "材料", r"(?<![a-z])(?:source|material|fil
 _ANALYZE_PHRASE = re.compile(r"(?:生成|创建|重新|开始|" + _word("(?:request|run)") + r").{0,20}?"
                              r"(?:ai\s*分析|分析|" + _word("analysis") + ")")
 _IMPORT_ITEM = rf"(?:{_POINTER}|{_IMPORT_OBJECT}|{_FORM}|财报|年报|季报)"
-_IMPORT_VERBS = rf"(?:导入|存入|存到|放入|放进|加入|收录|录入|保存|{_word('import|save|ingest')})"
+_IMPORT_VERBS = rf"(?:导入(?!业务|政策|关税)|存入|存到|放入|放进|加入|收录|录入|保存|{_word('import|save|ingest')})"
 
 
 def _requested_action_words(question: str) -> str | None:
