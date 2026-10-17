@@ -326,7 +326,7 @@ class Turn:
         self.audit['nodes'].append('classify_intent')
         payload={'question':self.question,'original':self.original,'user_action_words':self.authorization_question,'previous_category':self.state.get('previous_category'),'history':self.history,'previous_scope':self.state.get('previous_scope'),'as_of_utc':datetime.now(UTC).isoformat(),'write_tools':write_tool_catalogue()}
         prompt=('Return classify_request. Decide by what the request needs, in this order:\n'
-            'D — the user wants this product to do something: a write (import, save, fetch, scan, index, analyse, forecast, replay, revise, withdraw, initialise, translate, review, queue change), an explicit request to search the public web, or a question about how to use this product.\n'
+            'D — the user wants this product to do something: a write (import, save, fetch, scan, index, analyse, forecast, replay, revise, withdraw, initialise, translate, review, queue change), reading or changing system state such as the research queue, task status or a workspace page, an explicit request to search the public web, or a question about how to use this product.\n'
             'A — answering needs data this product stores: prices, SEC filings, uploaded materials, saved AI analysis, saved FAQ, saved forecasts, or a specific saved source.\n'
             'B — finance, markets or company knowledge that needs no stored data and no current fact: concepts, definitions, how something works, a business model.\n'
             'C — anything else this product does not do; coding included.\n'
@@ -473,7 +473,7 @@ class Turn:
         instruction+=('Tools are disabled. Give partial results and explicitly list completed and incomplete goals.' if closing else
             'Select native tools or finish. A prioritizes reads. Costly tools only propose a confirmation card and may ONLY be proposed when the USER explicitly requested the write. Use evidence ordinals for newer_than. '
             'For ANY explicitly requested owner write, including queue changes and relevance reviews, call its granted write tool to create the server confirmation card. Do not merely describe a proposed write or ask for confirmation in prose: only a returned server card can be confirmed. Read lookups do not complete a requested write. '
-            'For exact previous results use use_result_set with server set ID and one-based positions. A request for latest news or a different time window needs a fresh web_research call; do not answer it by reusing earlier news rows. Arbitrary companies may be searched; queue membership is irrelevant. '
+            'For exact previous results use use_result_set with server set ID and one-based positions. A request for public or current facts (news, recent events, anything outside the saved library) is served by web_research; saved-data tools cannot answer it, and skipping the search is not an answer. A request for latest news or a different time window needs a fresh web_research call; do not answer it by reusing earlier news rows. Arbitrary companies may be searched; queue membership is irrelevant. '
             'On invalid_arguments fix the arguments; do not repeat identical failures. On ambiguous references call ask_user. '
             'When saved evidence is empty, do not enumerate all saved-data tools. For an absent financial number finish with 没有可核验资料 after one justified alternative search; missing evidence is a legitimate answer. '
             'An empty knowledge/material search says nothing about saved price history. For a stock-price trend, query_stock_prices is the saved OHLCV source; check it before concluding that saved prices are absent. '
@@ -576,7 +576,9 @@ class Turn:
             self.feedback.append({'name':name,'result':outcome});return
         if policy.level!='read' or name in {'query_system_status','query_research_queue'}:
             self.feedback.append({'name':name,'result':outcome});return
+        from .evidence import canonical_metric
         requirements={key:self.scope.get(key) for key in ('company','metrics','period')}
+        if requirements.get('metrics'):requirements['metrics']=[canonical_metric(m) for m in requirements['metrics'] if canonical_metric(m)]
         requirements['entity_aliases']=self.scope.get('_entity_aliases',[])
         from ..agent_web_research import METRIC_GROUPS
         if requirements.get('metrics'):requirements['metrics']=[key for key in requirements['metrics'] if key not in METRIC_GROUPS or any(contains(term,self.question) for term in METRIC_GROUPS[key])]

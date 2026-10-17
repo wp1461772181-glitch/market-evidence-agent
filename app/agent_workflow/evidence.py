@@ -49,6 +49,28 @@ def period_match(request: str, body: str) -> bool:
     return True
 
 
+# The gate knows three structural metrics that are not synonyms of a text term.  When the classifier
+# was limited to a fixed enum these arrived spelled exactly; now it copies the user's own wording, so
+# "股价" and "已保存价格" must still reach the price branch and "提交日期" the date branch.
+_STRUCTURAL_METRICS={
+ 'price':('price','close','收盘','股价','收盘价','价格','已保存价格','quote','ohlcv'),
+ 'date':('date','日期','时间','发布日期','提交日期','披露日期','filed_at','published_at'),
+ 'forecast':('forecast','预测','概率','probability','probabilities'),
+}
+
+
+def canonical_metric(name):
+    """The gate's own name for a metric the user wrote in their own words."""
+    text=' '.join(str(name or '').split()).strip()
+    if not text:return ''
+    folded=text.casefold()
+    for canonical,terms in METRIC_GROUPS.items():
+        if folded==canonical or any(folded==t.casefold() for t in terms):return canonical
+    for canonical,terms in _STRUCTURAL_METRICS.items():
+        if folded==canonical or any(folded==t.casefold() for t in terms):return canonical
+    return text
+
+
 def gate_row(question: str, row: dict, *, symbol: str | None=None, company: str | None=None,
              metrics: list[str] | None=None, period: str | None=None, days_back: int | None=None,
              official_only: bool=False, now: datetime | None=None, entity_aliases: list[str] | None=None) -> tuple[bool,str]:
