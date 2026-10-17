@@ -207,7 +207,7 @@ def bounded_tool_result(value, limit=8000):
  kept=[]
  if isinstance(data,list):
   for item in data:
-   bounded={k:(v[:700] if isinstance(v,str) else v) for k,v in item.items()} if isinstance(item,dict) else str(item)[:700]
+   bounded={k:(v[:3000] if isinstance(v,str) else v) for k,v in item.items()} if isinstance(item,dict) else str(item)[:3000]
    candidate={**value,"data":kept+[bounded],"truncated":True}
    if _protocol_size(candidate)>limit:break
    kept.append(bounded)

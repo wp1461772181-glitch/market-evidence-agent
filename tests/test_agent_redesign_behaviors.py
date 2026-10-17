@@ -47,6 +47,18 @@ async def turn(question,*,route='A',scope=None,steps=(),answers=None,owner=False
 
 def run(*args,**kwargs):return asyncio.run(turn(*args,**kwargs))
 
+def test_a_request_about_several_companies_is_not_blocked_by_one_primary_scope():
+    """A user who names eight tickers must not be asked "which company?" because the classifier can
+    only carry one primary scope. Every named ticker is also allowed as a tool argument."""
+    steps=[call('query_stock_prices',symbol='AAPL'),call('query_stock_prices',symbol='MU'),
+           {'content':'AAPL 已保存收盘价 100 美元[1]。MU 已保存收盘价 90 美元[2]。'}]
+    r,c,_,_=run('分别查 AAPL 和 MU 的已保存价格',route='A',
+        scope={'symbol':'AAPL','symbols':['AAPL','MU']},steps=steps,
+        answers={'query_stock_prices':lambda a:{'ok':True,'data':[{'id':a['symbol'],'symbol':a['symbol'],'close':100}]}})
+    assert r['pending_request'] is None
+    assert [a['symbol'] for n,a in c if n=='query_stock_prices']==['AAPL','MU']
+
+
 @pytest.mark.parametrize('company,symbol',[('Micron','MU'),('Roblox','RBLX'),('Unknown Public Company','ZZZZ'),('美光','MU')])
 @pytest.mark.parametrize('days',[7,15])
 def test_arbitrary_company_news_search_has_explicit_window_no_queue_card(company,symbol,days):

@@ -4,6 +4,9 @@ export class AgentChatLifecycle {
   active = null;
 
   begin(controller) {
+    // A new request supersedes the previous one: abort it so the server stops billing for a turn
+    // whose answer can no longer reach the page.
+    this.active?.controller.abort();
     const token = ++this.generation;
     this.active = { token, controller };
     return token;

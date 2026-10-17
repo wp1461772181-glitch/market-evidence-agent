@@ -108,7 +108,8 @@ export async function agentChatStream(config: AgentChatConfig, message: string, 
       if (eventName === "delta" && typeof data.text === "string") answer += data.text;
       const receivedEvent = eventName;
       const accepted = onEvent({ event: receivedEvent, data });
-      if (accepted !== false && receivedEvent === "conversation" && typeof data.conversation_id === "string") window.sessionStorage.setItem(chatConversationKey, data.conversation_id);
+      if (accepted === false) { await reader.cancel().catch(() => {}); return answer; }
+      if (receivedEvent === "conversation" && typeof data.conversation_id === "string") window.sessionStorage.setItem(chatConversationKey, data.conversation_id);
       if (receivedEvent === "done" && ["complete","succeeded","partially_succeeded","waiting_for_input","running","failed"].includes(String(data.status))) receivedDone = true;
       eventName = "message";
       if (receivedEvent === "error") throw new ApiError(String(data.code ?? "chat_failed"));
