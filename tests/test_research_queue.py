@@ -82,3 +82,38 @@ def test_only_the_owner_reads_or_writes_the_queue(monkeypatch, disposable_databa
     before, put, after = asyncio.run(exercise())
     assert before == {"symbols": None}
     assert put == after == {"symbols": ["AMD", "MU"]}
+
+
+def test_archiving_hides_a_conversation_without_deleting_it(disposable_database):
+    """Archiving is a logical delete: the row leaves the list, and the conversation plus its messages
+    are still there (a restore brings it back)."""
+    from app import agent_chat_store as store
+    from app.agent_chat_models import AgentConversation, AgentConversationTitle, AgentMessage
+    from app.database import Base, engine
+    Base.metadata.create_all(engine, tables=[AgentConversation.__table__, AgentConversationTitle.__table__,
+                                             AgentMessage.__table__])
+
+    async def exercise():
+        try:
+            keep = await store.create_conversation(OWNER)
+            gone = await store.create_conversation(OWNER)
+            turn = str(__import__("uuid").uuid4())
+            await store.append_message(gone, turn, "user", "归档我")
+            await store.append_message(gone, turn, "assistant", "好的")
+            before = {row["id"] for row in await store.list_conversations(OWNER)}
+            archived = await store.set_conversation_archived(OWNER, gone, True)
+            after = {row["id"] for row in await store.list_conversations(OWNER)}
+            still_there = await store.owned_messages(gone, OWNER)
+            stranger = await store.set_conversation_archived(SOMEONE, gone, True)
+            restored = await store.set_conversation_archived(OWNER, gone, False)
+            back = {row["id"] for row in await store.list_conversations(OWNER)}
+            return keep, gone, before, archived, after, still_there, stranger, restored, back
+        finally:
+            await store.engine.dispose()
+
+    keep, gone, before, archived, after, still_there, stranger, restored, back = asyncio.run(exercise())
+    assert before == {keep, gone}
+    assert archived is True and after == {keep}          # hidden from the sidebar list
+    assert still_there and still_there[0]["content"] == "归档我"   # messages kept
+    assert stranger is False                              # another credential cannot archive it
+    assert restored is True and back == {keep, gone}      # a restore lists it again

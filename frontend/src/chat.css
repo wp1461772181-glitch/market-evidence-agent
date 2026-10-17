@@ -63,6 +63,13 @@
 .agent-history-rename { flex: 0 0 auto; align-self: flex-start; margin: 6px 6px 0 0; padding: 5px; border: 0; border-radius: 7px; background: transparent; color: var(--c-muted); cursor: pointer; opacity: 0; transition: opacity .12s; }
 .agent-history-row:hover .agent-history-rename, .agent-history-rename:focus-visible, .agent-history-row:focus-within .agent-history-rename { opacity: 1; }
 .agent-history-rename:hover { background: var(--c-line); color: var(--c-ink); }
+.agent-history-actions { display: flex; flex: 0 0 auto; align-self: flex-start; gap: 2px; margin: 6px 6px 0 0; }
+.agent-history-actions .agent-history-rename,
+.agent-history-actions .agent-history-archive { margin: 0; }
+.agent-history-archive { flex: 0 0 auto; padding: 5px; border: 0; border-radius: 7px; background: transparent; color: var(--c-muted); cursor: pointer; opacity: 0; transition: opacity .12s; }
+.agent-history-row:hover .agent-history-archive, .agent-history-archive:focus-visible, .agent-history-row:focus-within .agent-history-archive { opacity: 1; }
+.agent-history-archive:hover { background: var(--c-line); color: var(--c-ink); }
+.citation-unmatched { color: inherit; cursor: help; }
 .agent-history-edit { flex: 1 1 auto; display: grid; gap: 4px; padding: 7px 8px; }
 .agent-history-edit input { width: 100%; box-sizing: border-box; padding: 7px 9px; border: 1px solid var(--c-accent); border-radius: 8px; font: 13px var(--sans); color: var(--c-ink); background: #fff; outline: none; box-shadow: 0 0 0 3px rgba(22,124,115,.14); }
 .agent-history-edit small { color: var(--c-faint); font-size: 11px; }

@@ -1,6 +1,6 @@
 import { dispatchAgentAction } from "./agent-client-actions.mjs";
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
-import { agentChatRequest, agentChatModels, agentChatStream, configuredApiBaseUrl, restoreAgentChat, clearAgentConversation, getChatMode, setChatMode, listAgentConversations, renameAgentConversation, selectAgentConversation, personalChatLogin, getKnowledgeCitation, type KnowledgeCitationDetail, type ConversationSummary, type AgentChatConfig, type AgentChatMessage, type AgentChatProvider, type AgentChatEvent } from "./api";
+import { agentChatRequest, agentChatModels, agentChatStream, configuredApiBaseUrl, restoreAgentChat, clearAgentConversation, getChatMode, setChatMode, listAgentConversations, renameAgentConversation, archiveAgentConversation, selectAgentConversation, personalChatLogin, getKnowledgeCitation, type KnowledgeCitationDetail, type ConversationSummary, type AgentChatConfig, type AgentChatMessage, type AgentChatProvider, type AgentChatEvent } from "./api";
 import { chatTurnPreviews, plainChatPreview } from "./chat-thread.mjs";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -36,6 +36,7 @@ const CheckIcon = () => <Icon><path d="M5 12.5l4.5 4.5L19 7.5" /></Icon>;
 const ThumbUpIcon = () => <Icon><path d="M7 11v9H4a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h3z" /><path d="M7 11l4-7a2 2 0 0 1 2 2v3h5.2a2 2 0 0 1 2 2.3l-1.1 7A2 2 0 0 1 17.1 20H7" /></Icon>;
 const ThumbDownIcon = () => <Icon><path d="M17 13V4h3a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1h-3z" /><path d="M17 13l-4 7a2 2 0 0 1-2-2v-3H5.8a2 2 0 0 1-2-2.3l1.1-7A2 2 0 0 1 6.9 4H17" /></Icon>;
 const PencilIcon = () => <Icon><path d="M4 20h4l10.5-10.5a2.1 2.1 0 0 0-3-3L5 17v3z" /><path d="M13.5 6.5l3 3" /></Icon>;
+const ArchiveIcon = () => <Icon><path d="M4 5h16v3H4V5z" /><path d="M5.5 8v10.5a1.5 1.5 0 0 0 1.5 1.5h10a1.5 1.5 0 0 0 1.5-1.5V8" /><path d="M9.5 12h5" /></Icon>;
 const SendIcon = () => <Icon><path d="M12 19V5" /><path d="M5.5 11.5L12 5l6.5 6.5" /></Icon>;
 
 function ClarificationCard({clarification,active,onChoose,onReply}:{clarification:NonNullable<AgentChatMessage["clarification"]>;active:boolean;onChoose:(value:string)=>Promise<void>;onReply:(value:string)=>Promise<void>}) {
@@ -74,7 +75,7 @@ function shortDate(value:string, locale:string):string {
   return same?date.toLocaleTimeString(locale,{hour:"2-digit",minute:"2-digit"}):date.toLocaleDateString(locale,{month:"numeric",day:"numeric"});
 }
 
-function HistoryRow({item,current,onOpen,onRename}:{item:ConversationSummary;current:boolean;onOpen:()=>void;onRename:(title:string)=>Promise<void>}) {
+function HistoryRow({item,current,onOpen,onRename,onArchive}:{item:ConversationSummary;current:boolean;onOpen:()=>void;onRename:(title:string)=>Promise<void>;onArchive:()=>Promise<void>}) {
   const { t, locale } = useLocale();
   const [editing,setEditing]=useState(false),[value,setValue]=useState(item.title),[error,setError]=useState(""),[saving,setSaving]=useState(false);
   const input=useRef<HTMLInputElement>(null);
@@ -99,7 +100,10 @@ function HistoryRow({item,current,onOpen,onRename}:{item:ConversationSummary;cur
       <span className="agent-history-title">{item.title||t("新建对话")}</span>
       <span className="agent-history-time">{shortDate(item.updated_at,locale)}</span>
     </button>
-    <button type="button" className="agent-history-rename" aria-label={t("重命名对话")} title={t("重命名")} onClick={()=>{setValue(item.title);setEditing(true)}}><span style={{display:"inline-flex",width:14,height:14}}><PencilIcon /></span></button>
+    <span className="agent-history-actions">
+      <button type="button" className="agent-history-rename" aria-label={t("重命名对话")} title={t("重命名")} onClick={()=>{setValue(item.title);setEditing(true)}}><span style={{display:"inline-flex",width:14,height:14}}><PencilIcon /></span></button>
+      <button type="button" className="agent-history-archive" aria-label={t("归档对话")} title={t("归档（仅从列表移除，不删除内容）")} onClick={()=>{void onArchive()}}><span style={{display:"inline-flex",width:14,height:14}}><ArchiveIcon /></span></button>
+    </span>
   </div>;
 }
 export function AgentChatProviderRoot({ children }: { children: ReactNode }) {
@@ -238,6 +242,12 @@ export function AgentChatPanel({ onSettings,onModeChange }: { onSettings: () => 
     if(saved===null)await refreshHistory();   // an empty name restores the default (the first question)
     else setHistory(items=>items.map(entry=>entry.id===item.id?{...entry,title:saved,custom_title:true}:entry));
   }
+  async function archiveHistory(item:ConversationSummary){
+    try{await archiveAgentConversation(item.id,true)}catch(e){setHistoryError(e instanceof Error?e.message:t("归档失败，请重试"));return}
+    setHistory(rows=>rows.filter(row=>row.id!==item.id));
+    // 归档的是当前打开的对话时，像"新建对话"一样清空，避免继续往已归档的对话里写
+    if(item.id===currentConversation)c.clear();
+  }
   function switchMode(){if(mode==="personal"){setChatMode("guest");setMode("guest");onModeChange("guest");window.location.hash="#agent"}else{setLoginOpen(true);setLoginError("")}}
   async function submitPersonalLogin(){try{const credential=await personalChatLogin(loginCode);setChatMode("personal",credential);setLoginCode("");setMode("personal");onModeChange("personal");setLoginOpen(false)}catch{setLoginError(t("个人登录失败，请稍后重试。"))}}
   async function copyAnswer(text:string,index:number){setCopied(null);setCopyStatus(t("正在复制…"));let timer:number|undefined;try{const clipboard=navigator.clipboard?.writeText(text);if(!clipboard)throw Error("clipboard_unavailable");await Promise.race([clipboard,new Promise<never>((_,reject)=>{timer=window.setTimeout(()=>reject(Error("clipboard_timeout")),1800)})]);setCopied(index);setCopyStatus(t("已复制"));}catch{setCopied(-index-1);setCopyStatus(t("复制失败；请选中回答后手动复制。"));const article=document.getElementById(`chat-message-${index}`);const range=document.createRange();if(article){range.selectNodeContents(article.querySelector(".markdown-body")??article);window.getSelection()?.removeAllRanges();window.getSelection()?.addRange(range);}}finally{if(timer)window.clearTimeout(timer);window.setTimeout(()=>{setCopied(null);setCopyStatus("")},3500)}}
@@ -272,7 +282,7 @@ export function AgentChatPanel({ onSettings,onModeChange }: { onSettings: () => 
         {historyLoading&&<p role="status">{t("正在读取…")}</p>}
         {historyError&&<p role="alert">{historyError} <button className="secondary-action" onClick={()=>void refreshHistory()}>{t("重试")}</button></p>}
         {!historyLoading&&!historyError&&!history.length&&<p>{t("还没有保存的对话")}</p>}
-        {history.map(item=><HistoryRow key={item.id} item={item} current={Boolean(c.messages.length)&&item.id===currentConversation} onOpen={()=>void openHistory(item)} onRename={title=>renameHistory(item,title)} />)}
+        {history.map(item=><HistoryRow key={item.id} item={item} current={Boolean(c.messages.length)&&item.id===currentConversation} onOpen={()=>void openHistory(item)} onRename={title=>renameHistory(item,title)} onArchive={()=>archiveHistory(item)} />)}
         {historyHasMore&&<button className="secondary-action" onClick={()=>void loadMoreHistory()}>{t("加载更多")}</button>}
       </aside>
       <div className="agent-main-column">

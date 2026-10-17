@@ -61,6 +61,13 @@ export async function renameAgentConversation(id:string,title:string,signal?:Abo
   const data=await response.json().catch(()=>null) as {title?:unknown}|null;
   return typeof data?.title==="string"&&data.title?data.title:null;
 }
+/** Archive (hide) or restore one of this credential's conversations: a logical delete. */
+export async function archiveAgentConversation(id:string,archived=true,signal?:AbortSignal): Promise<boolean> {
+  const url = agentChatUrl("stream", configuredApiBaseUrl).replace(/stream$/, `conversations/${encodeURIComponent(id)}`);
+  const response = await fetch(url,{method:"PATCH",signal,cache:"no-store",headers:{Accept:"application/json","Content-Type":"application/json","X-Chat-Session":chatCredential()},body:JSON.stringify({archived})});
+  if(!response.ok) throw new ApiError(response.status===404?"找不到这个对话。":"归档失败，请重试。",response.status);
+  return true;
+}
 /** The owner's research queue as the server keeps it: null until one was saved.  Owner only. */
 export async function getResearchQueue(signal?:AbortSignal): Promise<string[]|null> {
   const url = agentChatUrl("stream", configuredApiBaseUrl).replace(/stream$/, "research-queue");

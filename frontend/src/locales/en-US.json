@@ -1115,5 +1115,8 @@
   "网页日期": "Web publication date",
   "确认有效期为十分钟；改变目标需要重新确认。": "Confirmation expires in ten minutes. Changed targets require a new confirmation.",
   "Agent 建议：请决定是否批准": "Agent suggestion: decide whether to approve",
-  "这是 agent 的建议，不是你的要求。批准后才会继续。": "This is an agent suggestion, not your request. It proceeds only after approval."
+  "这是 agent 的建议，不是你的要求。批准后才会继续。": "This is an agent suggestion, not your request. It proceeds only after approval.",
+  "归档对话": "Archive conversation",
+  "归档（仅从列表移除，不删除内容）": "Archive (removes it from the list; nothing is deleted)",
+  "归档失败，请重试": "Could not archive it. Please try again."
 }

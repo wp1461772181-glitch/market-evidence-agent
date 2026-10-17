@@ -12,7 +12,7 @@ from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from .agent_chat_store import list_conversations, set_conversation_title
+from .agent_chat_store import list_conversations, set_conversation_title, set_conversation_archived
 
 router = APIRouter(prefix="/agent-chat", tags=["agent-chat-identity"])
 _attempts: dict[str, list[float]] = {}
@@ -85,18 +85,30 @@ async def conversations(x_chat_session: str | None = Header(default=None), limit
 
 
 class RenameBody(BaseModel):
-    title: str = Field(max_length=400)
+    """A name and/or the archived flag.  Archiving is a logical delete: the conversation is kept but
+    stops being listed."""
+    title: str | None = Field(default=None, max_length=400)
+    archived: bool | None = None
 
 @router.patch("/conversations/{conversation_id}")
 async def rename_conversation(conversation_id: str, body: RenameBody, x_chat_session: str | None = Header(default=None)):
-    """Give one of this owner's conversations a name (an empty name restores the default)."""
+    """Give one of this owner's conversations a name (an empty name restores the default), or archive
+    and restore it."""
     if not x_chat_session or not 32 <= len(x_chat_session) <= 256:
         raise HTTPException(401, "chat_session_required", headers={"Cache-Control": "no-store"})
-    if any(ord(char) < 32 or ord(char) == 127 for char in body.title):
-        raise HTTPException(422, "invalid_conversation_title", headers={"Cache-Control": "no-store"})
-    title = " ".join(body.title.split())
-    if len(title) > 80:
-        raise HTTPException(422, "conversation_title_too_long", headers={"Cache-Control": "no-store"})
-    if not await set_conversation_title(x_chat_session, conversation_id, title or None):
-        raise HTTPException(404, "conversation_not_found", headers={"Cache-Control": "no-store"})
-    return JSONResponse({"id": conversation_id, "title": title or None}, headers={"Cache-Control": "no-store"})
+    if body.title is None and body.archived is None:
+        raise HTTPException(422, "invalid_conversation_update", headers={"Cache-Control": "no-store"})
+    title: str | None = None
+    if body.title is not None:
+        if any(ord(char) < 32 or ord(char) == 127 for char in body.title):
+            raise HTTPException(422, "invalid_conversation_title", headers={"Cache-Control": "no-store"})
+        title = " ".join(body.title.split())
+        if len(title) > 80:
+            raise HTTPException(422, "conversation_title_too_long", headers={"Cache-Control": "no-store"})
+        if not await set_conversation_title(x_chat_session, conversation_id, title or None):
+            raise HTTPException(404, "conversation_not_found", headers={"Cache-Control": "no-store"})
+    if body.archived is not None:
+        if not await set_conversation_archived(x_chat_session, conversation_id, body.archived):
+            raise HTTPException(404, "conversation_not_found", headers={"Cache-Control": "no-store"})
+    return JSONResponse({"id": conversation_id, "title": title or None, "archived": body.archived},
+                        headers={"Cache-Control": "no-store"})

@@ -174,6 +174,8 @@ def create_tables() -> None:
     create_sec_filing_inventory_table()
     create_uploaded_evidence_table()
     create_evidence_revision_tables()
+    from .agent_chat_store import ensure_conversation_archive_column
+    ensure_conversation_archive_column()
     with SessionLocal() as session:
         seed_faq(session)
         session.commit()

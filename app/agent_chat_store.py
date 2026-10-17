@@ -1,5 +1,5 @@
 import hashlib, uuid, json
-from sqlalchemy import select, func
+from sqlalchemy import select, func, true
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from .config import DATABASE_URL
@@ -104,6 +104,34 @@ async def owned_messages(conversation_id: str,credential: str):
             selected[0:0]=group; used+=size
         return [{"role":m.role,"content":m.content,"tool_calls":m.tool_calls,"tool_call_id":m.tool_call_id,"status":m.status,"turn_id":str(m.turn_id)} for m in selected]
 
+def ensure_conversation_archive_column() -> None:
+    """Add the archive column to an existing table.  A fresh database gets it from the model.
+
+    This module's own engine is the async one; startup DDL must use the synchronous engine.
+    """
+    from sqlalchemy import text
+    from .database import engine as sync_engine
+    with sync_engine.begin() as connection:
+        connection.execute(text("ALTER TABLE agent_conversations ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ"))
+
+
+async def set_conversation_archived(credential: str, conversation_id: str, archived: bool) -> bool:
+    """Archive (hide) or restore one of this credential's conversations.  False when it is not theirs."""
+    try:
+        cid = uuid.UUID(conversation_id)
+    except ValueError:
+        return False
+    async with Session() as s:
+        owned = await s.scalar(select(AgentConversation.id).where(
+            AgentConversation.id == cid, AgentConversation.owner_hash == owner_hash(credential)))
+        if owned is None:
+            return False
+        row = await s.get(AgentConversation, cid)
+        row.archived_at = func.now() if archived else None
+        await s.commit()
+        return True
+
+
 async def finish_conversation(conversation_id: str, status: str):
     async with Session() as s:
         conv=await s.get(AgentConversation,uuid.UUID(conversation_id))
@@ -111,9 +139,9 @@ async def finish_conversation(conversation_id: str, status: str):
             conv.status=status
             await s.commit()
 
-async def list_conversations(credential: str, limit: int = 20, offset: int = 0):
+async def list_conversations(credential: str, limit: int = 20, offset: int = 0, include_archived: bool = False):
     """Return only conversations owned by this credential, with a bounded title lookup: the name the
-    owner gave it, else the first question."""
+    owner gave it, else the first question.  Archived conversations are hidden unless asked for."""
     async with Session() as s:
         first_question = (select(AgentMessage.content)
             .where(AgentMessage.conversation_id == AgentConversation.id, AgentMessage.role == "user")
@@ -123,6 +151,7 @@ async def list_conversations(credential: str, limit: int = 20, offset: int = 0):
                    AgentConversationTitle.title)
             .outerjoin(AgentConversationTitle, AgentConversationTitle.conversation_id == AgentConversation.id)
             .where(AgentConversation.owner_hash == owner_hash(credential))
+            .where(AgentConversation.archived_at.is_(None) if not include_archived else true())
             .order_by(AgentConversation.updated_at.desc(), AgentConversation.id.desc())
             .offset(offset).limit(limit)
         )).all()
