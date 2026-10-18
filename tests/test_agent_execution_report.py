@@ -80,3 +80,20 @@ def test_without_a_kept_request_the_button_value_is_all_that_is_known():
     asyncio.run(turn.report_execution(EXECUTED))
     assert 'in English' in seen[0]['content']
     assert json.loads(seen[1]['content'])['user_request'] == 'confirm:tok'
+
+
+QUEUED = {'ok': True, 'data': [{'status': 'queued', 'job_id': 'job-42'}]}
+
+
+def test_a_queued_job_tells_the_user_what_to_do_next():
+    turn, seen = confirmation_turn('分析已启动，仍在处理中。')
+    result = asyncio.run(turn.report_execution(QUEUED))
+    payload = json.loads(seen[1]['content'])
+    assert payload['executed_operations'][0]['job_id'] == 'job-42'
+    assert '好了吗' in result['answer']
+
+
+def test_a_finished_operation_gets_no_second_prompt():
+    turn, _ = confirmation_turn('博通（AVGO）的 10-Q 原文已登记并拉取完成。')
+    result = asyncio.run(turn.report_execution(EXECUTED))
+    assert '好了吗' not in result['answer']

@@ -26,7 +26,9 @@ def test_ungranted_native_write_rejected_even_when_model_ignores_schema(monkeypa
     result,exposed,writes=run(monkeypatch,'看看AMD',steps=[call('add_to_research_queue',{'symbol':'AMD'})])
     assert not writes and 'add_to_research_queue' not in exposed[0]
     assert result['audit']['write_outcome']=='refused:write_tool_not_granted'
-    assert 'request_action' in result['answer'] and '未执行' in result['answer']
+    # The user reads this sentence: it must name the next step, not a tool they cannot call.
+    assert 'request_action' not in result['answer']
+    assert '未执行' in result['answer'] and '确认卡' in result['answer']
 
 def test_only_classified_server_write_is_registered_and_proposed(monkeypatch):
     result,exposed,writes=run(monkeypatch,'把AMD纳入我的研究清单',grants=['add_to_research_queue'],steps=[call('add_to_research_queue',{'symbol':'AMD'})])

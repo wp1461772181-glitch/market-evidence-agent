@@ -306,8 +306,10 @@ def test_duplicate_native_tool_requests_execute_once_and_stop(monkeypatch):
     with TestClient(main.app) as client:
         events=frames(send(client,message='show AAPL prices'))
     results=[e[1] for e in events if e[0]=='tool_result' and e[1]['name']=='query_stock_prices']
+    # The duplicate is answered with the first result instead of ending the turn: the model that
+    # repeats itself has lost its own answer, not run out of work. It is still executed only once.
     assert len(results)==1 and results[0]['call_id']=='call-1'
-    assert events[-1][0]=='done' and events[-1][1]['reason']=='no_progress'
+    assert events[-1][0]=='done' and events[-1][1]['reason']!='no_progress'
     assert any(e[0]=='citations' for e in events)
 
 

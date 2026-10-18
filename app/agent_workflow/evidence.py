@@ -234,6 +234,15 @@ def unsupported_numbers(answer,citations):
     Unit-normalized amounts may be translated (10 billion / 100亿) and probabilities
     may be shown as percentages. This is a guard, not a semantic answer scorer.
     """
+    return bool(unsupported_number_values(answer,citations))
+
+
+def unsupported_number_values(answer,citations):
+    """The candidate numbers no cited source supports, so a repair can name them.
+
+    Same rules as ``unsupported_numbers``; the list only tells the rewriting model what to
+    drop or re-source, it never decides the answer.
+    """
     from datetime import datetime, timedelta
     from .semantic import figure_values
     from .language import simplified
@@ -245,6 +254,7 @@ def unsupported_numbers(answer,citations):
         re.I
     )
     indexed={str(c['ordinal']):c for c in citations}
+    rejected=[]
     for passage in cited_passages(answer):
         refs=re.findall(r'\[(\d+)\]',passage)
         body=' '.join(str(indexed[r].get('quote',''))+' '+str(indexed[r].get('published_at',''))+' '+str(indexed[r].get('source_url',''))+' '+str(indexed[r].get('title','')) for r in refs if r in indexed)
@@ -277,8 +287,8 @@ def unsupported_numbers(answer,citations):
         claim|=figure_values(bare)
         # Exclude list numbering and calendar years to avoid false positive claim rejections
         claim={v for v in claim if not(1.0<=v<=10.0 and v==int(v)) and not(1990<=v<=2035 and v==int(v))}
-        if any(v not in allowed and not(v/100 in allowed and re.search(r'%|％|百分',passage)) for v in claim):return True
-    return False
+        rejected.extend(v for v in claim if v not in allowed and not(v/100 in allowed and re.search(r'%|％|百分',passage)))
+    return sorted(set(rejected))
 
 # Claim validation only. These concepts never route a request or choose a tool.
 RESIGNATION_TERMS=('resign','resigned','resignation','stepped down','stepping down','辞职','辞任','离职','退任')

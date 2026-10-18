@@ -102,3 +102,14 @@ def test_explicit_task_switch_with_consistent_semantic_stages_reads_prices(relat
         executor=lambda n,a:executed.append(n) or {'ok':True,'data':[] if n=='search_knowledge' else [{'id':'p','symbol':'MU','close':100}]})
     result=asyncio.run(direct.run_direct_turn('改成看 Micron 过去15天股价',ctx,emit=emit,messages=[{'role':'user','content':'Micron 最近新闻'}],state={'previous_scope':{'company':'Micron','symbol':'MU','metrics':[]}}))
     assert executed==['search_knowledge','query_stock_prices'] and result['status']=='succeeded'
+
+
+def test_repair_is_told_which_numbers_the_source_check_rejected():
+    seen=[]
+    steps=iter([call('query_stock_prices',symbol='AMD'),{'content':'AMD 收盘价为999美元[1]。'},repair('AMD 收盘价为100美元')])
+    def decide(messages,tools):seen.append(json.dumps(messages,ensure_ascii=False,default=str));return next(steps)
+    ctx=AgentRuntimeContext('custom','test','dummy',classifier=lambda _:'D',decider=decide,executor=lambda *_:{'ok':True,'data':[{'id':'p','symbol':'AMD','close':100}]})
+    result=asyncio.run(direct.run_direct_turn('AMD 收盘价',ctx,emit=emit))
+    assert result['status']=='succeeded'
+    repair_request=[m for m in json.loads(seen[-1]) if m.get('role')=='user'][-1]['content']
+    assert '999' in repair_request and 'unsupported_numbers' in repair_request
