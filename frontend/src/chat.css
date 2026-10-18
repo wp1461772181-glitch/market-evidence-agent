@@ -264,3 +264,8 @@
   .agent-header-actions > span { display: none; }
   .agent-welcome h2 { font-size: 22px; }
 }
+.agent-user-bubble { position: relative; display: flex; align-items: flex-start; gap: 6px; }
+.agent-user-bubble p { margin: 0; }
+.agent-user-copy { flex: 0 0 auto; padding: 4px; border: 0; border-radius: 7px; background: transparent; color: var(--c-muted); cursor: pointer; opacity: 0; transition: opacity .12s; }
+.agent-message.is-user:hover .agent-user-copy, .agent-user-copy:focus-visible { opacity: 1; }
+.agent-user-copy:hover { background: var(--c-line); color: var(--c-ink); }

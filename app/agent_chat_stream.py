@@ -424,7 +424,9 @@ async def get_messages(conversation_id:str,x_chat_session:str|None=Header(defaul
    if calls:
     traces=traces_by_turn.setdefault(row["turn_id"],[])
     known={item.get("call_id") for item in traces}
-    traces.extend({"call_id":call.get("id"),"name":call.get("function",{}).get("name","tool"),"arguments":call.get("function",{}).get("arguments"),"status":"failed"}
+    # A call with no stored result was not necessarily a failure: proposals and cards answer through
+    # the turn's clarification instead.  "submitted" says only that no tool result was recorded.
+    traces.extend({"call_id":call.get("id"),"name":call.get("function",{}).get("name","tool"),"arguments":call.get("function",{}).get("arguments"),"status":"submitted"}
                  for call in calls if call.get("id") not in known)
   elif row.get("role")=="tool":
    trace_list=traces_by_turn.get(row["turn_id"],[])

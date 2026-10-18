@@ -644,7 +644,7 @@ class Turn:
         elif self.last_accepted is not None:safe=self.last_accepted
         else:safe={k:v for k,v in self.feedback[-1].items() if k in {'ok','data','status','error_code','hint'}}
         from ..agent_chat_stream import bounded_tool_result
-        await self.emit({'event':'tool_result','call_id':self.last_call_id,'name':name,'result':bounded_tool_result(safe)})
+        await self.emit({'event':'tool_result','call_id':self.active_call_id or self.last_call_id,'name':name,'result':bounded_tool_result(safe)})
 
     def accept(self,name,args,outcome):
         self.last_accepted=None
@@ -1172,14 +1172,21 @@ class Turn:
                 if policy.level=='costly' or (policy.level=='reversible' and self.owner):
                     self.audit['tool_calls']+=1;outcome=await self.propose(name,args);self.feedback.append(outcome)
                     self.record_write_result(name,outcome)
+                    # A proposal is a result too: without it the client shows the call as pending
+                    # for ever and the stored turn restores it as failed.
+                    await self.publish_result(name,outcome)
                     if not outcome.get('ok'):batch_failed=True
-                elif name=='ask_user':self.audit['tool_calls']+=1;self.pending=self.card(args['question'],args['options'])
+                elif name=='ask_user':
+                    self.audit['tool_calls']+=1;self.pending=self.card(args['question'],args['options'])
+                    await self.publish_result(name,{'ok':True,'data':[{'status':'waiting_for_input','question':args['question']}]})
                 elif name=='use_result_set':
                     self.audit['tool_calls']+=1;outcome=await self.previous_results(args);self.feedback.append(outcome)
+                    await self.publish_result(name,outcome)
                     if args.get('action')!='summarize':self.record_write_result(args['action'],outcome)
                     if not outcome.get('ok'):batch_failed=True
                 elif name=='request_action':
                     self.audit['tool_calls']+=1;outcome=await self.request_action(args);self.feedback.append(outcome)
+                    await self.publish_result(name,outcome)
                 else:
                     outcome=await self.execute_read(name,args);self.accept(name,args,outcome);await self.publish_result(name,outcome)
                     if policy.level=='reversible':
