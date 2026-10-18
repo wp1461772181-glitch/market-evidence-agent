@@ -345,6 +345,45 @@ def test_no_content_material_is_blocked_without_model_call():
     assert result["analysis_id"] is None
 
 
+def test_worker_runs_a_job_queued_before_a_contract_upgrade():
+    source_id = _upload(text_value="Revenue grew by 8% this quarter. upgrade adoption test")
+    queued = _request(source_id, key="config-upgrade")
+    with SessionLocal() as db:
+        job = db.get(MaterialAnalysisJob, UUID(queued["job_id"]))
+        job.prompt_version = "material-analysis-prompt-v1"
+        db.commit()
+
+    provider = FakeProvider()
+    result = run_material_analysis_once(session_factory=SessionLocal, provider=provider, job_id=UUID(queued["job_id"]))
+    assert result["status"] == "succeeded"
+    assert provider.calls == 1
+    with SessionLocal() as db:
+        job = db.get(MaterialAnalysisJob, UUID(queued["job_id"]))
+        version = db.scalar(select(MaterialAnalysisVersion).where(MaterialAnalysisVersion.source_id == source_id))
+    assert job.prompt_version == PROMPT_VERSION
+    assert version.prompt_version == PROMPT_VERSION
+
+
+def test_an_outdated_worker_hands_a_newer_job_back_instead_of_blocking_it():
+    source_id = _upload(text_value="Revenue grew by 8% this quarter. stale worker test")
+    queued = _request(source_id, key="config-newer")
+    with SessionLocal() as db:
+        job = db.get(MaterialAnalysisJob, UUID(queued["job_id"]))
+        job.prompt_version = "material-analysis-prompt-v99"
+        db.commit()
+
+    provider = FakeProvider()
+    result = run_material_analysis_once(session_factory=SessionLocal, provider=provider, job_id=UUID(queued["job_id"]))
+    assert result["status"] == "stale_worker"
+    assert provider.calls == 0
+    with SessionLocal() as db:
+        job = db.get(MaterialAnalysisJob, UUID(queued["job_id"]))
+        versions = list(db.scalars(select(MaterialAnalysisVersion).where(MaterialAnalysisVersion.source_id == source_id)))
+    assert job.status == "queued"
+    assert job.safe_error_code is None
+    assert versions == []
+
+
 def test_worker_blocks_a_queued_job_after_its_analysis_contract_changes():
     source_id = _upload(text_value="Revenue grew by 8% this quarter. config version test")
     queued = _request(source_id, key="config-version")

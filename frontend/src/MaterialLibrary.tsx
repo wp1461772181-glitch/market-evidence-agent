@@ -22,6 +22,16 @@ const STATUS_LABEL: Record<MaterialAnalysisStatus, string> = {
   not_started: "待分析", queued: "排队中", running: "分析中", succeeded: "已分析", failed: "最近失败", blocked_data: "缺少正文",
 };
 
+// A blocked job carries its own reason. "缺少正文" is only true when the material
+// itself has nothing to read; a config upgrade blocked the job for a different
+// reason, and the next analysis request clears it on its own.
+function statusLabel(item: MaterialItem): string {
+  if (item.analysis_status !== "blocked_data") return STATUS_LABEL[item.analysis_status];
+  return item.latest_job?.safe_error_code === "config_version_changed"
+    ? "分析配置已更新，请重新发起分析"
+    : STATUS_LABEL.blocked_data;
+}
+
 export function MaterialLibrary({ symbol, onScan }: { symbol: string; onScan: () => Promise<FilingScanResult> }) {
   const { t } = useLocale();
   const [sourceType, setSourceType] = useState<MaterialSourceType | "all">("all");
@@ -128,7 +138,7 @@ export function MaterialLibrary({ symbol, onScan }: { symbol: string; onScan: ()
           {page.kind === "error" && <div className="material-empty" role="alert"><p>{page.message}</p><button className="secondary-action" onClick={refresh}>{<Tx text={"重试"} />}</button></div>}
           {page.kind === "ready" && page.items.length === 0 && <p className="material-empty">{<Tx text={"没有匹配材料。可在证据页上传媒体材料，或扫描 SEC 资料。"} />}</p>}
           {page.kind === "ready" && page.items.map((item) => <button key={`${item.source_type}:${item.source_id}`} type="button" className={`material-row ${selected?.source_id === item.source_id && selected.source_type === item.source_type ? "is-selected" : ""}`} onClick={() => { setFocusAnalysisId(null); setSelected(item); }}>
-            <span className="material-row-top"><strong>{item.title}</strong><span className={`material-status status-${item.analysis_status}`}>{translatePhrase(STATUS_LABEL[item.analysis_status])}</span></span>
+            <span className="material-row-top"><strong>{item.title}</strong><span className={`material-status status-${item.analysis_status}`}>{translatePhrase(statusLabel(item))}</span></span>
             <span className="material-row-meta">{t(item.source_type === "official_filing" ? "SEC 官方" : "上传材料")} · {t("发布")} {formatDate(item.published_at)}</span>
             <span className="material-row-meta">{item.latest_analysis_version_no ? `${t("AI 分析")} v${item.latest_analysis_version_no}` : t("尚无 AI 分析记录")}</span>
           </button>)}

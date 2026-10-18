@@ -124,10 +124,21 @@ def repoint(target: Path) -> None:
     CURRENT.symlink_to(target.name)
 
 
+# Processes that keep the code they imported at start-up. Interval agents spawn a
+# fresh process on every run and pick the new release up on their own, so leaving a
+# long-running one alone would keep serving the previous release after a deploy.
+LONG_RUNNING_LABELS = (LAUNCHD_LABEL, "com.market-evidence-agent.forecast-worker")
+
+
 def restart_service() -> None:
     uid = os.getuid()
-    say("backend", f"restarting {LAUNCHD_LABEL}")
-    run(["launchctl", "kickstart", "-k", f"gui/{uid}/{LAUNCHD_LABEL}"])
+    for label in LONG_RUNNING_LABELS:
+        target = f"gui/{uid}/{label}"
+        if run(["launchctl", "print", target], check=False).returncode != 0:
+            say("backend", f"{label} is not loaded; skipping")
+            continue
+        say("backend", f"restarting {label}")
+        run(["launchctl", "kickstart", "-k", target])
 
 
 def wait_healthy(seconds: int = 45) -> bool:

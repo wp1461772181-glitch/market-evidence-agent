@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import socket
 from datetime import UTC, datetime, timedelta
 from typing import Any, Callable
@@ -152,6 +153,23 @@ def request_material_analysis(
     return _job_result(job, cache_hit=cache is not None)
 
 
+def _version_number(value: str) -> int | None:
+    """The numeric tail of a versioned constant ("...-v2" -> 2); None when unparsable."""
+    match = re.search(r"-v(\d+)$", str(value or ""))
+    return int(match.group(1)) if match else None
+
+
+def _block_for_config(db: Session, job: MaterialAnalysisJob) -> dict[str, Any]:
+    job.status = "blocked_data"
+    job.current_stage = "blocked_data"
+    job.safe_error_code = "config_version_changed"
+    job.lease_owner = None
+    job.lease_expires_at = None
+    job.completed_at = datetime.now(UTC)
+    db.commit()
+    return {"status": "blocked_data", "job_id": str(job.id), "analysis_id": None}
+
+
 def run_material_analysis_once(
     *, session_factory: Callable[[], Session], provider: Any | None = None,
     provider_factory: ProviderFactory | None = None, job_id: UUID | None = None,
@@ -168,14 +186,27 @@ def run_material_analysis_once(
             "lease_epoch": job.lease_epoch, "attempts": job.attempts, "requested_model": job.requested_model,
         }
         if job.schema_version != SCHEMA_VERSION or job.prompt_version != PROMPT_VERSION:
-            job.status = "blocked_data"
-            job.current_stage = "blocked_data"
-            job.safe_error_code = "config_version_changed"
-            job.lease_owner = None
-            job.lease_expires_at = None
-            job.completed_at = datetime.now(UTC)
+            current = (_version_number(SCHEMA_VERSION), _version_number(PROMPT_VERSION))
+            recorded = (_version_number(job.schema_version), _version_number(job.prompt_version))
+            if None in current or None in recorded:
+                return _block_for_config(db, job)
+            if recorded > current:
+                # This worker loads older code than the job was queued under, so it
+                # must not produce an analysis the queue did not ask for. Hand the
+                # job back instead of failing the user's request.
+                job.status = "queued"
+                job.current_stage = "queued"
+                job.lease_owner = None
+                job.lease_expires_at = None
+                job.started_at = None
+                job.attempts = max(0, job.attempts - 1)
+                db.commit()
+                return {"status": "stale_worker", "job_id": str(job.id), "analysis_id": None}
+            # The job was queued before a contract upgrade and nothing has been
+            # produced for it yet: run it under the contract this worker loads.
+            job.schema_version = SCHEMA_VERSION
+            job.prompt_version = PROMPT_VERSION
             db.commit()
-            return {"status": "blocked_data", "job_id": str(job.id), "analysis_id": None}
         if not job.force:
             cached = db.scalar(
                 select(MaterialAnalysisVersion)
