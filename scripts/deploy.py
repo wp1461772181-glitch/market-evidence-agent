@@ -41,6 +41,12 @@ PAGES = "https://wp1461772181-glitch.github.io/market-evidence-agent/"
 LAUNCHD_LABEL = "com.market-evidence-agent.api"
 PYTHON = ROOT / ".venv-rag" / "bin" / "python"
 TEST_ENV = {"PUBLIC_API_MODE": "false", "RAG_ENABLED": "false", "RAG_INDEXING_ENABLED": "false"}
+# Failures caused by this machine's launchd/RAG environment rather than by the
+# code under test. Any other failure blocks a deploy, whatever the total says.
+KNOWN_ENVIRONMENT_FAILURES = frozenset({
+    "tests/test_agent_chat_api.py::test_shared_frontend_url_helper_reaches_public_chat_transport",
+    "tests/test_api_server_launchagent.py::test_fresh_checkout_uses_rag_environment_only_when_enabled",
+})
 
 
 def run(command: list[str], *, cwd: Path | None = None, env: dict | None = None, check: bool = True) -> subprocess.CompletedProcess:
@@ -72,13 +78,16 @@ def preflight(skip_tests: bool) -> str:
     if dirty:
         raise SystemExit("refusing to deploy with uncommitted tracked changes:\n" + dirty)
     if not skip_tests:
-        say("tests", "running the backend suite (2 known environment failures are expected)")
+        say("tests", "running the backend suite (2 known environment failures are allowed)")
         result = run([str(PYTHON), "-m", "pytest", "tests/", "-q"], env=TEST_ENV, check=False)
         tail = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else "no output"
         say("tests", tail)
-        if "failed" in tail and not tail.startswith(("2 failed", "0 failed")):
+        failed = {line.split(" - ")[0].removeprefix("FAILED ").strip()
+                  for line in result.stdout.splitlines() if line.startswith("FAILED ")}
+        unexpected = sorted(failed - KNOWN_ENVIRONMENT_FAILURES)
+        if unexpected:
             sys.stderr.write(result.stdout[-6000:])
-            raise SystemExit("tests failed; fix them or pass --skip-tests")
+            raise SystemExit("tests failed: " + ", ".join(unexpected))
     return head_sha()
 
 
