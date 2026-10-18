@@ -673,3 +673,23 @@ def test_a_failing_xbrl_poll_leaves_the_fetched_text_intact():
     assert fetched.content_status == "fetched"
     assert fetched.content_text and "Total assets" in fetched.content_text
     assert fetched.content_financials is None
+
+
+def test_a_primary_document_larger_than_the_json_cap_is_still_fetched():
+    create_sec_filing_inventory_table()
+    _clear_inventory()
+    opener, _ = _responses()
+    provider = _provider(opener)
+    huge = ("<html><body>" + ("Filing text " * 500_000) + "</body></html>").encode()
+    assert len(huge) > sec_filings.MAX_FILING_BYTES
+    with SessionLocal() as db:
+        rows, _, _ = scan_sec_filings(symbol="AAPL", db=db, provider=provider)
+        filing = next(row for row in rows if row.form == "8-K")
+        opener.responses[filing.source_url] = huge
+        fetched, _ = fetch_inventory_content(
+            symbol="AAPL", accession_number=filing.accession_number, db=db, provider=provider,
+            observed_at=datetime(2026, 11, 2, 10, tzinfo=UTC),
+        )
+
+    assert fetched.content_status == "fetched"
+    assert fetched.content_length and fetched.content_length > sec_filings.MAX_FILING_BYTES

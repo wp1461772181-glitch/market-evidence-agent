@@ -46,6 +46,10 @@ DEFAULT_TIMEOUT_SECONDS = 20
 # SEC's published upper limit is 10 requests/second.  This client waits at
 # least 0.2 seconds between its own requests, staying below five/second.
 MIN_REQUEST_INTERVAL_SECONDS = 0.2
+# JSON metadata (ticker maps, submission lists) stays small; a primary filing
+# document is HTML and routinely runs to several megabytes (the largest 10-K in
+# the current universe is an 8.1 MB file), so it gets the larger ceiling that
+# the batch backfill already used.
 MAX_FILING_BYTES = 5_000_000
 MAX_PRIMARY_DOCUMENT_BYTES = 50_000_000
 MAX_EXCERPT_CHARACTERS = 80_000
@@ -204,7 +208,7 @@ class SecEdgarProvider:
         opener: Callable = DEFAULT_SEC_OPENER,
         sleeper: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
-        max_primary_document_bytes: int = MAX_FILING_BYTES,
+        max_primary_document_bytes: int = MAX_PRIMARY_DOCUMENT_BYTES,
     ) -> None:
         user_agent = user_agent if user_agent is not None else configured_sec_user_agent()
         if not user_agent.strip() or "@" not in user_agent:
