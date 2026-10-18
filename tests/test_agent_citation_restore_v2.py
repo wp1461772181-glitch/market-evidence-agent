@@ -56,3 +56,46 @@ def test_more_than_ten_source_identities_survive_history_restore():
         number_rows('query_stock_prices',[{'id':str(r.id),'symbol':r.symbol,'close':r.close,'trading_date':r.trading_date.isoformat(),'source':r.source,'fetched_at':r.fetched_at.isoformat()} for r in rows],citations,{})
     restored=_restore_citations(citations,'guest')
     assert len(restored)==12 and all(c['source_type']=='saved_price' for c in restored)
+
+def test_a_filing_citation_quotes_exactly_what_the_reading_tool_showed():
+ """A stored filing is quoted through one excerpt helper; the verifier must use it too."""
+ from app.agent_tools import saved_filing_excerpt
+ body=("CIT annual report. Revenue was 109417 million and profit was 54770 million. "+
+       "Management discussed demand in every segment. "*400)
+ now=datetime.now(UTC)
+ with SessionLocal() as db:
+  row=SecFilingInventory(symbol='CIT',cik='0000320193',accession_number=f'0000320193-26-{uuid.uuid4().int%1000000:06}',
+   form='10-K',filed_at=date.today(),primary_document='a.htm',source_url='https://www.sec.gov/a.htm',
+   source='sec-edgar',review_status='pending_review',observed_at=now,content_status='fetched',
+   content_text=body,content_text_sha256=hashlib.sha256(body.encode()).hexdigest(),content_length=len(body),
+   content_excerpt=body[:80000],content_excerpt_sha256=hashlib.sha256(body[:80000].encode()).hexdigest(),
+   content_observed_at=now)
+  db.add(row);db.commit();identity=str(row.id)
+  excerpt,_=saved_filing_excerpt(row)
+ citations=[];number_rows('query_sec_filings',[{'id':identity,'symbol':'CIT','excerpt':excerpt}],citations,{})
+ assert len(excerpt)>5000
+ assert _restore_citations(citations,'guest')[0]['source_type']=='official_filing'
+ drifted=copy.deepcopy(citations);drifted[0]['quote']=excerpt[:3000]
+ assert _restore_citations(drifted,'guest')[0]['source_type']=='unavailable'
+
+def test_a_calculation_citation_lives_only_while_its_inputs_still_bind():
+ from app.agent_workflow.calculation import calculate
+ body='CIT filing. Revenue 109417 and profit 54770.'
+ now=datetime.now(UTC)
+ with SessionLocal() as db:
+  row=SecFilingInventory(symbol='CIT',cik='0000320193',accession_number=f'0000320193-26-{uuid.uuid4().int%1000000:06}',
+   form='10-Q',filed_at=date.today(),primary_document='a.htm',source_url='https://www.sec.gov/a.htm',
+   source='sec-edgar',review_status='pending_review',observed_at=now,content_status='fetched',
+   content_excerpt=body,content_excerpt_sha256=hashlib.sha256(body.encode()).hexdigest(),content_observed_at=now)
+  db.add(row);db.commit();identity=str(row.id)
+ citations=[];number_rows('query_sec_filings',[{'id':identity,'symbol':'CIT','excerpt':body}],citations,{})
+ value=calculate({'expression':'a/b*100','inputs':[{'name':'a','value':'54770','source_ordinal':1},
+                                                   {'name':'b','value':'109417','source_ordinal':1}]},citations)
+ citations.append({'ordinal':2,'source_type':'calculation','derived':True,'title':'可复核计算',
+                   'quote':json.dumps(value),'calculation':value})
+ restored=_restore_citations(citations,'guest')
+ assert [item['source_type'] for item in restored]==['official_filing','calculation']
+ forged=copy.deepcopy(citations);forged[1]['calculation']={**value,'value':'99.00'}
+ assert _restore_citations(forged,'guest')[1]['source_type']=='unavailable'
+ orphaned=copy.deepcopy(citations);orphaned[0]['quote']='nothing bound here'
+ assert [item['source_type'] for item in _restore_citations(orphaned,'guest')]==['unavailable','unavailable']

@@ -88,6 +88,19 @@ def _restore_citations(items,credential):
      verified.append(item if valid else {'ordinal':ordinal,'source_type':'unavailable','title':'来源已失效','section':'','truncated':False})
     except (ValueError,TypeError):verified.append({'ordinal':ordinal,'source_type':'unavailable','title':'来源已失效','section':'','truncated':False})
     continue
+   if item.get('source_type')=='calculation':
+    # A calculation is live only while its inputs still bind to this turn's
+    # verified sources and the expression still produces the recorded value.
+    from .agent_workflow.calculation import calculate
+    payload=item.get('calculation') or {}
+    try:
+     recomputed=calculate({'expression':payload['expression'],'inputs':payload['inputs']},verified)
+     live=recomputed.get('value')==payload.get('value')
+    except (ValueError,KeyError,TypeError):
+     live=False
+    verified.append({**item,'chunk_id':None,'document_id':None} if live else
+                    {'ordinal':ordinal,'chunk_id':None,'title':'来源已失效','section':'','source_url':None,'source_type':'unavailable','truncated':False})
+    continue
    if item.get('source_type') in {'saved_filing','saved_ai_analysis','official_filing','ai_analysis'} and not item.get('chunk_id'):
     from .models import SecFilingInventory
     from .models import UploadedEvidence
@@ -95,11 +108,13 @@ def _restore_citations(items,credential):
     from .knowledge.models import KnowledgeUploadOwner
     try:
      identity=UUID(item.get('source_id',''))
+     from .agent_tools import CITATION_QUOTE_CHARACTERS, saved_filing_excerpt
      if item['source_type'] in {'saved_filing','official_filing'}:
       source=session.get(SecFilingInventory,identity)
-      valid=bool(source and source.content_status=='fetched' and source.content_excerpt and source.content_excerpt_sha256
-                 and hashlib.sha256(source.content_excerpt.encode()).hexdigest()==source.content_excerpt_sha256
-                 and item.get('quote')==__import__('app.agent_tools',fromlist=['_substantive_excerpt'])._substantive_excerpt(source.content_excerpt))
+      excerpt,digest_ok=saved_filing_excerpt(source) if source else ("",False)
+      # The quote is what the tool showed the model, so it has to be derived the
+      # same way here; anything else reports a live citation as expired.
+      valid=bool(digest_ok and item.get('quote')==excerpt[:CITATION_QUOTE_CHARACTERS])
       if valid:
        verified.append({**item,'chunk_id':None,'document_id':None,'source_url':source.content_source_url or source.source_url,
                         'published_at':source.filed_at.isoformat(),'observed_at':source.content_observed_at.isoformat() if source.content_observed_at else None})
@@ -109,8 +124,7 @@ def _restore_citations(items,credential):
       if valid:
        if analysis.source_type=='official_filing':
         source=session.get(SecFilingInventory,identity)
-        valid=bool(source and source.content_excerpt and source.content_excerpt_sha256
-                   and hashlib.sha256(source.content_excerpt.encode()).hexdigest()==source.content_excerpt_sha256)
+        valid=bool(source and saved_filing_excerpt(source)[1])
         if valid:verified.append({**item,'chunk_id':None,'document_id':None,'source_url':source.content_source_url or source.source_url})
        else:
         source=session.get(UploadedEvidence,identity)

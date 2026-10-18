@@ -293,18 +293,17 @@ async def query_sec_filings(symbol: str, form: str | None = None, accession_numb
     if filed_year is not None: filters+=" AND EXTRACT(YEAR FROM filed_at)=:year";params["year"]=filed_year
     if financial_only: filters+=" AND form IN ('10-K','10-Q')"
     rows=await _query("SELECT id, symbol, accession_number, form, filed_at, source_url, content_source_url, content_status, content_truncated, content_excerpt_sha256, content_excerpt, content_text, content_text_sha256, content_length, observed_at FROM sec_filing_inventory WHERE symbol=:symbol AND content_status='fetched' AND observed_at<=:cutoff AND content_observed_at<=:cutoff AND filed_at<=CAST(:cutoff AS date)"+filters+" ORDER BY filed_at DESC, accession_number DESC LIMIT :limit",params)
-    import hashlib
     for row in rows:
         full=row.get("content_text") or ""
-        body=full or row.get("content_excerpt") or ""
-        digest=row.get("content_text_sha256") if full else row.get("content_excerpt_sha256")
-        row["body_hash_valid"]=bool(body and digest and hashlib.sha256(body.encode()).hexdigest()==digest)
-        row["excerpt"]=_substantive_excerpt(body,limit=FILING_EXCERPT_BYTES)
+        excerpt,body_hash_valid=saved_filing_excerpt(row)
+        body_length=int(row.get("content_length") or len(full or (row.get("content_excerpt") or "")))
+        row["body_hash_valid"]=body_hash_valid
+        row["excerpt"]=excerpt
         # Two different questions: how much of the saved body is shown here, and
         # whether the saved body is the whole filing or the frozen preview.
-        row["excerpt_coverage"]="complete_saved_body" if len(row["excerpt"])>=len(body) else "partial_excerpt"
+        row["excerpt_coverage"]="complete_saved_body" if len(excerpt)>=body_length else "partial_excerpt"
         row["saved_text"]="full_document" if full else "frozen_80k_preview"
-        row["saved_characters"]=int(row.get("content_length") or len(body))
+        row["saved_characters"]=body_length
         for key in ("content_excerpt","content_excerpt_sha256","content_text","content_text_sha256","content_length"): row.pop(key,None)
     rows=[row for row in rows if row.get('body_hash_valid')]
     if limit == 1 and rows:
@@ -328,6 +327,26 @@ async def query_research_faq(keyword: str) -> dict:
         return {"ok":False,"data":None,"error_code":exc.code,"source":"knowledge_chunks:research_faq","as_of":None}
 
 FILING_EXCERPT_BYTES = 12_000
+# The excerpt a citation quotes is clipped to this many characters before it is
+# attached to the citation, so the verifier compares against the same slice.
+CITATION_QUOTE_CHARACTERS = 5000
+
+
+def saved_filing_excerpt(record, *, limit: int=FILING_EXCERPT_BYTES) -> tuple[str, bool]:
+    """The excerpt a tool shows for one saved filing, and whether its body matches.
+
+    Both the reading tool and the citation verifier must derive this the same way:
+    the verifier compares the quoted text with it, so a divergence reports a live
+    citation as expired. ``record`` is a row mapping or a SecFilingInventory.
+    """
+    def field(name):
+        return record.get(name) if isinstance(record, dict) else getattr(record, name, None)
+    full=field("content_text") or ""
+    body=full or field("content_excerpt") or ""
+    digest=field("content_text_sha256") if full else field("content_excerpt_sha256")
+    if not body or not digest or hashlib.sha256(body.encode()).hexdigest()!=digest:
+        return "", False
+    return _substantive_excerpt(body, limit=limit), True
 
 
 def _substantive_excerpt(body: str, limit: int=3000) -> str:
