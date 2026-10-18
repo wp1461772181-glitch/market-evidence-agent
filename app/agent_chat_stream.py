@@ -454,6 +454,30 @@ async def get_messages(conversation_id:str,x_chat_session:str|None=Header(defaul
    elif isinstance(row.get("tool_calls"),dict) and isinstance(row["tool_calls"].get("tool_trace"),list):item["tool_trace"]=row["tool_calls"]["tool_trace"]
    messages.append(item)
   elif row.get("role")=="user":messages.append({"role":"user","content":row["content"],"status":row["status"]})
+
+  # A card-answering call has no tool result of its own: whether it is still running or already done
+  # depends on what happened to the card.  Ask the server instead of guessing.
+  def consent_state(request_id):
+   from .database import SessionLocal
+   from .agent_workflow.models import AgentConsent
+   try: identity=uuid.UUID(str(request_id))
+   except (TypeError,ValueError): return "running"
+   from sqlalchemy import select as _select
+   with SessionLocal() as db:
+    row=db.scalar(_select(AgentConsent.status).where(AgentConsent.id==identity))
+   return {"complete":"complete","cancelled":"cancelled","proposed":"running",
+           "executing":"running","cancelling":"running"}.get(row,"running")
+  for position,item in enumerate(messages):
+   clarification=item.get("clarification") if isinstance(item,dict) else None
+   if not isinstance(clarification,dict): continue
+   pending=[trace for trace in (item.get("tool_trace") or []) if trace.get("status") in {"submitted","running"}]
+   if not pending: continue
+   if clarification.get("reason")=="write_confirmation":
+    status=consent_state(clarification.get("request_id"))
+   else:
+    # An ask/clarify card is answered by the next message in the conversation.
+    status="complete" if position<len(messages)-1 else "running"
+   for trace in pending: trace["status"]=status;trace["card"]=True
  return {"messages":messages}
 
 
