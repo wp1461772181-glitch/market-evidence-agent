@@ -12,14 +12,20 @@ class ConsentError(ValueError):pass
 
 def digest(value):return hashlib.sha256(json.dumps(value,sort_keys=True,ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
 
-def propose(credential,conversation,operations,display,*,now=None):
+def propose(credential,conversation,operations,display,*,question='',now=None):
+    """Mint one card and keep the request that produced it.
+
+    A press on the card sends only the button's value, so the turn that executes the write has no
+    other way to learn what the user asked: the request travels with the card instead.
+    """
     if not owner_credential_matches(credential):raise ConsentError('owner_login_required')
     if not operations or len(operations)>8:raise ConsentError('invalid_write_targets')
     token=secrets.token_urlsafe(32);expires=(now or datetime.now(UTC))+timedelta(minutes=10)
     with SessionLocal() as db:
         row=AgentConsent(owner_hash=owner_hash(credential),conversation_id=conversation,capability_hash=digest(token),payload_digest=digest(operations),operations=operations,display=display,expires_at=expires,status='proposed')
         db.add(row);db.commit();identity=str(row.id)
-    return {'id':identity,'reason':'write_confirmation','display':display,'expires_at':expires.isoformat(),
+    return {'id':identity,'reason':'write_confirmation','display':display,'original_question':question,
+        'expires_at':expires.isoformat(),
         'choices':[{'label':'同意','value':'confirm:'+token},{'label':'换个操作','value':'change:'+identity},{'label':'取消','value':'cancel:'+identity}]}
 
 def lookup(credential,conversation,request_id):

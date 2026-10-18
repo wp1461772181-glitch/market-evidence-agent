@@ -191,13 +191,19 @@ def execution_facts(value: dict) -> list[dict]:
     return rows or [{'status':'complete','ok':value.get('ok',True)}]
 
 
-def execution_fallback(facts: list[dict],question: str='') -> str:
-    """What the user gets when the model cannot phrase the report: the same facts, plainly."""
+def execution_fallback(facts: list[dict],question: str='',targets: list[dict]|None=None) -> str:
+    """What the user gets when the model cannot phrase the report: the same facts, plainly.
+
+    A batch row often carries only its outcome, so a target that was actually confirmed supplies the
+    name: the report has to say what was written even when the model never got to write it.
+    """
     zh=bool(re.search(r'[\u3400-\u9fff]',question or ''))
+    confirmed=[str(t.get('title') or t.get('symbol') or '') for t in (targets or []) if isinstance(t,dict)]
     done={'created','complete','completed','succeeded','succeeded_no_change'}
     lines=[]
-    for fact in facts:
-        name=fact.get('title') or fact.get('symbol') or fact.get('action') or ''
+    for index,fact in enumerate(facts):
+        named=fact.get('title') or fact.get('symbol') or fact.get('action') or ''
+        name=named or (confirmed[index] if index<len(confirmed) else '')
         status=fact.get('status');error=fact.get('error_code')
         if error:detail=('未成功：'+error) if zh else ('failed: '+error)
         elif status in done:detail='已完成' if zh else 'done'
@@ -803,6 +809,12 @@ class Turn:
             'rows':accepted,'scope':{k:v for k,v in requirements.items() if v is not None},'tool':name,'created_at':datetime.now(UTC).isoformat()}
         self.sets=[*self.sets,saved][-6:];self.new_sets.append(saved)
 
+    def filing_title(self,discovery,symbol=''):
+        """The filing named the way a person reads it: issuer and form, never an accession number."""
+        issuer=(self.scope.get('company') or symbol or self.scope.get('symbol') or '').strip()
+        form=str(discovery.get('form') or '').strip().upper()
+        return f'{issuer} {form}'.strip() or 'SEC 文件'
+
     async def describe_targets(self,name,args):
         """Human rows for the confirmation card: company, what it is, and its kind. Never a raw id."""
         symbol=args.get('symbol') or self.scope.get('symbol')
@@ -858,7 +870,8 @@ class Turn:
             from .sec_sources import prepare_filing
             try:operation=await asyncio.to_thread(prepare_filing,name,args,financial_only=self.scope.get('financial_only',False))
             except ValueError as exc:return tools.error(str(exc))
-            display['targets']=[{**operation['arguments'],'form':operation['discovery']['form'],'web_date':operation['discovery']['filed_at'],'url':operation['discovery']['source_url']}]
+            display['targets']=[{**operation['arguments'],'title':self.filing_title(operation['discovery'],operation['arguments'].get('symbol') or ''),
+                'form':operation['discovery']['form'],'web_date':operation['discovery']['filed_at'],'url':operation['discovery']['source_url']}]
             display['title']='确认登记并拉取 SEC 官方原文'
         self.proposals.append(([operation],display))
         self.audit['write_outcome']='proposed'
@@ -886,7 +899,7 @@ class Turn:
             if ordinal is not None and not older:return self.write_error(name,'comparison_date_unavailable')
             operation['comparison_citations']=[copy.deepcopy(older)] if older else []
         display={'title':'这是 agent 的建议，不是你的要求：'+name,'agent_suggestion':True,'targets':[operation['arguments']],'alternative':str(args.get('reason') or '')[:400]}
-        self.pending=await asyncio.to_thread(consent.propose,self.context.identity_credential,self.context.conversation_id,[operation],display)
+        self.pending=await asyncio.to_thread(consent.propose,self.context.identity_credential,self.context.conversation_id,[operation],display,question=self.request_words())
         self.pending['choices'][0]['label']='授权发现目标，查看确认卡' if name in {'fetch_sec','refresh_sec'} else ('批准建议，查看正文确认卡' if operation.get('grant_only') else '批准并执行')
         self.suggestion_used=True;self.audit['write_outcome']='proposed'
         return {'ok':True,'data':[{'status':'awaiting_suggestion_approval','tool':name}]}
@@ -956,7 +969,7 @@ class Turn:
             if alternatives:display['alternative']=' '.join(dict.fromkeys(alternatives))
         if partial:
             display={**display,**partial,'title':f"仅找到 {partial['available_count']}/{partial['requested_count']} 项，请核对实际目标"}
-        self.pending=await asyncio.to_thread(consent.propose,self.context.identity_credential,self.context.conversation_id,operations,display)
+        self.pending=await asyncio.to_thread(consent.propose,self.context.identity_credential,self.context.conversation_id,operations,display,question=self.request_words())
         self.proposals=[]
 
     async def previous_results(self,args):
@@ -1072,18 +1085,23 @@ class Turn:
             }
             self.sets = [*self.sets, executed_set][-6:]
             self.new_sets.append(executed_set)
-        return await self.report_execution(value,(self.pending or {}).get('display',{}).get('targets'))
+        return await self.report_execution(value)
 
     async def report_execution(self,value,targets=None):
         """Report a completed write in the user's language from the facts the server recorded.
 
         The request itself travels with the facts: without it the model has nothing to infer the answer
-        language from and answers in the language of the English prompt.
+        language from and answers in the language of the English prompt.  On a confirmation turn
+        ``self.original`` is the button's value (``confirm:...``), so the words come from the request
+        the card kept, and the targets from the card that was actually shown.
         """
+        pending=self.state.get('pending_request') or {}
+        request=pending.get('original_question') or self.original
+        targets=targets if targets is not None else (pending.get('display') or {}).get('targets')
         facts=execution_facts(value)
-        fallback=execution_fallback(facts,self.original)
-        language='Chinese' if re.search(r'[\u3400-\u9fff]',self.original) else 'English'
-        payload={'user_request':self.original,'executed_operations':facts}
+        fallback=execution_fallback(facts,request,targets)
+        language='Chinese' if re.search(r'[\u3400-\u9fff]',request) else 'English'
+        payload={'user_request':request,'executed_operations':facts}
         if targets:
             payload['what_was_targeted']=[{k:v for k,v in row.items() if v is not None}
                                          for row in targets if isinstance(row,dict)]
@@ -1108,9 +1126,13 @@ class Turn:
         self.audit['source']='fixed_execution_report'
         return self.finish(fallback,generated=True)
 
+    def request_words(self):
+        """The human's own words for this turn: a press on a card sends only the button's value."""
+        return (self.state.get('pending_request') or {}).get('original_question') or self.original
+
     def finish(self,answer,*,status='succeeded',reason=None,generated=False):
         from .language import format_answer
-        answer=format_answer(answer,self.original,self.citations)
+        answer=format_answer(answer,self.request_words(),self.citations)
         if self.context.api_key:answer=answer.replace(self.context.api_key,'[redacted]')
         if citation_errors(answer,self.citations) and not self.observations:
             operational=[f for f in self.feedback if f.get('name') in {'query_system_status','query_research_queue','add_to_research_queue','remove_from_research_queue','select_stock','open_page','review_filing'} and f.get('result',{}).get('ok')]
