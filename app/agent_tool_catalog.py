@@ -53,7 +53,8 @@ class WebIngestArgs(Args):
     newer_than:int|None=Field(default=None,ge=1,le=50)
 class InitializeArgs(SymbolArgs):
     days:int=Field(default=366,ge=1,le=3660)
-class ScanArgs(SymbolArgs):pass
+class ScanArgs(SymbolArgs):
+    days:int|None=Field(default=None,ge=1,le=3650,description='Calendar days of history to backfill; omit for the incremental scan since the last saved watermark.')
 class PageArgs(Args):
     page:Literal['overview','predictions','materials','sec','revisions','evaluation','agent','knowledge']
 class StockArgs(SymbolArgs):pass
@@ -145,7 +146,7 @@ EXTRA=(
  ('forecast',ForecastArgs,'costly','Propose a new research forecast, using only user-requested saved source IDs. Confirmation required.'),
  ('ingest_web_source',WebIngestArgs,'costly','Propose saving a returned public URL as web_news. Only if the USER requested saving, including conditional saving. newer_than refers to the saved-evidence ordinal; server compares publication dates. Confirmation required.'),
  ('initialize_prices',InitializeArgs,'costly','Propose fetching historical daily prices for a symbol and explicit days. Confirmation required.'),
- ('scan_official',ScanArgs,'costly','Propose scanning official SEC filings for one symbol; may enqueue eligible existing automatic research. Confirmation required.'),
+ ('scan_official',ScanArgs,'costly','Propose scanning official SEC filings for one symbol; may enqueue eligible existing automatic research. Pass days to backfill that many calendar days of history when the user asks for an initialization or complains the saved list is short; omit it for the incremental scan. Confirmation required.'),
  ('review_filing',ReviewArgs,'reversible','Record the owner requested accepted/rejected relevance review for a saved SEC filing. Never delete data.'),
  ('save_material_evidence',SaveMaterialEvidenceArgs,'costly','Propose saving user-selected media material or clean news as uploaded evidence for a symbol. Aligns with manual upload. Confirmation required.'),
  ('withdraw_knowledge_document',WithdrawDocumentArgs,'costly','Propose soft-withdrawing an active knowledge document from retrieval index. Confirmation required.'),

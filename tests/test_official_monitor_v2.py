@@ -453,3 +453,47 @@ def test_monitor_persists_evaluation_failure_without_erasing_sec_result(disposab
     assert result.status == "succeeded"
     assert stored.status == "succeeded"
     assert stored.evaluation_summary == {"status": "failed", "error": "evaluation fixture failure"}
+
+
+def test_explicit_lookback_replaces_the_incremental_window(disposable_database):
+    Base.metadata.create_all(bind=engine)
+    _clear_monitor_runs()
+    first_provider = _Provider({"AAPL": [_filing("AAPL", "0000320193-26-000201", NOW - timedelta(hours=2))]})
+    backfill_provider = _Provider()
+    with SessionLocal() as db:
+        first = run_once(db=db, provider=first_provider, observed_at=NOW, symbols=("AAPL",), received_at_factory=lambda: NOW)
+        backfill = run_once(
+            db=db,
+            provider=backfill_provider,
+            observed_at=NOW,
+            symbols=("AAPL",),
+            lookback_days=365,
+            received_at_factory=lambda: NOW,
+        )
+
+    assert first.status == "succeeded"
+    assert backfill.status == "succeeded"
+    assert backfill_provider.calls == [("AAPL", NOW.date() - timedelta(days=365), NOW.date())]
+
+
+def test_user_initiated_scan_defers_the_independent_evaluator(disposable_database, monkeypatch):
+    Base.metadata.create_all(bind=engine)
+    _clear_monitor_runs()
+
+    def unexpected_evaluation(*, db, evaluated_at):
+        raise AssertionError("the chat request must not run the scheduled evaluator")
+
+    monkeypatch.setattr("app.official_monitor_v2.run_evaluation_batch", unexpected_evaluation)
+    with SessionLocal() as db:
+        result = run_once(
+            db=db,
+            provider=_Provider(),
+            observed_at=NOW,
+            symbols=("AAPL",),
+            evaluate=False,
+            received_at_factory=lambda: NOW,
+        )
+        stored = db.get(OfficialMonitorRunV2, result.run_id)
+
+    assert result.status == "succeeded"
+    assert stored.evaluation_summary == {"status": "deferred", "reason": "user_initiated_scan"}

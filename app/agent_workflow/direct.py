@@ -167,7 +167,7 @@ def source_display_title(source_type,source_id):
 
 
 EXECUTION_FACT_KEYS=('action','status','ok','error_code','title','symbol','created','inserted',
-                     'indexed','queued_chunks','job_id','reason','message')
+                     'indexed','queued_chunks','job_id','reason','message','scanned')
 
 
 def execution_facts(value: dict) -> list[dict]:
@@ -836,7 +836,9 @@ class Turn:
         if not self.owner:return self.write_error(name,'owner_login_required')
         if not self.write_allowed(name):return self.write_error(name,'write_negated' if name in self.granted_actions else 'write_tool_not_granted')
         operation={'name':name,'arguments':copy.deepcopy(args)}
-        display={'title':WRITE_TITLES.get(name,name),'targets':await self.describe_targets(name,args)}
+        title=WRITE_TITLES.get(name,name)
+        if name=='scan_official' and args.get('days'):title=f'回补 {args["days"]} 天官方申报'
+        display={'title':title,'targets':await self.describe_targets(name,args)}
         if name=='ingest_web_source':
             # Guard an explicit newer-date condition; never choose a route or tool.
             if args.get('newer_than') is None and self.scope.get('write_condition')=='newer_than_saved':return tools.error('comparison_citation_required')

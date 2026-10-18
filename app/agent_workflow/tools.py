@@ -262,7 +262,17 @@ def execute_costly(operation,key,context):
         return {'ok':value.status=='completed','run_id':str(value.run_id),'status':value.status,'inserted':value.inserted_count}
     if name=='scan_official':
         from ..official_monitor_v2 import run_once
+        days=args.get('days')
         with SessionLocal() as db:
-            value=run_once(db=db,symbols=[args['symbol']]);db.commit()
-            return {'ok':value.status=='succeeded','run_id':str(value.run_id),'status':value.status}
+            # The independent evaluator and learner belong to the scheduled monitor: a
+            # confirmed scan must finish inside the chat request it was confirmed in.
+            # A backfill reads one SEC submissions page per covered year, so the page
+            # budget follows the requested range instead of a fixed three pages.
+            pages=max(3,(days+364)//365+1) if days else 3
+            value=run_once(db=db,symbols=[args['symbol']],evaluate=False,max_pages=min(12,pages),
+                           lookback_days=days);db.commit()
+            scanned=[{'symbol':item.symbol,'status':item.status,'discovered':item.discovered_count,
+                      'created':item.created_count,'queued':item.queued_count,
+                      **({'error':item.error} if item.error else {})} for item in value.symbols]
+            return {'ok':value.status=='succeeded','run_id':str(value.run_id),'status':value.status,'scanned':scanned}
     raise ValueError('unknown_tool')
