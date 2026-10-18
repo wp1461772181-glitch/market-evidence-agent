@@ -42,6 +42,8 @@ LABELS: dict[str, str] = {
 }
 MONEY_UNITS = ("USD",)
 MAX_PERIODS = 4
+# Forms whose XBRL carries the primary statements an analysis quotes.
+FACT_FORMS = frozenset({"10-K", "10-Q", "20-F"})
 
 
 def reported_figures(payload: dict, *, form: str, filed_at: date, limit: int = MAX_PERIODS) -> list[dict[str, Any]]:

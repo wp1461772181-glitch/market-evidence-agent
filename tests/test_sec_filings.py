@@ -607,3 +607,69 @@ def test_review_endpoint_persists_one_human_source_relevance_decision(client, mo
         json={"decision": "accepted", "note": "Missing record."},
     )
     assert missing.status_code == 404
+
+
+class FakeFinancialsProvider:
+    """Serves one document and answers XBRL concept polls without the network."""
+
+    def __init__(self, *, payload: dict | None = None, raises: bool = False):
+        self.payload = payload or {}
+        self.raises = raises
+        self.asked: list[tuple[str, str]] = []
+
+    def fetch_primary_document(self, filing):
+        return sec_filings.SecFilingContent.from_text(
+            "APPLE INC.\nCONSOLIDATED BALANCE SHEETS\nTotal assets 1,000\n"
+        )
+
+    def fetch_exhibit_99_1(self, filing):
+        return None
+
+    def company_concept(self, cik: str, concept: str) -> dict:
+        self.asked.append((str(cik), concept))
+        if self.raises:
+            raise SecFilingsError("SEC request failed")
+        return self.payload.get(concept, {"units": {}})
+
+
+def test_a_fetched_10k_carries_the_figures_its_own_xbrl_reports():
+    create_sec_filing_inventory_table()
+    _clear_inventory()
+    opener, _ = _responses()
+    provider = _provider(opener)
+    with SessionLocal() as db:
+        rows, _, _ = scan_sec_filings(symbol="AAPL", db=db, provider=provider)
+        filing = next(row for row in rows if row.form == "10-K")
+        xbrl = FakeFinancialsProvider(payload={"Revenues": {"units": {"USD": [{
+            "form": "10-K", "filed": filing.filed_at.isoformat(),
+            "start": "2025-09-28", "end": "2026-09-26", "val": 391035000000,
+        }]}}})
+        fetched, cache_hit = fetch_inventory_content(
+            symbol="AAPL", accession_number=filing.accession_number, db=db,
+            provider=xbrl, observed_at=datetime(2026, 11, 2, 10, tzinfo=UTC),
+        )
+
+    assert cache_hit is False
+    assert fetched.content_financials
+    assert fetched.content_financials[0]["metric"] == "revenue"
+    assert fetched.content_financials[0]["periods"][0]["value"] == 391035000000
+    assert any(concept == "Revenues" for _, concept in xbrl.asked)
+
+
+def test_a_failing_xbrl_poll_leaves_the_fetched_text_intact():
+    create_sec_filing_inventory_table()
+    _clear_inventory()
+    opener, _ = _responses()
+    provider = _provider(opener)
+    with SessionLocal() as db:
+        rows, _, _ = scan_sec_filings(symbol="AAPL", db=db, provider=provider)
+        filing = next(row for row in rows if row.form == "10-Q")
+        fetched, _ = fetch_inventory_content(
+            symbol="AAPL", accession_number=filing.accession_number, db=db,
+            provider=FakeFinancialsProvider(raises=True),
+            observed_at=datetime(2026, 11, 2, 10, tzinfo=UTC),
+        )
+
+    assert fetched.content_status == "fetched"
+    assert fetched.content_text and "Total assets" in fetched.content_text
+    assert fetched.content_financials is None

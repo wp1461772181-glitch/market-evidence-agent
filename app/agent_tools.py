@@ -57,7 +57,8 @@ async def _legacy_materials(symbol: str, keyword: str, limit: int) -> dict:
               AND {owner_filter}
               ORDER BY u.published_at DESC NULLS LAST LIMIT :limit""", term_params)
     filings = await _query("""SELECT id, primary_document AS title, source_url, filed_at AS published_at,
-      observed_at, content_observed_at, content_excerpt AS excerpt, length(content_excerpt) AS body_length,
+      observed_at, content_observed_at, content_text, content_text_sha256, content_length,
+      content_excerpt AS excerpt, length(content_excerpt) AS body_length,
       content_truncated AS source_truncated, content_excerpt_sha256, 'official_filing' AS material_type
       FROM sec_filing_inventory WHERE symbol=:symbol AND content_status='fetched'
       AND content_excerpt IS NOT NULL AND content_observed_at IS NOT NULL AND content_observed_at<=:cutoff
@@ -71,7 +72,8 @@ async def _legacy_materials(symbol: str, keyword: str, limit: int) -> dict:
             f_clauses = " OR ".join(f"(primary_document ILIKE :t{i} ESCAPE E'\\\\' OR COALESCE(content_excerpt,'') ILIKE :t{i} ESCAPE E'\\\\')" for i in range(min(5, len(terms))))
             f_params = {**params, **{f"t{i}": f"%{_like(t)}%" for i, t in enumerate(terms[:5])}}
             filings = await _query(f"""SELECT id, primary_document AS title, source_url, filed_at AS published_at,
-              observed_at, content_observed_at, content_excerpt AS excerpt, length(content_excerpt) AS body_length,
+              observed_at, content_observed_at, content_text, content_text_sha256, content_length,
+              content_excerpt AS excerpt, length(content_excerpt) AS body_length,
               content_truncated AS source_truncated, content_excerpt_sha256, 'official_filing' AS material_type
               FROM sec_filing_inventory WHERE symbol=:symbol AND content_status='fetched'
               AND content_excerpt IS NOT NULL AND content_observed_at IS NOT NULL AND content_observed_at<=:cutoff
@@ -80,8 +82,21 @@ async def _legacy_materials(symbol: str, keyword: str, limit: int) -> dict:
               AND ({f_clauses})
               ORDER BY filed_at DESC LIMIT :limit""", f_params)
     import hashlib
-    filings = [row for row in filings if row.get("excerpt") and row.get("content_excerpt_sha256")
-               and hashlib.sha256(row["excerpt"].encode()).hexdigest()==row["content_excerpt_sha256"]]
+    verified = []
+    for row in filings:
+        full = row.pop("content_text", None) or ""
+        preview = row.get("excerpt") or ""
+        body = full or preview
+        digest = (row.pop("content_text_sha256", None) if full else None) or row.get("content_excerpt_sha256")
+        if not body or not digest or hashlib.sha256(body.encode()).hexdigest() != digest:
+            continue
+        row["body_length"] = int(row.pop("content_length", 0) or len(body))
+        # ``source_truncated`` only means something when the saved body really
+        # is the frozen 80k preview; a full filing is complete by definition.
+        row["source_truncated"] = bool(row.get("source_truncated")) if not full else False
+        row["excerpt"] = body
+        verified.append(row)
+    filings = verified
     rows = sorted(uploaded + filings, key=lambda row: str(row.get("published_at") or ""), reverse=True)[:limit]
     for row in rows:
         if row.get("material_type") == "official_filing" and row.get("content_observed_at"):
@@ -89,8 +104,9 @@ async def _legacy_materials(symbol: str, keyword: str, limit: int) -> dict:
         row.pop("content_observed_at", None)
         row.pop("content_excerpt_sha256", None)
         source_truncated=row.pop("source_truncated",False);body_length=row.pop("body_length",0)
-        row["excerpt_coverage"]="partial_excerpt" if source_truncated or body_length>1200 else "complete_saved_body"
-        row["excerpt"] = row["excerpt"][:1200]
+        row["excerpt_coverage"]="partial_excerpt" if source_truncated or body_length>3000 else "complete_saved_body"
+        row["saved_text"]="frozen_80k_preview" if source_truncated else "full_document"
+        row["excerpt"] = row["excerpt"][:3000]
     return {"ok": True, "data": [{k:_json(v) for k,v in row.items()} for row in rows],
             "source": "uploaded_evidence + sec_filing_inventory (saved records)",
             "as_of": _json(max((r["observed_at"] for r in rows if r.get("observed_at")), default=None)),
@@ -276,15 +292,20 @@ async def query_sec_filings(symbol: str, form: str | None = None, accession_numb
         filters+=" AND id=CAST(:source_id AS uuid)";params["source_id"]=source_id
     if filed_year is not None: filters+=" AND EXTRACT(YEAR FROM filed_at)=:year";params["year"]=filed_year
     if financial_only: filters+=" AND form IN ('10-K','10-Q')"
-    rows=await _query("SELECT id, symbol, accession_number, form, filed_at, source_url, content_source_url, content_status, content_truncated, content_excerpt_sha256, content_excerpt, observed_at FROM sec_filing_inventory WHERE symbol=:symbol AND content_status='fetched' AND observed_at<=:cutoff AND content_observed_at<=:cutoff AND filed_at<=CAST(:cutoff AS date)"+filters+" ORDER BY filed_at DESC, accession_number DESC LIMIT :limit",params)
+    rows=await _query("SELECT id, symbol, accession_number, form, filed_at, source_url, content_source_url, content_status, content_truncated, content_excerpt_sha256, content_excerpt, content_text, content_text_sha256, content_length, observed_at FROM sec_filing_inventory WHERE symbol=:symbol AND content_status='fetched' AND observed_at<=:cutoff AND content_observed_at<=:cutoff AND filed_at<=CAST(:cutoff AS date)"+filters+" ORDER BY filed_at DESC, accession_number DESC LIMIT :limit",params)
     import hashlib
     for row in rows:
-        body=row.get("content_excerpt") or ""
-        digest=row.get("content_excerpt_sha256")
+        full=row.get("content_text") or ""
+        body=full or row.get("content_excerpt") or ""
+        digest=row.get("content_text_sha256") if full else row.get("content_excerpt_sha256")
         row["body_hash_valid"]=bool(body and digest and hashlib.sha256(body.encode()).hexdigest()==digest)
-        row["excerpt"]=_substantive_excerpt(body)
-        row["excerpt_coverage"]="partial_excerpt" if row.get("content_truncated") or len(row["excerpt"])<len(body) else "complete_saved_body"
-        row.pop("content_excerpt",None);row.pop("content_excerpt_sha256",None)
+        row["excerpt"]=_substantive_excerpt(body,limit=FILING_EXCERPT_BYTES)
+        # Two different questions: how much of the saved body is shown here, and
+        # whether the saved body is the whole filing or the frozen preview.
+        row["excerpt_coverage"]="complete_saved_body" if len(row["excerpt"])>=len(body) else "partial_excerpt"
+        row["saved_text"]="full_document" if full else "frozen_80k_preview"
+        row["saved_characters"]=int(row.get("content_length") or len(body))
+        for key in ("content_excerpt","content_excerpt_sha256","content_text","content_text_sha256","content_length"): row.pop(key,None)
     rows=[row for row in rows if row.get('body_hash_valid')]
     if limit == 1 and rows:
         from .agent_workflow.source_selection import choose_filing
@@ -305,6 +326,9 @@ async def query_research_faq(keyword: str) -> dict:
         return await retrieve_faq(keyword)
     except KnowledgeUnavailable as exc:
         return {"ok":False,"data":None,"error_code":exc.code,"source":"knowledge_chunks:research_faq","as_of":None}
+
+FILING_EXCERPT_BYTES = 12_000
+
 
 def _substantive_excerpt(body: str, limit: int=3000) -> str:
     """Select substantive filing text while reporting that it is only an excerpt."""

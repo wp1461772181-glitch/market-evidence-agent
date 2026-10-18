@@ -31,6 +31,7 @@ from .database import engine
 from .models import SecFilingInventory
 from .services import normalize_symbol
 from .symbols import normalize_market_symbol, sec_ticker_matches
+from .xbrl_financials import FACT_FORMS, as_payload, collect
 
 
 SEC_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
@@ -569,6 +570,16 @@ def fetch_inventory_content(
     filing.content_kind = content_kind
     filing.related_attachment_status = related_attachment_status
     filing.related_attachment_error = related_attachment_error
+    # Pull the filing's own reported figures while we are already talking to
+    # SEC.  An analysis then quotes revenue and cash flow instead of guessing
+    # them from formatted prose.  A missing or throttled XBRL response must not
+    # cost us the text that was just fetched, so it stays optional.
+    if filing.form in FACT_FORMS and filing.filed_at is not None:
+        try:
+            figures = collect(active_provider, filing.cik, form=filing.form, filed_at=filing.filed_at)
+            filing.content_financials = as_payload(figures) or None
+        except Exception:
+            filing.content_financials = None
     db.commit()
     db.refresh(filing)
     return filing, False

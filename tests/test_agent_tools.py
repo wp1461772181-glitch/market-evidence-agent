@@ -327,3 +327,33 @@ def test_sql_latest_financial_ai_summary_ignores_newer_8k_with_index_pending(dis
     assert financial["data"][0]["summary"]==exact["data"][0]["summary"]=="Correct 10-Q AI summary."
     assert financial["data"][0]["index_status"]=="index_pending"
     assert latest["data"][0]["summary"]=="Newer 8-K AI summary."
+
+
+def test_sec_filing_tool_reads_the_full_text_and_reports_its_size(monkeypatch):
+    import app.agent_tools as tools
+    import hashlib
+    text = 'Cover page\n' + ('x' * 20000) + '\nItem 7. MD&A of results of operations\n' + ('y' * 20000)
+    digest = hashlib.sha256(text.encode()).hexdigest()
+
+    async def query(sql, params):
+        assert 'content_text' in sql and 'content_length' in sql
+        return [{'id': 'filing-uuid', 'accession_number': '0000000000-26-000009', 'form': '10-K',
+                 'filed_at': None, 'source_url': 'https://sec.test/main', 'content_source_url': None,
+                 'content_status': 'fetched', 'content_truncated': True,
+                 'content_excerpt': text[:80000], 'content_excerpt_sha256': digest,
+                 'content_text': text, 'content_text_sha256': digest, 'content_length': len(text),
+                 'observed_at': None}]
+
+    monkeypatch.setattr(tools, '_query', query)
+
+    async def index_state(_source_id):
+        return 'not_imported'
+
+    monkeypatch.setattr(tools, '_index_state', index_state)
+    row = asyncio.run(tools.query_sec_filings.ainvoke({'symbol': 'AAPL'}))['data'][0]
+    assert row['body_hash_valid'] is True
+    assert row['saved_text'] == 'full_document'
+    assert row['saved_characters'] == len(text)
+    assert row['excerpt'].startswith('Item 7.')
+    assert len(row['excerpt']) <= tools.FILING_EXCERPT_BYTES
+    assert 'content_text' not in row
