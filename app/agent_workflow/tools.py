@@ -261,16 +261,16 @@ def execute_costly(operation,key,context):
         now=datetime.now(UTC);value=ingest_market_data([args['symbol']],(now-timedelta(days=args['days'])).date(),now.date(),now)
         return {'ok':value.status=='completed','run_id':str(value.run_id),'status':value.status,'inserted':value.inserted_count}
     if name=='scan_official':
-        from ..official_monitor_v2 import run_once
+        from ..official_monitor_v2 import scan_only
         days=args.get('days')
         with SessionLocal() as db:
-            # The independent evaluator and learner belong to the scheduled monitor: a
-            # confirmed scan must finish inside the chat request it was confirmed in.
+            # A confirmed scan reports its own SEC outcome inside the chat request, so the
+            # scheduled monitor's evaluator and learner are not part of this effect.
             # A backfill reads one SEC submissions page per covered year, so the page
             # budget follows the requested range instead of a fixed three pages.
             pages=max(3,(days+364)//365+1) if days else 3
-            value=run_once(db=db,symbols=[args['symbol']],evaluate=False,max_pages=min(12,pages),
-                           lookback_days=days);db.commit()
+            value=scan_only(db=db,symbols=[args['symbol']],max_pages=min(12,pages),
+                            lookback_days=days);db.commit()
             scanned=[{'symbol':item.symbol,'status':item.status,'discovered':item.discovered_count,
                       'created':item.created_count,'queued':item.queued_count,
                       **({'error':item.error} if item.error else {})} for item in value.symbols]

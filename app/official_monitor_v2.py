@@ -71,7 +71,7 @@ class OfficialMonitorV2Result:
         }
 
 
-def run_once(
+def scan_only(
     *,
     db: Session,
     provider: SecEdgarProvider | None = None,
@@ -80,15 +80,80 @@ def run_once(
     max_pages: int = 3,
     max_filings: int = 1_000,
     received_at_factory: Callable[[], datetime] | None = None,
-    evaluate: bool = True,
     lookback_days: int | None = None,
 ) -> OfficialMonitorV2Result:
     """Persist one bounded SEC scan and queue eligible V2 automatic revisions.
+
+    This is exactly the effect a user confirms: the filing directory moves, and
+    nothing else.  Market evaluation and JEV learning belong to the scheduled
+    monitor (``monitor_tick``), not to a request the user asked to be quick.
 
     A successful, complete scan advances only its own stock's watermark.  A
     failed or page-capped scan retains its prior watermark so the next run
     repeats a bounded overlapping date range rather than silently losing news.
     """
+    return _locked_pass(
+        db=db,
+        observed_at=observed_at,
+        received_at_factory=received_at_factory,
+        body=lambda instant, received_clock: _scan_locked(
+            db=db,
+            provider=provider,
+            observed_at=instant,
+            symbols=symbols,
+            max_pages=max_pages,
+            max_filings=max_filings,
+            received_clock=received_clock,
+            lookback_days=lookback_days,
+        ),
+    )
+
+
+def monitor_tick(
+    *,
+    db: Session,
+    provider: SecEdgarProvider | None = None,
+    observed_at: datetime | None = None,
+    symbols: Iterable[str] | None = None,
+    max_pages: int = 3,
+    max_filings: int = 1_000,
+    received_at_factory: Callable[[], datetime] | None = None,
+    lookback_days: int | None = None,
+) -> OfficialMonitorV2Result:
+    """Run one scheduled monitoring pass: the SEC scan, then labels and learning.
+
+    The scan is committed on its own before the evaluator starts, so a slow or
+    failing evaluation can neither roll back the filing directory nor leave the
+    run recorded as ``running``.
+    """
+
+    def body(instant: datetime, received_clock: Callable[[], datetime]) -> OfficialMonitorV2Result:
+        scanned = _scan_locked(
+            db=db,
+            provider=provider,
+            observed_at=instant,
+            symbols=symbols,
+            max_pages=max_pages,
+            max_filings=max_filings,
+            received_clock=received_clock,
+            lookback_days=lookback_days,
+        )
+        _evaluate_and_learn(db=db, run_id=scanned.run_id)
+        return scanned
+
+    return _locked_pass(
+        db=db, observed_at=observed_at, received_at_factory=received_at_factory, body=body
+    )
+
+
+def _locked_pass(
+    *,
+    db: Session,
+    observed_at: datetime | None,
+    received_at_factory: Callable[[], datetime] | None,
+    body: Callable[[datetime, Callable[[], datetime]], OfficialMonitorV2Result],
+) -> OfficialMonitorV2Result:
+    """Hold the session-level monitor lock for one pass and release it afterwards."""
     instant = _utc(observed_at or datetime.now(UTC), "observed_at")
     received_clock = received_at_factory or (lambda: datetime.now(UTC))
     lock_connection = _try_monitor_lock()
@@ -106,22 +171,12 @@ def run_once(
         db.commit()
         return OfficialMonitorV2Result(run.id, "failed", instant, ())
     try:
-        return _run_locked(
-            db=db,
-            provider=provider,
-            observed_at=instant,
-            symbols=symbols,
-            max_pages=max_pages,
-            max_filings=max_filings,
-            received_clock=received_clock,
-            evaluate=evaluate,
-            lookback_days=lookback_days,
-        )
+        return body(instant, received_clock)
     finally:
         _release_monitor_lock(lock_connection)
 
 
-def _run_locked(
+def _scan_locked(
     *,
     db: Session,
     provider: SecEdgarProvider | None,
@@ -130,10 +185,9 @@ def _run_locked(
     max_pages: int,
     max_filings: int,
     received_clock: Callable[[], datetime],
-    evaluate: bool = True,
     lookback_days: int | None = None,
 ) -> OfficialMonitorV2Result:
-    """Run while the PostgreSQL session-level monitor lock is held."""
+    """Run one SEC scan while the PostgreSQL session-level monitor lock is held."""
     instant = observed_at
     active_provider = provider or SecEdgarProvider()
     normalized_symbols = _symbols(symbols if symbols is not None else _active_symbols(db))
@@ -241,49 +295,55 @@ def _run_locked(
     run.last_success_watermark = watermarks
     run.next_due_at = completed_at + MONITOR_INTERVAL
 
-    # Persist the SEC outcome before attempting the independent evaluator.
-    # If the evaluator raises and rolls back, this run must not be left as
-    # ``running`` or lose its per-symbol failure information.
+    # Persist the SEC outcome before anything independent of it runs.  If the
+    # evaluator raises and rolls back, this run must not be left as ``running``
+    # or lose its per-symbol failure information.
     db.commit()
-
-    if evaluate:
-        # Evaluation is deliberately independent from SEC discovery.  A failed
-        # filing request for one symbol must not prevent an already mature version
-        # from being evaluated against the price rows that are already present.
-        # The evaluator independently refreshes only mature Yahoo target days and
-        # reviews their frozen anchor-to-target action interval before a label.
-        try:
-            evaluation_summary = run_evaluation_batch(db=db, evaluated_at=None).as_dict()
-        except Exception as exc:  # Keep the SEC run auditable even if evaluation breaks.
-            db.rollback()
-            run = db.get(OfficialMonitorRunV2, run.id)
-            if run is None:  # pragma: no cover - the run was committed above.
-                raise RuntimeError("persisted monitor run disappeared before evaluation summary")
-            run.evaluation_summary = {"status": "failed", "error": str(exc)}
-        else:
-            try:
-                from .jev_learning import run_jev_learning_cycle
-
-                learning_summary = run_jev_learning_cycle(db=db)
-            except Exception:
-                # An unavailable learner must not roll back the independently
-                # committed SEC scan or its valid point-in-time evaluation.
-                db.rollback()
-                run = db.get(OfficialMonitorRunV2, run.id)
-                learning_summary = {"status": "failed", "reason": "jev_learning_cycle_failed"}
-            run.evaluation_summary = {
-                "status": "succeeded",
-                **evaluation_summary,
-                "jev_learning": learning_summary,
-            }
-    else:
-        # A user-triggered scan reports its own SEC outcome inside the chat request, so the
-        # independent evaluator and learner stay with the scheduled monitor instead of
-        # stretching that single request past the inactivity budget.
-        run.evaluation_summary = {"status": "deferred", "reason": "user_initiated_scan"}
+    # A scan on its own never labels or learns; ``monitor_tick`` raises this to
+    # the real summary once the independent evaluator has run.
+    run.evaluation_summary = {"status": "deferred", "reason": "scan_only"}
     db.commit()
     db.refresh(run)
     return OfficialMonitorV2Result(run.id, status, instant, tuple(results))
+
+
+def _evaluate_and_learn(*, db: Session, run_id) -> None:
+    """Label mature forecast versions and run the learner for one monitor run.
+
+    Evaluation is deliberately independent from SEC discovery: a failed filing
+    request for one symbol must not prevent an already mature version from being
+    labeled against the price rows that are already present.  The evaluator
+    independently refreshes only mature Yahoo target days and reviews their
+    frozen anchor-to-target action interval before a label.
+    """
+    run = db.get(OfficialMonitorRunV2, run_id)
+    if run is None:  # pragma: no cover - the scan committed this row above.
+        raise RuntimeError("persisted monitor run disappeared before evaluation summary")
+    try:
+        evaluation_summary = run_evaluation_batch(db=db, evaluated_at=None).as_dict()
+    except Exception as exc:  # Keep the SEC run auditable even if evaluation breaks.
+        db.rollback()
+        run = db.get(OfficialMonitorRunV2, run_id)
+        if run is None:  # pragma: no cover - the run was committed above.
+            raise RuntimeError("persisted monitor run disappeared before evaluation summary")
+        run.evaluation_summary = {"status": "failed", "error": str(exc)}
+    else:
+        try:
+            from .jev_learning import run_jev_learning_cycle
+
+            learning_summary = run_jev_learning_cycle(db=db)
+        except Exception:
+            # An unavailable learner must not roll back the independently
+            # committed SEC scan or its valid point-in-time evaluation.
+            db.rollback()
+            run = db.get(OfficialMonitorRunV2, run_id)
+            learning_summary = {"status": "failed", "reason": "jev_learning_cycle_failed"}
+        run.evaluation_summary = {
+            "status": "succeeded",
+            **evaluation_summary,
+            "jev_learning": learning_summary,
+        }
+    db.commit()
 
 
 def _try_monitor_lock():
@@ -634,7 +694,7 @@ def main(argv: list[str] | None = None) -> int:
     observed_at = datetime.fromisoformat(args.at.replace("Z", "+00:00")) if args.at else None
     try:
         with SessionLocal() as db:
-            result = run_once(
+            result = monitor_tick(
                 db=db,
                 observed_at=observed_at,
                 max_pages=args.max_pages,

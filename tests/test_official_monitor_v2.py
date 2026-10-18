@@ -9,7 +9,7 @@ from app.forecast_contract import create_root_contract
 from app.forecast_v2_models import ForecastEvaluationV2, ForecastJobV2, ForecastVersionV2, OfficialMonitorRunV2
 from app.models import SecFilingInventory
 from app.models import MarketPrice
-from app.official_monitor_v2 import INITIAL_LOOKBACK, MONITOR_LOCK_KEY, run_once
+from app.official_monitor_v2 import INITIAL_LOOKBACK, MONITOR_LOCK_KEY, monitor_tick, scan_only
 from app.official_monitor_v2 import _symbols
 from app.active_symbols import active_symbols
 from sqlalchemy import text
@@ -173,8 +173,8 @@ def test_persisted_monitor_queues_exact_72_hour_fetched_source_once(disposable_d
         job, root = _root(symbol="AAPL", created_at=NOW - timedelta(hours=72))
         db.add_all((job, root, _fetched_source(symbol="AAPL", filing=filing, observed_at=NOW)))
         db.commit()
-        first = run_once(db=db, provider=provider, observed_at=NOW, received_at_factory=lambda: NOW)
-        repeated = run_once(
+        first = scan_only(db=db, provider=provider, observed_at=NOW, received_at_factory=lambda: NOW)
+        repeated = scan_only(
             db=db, provider=provider, observed_at=NOW + timedelta(hours=1),
             received_at_factory=lambda: NOW + timedelta(hours=1),
         )
@@ -201,14 +201,14 @@ def test_failed_symbol_retains_its_watermark_while_other_symbols_advance(disposa
     _clear_monitor_runs()
     first_provider = _Provider(failing_symbols={"MSFT"})
     with SessionLocal() as db:
-        first = run_once(db=db, provider=first_provider, observed_at=NOW, received_at_factory=lambda: NOW)
+        first = scan_only(db=db, provider=first_provider, observed_at=NOW, received_at_factory=lambda: NOW)
         stored_first = db.get(OfficialMonitorRunV2, first.run_id)
         assert stored_first is not None
         assert "AAPL" in stored_first.last_success_watermark
         assert "MSFT" not in stored_first.last_success_watermark
 
         second_provider = _Provider()
-        second = run_once(
+        second = scan_only(
             db=db, provider=second_provider, observed_at=NOW + timedelta(hours=1),
             received_at_factory=lambda: NOW + timedelta(hours=1),
         )
@@ -238,7 +238,7 @@ def test_monitor_rejects_old_or_expired_roots(disposable_database):
         db.add(_fetched_source(symbol="AAPL", filing=old_filing, observed_at=check_at))
         db.add(_fetched_source(symbol="GOOGL", filing=expired_filing, observed_at=check_at))
         db.commit()
-        result = run_once(db=db, provider=provider, observed_at=check_at, received_at_factory=lambda: check_at)
+        result = scan_only(db=db, provider=provider, observed_at=check_at, received_at_factory=lambda: check_at)
         automatic = (
             db.query(ForecastJobV2)
             .filter(
@@ -265,7 +265,7 @@ def test_new_filing_fetches_text_before_queueing_and_fetch_failure_retries(dispo
         db.add_all((root_job, root))
         db.commit()
         failing = _Provider({"AAPL": [filing]}, failing_fetch_symbols={"AAPL"})
-        first = run_once(
+        first = scan_only(
             db=db,
             provider=failing,
             observed_at=check_at,
@@ -273,7 +273,7 @@ def test_new_filing_fetches_text_before_queueing_and_fetch_failure_retries(dispo
         )
         failed_run = db.get(OfficialMonitorRunV2, first.run_id)
         recovered = _Provider({"AAPL": [filing]})
-        second = run_once(
+        second = scan_only(
             db=db,
             provider=recovered,
             observed_at=check_at + timedelta(hours=1),
@@ -303,7 +303,7 @@ def test_blocked_automatic_job_gets_one_idempotent_monitor_recovery(disposable_d
         source = _fetched_source(symbol="AAPL", filing=filing, observed_at=check_at)
         db.add_all((root_job, root, source))
         db.commit()
-        first = run_once(db=db, provider=provider, observed_at=check_at, received_at_factory=lambda: check_at)
+        first = scan_only(db=db, provider=provider, observed_at=check_at, received_at_factory=lambda: check_at)
         job = (
             db.query(ForecastJobV2)
             .filter(ForecastJobV2.kind == "automatic_revision", ForecastJobV2.root_version_id == root.id)
@@ -314,7 +314,7 @@ def test_blocked_automatic_job_gets_one_idempotent_monitor_recovery(disposable_d
         job.completed_at = check_at + timedelta(minutes=1)
         job.attempts = [{"epoch": 1, "started_at": check_at.isoformat()}]
         db.commit()
-        second = run_once(
+        second = scan_only(
             db=db, provider=provider, observed_at=check_at + timedelta(hours=1),
             received_at_factory=lambda: check_at + timedelta(hours=1),
         )
@@ -345,7 +345,7 @@ def test_new_text_uses_its_actual_receive_time_not_the_scan_start(disposable_dat
         root_job, root = _root(symbol="AAPL", created_at=check_at - timedelta(hours=2))
         db.add_all((root_job, root))
         db.commit()
-        result = run_once(
+        result = scan_only(
             db=db,
             provider=provider,
             observed_at=check_at,
@@ -380,7 +380,7 @@ def test_same_stock_sources_are_merged_into_one_automatic_job(disposable_databas
             )
         )
         db.commit()
-        result = run_once(db=db, provider=provider, observed_at=check_at, received_at_factory=lambda: check_at)
+        result = scan_only(db=db, provider=provider, observed_at=check_at, received_at_factory=lambda: check_at)
         jobs = list(
             db.query(ForecastJobV2)
             .filter(ForecastJobV2.kind == "automatic_revision", ForecastJobV2.root_version_id == root.id)
@@ -396,7 +396,7 @@ def test_concurrent_monitor_lock_records_a_visible_non_scanning_run(disposable_d
     with engine.connect() as lock_connection:
         lock_connection.execute(text("SELECT pg_advisory_lock(:lock_key)"), {"lock_key": MONITOR_LOCK_KEY})
         with SessionLocal() as db:
-            result = run_once(db=db, provider=_Provider(), observed_at=NOW, received_at_factory=lambda: NOW)
+            result = scan_only(db=db, provider=_Provider(), observed_at=NOW, received_at_factory=lambda: NOW)
             stored = db.get(OfficialMonitorRunV2, result.run_id)
         lock_connection.execute(text("SELECT pg_advisory_unlock(:lock_key)"), {"lock_key": MONITOR_LOCK_KEY})
 
@@ -412,7 +412,7 @@ def test_failed_sec_symbol_still_persists_independent_pending_evaluation(disposa
         root_job, root = _root(symbol="AAPL", created_at=check_at - timedelta(days=1))
         db.add_all((root_job, root))
         db.commit()
-        result = run_once(
+        result = monitor_tick(
             db=db,
             provider=_Provider(failing_symbols=("AAPL",)),
             observed_at=check_at,
@@ -441,7 +441,7 @@ def test_monitor_persists_evaluation_failure_without_erasing_sec_result(disposab
 
     monkeypatch.setattr("app.official_monitor_v2.run_evaluation_batch", fail_evaluation)
     with SessionLocal() as db:
-        result = run_once(
+        result = monitor_tick(
             db=db,
             provider=_Provider(),
             observed_at=check_at,
@@ -461,8 +461,8 @@ def test_explicit_lookback_replaces_the_incremental_window(disposable_database):
     first_provider = _Provider({"AAPL": [_filing("AAPL", "0000320193-26-000201", NOW - timedelta(hours=2))]})
     backfill_provider = _Provider()
     with SessionLocal() as db:
-        first = run_once(db=db, provider=first_provider, observed_at=NOW, symbols=("AAPL",), received_at_factory=lambda: NOW)
-        backfill = run_once(
+        first = scan_only(db=db, provider=first_provider, observed_at=NOW, symbols=("AAPL",), received_at_factory=lambda: NOW)
+        backfill = scan_only(
             db=db,
             provider=backfill_provider,
             observed_at=NOW,
@@ -476,24 +476,64 @@ def test_explicit_lookback_replaces_the_incremental_window(disposable_database):
     assert backfill_provider.calls == [("AAPL", NOW.date() - timedelta(days=365), NOW.date())]
 
 
-def test_user_initiated_scan_defers_the_independent_evaluator(disposable_database, monkeypatch):
+def test_a_confirmed_scan_neither_labels_nor_learns(disposable_database, monkeypatch):
     Base.metadata.create_all(bind=engine)
     _clear_monitor_runs()
 
     def unexpected_evaluation(*, db, evaluated_at):
-        raise AssertionError("the chat request must not run the scheduled evaluator")
+        raise AssertionError("a confirmed scan must not run the scheduled evaluator")
+
+    def unexpected_learning(*, db):
+        raise AssertionError("a confirmed scan must not run the scheduled learner")
 
     monkeypatch.setattr("app.official_monitor_v2.run_evaluation_batch", unexpected_evaluation)
+    monkeypatch.setattr("app.jev_learning.run_jev_learning_cycle", unexpected_learning)
     with SessionLocal() as db:
-        result = run_once(
+        result = scan_only(
             db=db,
             provider=_Provider(),
             observed_at=NOW,
             symbols=("AAPL",),
-            evaluate=False,
             received_at_factory=lambda: NOW,
         )
         stored = db.get(OfficialMonitorRunV2, result.run_id)
 
     assert result.status == "succeeded"
-    assert stored.evaluation_summary == {"status": "deferred", "reason": "user_initiated_scan"}
+    assert stored.evaluation_summary == {"status": "deferred", "reason": "scan_only"}
+
+
+def test_the_scheduled_tick_labels_and_learns_after_its_scan(disposable_database, monkeypatch):
+    Base.metadata.create_all(bind=engine)
+    _clear_monitor_runs()
+    seen: dict[str, object] = {}
+
+    class Summary:
+        def as_dict(self):
+            return {"examined": 3, "inserted": 0}
+
+    def evaluated(*, db, evaluated_at):
+        seen["evaluated_at"] = evaluated_at
+        return Summary()
+
+    monkeypatch.setattr("app.official_monitor_v2.run_evaluation_batch", evaluated)
+    monkeypatch.setattr(
+        "app.jev_learning.run_jev_learning_cycle", lambda *, db: {"status": "idle"}
+    )
+    with SessionLocal() as db:
+        result = monitor_tick(
+            db=db,
+            provider=_Provider(),
+            observed_at=NOW,
+            symbols=("AAPL",),
+            received_at_factory=lambda: NOW,
+        )
+        stored = db.get(OfficialMonitorRunV2, result.run_id)
+
+    assert result.status == "succeeded"
+    assert seen == {"evaluated_at": None}
+    assert stored.evaluation_summary == {
+        "status": "succeeded",
+        "examined": 3,
+        "inserted": 0,
+        "jev_learning": {"status": "idle"},
+    }
