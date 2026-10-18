@@ -1,4 +1,4 @@
-from app.knowledge.chunking import build_chunks, embedding_text
+from app.knowledge.chunking import coverage_gaps, build_chunks, embedding_text
 from app.knowledge.sources import SourceDocument
 
 class CharTokenizer:
@@ -62,15 +62,58 @@ def test_plain_text_item_and_title_case_headings_scope_each_chunk():
         'Total assets were 123 million.\n'
     )
     chunks=build_chunks(source(text),CharTokenizer())
-    by_answer={c.answer.strip():c for c in chunks}
     discussion=next(c for c in chunks if 'Revenue grew' in c.answer)
     balance=next(c for c in chunks if 'Total assets were' in c.answer)
-    assert discussion.answer.strip()=='Revenue grew because of demand.'
+    # A heading is consumed as metadata, so its characters ride into the chunk
+    # that follows rather than disappearing from the index.
+    assert discussion.answer.strip()=='Item 7. Management Discussion and Analysis Revenue grew because of demand.'
     assert 'Item 7' in discussion.questions
-    assert 'Item 8' in balance.category
-    assert balance.questions=='Consolidated Balance Sheets'
+    # "CONSOLIDATED BALANCE SHEETS" sits directly under an Item heading with no
+    # blank line of its own, so v6 does not promote it to a second section: the
+    # balance sheet stays scoped by Item 8 and its title is carried as text.
+    assert balance.section_path=='Item 8. Financial Statements and Supplementary Data'
+    assert balance.questions.startswith('Item 8')
     assert 'Item 7' not in balance.category and 'Item 7' not in balance.section_path
-    assert by_answer['Total assets were 123 million.'] is balance
+    assert 'CONSOLIDATED BALANCE SHEETS' in balance.answer
+
+def test_no_character_of_a_filing_is_left_out_of_the_index():
+    """Every character must belong to some chunk.
+
+    The chunker used to discard a flushed block whenever it looked like page
+    furniture, and standalone statements went missing, page numbers went missing,
+    and a table header could belong to nothing at all.
+    """
+    text=(
+        'UNITED STATES\nSECURITIES AND EXCHANGE COMMISSION\nWashington, D.C. 20549\n'
+        '1\n'
+        'Item 7. Management Discussion and Analysis\n'
+        'Revenue grew because of demand. Margins held.\n'
+        '| Metric | FY2026 | FY2025 |\n| --- | --- | --- |\n| Revenue | 29,600 | 25,100 |\n'
+        'CONSOLIDATED BALANCE SHEETS\n'
+        'Total assets were 123 million.\n'
+        '2\n'
+    )
+    document=source(text);chunks=build_chunks(document,CharTokenizer())
+    assert coverage_gaps(text,chunks)==[]
+    joined=' '.join(c.answer for c in chunks)
+    for phrase in ('UNITED STATES','Washington, D.C. 20549','Item 7.','CONSOLIDATED BALANCE SHEETS','Total assets were'):
+        assert phrase in joined,phrase
+
+def test_page_furniture_never_becomes_a_section_label():
+    """The registrant, the Commission and job titles are not headings."""
+    text=(
+        'SECURITIES AND EXCHANGE COMMISSION\n'
+        'Management provided the following update.\n'
+        'EVP & CFO\n'
+        'The officer signed the report.\n'
+        'Item 1A. Risk Factors\n'
+        'Supply constraints may reduce revenue.\n'
+    )
+    chunks=build_chunks(source(text),CharTokenizer())
+    labels=' '.join(c.section_path for c in chunks)
+    assert 'Securities And Exchange Commission' not in labels
+    assert 'Evp & Cfo' not in labels
+    assert 'Item 1A. Risk Factors' in labels
 
 def test_financial_line_labels_are_not_mistaken_for_headings():
     text='TOTAL ASSETS 1,234 1,100\nTotal liabilities were 45 million.\n'

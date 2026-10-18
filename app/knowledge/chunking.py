@@ -2,7 +2,7 @@ from __future__ import annotations
 import hashlib, re, uuid
 from typing import Protocol
 from .sources import ChunkDraft, SourceDocument
-CHUNKER_VERSION='markdown-sentence-v5'
+CHUNKER_VERSION='markdown-sentence-v6'
 FORMAT_VERSION='category-questions-answer-v1'
 _NAMESPACE=uuid.UUID('d26df052-bc20-4d4d-8b9c-3156b7e9e31f')
 class Tokenizer(Protocol):
@@ -38,21 +38,71 @@ _ITEM_HEADING=re.compile(r'^(?:item|part)\s+(?:\d{1,2}[a-c]?|[ivx]{1,4})\.?\s*\S
 _BARE_ITEM=re.compile(r'^(?:item|part)\s+(?:\d{1,2}[a-c]?|[ivx]{1,4})\.?$',re.I)
 _NOISE_LINE=re.compile(r'(?i)^(?:table of contents|contents)$')
 _ALLCAPS_HEADING=re.compile(r"^[A-Z][A-Z0-9 ,.'&/()\-:]{6,110}$")
+# Every capitalised line that is not an Item looks like a title, so the
+# registrant's name, the Commission's banner and an officer's job title used to
+# become section names for hundreds of chunks.  These never make a heading.
+_UNTRUSTED_TITLES=frozenset({'securities and exchange commission','united states','table of contents','contents',
+  'washington d c 20549','washington, d.c. 20549'})
+_ACRONYM=re.compile(r"^[A-Z0-9&.'-]{1,5}$")
+# A bare company name on its own line is a running header, not a section title.
+_ENTITY_NAME=re.compile(r'(?i)\b(inc|corp|corporation|company|co|llc|l\.l\.c|plc|ltd|limited|holdings|group|nv|n\.v|sa|s\.a|ag)\b\.?$')
+_TABLE_RULE=re.compile(r'\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*')
 
 
-def _heading(line: str) -> tuple[int,str] | None:
-    text=line.strip()
+def _plausible_title(text: str, *, previous_blank: bool, next_nonblank: bool, own_title: str) -> bool:
+    """A capitalised line is a heading only when the document itself says so: it
+    stands alone between blank lines, reads like a title rather than a sentence,
+    and is not the registrant or the Commission talking about themselves."""
+    if not previous_blank or not next_nonblank: return False
+    if any(c.isdigit() for c in text): return False
+    if sum(c.isalpha() for c in text)<6: return False
+    lowered=' '.join(text.lower().split())
+    if lowered in _UNTRUSTED_TITLES: return False
+    if own_title:
+        own=' '.join(own_title.lower().split()).replace('.','')
+        if own and lowered.replace('.','') in own: return False
+    words=[word for word in text.split() if word]
+    if not 2<=len(words)<=10: return False
+    # An all-caps line made mostly of short capitalised tokens is a byline, a job
+    # title or a ticker banner ("EVP & CFO", "LDICC NCGC EC"), not a section.
+    if sum(1 for word in words if _ACRONYM.match(word))/len(words)>=0.6: return False
+    # The registrant naming itself is page furniture, not a section.
+    if len(words)<=4 and _ENTITY_NAME.search(text): return False
+    return True
+
+
+def _heading(line: str, *, previous_blank: bool=True, next_nonblank: bool=True, own_title: str='') -> tuple[int,str] | None:
+    text=' '.join(line.split())
     if not text or len(text)>120: return None
     if text.startswith('#'):
         level=len(text)-len(text.lstrip('#')); title=text[level:].strip()
         return (level,title) if title else None
     if _ITEM_HEADING.match(text) and not _NOISE_LINE.match(text):
+        # Filings separate "Item" and its number with a thin space or a tab, and
+        # a label must not carry that layout character into retrieval paths.
         label=re.sub(r'^((?:item|part)\s+\S+?\.)\s*',lambda m:m.group(1)+' ',text,count=1,flags=re.I)
         return (2,label if not text.isupper() else label.title())
-    if _ALLCAPS_HEADING.match(text) and not any(c.isdigit() for c in text):
-        words=text.split()
-        if len(words)>=2 and sum(c.isalpha() for c in text)>=6: return (3,text.title())
+    if _ALLCAPS_HEADING.match(text) and _plausible_title(text,previous_blank=previous_blank,
+                                                        next_nonblank=next_nonblank,own_title=own_title):
+        return (3,text.title())
     return None
+
+
+def coverage_gaps(text: str, chunks: list[ChunkDraft]) -> list[tuple[int,int]]:
+    """Regions of ``text`` that no chunk carries; whitespace-only gaps do not count.
+
+    The chunker used to drop a flushed block whenever it looked like page
+    furniture, so a filing could lose whole paragraphs without anything noticing.
+    Every character (bar layout whitespace) must belong to some chunk, and this is
+    how the tests and ``scripts/audit_chunking.py`` check it.
+    """
+    spans=sorted((chunk.start_offset,chunk.end_offset) for chunk in chunks if chunk.end_offset>chunk.start_offset)
+    gaps=[]; cursor=0
+    for start,end in spans:
+        if start>cursor and text[cursor:start].strip(): gaps.append((cursor,start))
+        cursor=max(cursor,end)
+    if cursor<len(text) and text[cursor:].strip(): gaps.append((cursor,len(text)))
+    return gaps
 
 
 def build_chunks(document: SourceDocument, tokenizer: Tokenizer, *, target_tokens: int=512, overlap_tokens: int=64, max_tokens: int=768) -> list[ChunkDraft]:
@@ -60,15 +110,39 @@ def build_chunks(document: SourceDocument, tokenizer: Tokenizer, *, target_token
     lines=document.text.splitlines(keepends=True); positions=[]; offset=0
     for line in lines: positions.append((offset,offset+len(line),line.rstrip('\r\n'))); offset+=len(line)
     chunks=[]; headings=[]; active=[]; category_base=document.category or document.source_type
+    # Text consumed as a heading, a table header or a running header but not yet
+    # carried by any chunk.  Prepending it to the next chunk keeps every character
+    # of the filing inside the index, so a missed heading can only mislabel a
+    # region -- it can never drop the balance sheet out of retrieval.
+    pending=[]; own_title=document.title or ''
     def metadata():
         question=document.questions or (headings[-1][1] if headings else document.title)
         category=' > '.join(([category_base] if category_base else [])+[x[1] for x in headings[:-1]]) or category_base
         return category,question
-    def add(answer,start,end,content_type='text',needs_review=False,question_override=None):
+    def _raw_add(answer,start,end,content_type='text',needs_review=False,question_override=None):
         category,question=metadata(); question=question_override or question; emb=embedding_text(category,question,answer)
         review=needs_review or _token_count(tokenizer,emb)>max_tokens
         ordinal=len(chunks); identity=f'{document.source_table}|{document.source_id}|{document.source_version}|{CHUNKER_VERSION}|{FORMAT_VERSION}|{ordinal}'
         chunks.append(ChunkDraft(str(uuid.uuid5(_NAMESPACE,identity)),ordinal,category,question,answer,emb,hashlib.sha256(answer.encode()).hexdigest(),start,end,review,content_type,' > '.join(x[1] for x in headings)))
+    def _emit_pending():
+        if not pending: return
+        items=pending[:]; pending.clear()
+        text=' '.join(item[2].strip() for item in items if item[2].strip())
+        if text: _raw_add(text,items[0][0],max(item[1] for item in items))
+    def add(answer,start,end,content_type='text',needs_review=False,question_override=None):
+        if pending:
+            # Only a run that ends exactly where this chunk starts may become its
+            # prefix; otherwise the span would claim characters the answer does not
+            # contain and the offsets would no longer describe the filing.
+            if pending[-1][1]<=start and not document.text[pending[-1][1]:start].strip():
+                text=' '.join(item[2].strip() for item in pending if item[2].strip())
+                first=pending[0][0]; pending.clear()
+                if text:
+                    answer=f'{text} {answer.strip()}' if answer.strip() else text
+                    start=first
+            else:
+                _emit_pending()
+        _raw_add(answer,start,end,content_type,needs_review,question_override)
     def _noise(answer: str) -> bool:
         """Page numbers and running headers carry no meaning worth embedding."""
         letters=sum(c.isalpha() or '\u4e00'<=c<='\u9fff' for c in answer)
@@ -78,13 +152,24 @@ def build_chunks(document: SourceDocument, tokenizer: Tokenizer, *, target_token
         nonlocal active
         if active:
             answer=' '.join(x[2] for x in active)
-            if not _noise(answer): add(answer,active[0][0],active[-1][1])
+            if _noise(answer):
+                # Keep the text instead of dropping it: it rides along as the
+                # prefix of the next real chunk and only stands alone when a
+                # whole page of furniture collects (a cover page, page numbers).
+                pending.extend(active)
+                if sum(len(item[2]) for item in pending)>200: _emit_pending()
+            else:
+                add(answer,active[0][0],active[-1][1])
             active=[]
+    def _blank(index: int) -> bool:
+        return not (0<=index<len(positions) and positions[index][2].strip())
+    def _text_follows(index: int) -> bool:
+        return any(not _blank(ahead) for ahead in range(index+1,min(len(positions),index+4)))
     i=0; preceding_context=''
     while i<len(positions):
         start,end,line=positions[i]
         if not line.strip(): i+=1; continue
-        heading=_heading(line)
+        heading=_heading(line,previous_blank=_blank(i-1),next_nonblank=_text_follows(i),own_title=own_title)
         if heading is None and _BARE_ITEM.match(line.strip()):
             # A table of contents keeps the number alone and the title on the
             # next non-empty line; joining them restores the real heading.
@@ -93,23 +178,37 @@ def build_chunks(document: SourceDocument, tokenizer: Tokenizer, *, target_token
                 if not title: continue
                 if len(title)<=100 and not title.isdigit() and not _NOISE_LINE.match(title):
                     heading=(2,f'{line.strip()} {title}')
+                    pending.append((positions[ahead][0],positions[ahead][1],title))
                 break
         if heading is not None:
             flush(); level,title=heading
+            pending.append((start,end,line.strip()))
             headings=[x for x in headings if x[0]<level]+[(level,title)]; i+=1; continue
         if line.lstrip().startswith('|'):
             preceding_context=' '.join(item[2] for item in active)
             flush(); table=[]
             while i<len(positions) and positions[i][2].lstrip().startswith('|'): table.append(positions[i]); i+=1
-            rows=[x for x in table if not re.fullmatch(r'\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*',x[2])]
+            rows=[x for x in table if not _TABLE_RULE.fullmatch(x[2])]
             header=rows[0][2] if len(rows)>1 else ''
-            for row_start,row_end,row in rows[1:] if header else rows:
-                cells=[cell.strip() for cell in row.strip().strip('|').split('|')]
+            for row in table:
+                row_start,row_end,text=row
+                if _TABLE_RULE.fullmatch(text):
+                    # The rule line has no content worth embedding, but its
+                    # characters still belong to the table block, not to a gap.
+                    pending.append((row_start,row_end,'')); continue
+                if header and row is rows[0]:
+                    # The header line belongs to the first row's chunk, so nothing
+                    # disappears between the header and the data beneath it.
+                    pending.append((row_start,row_end,text.strip())); continue
+                cells=[cell.strip() for cell in text.strip().strip('|').split('|')]
                 metric=cells[0] if cells else ''
                 _,base_question=metadata()
                 row_question=f'{base_question} — {metric}' if metric else base_question
                 context=(preceding_context+'\n') if preceding_context else ''
-                add(f'{context}{header}\n{row}' if header and row!=header else context+row,row_start,row_end,'table_row',question_override=row_question)
+                if header and text!=header:
+                    add(f'{context}{header}\n{text}',row_start,row_end,'table_row',question_override=row_question)
+                else:
+                    add(context+text,row_start,row_end,'table_row',question_override=row_question)
             continue
         preceding_context=''
         for s,e,text in _sentences(line):
@@ -132,5 +231,5 @@ def build_chunks(document: SourceDocument, tokenizer: Tokenizer, *, target_token
                     flush()
                 add(text,start+s,start+e,needs_review=True)
         i+=1
-    flush()
+    flush(); _emit_pending()
     return chunks
