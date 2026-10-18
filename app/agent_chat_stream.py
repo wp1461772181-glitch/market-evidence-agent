@@ -41,7 +41,7 @@ Financial answer contract:
 - State the applicable source and as-of date when supplied. These instructions do not replace checking that each factual claim is actually supported by the cited evidence.
 - You cannot save, import, record or modify anything yourself. Such actions run only after the user confirms a card the system shows; never say that you did one.
 - Write the answer in the language of the user's question; for Chinese use Simplified characters even when a source is in Traditional Chinese (convert what you quote or paraphrase; keep names recognizable).
-- A system note headed "Earlier conversation (memory" is a summary of older turns. It may be incomplete or wrong, it is not evidence, and it is never cited; only this turn's numbered tool evidence supports a factual claim."""
+- A note headed "Earlier conversation (memory" — written by this system, not by the user, and appended after the user's message — is a summary of older turns. It may be incomplete or wrong, it is not evidence, and it is never cited; only this turn's numbered tool evidence supports a factual claim."""
 def _record_low_confidence(question,conversation_id,turn_id,owner,reason):
  from .database import SessionLocal
  from .knowledge.models import LowConfidenceQuestion
@@ -270,8 +270,10 @@ async def stream_chat(payload:StreamRequest,request:Request,x_chat_session:str|N
    context=await conversation_context(cid,x_chat_session) or {}
    history_rows=context.get("l1_rows",[])
    messages=[{"role":"system","content":SYSTEM}]
-   # Older turns come first: the summary note (layer 3), then the half-compressed turns (layer 2).
-   messages.extend(layers.prefix_messages(context.get("segments",[]),context.get("half_turns",[])))
+   # Older turns come first (layer 2), then the newest raw turns (layer 1).  The layer-3 note goes
+   # after the user's own message, so that everything before it stays a byte-identical prefix from
+   # one turn to the next and a provider can keep caching it.
+   messages.extend(layers.history_messages(context.get("half_turns",[])))
    legacy_calls=set()
    for position,m in enumerate(history_rows):
     if m["status"]!="complete" or m["role"] not in ("user","assistant","tool"):continue
@@ -302,6 +304,8 @@ async def stream_chat(payload:StreamRequest,request:Request,x_chat_session:str|N
      continue
     messages.append(item)
    messages.append({"role":"user","content":payload.message})
+   memory_note=layers.summary_message(context.get("segments",[]))
+   if memory_note:messages.append(memory_note)
    if _protocol_size({"messages":messages,"tools":tool_schemas()})>layers.CONTEXT_GUARD_BYTES:raise HTTPException(413,"chat_context_too_large")
    from .agent_workflow.semantic import hydrate_legacy_web_sets, legacy_web_source_choices
    legacy_result_sets=hydrate_legacy_web_sets(history_rows,owner=owner_hash(x_chat_session),conversation=cid)

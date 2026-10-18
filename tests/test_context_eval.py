@@ -51,7 +51,7 @@ def test_the_arms_follow_the_budgets(built):
     assert small_context["overflow"] and not all(ev.facts_in(ev.transcript(small), tokens).values())
     with_note, _ = ev.arm_layers(rows, 32, [{"seq": 1, "from_sequence": 1, "upto_sequence": small_context["overflow"][-1].last_sequence,
                                               "content": "用户要求只看 10-K，周三下午三点前交付。"}])
-    assert with_note[0]["role"] == "system" and with_note[0]["content"].startswith(layers.MEMORY_MARKER)
+    assert with_note[-1]["role"] == "user" and with_note[-1]["content"].startswith(layers.MEMORY_MARKER)
 
 
 def test_the_size_rule_is_the_one_the_history_window_has_always_used(built):

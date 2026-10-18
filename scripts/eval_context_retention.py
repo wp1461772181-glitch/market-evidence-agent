@@ -151,14 +151,15 @@ def arm_window(rows: list[dict], total_bytes: int) -> list[dict]:
 def arm_layers(rows: list[dict], budget_kb: int, segments: list[dict]) -> tuple[list[dict], dict]:
     parts = budget_parts(budget_kb)
     context = layers.layer_rows(rows, segments, l1_bytes=parts["l1"], l2_bytes=parts["l2"], l3_bytes=parts["l3"])
-    prefix = layers.prefix_messages(context["segments"], context["half_turns"])
-    return prefix + _as_messages(context["l1_rows"]), context
+    prefix = layers.history_messages(context["half_turns"])
+    note = layers.summary_message(context["segments"])
+    return prefix + _as_messages(context["l1_rows"]) + ([note] if note else []), context
 
 
 def budget_parts(budget_kb: int) -> dict:
     budget = budget_kb * KB
-    return {"budget": budget, "l1": budget // 2, "l2": budget * 3 // 8, "l3": budget * 3 // 32,
-            "total": budget // 2 + budget * 3 // 8 + budget * 3 // 32}
+    l1, l2, l3 = layers.split_budget(budget)
+    return {"budget": budget, "l1": l1, "l2": l2, "l3": l3, "total": budget}
 
 
 def transcript(messages: list[dict]) -> str:

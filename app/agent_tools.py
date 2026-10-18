@@ -160,10 +160,15 @@ async def _index_state(source_id: str) -> str:
     return "ready" if rows[0]["ready_chunks"] else "index_pending"
 
 async def _expanded_retrieval(function, symbol: str, keyword: str, limit: int, source_id: str | None):
-    from .knowledge.query_understanding import expanded_queries
-    queries = [keyword] if source_id else expanded_queries(keyword)
+    """Search with the user's own wording first; widen only if that found nothing to rank.
+
+    Query 扩写 costs a model call, so it buys something only where a miss is otherwise silent: the
+    index may hold a passage under wording the question did not use.  A hit costs what it always
+    did, and the variants are thrown away after this search (so the index still holds one copy)."""
+    from .knowledge.query_understanding import query_variants
     rows=[];seen=set();first=None
-    for query in queries[:3]:
+    async def attempt(query):
+        nonlocal first
         found = await function(symbol, query, limit, source_id=source_id) if source_id else await function(symbol, query, limit)
         if first is None:first=found
         for row in found.get("data") or []:
@@ -171,7 +176,12 @@ async def _expanded_retrieval(function, symbol: str, keyword: str, limit: int, s
             if key not in seen:
                 seen.add(key);rows.append(row)
             if len(rows)>=limit:break
-        if len(rows)>=limit:break
+    await attempt(keyword)
+    if not rows and not source_id:
+        for query in (await query_variants(keyword))[1:]:
+            await attempt(query)
+            if len(rows)>=limit:break
+    if first is None:first={'ok':True,'data':[],'source':'knowledge','as_of':None}
     return {**first,"data":rows[:limit],"as_of":max((str(row.get("observed_at")) for row in rows if isinstance(row,dict) and row.get("observed_at")),default=first.get("as_of"))}
 
 @tool(args_schema=PriceArgs)

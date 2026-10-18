@@ -8,6 +8,7 @@ from ..agent_chat_provider import decision_request,decision_session
 from ..agent_progress import progress_watchdog,mark_progress
 from ..agent_chat_identity import owner_credential_matches
 from ..agent_tool_catalog import definitions,schemas,validate
+from .. import agent_context as layers
 from .evidence import gate_row,number_rows,citation_errors,contains
 from . import tools,consent
 from .authorization import vetoed
@@ -111,8 +112,9 @@ def parsed(message):
 
 
 def bounded_history(messages):
-    # Keep the layered context's system summary, raw user turns and compressed turns.
-    # It may ground a reference, but can never supply facts or write authority.
+    # Keep the layered context's raw user turns and compressed turns as one JSON field.  It may
+    # ground a reference, but can never supply facts or write authority.  The size is the history
+    # budget itself, not a second number that could drift away from it.
     selected=[];used=0
     sources=assistant_message_sources(messages or [])
     source_by_text={v:k for k,v in sources.items()}
@@ -121,7 +123,7 @@ def bounded_history(messages):
         item={'role':message['role'],'content':str(message.get('content',''))}
         if message['role']=='assistant' and item['content'] in source_by_text:item['source']=source_by_text[item['content']]
         size=len(json.dumps(item,ensure_ascii=False).encode())
-        if used+size>64000:continue
+        if used+size>layers.HISTORY_BUDGET:continue
         selected.append(item);used+=size
     return json.dumps(list(reversed(selected)),ensure_ascii=False)
 
@@ -222,6 +224,19 @@ class Turn:
         self.suggestion_used=False
         self.new_sets=[];self.invalid_calls=set();self.completed=set();self.protocol=[];self.final_protocol={};self.active_call_id=None;self.last_accepted=None
 
+    async def expander(self,query):
+        """Model-written retrieval variants for one query.
+
+        Query 改写 is the resolver's job above; this is its sibling: the same question said three
+        ways, so that wording the index happens not to use is not a silent miss.  It runs only where
+        a read tool searches by text, never for an exact source read, and its output is filtered by
+        ``query_understanding.query_variants`` before any of it is used."""
+        from ..knowledge.query_understanding import EXPANSION_PROMPT,parse_variants
+        message=await self.model([{'role':'system','content':EXPANSION_PROMPT},
+                                  {'role':'user','content':json.dumps({'question':query},ensure_ascii=False)}],[],
+                                 protocol_retries=0)
+        return parse_variants(message.get('content'))
+
     def exposed_tools(self):return schemas(owner=self.owner,granted=self.granted_actions)
     def write_error(self,name,code):
         self.write_reasons[name]=code;self.audit['write_outcome']='refused:'+code
@@ -245,8 +260,10 @@ class Turn:
         return None
 
     async def model(self,messages,tool_schemas,*,protocol_retries=1):
-        estimate=(len(json.dumps(messages,ensure_ascii=False).encode())+len(json.dumps(tool_schemas).encode()))//4
-        if estimate>64000:raise ValueError('chat_context_too_large')
+        # The same knob as the door: a request that was accepted may grow by the tool results this
+        # turn itself produces, and nothing more.
+        size=len(json.dumps(messages,ensure_ascii=False).encode())+len(json.dumps(tool_schemas).encode())
+        if size>layers.RUNNING_REQUEST_BYTES:raise ValueError('chat_context_too_large')
         for attempt in range(protocol_retries+1):
             self.audit['model_calls']+=1
             async with progress_watchdog(IDLE_SECONDS):
@@ -254,7 +271,8 @@ class Turn:
             mark_progress()
             usage=response.get('usage',{}) if isinstance(response,dict) else {}
             actual=usage.get('total_tokens')
-            if not isinstance(actual,int):actual=estimate+len(json.dumps(message).encode())//4;self.audit['usage_mode']='estimated'
+            if not isinstance(actual,int):
+                actual=layers.estimate_tokens(size+len(json.dumps(message).encode()));self.audit['usage_mode']='estimated'
             self.audit['token_usage']+=actual
             if any(m in str(message.get('content') or '') for m in MARKERS):
                 if attempt>=protocol_retries:raise ValueError('provider_protocol_invalid')
@@ -268,7 +286,10 @@ class Turn:
     async def reference(self):
         self.audit['nodes'].append('resolve_reference')
         await self.emit({'event':'status','status':'resolving_reference'})
-        prior=self.messages[:-1] if self.messages and self.messages[-1].get('role')=='user' and self.messages[-1].get('content')==self.original else self.messages
+        # The layer-3 note is appended after the user's message, so it is not part of the turn
+        # history and must not be read as something the user said in an earlier turn.
+        conversation=layers.conversation_messages(self.messages)
+        prior=conversation[:-1] if conversation and conversation[-1].get('role')=='user' and conversation[-1].get('content')==self.original else conversation
         relevant=[m for m in prior if m.get('role')=='user']
         if not relevant and not self.sets and not self.state.get('pending_request'):
             from .semantic import ordinal_positions
@@ -325,7 +346,7 @@ class Turn:
     async def validate_business_reference(self):
         if self.route not in {'A','D'}:return
         canonical=self.question
-        relevant=[m for m in self.messages if m.get('role')=='user']
+        relevant=[m for m in layers.conversation_messages(self.messages) if m.get('role')=='user']
         trusted=' '.join(str(m.get('content','')) for m in relevant)+' '+self.original+' '+json.dumps([s.get('scope') for s in self.sets],ensure_ascii=False)
         trusted+=' '+json.dumps(self.state.get('previous_scope',{}),ensure_ascii=False)
         trusted+=' '+' '.join(r['text'] for r in self.verified_referents)
@@ -393,6 +414,15 @@ class Turn:
             'A — answering needs data this product stores: prices, SEC filings, uploaded materials, saved AI analysis, saved FAQ, saved forecasts, or a specific saved source.\n'
             'B — finance, markets or company knowledge you can explain without any data this system stores: concepts, definitions, how something works, a business model, a worked example. It may reason with general or illustrative numbers; what makes it B is that it needs none of this system\'s records.\n'
             'C — anything else this product does not do; coding included.\n'
+            # Boundary cases are the ones a rule list gets wrong: they are chosen so that the words
+            # of the request and the route disagree.  They are examples, never requests to act on.
+            'Boundary examples, route and the scope it implies:\n'
+            '"AAPL 最近收盘价是多少" → A, symbol AAPL (a saved price record has to be read).\n'
+            '"毛利率是怎么算的" → B (a definition; no record of this system is needed).\n'
+            '"帮我写个 Python 快排" → C (coding; outside this product).\n'
+            '"把这份 PDF 导入资料库" → D, requested_actions ["import"] (a write the user asked for).\n'
+            '"怎么把 NVDA 加进研究队列" → D (a question about using this product).\n'
+            '"对比 AAPL 和 MSFT 的营收" → A, symbols ["AAPL","MSFT"] (read-only, several companies).\n'
             'A write that also needs saved data to name its target is still D. A and D share tools and permissions; A searches saved knowledge first.\n'
             'Fill the retrieval scope from the request only: symbol, symbols, company, company_mention, metrics, period, form, financial_only, latest, days_back, max_results. When several companies are named (对比/分别查/这几家), fill symbols with every ticker and symbol with the first. Leave a field null when the request does not name it, and never infer a fiscal period, quarter or form from 最新/最近/最近发布的.\n'
             'requested_actions: only writes this message itself asks for, named from the write_tools catalogue in the payload; negated, quoted, past, hypothetical or previously approved writes are not requests here, and a grant never comes from history. '
@@ -670,7 +700,12 @@ class Turn:
                         ordinal=len(self.citations)+1
                         self.citations.append({'ordinal':ordinal,'source_type':'calculation','derived':True,'title':'可复核计算','quote':json.dumps(value,ensure_ascii=False),'calculation':value})
                         outcome={'ok':True,'data':[{**value,'citation':'['+str(ordinal)+']'}]}
-                    else:outcome=await tools.invoke(name,args,self.context,emit=self.emit)
+                    else:
+                        # Retrieval-side query expansion: the model writes the variants for this
+                        # one search and they are thrown away afterwards, so the index still holds
+                        # one copy of each passage.
+                        from ..knowledge.query_understanding import use_expander
+                        with use_expander(self.expander):outcome=await tools.invoke(name,args,self.context,emit=self.emit)
             except (TimeoutError,ConnectionError):outcome=tools.error('tool_timeout')
             except Exception:outcome=tools.error('tool_failed')
             # F2: a completed attempt — even a failed one — proves the turn is alive, so the

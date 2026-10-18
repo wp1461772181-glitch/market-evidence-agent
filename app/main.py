@@ -152,6 +152,10 @@ app.add_middleware(AgentChatBodyLimitMiddleware, allowed_origins=allowed_origins
 def create_tables() -> None:
     from .agent_workflow.checkpoints import checkpoint_ready
     from .agent_workflow.settings import checkpoint_database_url
+    # A context budget that cannot fit one turn is a configuration error: say so at start-up
+    # rather than at the first request that needs history.
+    from .agent_context import startup_self_check
+    app.state.agent_context = startup_self_check()
     try:
         app.state.agent_checkpoint_ready = checkpoint_ready(checkpoint_database_url())
     except RuntimeError:

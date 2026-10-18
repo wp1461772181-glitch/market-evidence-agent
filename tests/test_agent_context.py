@@ -27,11 +27,19 @@ def test_the_layers_and_guards_follow_one_budget():
     assert layers.HISTORY_BUDGET == layers.BUDGET_KB * 1024
     assert layers.L1_BYTES + layers.L2_BYTES + layers.L3_BYTES <= layers.HISTORY_BUDGET
     assert layers.CONTEXT_GUARD_BYTES == 2 * layers.HISTORY_BUDGET
-    assert layers.HISTORY_TOKEN_ALLOWANCE == layers.HISTORY_BUDGET // 4
-    # the default is the 64 KB tier: 32 + 24 + 6 KB of history, a 128 KB request guard
-    if layers.BUDGET_KB == 64:
-        assert (layers.L1_BYTES, layers.L2_BYTES, layers.L3_BYTES) == (32768, 24576, 6144)
-        assert layers.CONTEXT_GUARD_BYTES == 131072
+    # the three layers spend exactly the budget, newest first
+    assert layers.L1_BYTES + layers.L2_BYTES + layers.L3_BYTES == layers.HISTORY_BUDGET
+    assert layers.L1_BYTES > layers.L2_BYTES > layers.L3_BYTES > 0
+    # the budget comes from the window, and the knob can only lower it
+    assert layers.BUDGET_KB <= layers.derive_history_budget(layers.WINDOW_TOKENS) // 1024
+    assert layers.startup_self_check()["budget_kb"] == layers.BUDGET_KB
+
+
+def test_a_smaller_window_tightens_the_budget_by_itself(monkeypatch):
+    big, small = layers.derive_history_budget(128_000), layers.derive_history_budget(16_000)
+    assert big > small >= layers.BUDGET_KB_MIN * 1024
+    assert layers.parse_budget_kb("64", ceiling=small // 1024) == small // 1024
+    assert layers.parse_budget_kb("64", ceiling=big // 1024) == 64
 
 
 # --- rendering and selection -------------------------------------------------------------------------
@@ -70,21 +78,29 @@ def test_the_newest_summary_segments_fit_and_stay_in_order():
     assert layers.select_segments(segments, budget=1) == []
 
 
-def test_the_summary_is_one_system_note_that_says_it_is_not_evidence():
+def test_the_summary_is_one_note_that_says_who_wrote_it_and_that_it_is_not_evidence():
     assert layers.summary_message([]) is None
     note = layers.summary_message([{"content": "用户关注苹果的营收"}, {"content": "之后改看英伟达"}])
-    assert note["role"] == "system" and note["content"].startswith(layers.MEMORY_MARKER)
+    assert note["role"] == "user" and note["content"].startswith(layers.MEMORY_MARKER)
+    assert "not by the user" in note["content"]
     assert "not evidence" in note["content"] and "not something to cite" in note["content"]
     assert "1. 用户关注苹果的营收" in note["content"] and "2. 之后改看英伟达" in note["content"]
-    assert layers.earlier_summary([{"role": "user", "content": "你好"}, note]) == "1. 用户关注苹果的营收\n2. 之后改看英伟达"
-    assert layers.earlier_summary([{"role": "system", "content": "Other system text"}]) == ""
+    # the note is memory, not part of the conversation a later stage may quote
+    assert layers.is_memory_message(note) and not layers.is_memory_message({"role": "user", "content": "你好"})
+    assert layers.conversation_messages([{"role": "user", "content": "你好"}, note]) == [{"role": "user", "content": "你好"}]
 
 
-def test_summary_comes_first_then_the_half_compressed_turns():
-    messages = layers.prefix_messages([{"content": "摘要"}], [_turn(1, "甲"), _turn(2, "乙")])
-    assert [m["role"] for m in messages] == ["system", "user", "assistant", "user", "assistant"]
-    assert messages[1]["content"] == "甲" and messages[3]["content"] == "乙"
-    assert layers.prefix_messages([], []) == []
+def test_the_note_goes_after_the_question_and_the_head_is_only_the_turns():
+    messages = layers.history_messages([_turn(1, "甲"), _turn(2, "乙")])
+    assert [m["role"] for m in messages] == ["user", "assistant", "user", "assistant"]
+    assert messages[0]["content"] == "甲" and messages[2]["content"] == "乙"
+    assert layers.history_messages([]) == []
+    # the whole request: system, layer 2, layer 1, the question, then the note.  Everything before
+    # the question is a byte-identical prefix from one turn to the next.
+    note = layers.summary_message([{"content": "摘要"}])
+    request = [{"role": "system", "content": "system"}] + messages + [{"role": "user", "content": "本轮"}] + [note]
+    assert [m["role"] for m in request][-2:] == ["user", "user"]
+    assert request[-2]["content"] == "本轮" and request[-1] is note
 
 
 def test_the_usage_report_adds_up_and_says_when_it_is_compressing():
@@ -147,7 +163,7 @@ def test_a_conversation_that_fits_layer_one_is_sent_exactly_as_before(disposable
     context, before = _run_with_store(exercise)
     assert context["l1_rows"] == before and len(before) == 3 * 2 + 2              # one turn has a tool batch
     assert context["half_turns"] == [] and context["overflow"] == [] and context["segments"] == []
-    assert layers.prefix_messages(context["segments"], context["half_turns"]) == []
+    assert layers.history_messages(context["half_turns"]) == []
 
 
 def test_older_turns_become_half_compressed_text_and_failed_turns_are_not_in_any_layer(disposable_database):
@@ -222,8 +238,8 @@ def test_the_model_gets_the_note_then_the_older_turns_then_the_recent_ones(strea
     sent=json.loads(payload['history']);contents=[m['content'] for m in sent]
     note=next(c for c in contents if c.startswith(layers.MEMORY_MARKER))
     assert '更早：用户只看 10-Q' in note
-    assert contents.index(note)<contents.index('很早的问题 苹果')<contents.index('近处的问题')
-    assert next(m for m in sent if m['content']==note)['role']=='system'
+    assert contents.index('很早的问题 苹果')<contents.index('近处的问题')<contents.index(note)
+    assert next(m for m in sent if m['content']==note)['role']=='user'
 
 
 
