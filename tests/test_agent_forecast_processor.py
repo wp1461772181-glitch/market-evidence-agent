@@ -12,7 +12,7 @@ from app.agent_forecast_processor import AgentForecastProcessor, _forecast_brief
 from app.forecast_v2 import ForecastDraft
 from app.forecast_v2_processor import ResearchOnlyForecastProcessor
 from app.forecast_jobs import enqueue_job
-from app.material_analysis import get_material_analysis, request_material_analysis, run_material_analysis_once
+from app.material_analysis import PROMPT_VERSION, get_material_analysis, request_material_analysis, run_material_analysis_once
 from app.models import UploadedEvidence
 from app.research_brief import ResearchBriefError, build_research_brief
 
@@ -86,7 +86,7 @@ def test_real_l1_cache_reuses_text_analysis_after_review_state_change_without_re
         def extract(self, **_kwargs):
             return SimpleNamespace(content=json.dumps({
                 "schema_version": "material-analysis-v1",
-                "prompt_version": "material-analysis-prompt-v1",
+                "prompt_version": PROMPT_VERSION,
                 "summary": "Revenue increased.",
                 "facts": [{"id": "f1", "statement": "Revenue grew.",
                            "citations": [{"quote": "Revenue grew."}]}],

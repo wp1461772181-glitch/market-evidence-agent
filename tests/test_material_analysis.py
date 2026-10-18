@@ -10,7 +10,7 @@ from sqlalchemy import delete, select, update
 
 from app.database import Base, SessionLocal, engine
 from app.event_provider import ProviderResult
-from app.material_analysis import MaterialAnalysisError, list_materials, request_material_analysis, run_material_analysis_once
+from app.material_analysis import PROMPT_VERSION, MaterialAnalysisError, list_materials, request_material_analysis, run_material_analysis_once
 from app.forecast_v2_models import EvidenceEventVersionV2
 from app.material_analysis_models import MaterialAnalysisJob, MaterialAnalysisVersion
 from app.material_analysis_schema import locate_material_analysis_citations, validate_material_analysis
@@ -40,12 +40,12 @@ def material_tables(disposable_database):
         db.commit()
 
 
-def _payload(*, coordinate: bool = False) -> dict:
+def _payload(*, coordinate: bool = False, prompt_version: str | None = None) -> dict:
     citation = {"quote": "Revenue grew by 8%"}
     if coordinate:
         citation.update(start_char=0, end_char=18)
     return {
-        "schema_version": "material-analysis-v1", "prompt_version": "material-analysis-prompt-v1",
+        "schema_version": "material-analysis-v1", "prompt_version": prompt_version or PROMPT_VERSION,
         "summary": "本季度收入增长。", "facts": [{"id": "f1", "statement": "收入增长。", "citations": [citation]}],
         "supporting": [], "counter": [], "uncertainties": [], "key_numbers": [],
     }
@@ -362,3 +362,16 @@ def test_worker_blocks_a_queued_job_after_its_analysis_contract_changes():
         versions = list(db.scalars(select(MaterialAnalysisVersion).where(MaterialAnalysisVersion.source_id == source_id)))
     assert job.safe_error_code == "config_version_changed"
     assert versions == []
+
+
+def test_a_payload_from_another_prompt_version_is_never_saved():
+    source_id = _upload("AAPL", "Revenue grew by 8% this quarter.")
+    result = _request(source_id)
+    output = run_material_analysis_once(
+        session_factory=SessionLocal,
+        provider=FakeProvider(json.dumps(_payload(prompt_version="material-analysis-prompt-v1"), ensure_ascii=False)),
+        job_id=UUID(result["job_id"]),
+    )
+    assert output["status"] == "failed"
+    with SessionLocal() as db:
+        assert db.scalar(select(MaterialAnalysisVersion).where(MaterialAnalysisVersion.source_id == source_id)) is None

@@ -336,6 +336,14 @@ class SecEdgarProvider:
         text = _html_text(raw)
         return SecFilingContent.from_text(text)
 
+    def company_concept(self, cik: str, concept: str) -> dict:
+        """One XBRL concept as SEC publishes it for this registrant."""
+        number = str(cik).strip().lstrip("0") or "0"
+        if not number.isdigit():
+            raise SecFilingsError("SEC CIK is not numeric")
+        return self._get_json(
+            f"https://data.sec.gov/api/xbrl/companyconcept/CIK{int(number):010d}/us-gaap/{concept}.json")
+
     def _get_json(self, url: str) -> dict:
         raw = self._get_bytes(url, max_bytes=MAX_FILING_BYTES)
         try:
@@ -634,6 +642,7 @@ def create_sec_filing_inventory_table() -> None:
             "content_text TEXT",
             "content_text_sha256 VARCHAR(64)",
             "content_length INTEGER",
+            "content_financials JSONB",
         ):
             connection.execute(
                 text(f"ALTER TABLE sec_filing_inventory ADD COLUMN IF NOT EXISTS {definition}")

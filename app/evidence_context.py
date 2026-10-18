@@ -32,7 +32,10 @@ from .symbols import normalize_market_symbol
 # version per source state instead of mutating the old row.
 CONTEXT_SCHEMA_VERSION = "evidence-context-v2"
 MAX_NEW_DOCUMENTS = 10
-MAX_ANALYSIS_CHARACTERS = 24_000
+# The analysis budget and section selection live together in analysis_window, so
+# the label a snapshot prints never disagrees with the characters it carries.
+from .analysis_window import MAX_ANALYSIS_CHARACTERS, build_analysis_window  # noqa: E402
+from .xbrl_financials import block_from_stored  # noqa: E402
 ContextMode = Literal["observed", "historical_research"]
 SourceType = Literal["official_filing", "uploaded_media"]
 
@@ -386,7 +389,20 @@ def _candidate_from_filing(row: SecFilingInventory, *, decision_at: datetime) ->
     content_kind = row.content_kind or "primary_document"
     attachment_status = row.related_attachment_status or ("unknown" if row.form == "8-K" else "not_applicable")
     attachment_incomplete = row.form == "8-K" and attachment_status in {"unknown", "not_checked", "unavailable"}
-    analysis_truncated = len(content) > MAX_ANALYSIS_CHARACTERS
+    # The saved excerpt is only the first 80,000 characters of the filing, so a
+    # long annual report was analysed through its cover page.  When the full text
+    # is stored, spend the same budget on the sections that carry the accounts.
+    full_text = row.content_text or ""
+    if full_text and _hash_text(full_text) != (row.content_text_sha256 or ""):
+        full_text = ""
+    window = build_analysis_window(full_text or content, form=row.form,
+                                   budget=MAX_ANALYSIS_CHARACTERS,
+                                   own_title=row.content_document_name or "")
+    analysis_text = window.text
+    figures_block = block_from_stored(row.content_financials)
+    if figures_block:
+        analysis_text = f"{analysis_text}\n\n{figures_block}"
+    analysis_truncated = not window.complete
     content_incomplete = bool(row.content_truncated) or analysis_truncated or attachment_incomplete
     if content_kind == "exhibit_99_1":
         coverage = "8k_related_exhibit"
@@ -394,9 +410,17 @@ def _candidate_from_filing(row: SecFilingInventory, *, decision_at: datetime) ->
         coverage = "8k_primary_document_no_related_exhibit"
     elif row.form == "8-K":
         coverage = "8k_primary_document_attachment_coverage_incomplete"
+    elif window.mode == "sections":
+        coverage = "key_sections_analyzed"
     else:
         coverage = "excerpt_only" if row.content_truncated else "fetched_excerpt"
-    analysis_end = min(len(content), MAX_ANALYSIS_CHARACTERS)
+    if window.mode == "sections":
+        # Not reading every character is reported, but a window that found every
+        # section it planned for is not an incomplete read of the accounts.
+        content_incomplete = bool(window.missing) or attachment_incomplete
+    elif window.mode == "whole" and full_text:
+        content_incomplete = attachment_incomplete
+    analysis_end = len(analysis_text)
     return _Candidate(
         source_type="official_filing",
         source_id=row.id,
@@ -419,10 +443,19 @@ def _candidate_from_filing(row: SecFilingInventory, *, decision_at: datetime) ->
             "published_at": published_at.isoformat(),
             "observed_at": observed_at.isoformat(),
             "content_excerpt": content,
-            "analysis_text": content[:MAX_ANALYSIS_CHARACTERS],
+            "analysis_text": analysis_text,
             "analysis_text_characters": analysis_end,
             "analysis_text_truncated": analysis_truncated,
-            "analysis_locator": {
+            "analysis_document_characters": len(full_text or content),
+            "analysis_has_reported_figures": bool(figures_block),
+            "analysis_coverage": {
+                "mode": window.mode,
+                "fraction": round(window.coverage, 4),
+                "sections": [segment.title for segment in window.segments][:24],
+                "skipped_sections": list(window.skipped)[:24],
+                "missing_sections": list(window.missing),
+            },
+            "analysis_locator": window.locator() if window.mode == "sections" else {
                 "kind": "extracted_text_char_range",
                 "start": 0,
                 "end": analysis_end,

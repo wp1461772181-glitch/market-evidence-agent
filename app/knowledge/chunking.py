@@ -29,63 +29,14 @@ def _sentences(text: str) -> list[tuple[int,int,str]]:
     return out
 # Plain-text SEC filings carry no markdown headings, so sentence windows used to
 # drift across unrelated sections (an Item 7 paragraph could share a chunk with
-# Item 8 tables). These recognisers promote real section titles to headings so a
-# chunk stays inside one section and carries that section in its category path.
-# Real filings write "Item 8.Financial Statements" with no space after the
-# number, and a table of contents puts "Item 8." alone with the title on the
-# next line, so the separator is optional and the bare form is handled below.
-_ITEM_HEADING=re.compile(r'^(?:item|part)\s+(?:\d{1,2}[a-c]?|[ivx]{1,4})\.?\s*\S.{0,110}$',re.I)
-_BARE_ITEM=re.compile(r'^(?:item|part)\s+(?:\d{1,2}[a-c]?|[ivx]{1,4})\.?$',re.I)
-_NOISE_LINE=re.compile(r'(?i)^(?:table of contents|contents)$')
-_ALLCAPS_HEADING=re.compile(r"^[A-Z][A-Z0-9 ,.'&/()\-:]{6,110}$")
-# Every capitalised line that is not an Item looks like a title, so the
-# registrant's name, the Commission's banner and an officer's job title used to
-# become section names for hundreds of chunks.  These never make a heading.
-_UNTRUSTED_TITLES=frozenset({'securities and exchange commission','united states','table of contents','contents',
-  'washington d c 20549','washington, d.c. 20549'})
-_ACRONYM=re.compile(r"^[A-Z0-9&.'-]{1,5}$")
-# A bare company name on its own line is a running header, not a section title.
-_ENTITY_NAME=re.compile(r'(?i)\b(inc|corp|corporation|company|co|llc|l\.l\.c|plc|ltd|limited|holdings|group|nv|n\.v|sa|s\.a|ag)\b\.?$')
+# Item 8 tables).  The recognisers themselves live in app/sec_structure.py so the
+# knowledge index and the analysis window can never disagree about where a
+# section starts; the private aliases keep this module's call sites unchanged.
+from ..sec_structure import (ALLCAPS_HEADING as _ALLCAPS_HEADING, ACRONYM as _ACRONYM,
+    BARE_ITEM as _BARE_ITEM, ENTITY_NAME as _ENTITY_NAME, ITEM_HEADING as _ITEM_HEADING,
+    NOISE_LINE as _NOISE_LINE, UNTRUSTED_TITLES as _UNTRUSTED_TITLES,
+    heading as _heading, plausible_title as _plausible_title)
 _TABLE_RULE=re.compile(r'\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*')
-
-
-def _plausible_title(text: str, *, previous_blank: bool, next_nonblank: bool, own_title: str) -> bool:
-    """A capitalised line is a heading only when the document itself says so: it
-    stands alone between blank lines, reads like a title rather than a sentence,
-    and is not the registrant or the Commission talking about themselves."""
-    if not previous_blank or not next_nonblank: return False
-    if any(c.isdigit() for c in text): return False
-    if sum(c.isalpha() for c in text)<6: return False
-    lowered=' '.join(text.lower().split())
-    if lowered in _UNTRUSTED_TITLES: return False
-    if own_title:
-        own=' '.join(own_title.lower().split()).replace('.','')
-        if own and lowered.replace('.','') in own: return False
-    words=[word for word in text.split() if word]
-    if not 2<=len(words)<=10: return False
-    # An all-caps line made mostly of short capitalised tokens is a byline, a job
-    # title or a ticker banner ("EVP & CFO", "LDICC NCGC EC"), not a section.
-    if sum(1 for word in words if _ACRONYM.match(word))/len(words)>=0.6: return False
-    # The registrant naming itself is page furniture, not a section.
-    if len(words)<=4 and _ENTITY_NAME.search(text): return False
-    return True
-
-
-def _heading(line: str, *, previous_blank: bool=True, next_nonblank: bool=True, own_title: str='') -> tuple[int,str] | None:
-    text=' '.join(line.split())
-    if not text or len(text)>120: return None
-    if text.startswith('#'):
-        level=len(text)-len(text.lstrip('#')); title=text[level:].strip()
-        return (level,title) if title else None
-    if _ITEM_HEADING.match(text) and not _NOISE_LINE.match(text):
-        # Filings separate "Item" and its number with a thin space or a tab, and
-        # a label must not carry that layout character into retrieval paths.
-        label=re.sub(r'^((?:item|part)\s+\S+?\.)\s*',lambda m:m.group(1)+' ',text,count=1,flags=re.I)
-        return (2,label if not text.isupper() else label.title())
-    if _ALLCAPS_HEADING.match(text) and _plausible_title(text,previous_blank=previous_blank,
-                                                        next_nonblank=next_nonblank,own_title=own_title):
-        return (3,text.title())
-    return None
 
 
 def coverage_gaps(text: str, chunks: list[ChunkDraft]) -> list[tuple[int,int]]:

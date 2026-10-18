@@ -328,6 +328,9 @@ class SecFilingInventory(Base):
     content_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     content_text_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     content_length: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Reported figures lifted from this filing's XBRL, frozen with the text so an
+    # analysis quotes the number the company filed instead of a number it read.
+    content_financials: Mapped[list | None] = mapped_column(JSON, nullable=True)
     content_error: Mapped[str | None] = mapped_column(String(280), nullable=True)
     # ``source_url`` always identifies the accession's primary filing.  A
     # fetched 8-K may instead retain its related Exhibit 99.1, so persist the

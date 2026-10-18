@@ -290,3 +290,65 @@
 - 4,682 块 ÷ 1.7 块/秒 ≈ 46 分钟；embedding 走本地 `data/knowledge/models/bge-m3`，**费用 0**
 - 只重建 `official_filing` 来源；本次不重抓 SEC、不改抓取层
 - **不影响**预测生成：那条路不走向量库，仍读 `content_excerpt` 前 24,000 字符（第 3 步 XBRL / 分析窗口改造另议）
+
+## 十一、分析层改造（2026-10-19，未重建索引）
+
+v6 只修了"切块怎么切"，没修"分析读什么"。分析层（AI 分析、研究简报、预测）一直读
+`content_excerpt[:24000]`，对 10-K/10-Q/DEF 14A 等于只读了封面、目录和免责声明。本轮把同一套章节识别
+复用到分析层，并让数字从 XBRL 来，不再靠正文里的文字。
+
+### 1. 新模块
+
+| 文件 | 作用 |
+|---|---|
+| `app/sec_structure.py` | 章节识别唯一实现：`sections(text)` 返回带 `start/end/level/code` 的 `Section`；`heading()`/`plausible_title()` 供切块与分析共用 |
+| `app/analysis_window.py` | 预算分配：`build_analysis_window(text, form, budget=24000)` → `mode ∈ {whole, sections, prefix}` |
+| `app/xbrl_financials.py` | 从 SEC companyfacts 取本份文件的权威数字，渲染成可引用的 `REPORTED FIGURES` 块 |
+| `scripts/backfill_xbrl_facts.py` | 为库内 10-K/10-Q/20-F 回填 `sec_filing_inventory.content_financials` |
+
+`chunking.py` 改为 `from ..sec_structure import ...`，不再各自维护正则——切块和分析从此按同一份章节定义工作。
+
+### 2. 窗口怎么分配（`analysis_window.py`）
+
+按表单给"该读什么"的配额：10-K → MD&A 9,000 + 财务报表 9,000 + 风险 3,000 + 业务 3,000；
+10-Q → MD&A 9,000 + 财务报表 9,000 + 风险 3,000 + 其余 3,000。同一类里有多个候选取**跨度最大**的那节
+（目录里每个 Item 只有几百字符，正文才是最大的那个）。报表起点用 `^\s*Total assets` 往回退 3,000 字符，
+所以 `CONSOLIDATED BALANCE SHEET` 标题连表头一起进窗口。
+
+### 3. XBRL 数字
+
+`content_financials` 存的是本份文件自己申报的数字（只认 `form` 与 `filed` 都相同的条目，不同文件的口径不混用）：
+revenue（四级 tag 回退）、net_income、operating_cash_flow、total_assets、gross_profit、operating_income、
+cost_of_revenue、cash_and_equivalents、total_liabilities、stockholders_equity，最多 4 期。
+分析文本尾部追加 `REPORTED FIGURES` 块，提示词要求"有块时一律用块内数字并引其原行"。
+
+### 4. 提示词与可加载性
+
+`PROMPT_VERSION` → `material-analysis-prompt-v2`；`_document_payload` 增加 `coverage`
+（`fraction_of_document` / `sections_included` / `sections_not_included`）与数字提示。
+提示词新增四问必须回答：营收及可比期变化、净利润与经营现金流、利润率及管理层归因、管理层点名的主要风险；
+`coverage.fraction < 1` 时必须在 `uncertainties` 里说明读了哪些章节，不得把部分阅读说成完整阅读。
+
+同时补了一条不变量：**模型返回的 `prompt_version` 必须等于分析时的 `PROMPT_VERSION`**，否则判
+`invalid_model_output`。原来存得下、读不回来的版本行（payload 自称 v1、行记录 v2，读回时指纹校验必然失败）
+从此不会产生。
+
+### 5. 实测（META 10-K 517,372 字符，2026-01-29）
+
+| | 旧（前 24,000 字符） | 新（按章节 24,000 + XBRL） |
+|---|---|---|
+| 覆盖 | 4.64%（封面/目录/风险开头） | 4.64% 但落在 MD&A + 财务报表 + 风险 + 业务 |
+| 营收 | 无 | 200,966 百万（+22%，2024 年 164,501） |
+| 营业利润 | 无 | 83,276 百万，利润率 41% |
+| 净利润 | 无 | 60,458 百万（2024 年 62,360） |
+| 经营现金流 | 无 | 115,800 百万 |
+| 数字来源 | 无（正文未读到报表） | XBRL，逐行可引 |
+
+模型摘要原文（截断）："该材料为 Meta Platforms, Inc. 2025 财年 10-K 的部分摘录（覆盖率约 4.64%）。
+2025 年营收 2009.66 亿美元，同比增长 22%……"
+
+### 6. 仍未做
+
+- `app/evidence_revision.py`（预测修订，20,000 字符）与对话里的 `_substantive_excerpt(limit=3000)` 仍是旧逻辑
+- XBRL 只回填了 10-K/10-Q（21 份）；8-K 与 DEF 14A 没有可比报表
+- 索引重建（v6 分块已写好未重建，`CHUNKER_VERSION` 一旦升到 v6 会自动换代）

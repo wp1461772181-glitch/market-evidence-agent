@@ -570,3 +570,42 @@ def test_uploaded_pdf_keeps_raw_bytes_and_extracted_text_hashes_distinct():
     assert snapshot["content_text_sha256"] == text_hash
     assert raw_hash != text_hash
     assert snapshot["content_text"] == extracted_text
+
+
+def _annual_report_text() -> str:
+    def filler(phrase: str, size: int) -> str:
+        return ((phrase + " ") * (size // (len(phrase) + 1) + 1))[:size]
+    return ("UNITED STATES\nSECURITIES AND EXCHANGE COMMISSION\n\nFORM 10-K\n\n" + filler("cover page.", 2_000)
+            + "\n\nTABLE OF CONTENTS\n\nItem 1. Business 5\nItem 7. Management's Discussion and Analysis 30\n"
+              "Item 8. Financial Statements and Supplementary Data 45\n"
+            + "\n\nItem 1. Business\n\n" + filler("We sell devices worldwide.", 12_000)
+            + "\n\nItem 7. Management's Discussion and Analysis of Financial Condition\n\nMDNA-BODY-MARKER\n"
+            + filler("Revenue grew on services.", 12_000)
+            + "\n\nItem 8. Financial Statements and Supplementary Data\n\nCONSOLIDATED BALANCE SHEETS\n"
+              "Total assets 100,000\n" + filler("Accounts payable and accruals.", 4_000))
+
+
+def test_a_long_filing_is_analysed_through_its_sections_and_reported_figures():
+    from app.evidence_context import _candidate_from_filing
+
+    text = _annual_report_text()
+    filing_id = _filing(content=text[:80_000])
+    with SessionLocal() as db:
+        row = db.get(SecFilingInventory, filing_id)
+        row.content_text = text
+        row.content_text_sha256 = hashlib.sha256(text.encode()).hexdigest()
+        row.content_length = len(text)
+        row.content_financials = [{"metric": "total_assets", "label": "Total assets", "unit": "USD",
+                                   "periods": [{"value": 100_000, "start": None, "end": "2025-09-27"}]}]
+        db.commit(); db.refresh(row)
+        candidate = _candidate_from_filing(row, decision_at=datetime(2026, 9, 11, tzinfo=UTC))
+    snapshot = candidate.source_snapshot
+    self_text = snapshot["analysis_text"]
+    assert snapshot["analysis_coverage"]["mode"] == "sections"
+    assert "MDNA-BODY-MARKER" in self_text and "Total assets 100,000" in self_text
+    assert "SECURITIES AND EXCHANGE COMMISSION" not in self_text
+    assert snapshot["analysis_has_reported_figures"] is True
+    assert "REPORTED FIGURES" in self_text and "USD 100,000" in self_text
+    assert snapshot["coverage"] == "key_sections_analyzed"
+    assert snapshot["analysis_coverage"]["fraction"] < 1
+    assert snapshot["analysis_locator"]["kind"] == "extracted_text_sections"

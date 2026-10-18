@@ -47,7 +47,7 @@ class KeyNumber(StrictModel):
 
 class MaterialAnalysisPayload(StrictModel):
     schema_version: str = Field(pattern=r"^material-analysis-v1$")
-    prompt_version: str = Field(pattern=r"^material-analysis-prompt-v1$")
+    prompt_version: str = Field(pattern=r"^material-analysis-prompt-v[12]$")
     summary: str = Field(min_length=1, max_length=1200)
     facts: list[Fact] = Field(max_length=12)
     supporting: list[Inference] = Field(max_length=6)
