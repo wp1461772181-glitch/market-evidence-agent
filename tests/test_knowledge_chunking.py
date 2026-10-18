@@ -47,3 +47,33 @@ def test_category_uses_parent_path_while_question_uses_current_heading():
     chunks=build_chunks(source('# Financials\n## Revenue\nFY2025 revenue was 123 USD million.'),CharTokenizer())
     assert chunks[0].category=='official_filing > Financials'
     assert chunks[0].questions=='Revenue'
+
+def test_plain_text_item_and_title_case_headings_scope_each_chunk():
+    """SEC filings arrive as plain text without markdown headings.
+
+    Sentence windows used to run straight from an Item 7 paragraph into the Item 8
+    statements, so a chunk's category said nothing about which section it covered.
+    """
+    text=(
+        'Item 7. Management Discussion and Analysis\n'
+        'Revenue grew because of demand.\n'
+        'Item 8. Financial Statements and Supplementary Data\n'
+        'CONSOLIDATED BALANCE SHEETS\n'
+        'Total assets were 123 million.\n'
+    )
+    chunks=build_chunks(source(text),CharTokenizer())
+    by_answer={c.answer.strip():c for c in chunks}
+    discussion=next(c for c in chunks if 'Revenue grew' in c.answer)
+    balance=next(c for c in chunks if 'Total assets were' in c.answer)
+    assert discussion.answer.strip()=='Revenue grew because of demand.'
+    assert 'Item 7' in discussion.questions
+    assert 'Item 8' in balance.category
+    assert balance.questions=='Consolidated Balance Sheets'
+    assert 'Item 7' not in balance.category and 'Item 7' not in balance.section_path
+    assert by_answer['Total assets were 123 million.'] is balance
+
+def test_financial_line_labels_are_not_mistaken_for_headings():
+    text='TOTAL ASSETS 1,234 1,100\nTotal liabilities were 45 million.\n'
+    chunks=build_chunks(source(text),CharTokenizer())
+    assert any('TOTAL ASSETS' in c.answer for c in chunks)
+    assert all('Total Assets 1' not in c.category for c in chunks)

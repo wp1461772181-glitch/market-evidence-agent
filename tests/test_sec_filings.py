@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import UTC, datetime
 
@@ -307,6 +308,42 @@ def test_fetches_a_bounded_cached_excerpt_only_from_an_inventoried_official_url(
     assert filing.content_truncated is True
     assert filing.content_excerpt_sha256 is not None
     assert opener.urls.count(selected_url) == 1
+
+
+def test_fetched_filing_keeps_the_whole_document_beside_the_frozen_excerpt():
+    """Retrieval needs the full document; analyses keep the frozen preview.
+
+    The preview stops at 80,000 characters, which on a real 10-K ends long before
+    Item 8 contains any figure. The full text is stored next to it so indexing
+    can reach the financial statements without changing what an analysis reads.
+    """
+    create_sec_filing_inventory_table()
+    _clear_inventory()
+    opener, _ = _responses()
+    provider = _provider(opener)
+
+    with SessionLocal() as db:
+        rows, _, _ = scan_sec_filings(symbol="AAPL", db=db, provider=provider)
+        filing, _ = fetch_inventory_content(
+            symbol="AAPL",
+            accession_number=rows[0].accession_number,
+            db=db,
+            provider=provider,
+            observed_at=datetime(2026, 11, 2, 10, tzinfo=UTC),
+        )
+
+        assert filing.content_text is not None
+        assert len(filing.content_text) > len(filing.content_excerpt)
+        assert filing.content_length == len(filing.content_text)
+        assert filing.content_text.startswith(filing.content_excerpt)
+        assert filing.content_text_sha256 == hashlib.sha256(
+            filing.content_text.encode("utf-8")
+        ).hexdigest()
+        # The frozen preview keeps its own hash so existing analyses and
+        # citations stay byte-identical.
+        assert filing.content_excerpt_sha256 == hashlib.sha256(
+            filing.content_excerpt.encode("utf-8")
+        ).hexdigest()
 
 
 def test_inline_xbrl_header_labels_never_reach_the_frozen_excerpt():

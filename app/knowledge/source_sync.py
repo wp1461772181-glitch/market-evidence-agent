@@ -108,9 +108,12 @@ def sync_sources_once(session_factory, runtime, tokenizer) -> None:
         sync_source_batch(session_factory, tokenizer, settings.generation, source_type=kind, batch_size=5)
     if os.getenv("RAG_INDEXING_ENABLED", "false").strip().lower() in {"1", "true", "yes"}:
         from .indexing import index_pending
+        # One chunk per 30-second tick meant a fresh 10-K (~40 chunks) needed
+        # twenty minutes and a full rebuild never converged. Each task is a
+        # single embedding, so a small batch stays well inside one tick.
         runtime.executor.run_background_sync(lambda: index_pending(
             session_factory, runtime.embedder, runtime.index,
-            settings.generation, max_tasks=1, worker_id="material-sync"))
+            settings.generation, max_tasks=5, worker_id="material-sync"))
 
 
 def start_source_sync(session_factory, interval_seconds: float = 30.0) -> None:

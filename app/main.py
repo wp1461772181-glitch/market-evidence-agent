@@ -417,7 +417,7 @@ def fetch_filing_content(
     refresh: bool = False,
     db: Session = Depends(get_db),
 ) -> dict:
-    """Fetch or refresh a bounded text excerpt from an inventoried SEC filing."""
+    """Fetch or refresh one inventoried SEC filing and keep its complete text."""
     try:
         filing, cache_hit = fetch_inventory_content(
             symbol=symbol,
@@ -429,7 +429,12 @@ def fetch_filing_content(
     except SecFilingsError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     item = SecFilingInventoryItem.model_validate(filing).model_dump()
-    return {**item, "content_excerpt": filing.content_excerpt, "cache_hit": cache_hit}
+    return {
+        **item,
+        "content_excerpt": filing.content_excerpt,
+        "content_length": filing.content_length,
+        "cache_hit": cache_hit,
+    }
 
 
 # 记录人工来源相关性审核；审核不验证申报事实或预测方向。

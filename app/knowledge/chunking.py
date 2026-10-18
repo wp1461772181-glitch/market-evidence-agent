@@ -2,7 +2,7 @@ from __future__ import annotations
 import hashlib, re, uuid
 from typing import Protocol
 from .sources import ChunkDraft, SourceDocument
-CHUNKER_VERSION='markdown-sentence-v3'
+CHUNKER_VERSION='markdown-sentence-v4'
 FORMAT_VERSION='category-questions-answer-v1'
 _NAMESPACE=uuid.UUID('d26df052-bc20-4d4d-8b9c-3156b7e9e31f')
 class Tokenizer(Protocol):
@@ -27,6 +27,27 @@ def _sentences(text: str) -> list[tuple[int,int,str]]:
     if part.strip():
         left=start+len(part)-len(part.lstrip()); right=start+len(part.rstrip()); out.append((left,right,text[left:right]))
     return out
+# Plain-text SEC filings carry no markdown headings, so sentence windows used to
+# drift across unrelated sections (an Item 7 paragraph could share a chunk with
+# Item 8 tables). These recognisers promote real section titles to headings so a
+# chunk stays inside one section and carries that section in its category path.
+_ITEM_HEADING=re.compile(r'^(?:item|part)\s+(?:\d{1,2}[a-c]?|[ivx]{1,4})\.?\s+\S.{0,110}$',re.I)
+_ALLCAPS_HEADING=re.compile(r"^[A-Z][A-Z0-9 ,.'&/()\-:]{6,110}$")
+
+
+def _heading(line: str) -> tuple[int,str] | None:
+    text=line.strip()
+    if not text or len(text)>120: return None
+    if text.startswith('#'):
+        level=len(text)-len(text.lstrip('#')); title=text[level:].strip()
+        return (level,title) if title else None
+    if _ITEM_HEADING.match(text): return (2,text if not text.isupper() else text.title())
+    if _ALLCAPS_HEADING.match(text) and not any(c.isdigit() for c in text):
+        words=text.split()
+        if len(words)>=2 and sum(c.isalpha() for c in text)>=6: return (3,text.title())
+    return None
+
+
 def build_chunks(document: SourceDocument, tokenizer: Tokenizer, *, target_tokens: int=512, overlap_tokens: int=64, max_tokens: int=768) -> list[ChunkDraft]:
     if target_tokens<1 or overlap_tokens<0 or max_tokens<target_tokens: raise ValueError('invalid chunk token limits')
     lines=document.text.splitlines(keepends=True); positions=[]; offset=0
@@ -50,8 +71,9 @@ def build_chunks(document: SourceDocument, tokenizer: Tokenizer, *, target_token
     while i<len(positions):
         start,end,line=positions[i]
         if not line.strip(): i+=1; continue
-        if line.startswith('#'):
-            flush(); level=len(line)-len(line.lstrip('#')); title=line[level:].strip()
+        heading=_heading(line)
+        if heading is not None:
+            flush(); level,title=heading
             headings=[x for x in headings if x[0]<level]+[(level,title)]; i+=1; continue
         if line.lstrip().startswith('|'):
             preceding_context=' '.join(item[2] for item in active)

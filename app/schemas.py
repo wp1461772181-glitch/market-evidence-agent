@@ -204,6 +204,7 @@ class SecFilingInventoryItem(BaseModel):
     content_observed_at: datetime | None
     content_excerpt_sha256: str | None
     content_truncated: bool
+    content_length: int | None = None
     content_error: str | None
     review_scope_note: str = (
         "Manual source relevance review only; it does not validate claims, directions, or forecasts."

@@ -25,8 +25,9 @@ from app.sec_filings import (
 )
 
 
-SUPPORTED_FORMS = frozenset({"10-K", "10-Q", "8-K"})
+SUPPORTED_FORMS = frozenset({"10-K", "10-Q", "8-K", "DEF 14A", "20-F", "40-F"})
 FINANCIAL_FORMS = frozenset({"10-K", "10-Q"})
+PROXY_FORMS = frozenset({"DEF 14A"})
 ALL_SYMBOLS = ("AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA")
 MAX_HISTORY_PAGES = 100
 MAX_HISTORY_FILINGS = 5_000
@@ -175,12 +176,17 @@ def main() -> int:
     parser.add_argument("--end-date", type=_parse_date, default=default_end)
     parser.add_argument("--symbols", nargs="+", choices=ALL_SYMBOLS, default=ALL_SYMBOLS)
     parser.add_argument("--include-8k", action="store_true", help="also include 8-K current reports")
+    parser.add_argument("--include-proxy", action="store_true", help="also include DEF 14A proxy statements")
     parser.add_argument("--apply", action="store_true", help="save filings and fetch text excerpts; without this flag only report counts")
     args = parser.parse_args()
     if args.start_date > args.end_date:
         parser.error("--start-date must be on or before --end-date")
 
-    forms = FINANCIAL_FORMS | ({"8-K"} if args.include_8k else set())
+    forms = (
+        FINANCIAL_FORMS
+        | ({"8-K"} if args.include_8k else set())
+        | (PROXY_FORMS if args.include_proxy else set())
+    )
     provider = SecEdgarProvider(max_primary_document_bytes=MAX_PRIMARY_DOCUMENT_BYTES)
     symbols = tuple(dict.fromkeys(args.symbols))
     history = _history(

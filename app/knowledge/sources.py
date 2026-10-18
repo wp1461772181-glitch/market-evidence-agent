@@ -72,9 +72,14 @@ def adapt_uploaded(row: Any, *, owner_hash: str | None, allowlist: set[str]) -> 
 
 def adapt_sec(row: Any) -> SourceDocument | None:
     if row.get('content_status') not in (None,'fetched'): return None
-    text=str(row.get('content_excerpt') or '')
-    if not text.strip() or not row.get('content_excerpt_sha256'): return None
-    if _hash(text)!=str(row['content_excerpt_sha256']):return None
+    # Prefer the full document text so a long 10-K is indexed past the frozen
+    # 80k preview. Rows fetched before the full-text column existed fall back to
+    # the preview, and either way the stored hash must match the text exactly.
+    full=row.get('content_text')
+    text=str(full if full else (row.get('content_excerpt') or ''))
+    expected=str(row.get('content_text_sha256') if full else (row.get('content_excerpt_sha256') or ''))
+    if not text.strip() or not expected: return None
+    if _hash(text)!=expected: return None
     url=row.get('content_source_url') or row.get('source_url')
     name=row.get('content_document_name') or row.get('primary_document') or 'SEC filing excerpt'
     source_hash=_snapshot_hash(text=text,title=str(name),url=url,symbol=str(row['symbol']),filed_at=row.get('filed_at'),
@@ -83,9 +88,9 @@ def adapt_sec(row: Any) -> SourceDocument | None:
       kind=str(row.get('content_kind') or 'sec_excerpt'))
     filed=row.get('filed_at')
     published=datetime.combine(filed,datetime.min.time(),tzinfo=UTC) if filed and not isinstance(filed,datetime) else _utc(filed)
-    return SourceDocument('sec_filing_inventory',str(row['id']),source_hash,str(row['content_excerpt_sha256']),'official_filing',str(row['symbol']),'public','public',None,
+    return SourceDocument('sec_filing_inventory',str(row['id']),source_hash,expected,'official_filing',str(row['symbol']),'public','public',None,
       str(name),url,published,_utc(row.get('observed_at')),_utc(row.get('content_observed_at')),bool(row.get('content_truncated')),
-      str(row.get('content_kind') or 'sec_excerpt'),text,category=str(row.get('form') or 'SEC filing'))
+      'sec_text' if full else 'sec_excerpt',text,category=str(row.get('form') or 'SEC filing'))
 
 def adapt_faq(row: Any) -> SourceDocument:
     category=str(row['category']); question=str(row['question']); answer=str(row['answer'])

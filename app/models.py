@@ -288,7 +288,10 @@ class SecFilingInventory(Base):
     __tablename__ = "sec_filing_inventory"
     __table_args__ = (
         UniqueConstraint("cik", "accession_number", name="uq_sec_filing_inventory_cik_accession"),
-        CheckConstraint("form IN ('10-K', '10-Q', '8-K')", name="ck_sec_filing_inventory_form"),
+        CheckConstraint(
+            "form IN ('10-K', '10-Q', '8-K', 'DEF 14A', '20-F', '40-F')",
+            name="ck_sec_filing_inventory_form",
+        ),
         CheckConstraint(
             "review_status IN ('pending_review', 'accepted', 'rejected')",
             name="ck_sec_filing_inventory_review_status",
@@ -318,6 +321,13 @@ class SecFilingInventory(Base):
     content_excerpt: Mapped[str | None] = mapped_column(String(80_000), nullable=True)
     content_excerpt_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     content_truncated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # The untouched document text. ``content_excerpt`` stays the frozen preview
+    # that analyses and citations already depend on; retrieval reads
+    # ``content_text`` so a long 10-K is indexed to its last footnote instead of
+    # stopping at the preview boundary.
+    content_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    content_text_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    content_length: Mapped[int | None] = mapped_column(Integer, nullable=True)
     content_error: Mapped[str | None] = mapped_column(String(280), nullable=True)
     # ``source_url`` always identifies the accession's primary filing.  A
     # fetched 8-K may instead retain its related Exhibit 99.1, so persist the

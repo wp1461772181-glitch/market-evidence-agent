@@ -40,7 +40,7 @@ SEC_SOURCE = "sec-edgar"
 DEFAULT_SEC_TICKERS = frozenset({"AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"})
 # Compatibility alias for stable default monitor schedules; runtime admission is dynamic.
 SUPPORTED_SEC_TICKERS = DEFAULT_SEC_TICKERS
-SUPPORTED_FORMS = frozenset({"10-K", "10-Q", "8-K"})
+SUPPORTED_FORMS = frozenset({"10-K", "10-Q", "8-K", "DEF 14A", "20-F", "40-F"})
 DEFAULT_TIMEOUT_SECONDS = 20
 # SEC's published upper limit is 10 requests/second.  This client waits at
 # least 0.2 seconds between its own requests, staying below five/second.
@@ -114,6 +114,22 @@ class SecFilingContent:
     excerpt: str
     excerpt_sha256: str
     truncated: bool
+    # Full plain text of the fetched document.  ``excerpt`` remains the frozen
+    # preview used by analyses and citations; retrieval and indexing use
+    # ``text`` so nothing past the preview boundary is silently dropped.
+    text: str = ""
+    text_sha256: str = ""
+
+    @classmethod
+    def from_text(cls, text: str) -> "SecFilingContent":
+        excerpt = text[:MAX_EXCERPT_CHARACTERS]
+        return cls(
+            excerpt=excerpt,
+            excerpt_sha256=hashlib.sha256(excerpt.encode("utf-8")).hexdigest(),
+            truncated=len(text) > len(excerpt),
+            text=text,
+            text_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        )
 
 
 class _TextCollector(HTMLParser):
@@ -295,15 +311,10 @@ class SecEdgarProvider:
             reject_nul_bytes=True,
         )
         text = _html_text(raw)
-        excerpt = text[:MAX_EXCERPT_CHARACTERS]
         return SecRelatedExhibit(
             document_name=document_name,
             source_url=source_url,
-            content=SecFilingContent(
-                excerpt=excerpt,
-                excerpt_sha256=hashlib.sha256(excerpt.encode("utf-8")).hexdigest(),
-                truncated=len(text) > len(excerpt),
-            ),
+            content=SecFilingContent.from_text(text),
         )
 
     def fetch_primary_document(self, filing: SecFilingInventory) -> SecFilingContent:
@@ -323,12 +334,7 @@ class SecEdgarProvider:
             reject_nul_bytes=True,
         )
         text = _html_text(raw)
-        excerpt = text[:MAX_EXCERPT_CHARACTERS]
-        return SecFilingContent(
-            excerpt=excerpt,
-            excerpt_sha256=hashlib.sha256(excerpt.encode("utf-8")).hexdigest(),
-            truncated=len(text) > len(excerpt),
-        )
+        return SecFilingContent.from_text(text)
 
     def _get_json(self, url: str) -> dict:
         raw = self._get_bytes(url, max_bytes=MAX_FILING_BYTES)
@@ -490,6 +496,7 @@ def fetch_inventory_content(
         not force_refresh
         and filing.content_status == "fetched"
         and filing.content_excerpt is not None
+        and filing.content_text is not None
         and (filing.form != "8-K" or attachment_checked)
     ):
         return filing, True
@@ -541,6 +548,9 @@ def fetch_inventory_content(
     filing.content_excerpt = content.excerpt
     filing.content_excerpt_sha256 = content.excerpt_sha256
     filing.content_truncated = content.truncated
+    filing.content_text = content.text or None
+    filing.content_text_sha256 = content.text_sha256 or None
+    filing.content_length = len(content.text) if content.text else None
     filing.content_status = "fetched"
     filing.content_error = None
     # Record the moment after the provider returned, never the request's
@@ -621,10 +631,23 @@ def create_sec_filing_inventory_table() -> None:
             "content_kind VARCHAR(32)",
             "related_attachment_status VARCHAR(32)",
             "related_attachment_error VARCHAR(280)",
+            "content_text TEXT",
+            "content_text_sha256 VARCHAR(64)",
+            "content_length INTEGER",
         ):
             connection.execute(
                 text(f"ALTER TABLE sec_filing_inventory ADD COLUMN IF NOT EXISTS {definition}")
             )
+        connection.execute(
+            text("ALTER TABLE sec_filing_inventory DROP CONSTRAINT IF EXISTS ck_sec_filing_inventory_form")
+        )
+        connection.execute(
+            text(
+                "ALTER TABLE sec_filing_inventory "
+                "ADD CONSTRAINT ck_sec_filing_inventory_form "
+                "CHECK (form IN ('10-K', '10-Q', '8-K', 'DEF 14A', '20-F', '40-F'))"
+            )
+        )
         connection.execute(
             text("ALTER TABLE sec_filing_inventory DROP CONSTRAINT IF EXISTS ck_sec_filing_inventory_review_status")
         )

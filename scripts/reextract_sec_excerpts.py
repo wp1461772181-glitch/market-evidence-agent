@@ -94,8 +94,9 @@ def main(argv: list[str] | None = None) -> int:
                 )
             except SecFilingsError as exc:
                 db.rollback()
-                outcomes[f"error:{exc.code}"] += 1
-                print(f"[{index}/{len(rows)}] {row.symbol} {row.accession_number} failed: {exc.code}")
+                reason = getattr(exc, "code", None) or str(exc)[:60]
+                outcomes[f"error:{reason}"] += 1
+                print(f"[{index}/{len(rows)}] {row.symbol} {row.accession_number} failed: {reason}")
         print("outcomes:", dict(outcomes))
     return 0
 
