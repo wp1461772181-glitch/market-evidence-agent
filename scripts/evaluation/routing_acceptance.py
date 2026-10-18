@@ -149,7 +149,23 @@ async def evaluate(args):
     if not results:raise RuntimeError('evaluation_not_run')
     quality=[r for r in results if not r['controlled_probe']]
     single=[r for r in quality if r['id'] in {'R01','R03','R04','R13','R15','R19','R20','R45','R46','R48','R49','R50'}]
-    value['summary']={'cases':len(results),'passed':sum(r['passed'] for r in results),'model_quality_cases':len(quality),'model_quality_passed':sum(r['passed'] for r in quality),'p50_ms':statistics.median(r['elapsed_ms'] for r in quality),'single_source_median_model_calls':statistics.median(r['model_calls'] for r in single) if single else None,'successful_p50_ms':statistics.median(r['elapsed_ms'] for r in quality if r['passed']) if any(r['passed'] for r in quality) else None}
+    # Refusal attribution: the course separates "did we find it" from "is it enough".  A turn that
+    # refused is not automatically a failure, and a turn that should have refused but answered is a
+    # different defect than one that answered badly.  Both are counted here so a change can be
+    # attributed instead of guessed at.
+    expectation={case['id']:(case.get('expect') or {}) for case in cases}
+    def refused(result):
+        audit=result.get('audit')
+        return bool(isinstance(audit,dict) and audit.get('refusal'))
+    def should_refuse(result):
+        marks=expectation.get(result['id'],{}).get('answer_must') or []
+        return any('没有可核验资料' in mark for mark in marks)
+    refusals=[r for r in quality if refused(r)]
+    value['summary']={'cases':len(results),'passed':sum(r['passed'] for r in results),'model_quality_cases':len(quality),'model_quality_passed':sum(r['passed'] for r in quality),'p50_ms':statistics.median(r['elapsed_ms'] for r in quality),'single_source_median_model_calls':statistics.median(r['model_calls'] for r in single) if single else None,'successful_p50_ms':statistics.median(r['elapsed_ms'] for r in quality if r['passed']) if any(r['passed'] for r in quality) else None,
+      'refusals':len(refusals),'refusal_rate':round(len(refusals)/len(quality),3) if quality else None,
+      'should_refuse':sum(1 for r in quality if should_refuse(r)),
+      'unexpected_refusals':[r['id'] for r in refusals if not should_refuse(r)],
+      'missed_refusals':[r['id'] for r in quality if should_refuse(r) and not refused(r)]}
     Path(args.output).write_text(json.dumps(value,ensure_ascii=False,indent=2));print(value['summary'])
 
 def main():

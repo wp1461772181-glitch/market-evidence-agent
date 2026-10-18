@@ -71,9 +71,32 @@ def canonical_metric(name):
     return text
 
 
+# Which checks may only annotate a row instead of discarding it.  The course's rule is that recall
+# answers "did we find it" and the model answers "is it enough": a source that is merely about a
+# different period, or that words the metric differently, is evidence the model should see and judge.
+# What stays a hard stop is data that cannot be trusted (a broken body) and a source about the wrong
+# company, because attributing one company's numbers to another is the one error worth refusing.
+# An explicit freshness window is the user's own constraint, not a relevance judgement, so it stays a
+# hard filter.  What softens is wording: whether the text says 毛利率 or gross margin, whether the
+# fiscal period is phrased the way the question phrased it.
+SOFT_GATE_CHECKS={'requested_metric_missing','requested_period_missing','weak_question_coverage'}
+
+
+def _gate_outcome(ok: bool,reason: str,soft: bool) -> tuple[bool,str]:
+    """``soft`` turns the annotation-only checks into an accepted row that carries a note.
+
+    The reason comes back prefixed with ``soft:`` so the caller can record the reservation on the
+    row and the answer model can say the source is not on point instead of the source disappearing.
+    """
+    if ok:return True,reason
+    if soft and reason.split(':',1)[0] in SOFT_GATE_CHECKS:return True,'soft:'+reason
+    return False,reason
+
+
 def gate_row(question: str, row: dict, *, symbol: str | None=None, company: str | None=None,
              metrics: list[str] | None=None, period: str | None=None, days_back: int | None=None,
-             official_only: bool=False, now: datetime | None=None, entity_aliases: list[str] | None=None) -> tuple[bool,str]:
+             official_only: bool=False, now: datetime | None=None, entity_aliases: list[str] | None=None,
+             soft: bool=False) -> tuple[bool,str]:
     kind=row.get('source_type','')
     web=kind in {'web','web_news'} or 'url' in row
     if row.get('fetch_error') or row.get('body_hash_valid') is False:return False,'invalid_source_body'
@@ -113,7 +136,7 @@ def gate_row(question: str, row: dict, *, symbol: str | None=None, company: str 
             try:
                 if not isinstance(row['close'],bool) and math.isfinite(float(row['close'])) and float(row['close'])>=0:continue
             except (TypeError,ValueError):pass
-            return False,'requested_metric_missing:price'
+            return _gate_outcome(False,'requested_metric_missing:price',soft)
         if key=='date' and any(row.get(field) for field in ('filed_at','published_at','trading_date','decision_at')):continue
         if key=='forecast' and row.get('probabilities'):continue
         terms=METRIC_GROUPS.get(key,(key,))
@@ -127,18 +150,18 @@ def gate_row(question: str, row: dict, *, symbol: str | None=None, company: str 
                     combined = prev + ' ' + part + ' ' + nxt
                     if any(contains(x, combined) for x in allowed_entities) and not re.search(r'\b(?:Samsung|Google|Microsoft|Meta|Amazon|Intel|Nvidia|Tesla)\b', part, re.I):
                         relevant.append(combined)
-        if not relevant:return False,'requested_metric_missing:'+key
-        if not any(period_match(period or question,part) for part in relevant):return False,'requested_period_missing'
+        if not relevant:return _gate_outcome(False,'requested_metric_missing:'+key,soft)
+        if not any(period_match(period or question,part) for part in relevant):return _gate_outcome(False,'requested_period_missing',soft)
     requested=period or question
     if not period_match(requested,body+' '+str(row.get('report_period') or '')+' '+str(row.get('filed_at') or row.get('trading_date') or row.get('decision_at') or '')):
-        return False,'requested_period_missing'
+        return _gate_outcome(False,'requested_period_missing',soft)
     if days_back is not None and not published_within(row.get('published_at') or row.get('filed_at'),days_back,now or datetime.now(UTC)):
-        return False,'requested_time_window_missing'
+        return _gate_outcome(False,'requested_time_window_missing',soft)
     query_without_url=re.sub(r'https://\S+',' ',question)
     from ..agent_web_research import _GENERIC_LATIN
     noise=set(_GENERIC_LATIN)|{'read','explain','summarize','summarise','verified','publication','dates','cite','citation','citations','briefly'}
     words=[t.casefold() for t in re.findall(r'[A-Za-z]{3,}',query_without_url) if t.casefold() not in noise]
-    if not needed and not(company or symbol) and words and not any(contains(t,body) for t in words):return False,'weak_question_coverage'
+    if not needed and not(company or symbol) and words and not any(contains(t,body) for t in words):return _gate_outcome(False,'weak_question_coverage',soft)
     return True,'sufficient_evidence'
 
 
