@@ -253,3 +253,40 @@
 
 - 分析窗口仍是 `content_excerpt` 的前 24,000 字符（v1 已声明第二阶段）。
 - `content_truncated` 语义未变：仍表示"预览被砍"，但同行的 `content_text` 已是全文；验收改为看 `content_length` 与 `content_text` 非空。
+
+## 九、待办：切块器 v6 重建索引（2026-10-18 记录，未执行）
+
+代码已提交（`944b018`）但**尚未部署**，因为 `CHUNKER_VERSION` 升到 `markdown-sentence-v6` 后检索只认当前代际，库内全是 v5 块，先部署会让向量库在重建完成前变成空的。
+
+### v6 修了什么（全量 93 份实测）
+
+| 表单 | 份数 | 分块 | 覆盖率 | 丢字 | 丢锚点 | 错标章节 |
+|---|---|---|---|---|---|---|
+| 10-K | 6 | 1,432 | 99.91% | 0 | 0 | 0 |
+| 10-Q | 15 | 1,787 | 99.92% | 0 | 0 | 0 |
+| 8-K | 67 | 577 | 99.79% | 0 | 0 | 0 |
+| DEF 14A | 5 | 886 | 99.96% | 0 | 0 | 0 |
+
+改造前：最差一份 90.9%，META 10-K 的 `CONSOLIDATED BALANCE SHEET` 标题掉进空洞，552 块（11.6%）标着不属于它的章节。
+
+三条根因与对策：
+1. `flush()` 判定为页眉页码就**直接丢弃** → 改为进 `pending` 缓冲挂到下一块之前（攒够 200 字符才单独成块）。
+2. 标题行被消费后文字**不进任何块** → 同上，字符随下一块入库。
+3. 全大写标题规则太松（`EVP & CFO`、`Amazon.Com, Inc.`、`SECURITIES AND EXCHANGE COMMISSION` 都成了章节名）→ 要求上下空行、无数字、词数 2–10、缩写占比 < 60%、黑名单、拒绝注册人名；`Item 9.01` 的细空格 U+2009 归一化。
+
+注意一个已修的自造 bug：第一版直接拿 `pending` 起点当块起点，produced 出 `start > end` 的倒置区间（10-Q 覆盖率反而掉到 87.6%）。现在只有"紧邻且中间无文字"的片段才能当前缀，否则先 `_emit_pending()` 单独成块。
+
+### 重建步骤（按做法 A：只重建不删，可回滚）
+
+1. `launchctl bootout gui/$(id -u)/com.market-evidence-agent.api`（避免老代码并发 sync 混代际）
+2. `PUBLIC_API_MODE=false RAG_ENABLED=true .venv-rag/bin/python scripts/rebuild_knowledge_index.py`
+3. `... scripts/verify_fulltext_index.py`（四条验收：全文覆盖、分块深度、XBRL 污染、真实提问检索）
+4. `... scripts/audit_chunking.py`（覆盖率/丢字/错标对照表）
+5. 部署：`python scripts/deploy.py`，再 `launchctl bootstrap` 恢复四个 agent
+6. 回滚：`CHUNKER_VERSION` 改回 `markdown-sentence-v5` 并重新部署，旧块立刻恢复可见
+
+### 预期与成本
+
+- 4,682 块 ÷ 1.7 块/秒 ≈ 46 分钟；embedding 走本地 `data/knowledge/models/bge-m3`，**费用 0**
+- 只重建 `official_filing` 来源；本次不重抓 SEC、不改抓取层
+- **不影响**预测生成：那条路不走向量库，仍读 `content_excerpt` 前 24,000 字符（第 3 步 XBRL / 分析窗口改造另议）
