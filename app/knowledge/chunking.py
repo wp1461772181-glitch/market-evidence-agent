@@ -2,7 +2,7 @@ from __future__ import annotations
 import hashlib, re, uuid
 from typing import Protocol
 from .sources import ChunkDraft, SourceDocument
-CHUNKER_VERSION='markdown-sentence-v4'
+CHUNKER_VERSION='markdown-sentence-v5'
 FORMAT_VERSION='category-questions-answer-v1'
 _NAMESPACE=uuid.UUID('d26df052-bc20-4d4d-8b9c-3156b7e9e31f')
 class Tokenizer(Protocol):
@@ -31,7 +31,12 @@ def _sentences(text: str) -> list[tuple[int,int,str]]:
 # drift across unrelated sections (an Item 7 paragraph could share a chunk with
 # Item 8 tables). These recognisers promote real section titles to headings so a
 # chunk stays inside one section and carries that section in its category path.
-_ITEM_HEADING=re.compile(r'^(?:item|part)\s+(?:\d{1,2}[a-c]?|[ivx]{1,4})\.?\s+\S.{0,110}$',re.I)
+# Real filings write "Item 8.Financial Statements" with no space after the
+# number, and a table of contents puts "Item 8." alone with the title on the
+# next line, so the separator is optional and the bare form is handled below.
+_ITEM_HEADING=re.compile(r'^(?:item|part)\s+(?:\d{1,2}[a-c]?|[ivx]{1,4})\.?\s*\S.{0,110}$',re.I)
+_BARE_ITEM=re.compile(r'^(?:item|part)\s+(?:\d{1,2}[a-c]?|[ivx]{1,4})\.?$',re.I)
+_NOISE_LINE=re.compile(r'(?i)^(?:table of contents|contents)$')
 _ALLCAPS_HEADING=re.compile(r"^[A-Z][A-Z0-9 ,.'&/()\-:]{6,110}$")
 
 
@@ -41,7 +46,9 @@ def _heading(line: str) -> tuple[int,str] | None:
     if text.startswith('#'):
         level=len(text)-len(text.lstrip('#')); title=text[level:].strip()
         return (level,title) if title else None
-    if _ITEM_HEADING.match(text): return (2,text if not text.isupper() else text.title())
+    if _ITEM_HEADING.match(text) and not _NOISE_LINE.match(text):
+        label=re.sub(r'^((?:item|part)\s+\S+?\.)\s*',lambda m:m.group(1)+' ',text,count=1,flags=re.I)
+        return (2,label if not text.isupper() else label.title())
     if _ALLCAPS_HEADING.match(text) and not any(c.isdigit() for c in text):
         words=text.split()
         if len(words)>=2 and sum(c.isalpha() for c in text)>=6: return (3,text.title())
@@ -62,16 +69,31 @@ def build_chunks(document: SourceDocument, tokenizer: Tokenizer, *, target_token
         review=needs_review or _token_count(tokenizer,emb)>max_tokens
         ordinal=len(chunks); identity=f'{document.source_table}|{document.source_id}|{document.source_version}|{CHUNKER_VERSION}|{FORMAT_VERSION}|{ordinal}'
         chunks.append(ChunkDraft(str(uuid.uuid5(_NAMESPACE,identity)),ordinal,category,question,answer,emb,hashlib.sha256(answer.encode()).hexdigest(),start,end,review,content_type,' > '.join(x[1] for x in headings)))
+    def _noise(answer: str) -> bool:
+        """Page numbers and running headers carry no meaning worth embedding."""
+        letters=sum(c.isalpha() or '\u4e00'<=c<='\u9fff' for c in answer)
+        if letters<8: return True
+        return bool(_NOISE_LINE.match(answer.strip()))
     def flush():
         nonlocal active
         if active:
-            add(' '.join(x[2] for x in active),active[0][0],active[-1][1])
+            answer=' '.join(x[2] for x in active)
+            if not _noise(answer): add(answer,active[0][0],active[-1][1])
             active=[]
     i=0; preceding_context=''
     while i<len(positions):
         start,end,line=positions[i]
         if not line.strip(): i+=1; continue
         heading=_heading(line)
+        if heading is None and _BARE_ITEM.match(line.strip()):
+            # A table of contents keeps the number alone and the title on the
+            # next non-empty line; joining them restores the real heading.
+            for ahead in range(i+1,min(len(positions),i+6)):
+                title=positions[ahead][2].strip()
+                if not title: continue
+                if len(title)<=100 and not title.isdigit() and not _NOISE_LINE.match(title):
+                    heading=(2,f'{line.strip()} {title}')
+                break
         if heading is not None:
             flush(); level,title=heading
             headings=[x for x in headings if x[0]<level]+[(level,title)]; i+=1; continue
