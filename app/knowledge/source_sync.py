@@ -113,7 +113,7 @@ def sync_sources_once(session_factory, runtime, tokenizer) -> None:
         # single embedding, so a small batch stays well inside one tick.
         runtime.executor.run_background_sync(lambda: index_pending(
             session_factory, runtime.embedder, runtime.index,
-            settings.generation, max_tasks=5, worker_id="material-sync"))
+            settings.generation, max_tasks=5, worker_id="material-sync", batch_size=5))
 
 
 def start_source_sync(session_factory, interval_seconds: float = 30.0) -> None:

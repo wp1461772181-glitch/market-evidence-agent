@@ -88,8 +88,12 @@ def adapt_sec(row: Any) -> SourceDocument | None:
       kind=str(row.get('content_kind') or 'sec_excerpt'))
     filed=row.get('filed_at')
     published=datetime.combine(filed,datetime.min.time(),tzinfo=UTC) if filed and not isinstance(filed,datetime) else _utc(filed)
+    # ``truncated`` describes the text this document was built from.  The snapshot
+    # hash above still mixes in the filing's historical flag so that rows fetched
+    # before the full-text column existed keep their identity; only the document
+    # flag changes meaning, and only when the whole filing is on hand.
     return SourceDocument('sec_filing_inventory',str(row['id']),source_hash,expected,'official_filing',str(row['symbol']),'public','public',None,
-      str(name),url,published,_utc(row.get('observed_at')),_utc(row.get('content_observed_at')),bool(row.get('content_truncated')),
+      str(name),url,published,_utc(row.get('observed_at')),_utc(row.get('content_observed_at')),not full,
       'sec_text' if full else 'sec_excerpt',text,category=str(row.get('form') or 'SEC filing'))
 
 def adapt_faq(row: Any) -> SourceDocument:

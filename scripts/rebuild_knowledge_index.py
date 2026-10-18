@@ -69,6 +69,7 @@ def _index_all(session_factory, runtime, generation: str, *, batch: int) -> None
             generation,
             max_tasks=batch,
             worker_id="rebuild",
+            batch_size=batch,
         )
         total += counts.get("indexed", 0)
         if counts.get("failed"):

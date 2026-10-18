@@ -233,7 +233,10 @@ async def _retrieve(query:str, *, faq:bool, symbol:str|None=None, limit:int=5, a
                 if doc.source_type=='ai_analysis':
                     excerpt=f'[派生 AI 分析；模型/版本见标题与章节；原文引文如下]\n{excerpt}'
                 if doc.source_type=='official_filing':
-                    coverage='saved excerpt; partial/truncated coverage' if doc.truncated else 'saved excerpt; coverage limited to the stored content'
+                    if getattr(doc,'parser','')=='sec_text':
+                        coverage='full filing text; complete coverage'
+                    else:
+                        coverage='saved excerpt; partial/truncated coverage' if doc.truncated else 'saved excerpt; coverage limited to the stored content'
                     excerpt=f'[{coverage}; content source: {doc.source_url or "URL unavailable"}; content observed: {observed.isoformat() if observed else "unknown"}]\n{excerpt}'
                 excerpt=f'[{citation_number}] {excerpt}'
                 row={'id':doc.source_id,'title':doc.title,'source_url':getattr(doc,'source_url',None),'published_at':doc.published_at.isoformat() if doc.published_at else None,

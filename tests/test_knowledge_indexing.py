@@ -102,3 +102,13 @@ def test_reconcile_repair_requeues_missing_vector_without_deleting(disposable_da
     with Session(engine) as session:
         assert session.query(KnowledgeChunk).filter_by(id=chunk_uuid,status='pending').count()==1
         assert session.query(KnowledgeIndexTask).filter_by(chunk_id=chunk_uuid,status='pending').count()==1
+
+def test_a_batch_never_claims_the_same_chunk_twice(indexed_source):
+    """Sessions run with autoflush off, so claiming twice in one transaction
+    used to hand the same pending task back and Milvus rejected the batch for
+    duplicate keys."""
+    from app.knowledge.indexing import index_pending
+    store=Store()
+    counts=index_pending(lambda:Session(engine),Embed(),store,'g'*64,max_tasks=4,batch_size=4)
+    assert counts['indexed']==1 and counts['failed']==0
+    assert len(store.rows)==1

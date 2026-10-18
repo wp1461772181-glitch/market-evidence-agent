@@ -84,7 +84,6 @@ async def _probe(symbol: str, generation: str) -> list[tuple[str, str]]:
         top = rows[0] if rows else {}
         excerpt = (top.get("excerpt") or "").replace("\n", " ")[:120]
         results.append((f"{symbol}/{label}", excerpt or "(no hit)"))
-        del generation
     return results
 
 

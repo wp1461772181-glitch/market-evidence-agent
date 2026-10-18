@@ -178,7 +178,7 @@ def run_index(payload:IndexRequest,x_chat_session:str|None=Header(default=None),
     embedder=runtime.embedder if runtime else DenseEmbedder(settings.model_path,cpu_threads=settings.cpu_threads)
     index=MilvusIndex(settings.milvus_uri,settings.generation)
     try:
-        counts=index_pending(session_factory,embedder,index,settings.generation,max_tasks=payload.max_tasks,worker_id='knowledge-admin')
+        counts=index_pending(session_factory,embedder,index,settings.generation,max_tasks=payload.max_tasks,worker_id='knowledge-admin',batch_size=min(32,payload.max_tasks))
         from sqlalchemy import func, select
         with session_factory() as session:
             remaining=session.scalar(select(func.count()).select_from(KnowledgeChunk).where(
