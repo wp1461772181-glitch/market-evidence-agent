@@ -309,6 +309,51 @@ def test_fetches_a_bounded_cached_excerpt_only_from_an_inventoried_official_url(
     assert opener.urls.count(selected_url) == 1
 
 
+def test_inline_xbrl_header_labels_never_reach_the_frozen_excerpt():
+    """Hidden inline-XBRL contexts must not outrank the filing's real prose.
+
+    A real 10-K opened with ~33,000 characters of hidden XBRL labels before its
+    first readable line, so the 24,000-character analysis window saw tag soup
+    instead of the filing.
+    """
+    document = (
+        '<html><body><div style="display:none">'
+        "<ix:header><ix:hidden>"
+        '<ix:nonNumeric name="us-gaap:ProductMember" contextRef="c-1">us-gaap:ProductMember</ix:nonNumeric>'
+        '<ix:nonNumeric name="avgo:segment" contextRef="c-1">avgo:segment</ix:nonNumeric>'
+        '<ix:nonNumeric name="iso4217:USD" contextRef="c-1">iso4217:USD</ix:nonNumeric>'
+        "</ix:hidden></ix:header></div>"
+        "<p>Total revenue for the third quarter was $24,279 million.</p>"
+        "</body></html>"
+    ).encode()
+
+    text = sec_filings._html_text(document)
+
+    assert text == "Total revenue for the third quarter was $24,279 million."
+    assert "us-gaap" not in text and "iso4217" not in text
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "ex-99.1.htm",
+        "exhibit99-1.htm",
+        "exhibit991.htm",
+        "d123456dex991.htm",
+        "avgo-08022026x8kxex99.htm",
+        "avgo-20260902ex99-1.htm",
+        "a8kexhibit991.html",
+    ],
+)
+def test_exhibit_99_1_filename_variants_match_real_edgar_names(name):
+    assert sec_filings._EXHIBIT_99_1.search(name) is not None
+
+
+@pytest.mark.parametrize("name", ["ex99_2.htm", "ex-99.2.htm", "exhibit992.htm", "aapl-8k.htm", "R1.htm"])
+def test_exhibit_99_1_filename_pattern_rejects_other_exhibits(name):
+    assert sec_filings._EXHIBIT_99_1.search(name) is None
+
+
 def test_marks_pdf_primary_document_unavailable_without_requesting_it():
     create_sec_filing_inventory_table()
     _clear_inventory()

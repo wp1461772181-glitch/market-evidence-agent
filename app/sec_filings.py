@@ -53,7 +53,12 @@ PRIMARY_DOCUMENT_CONTENT_TYPES = frozenset({"text/html", "text/plain", "applicat
 _SAFE_PRIMARY_DOCUMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,511}$")
 _SAFE_ACCESSION = re.compile(r"^\d{10}-\d{2}-\d{6}$")
 _SAFE_SUBMISSIONS_PAGE = re.compile(r"^CIK\d{10}-submissions-\d{3}\.json$")
-_EXHIBIT_99_1 = re.compile(r"(?i)(?:^|[-_])ex(?:hibit)?[-_]?99[._-]?1\.(?:htm|html|txt)$")
+# EDGAR filers spell the same exhibit many ways ("ex-99.1.htm", "exhibit99-1.htm",
+# "d123456dex991.htm", "avgo-08022026x8kxex99.htm"). The earlier pattern required a
+# separator immediately before "ex", so a real 8-K whose results exhibit was named
+# ``avgo-08022026x8kxex99.htm`` was reported as having no related exhibit and its
+# quarterly figures never reached the analysis.
+_EXHIBIT_99_1 = re.compile(r"(?i)ex(?:hibit)?[-_.]?99(?:[-_.]?0?1)?\.(?:htm|html|txt)$")
 _PROCESS_RATE_LOCK = Lock()
 _NEXT_PROCESS_REQUEST_AT: float | None = None
 
@@ -119,7 +124,12 @@ class _TextCollector(HTMLParser):
         "dd", "div", "dl", "dt", "fieldset", "figcaption", "figure", "footer", "header",
         "li", "main", "ol", "table", "tbody", "tfoot", "thead", "tr", "ul",
     })
-    _IGNORED_TAGS = frozenset({"script", "style", "noscript"})
+    # ``ix:header``/``ix:hidden`` hold inline-XBRL contexts, dimension members, and
+    # namespace references. Browsers hide them, but a markup-only parser would emit
+    # them as prose: on a real 10-K the frozen excerpt began with ~33,000 characters
+    # of these labels before the first readable line, so the analysis window saw tag
+    # soup instead of the financial statements.
+    _IGNORED_TAGS = frozenset({"script", "style", "noscript", "ix:header", "ix:hidden"})
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
