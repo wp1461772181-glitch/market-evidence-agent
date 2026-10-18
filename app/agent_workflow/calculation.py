@@ -47,3 +47,23 @@ def calculate(args, citations):
             value=value.quantize(Decimal(1).scaleb(-decimals))
     except (SyntaxError,ArithmeticError,RecursionError) as exc:raise ValueError('invalid_calculation') from exc
     return {'value':str(value),'expression':expression,'inputs':args['inputs'],'parents':sorted(set(parents)),'derived':True}
+
+
+def bindable_values(citations, args):
+    """The numbers a model may bind from the cited sources, as strings.
+
+    ``calculation_input_unbound`` is unhelpful on its own: the model then guesses another value
+    and the same call fails again. Handing back what the source actually contains ends the loop.
+    """
+    indexed={c['ordinal']:c for c in citations or []}
+    found={}
+    for item in args.get('inputs') or []:
+        ordinal=item.get('source_ordinal') if isinstance(item,dict) else None
+        source=indexed.get(ordinal)
+        if not source:continue
+        text=unicodedata.normalize('NFKC',str(source.get('quote',''))).replace('萬','万').replace('億','亿')
+        text=PERIOD_TEXT.sub(' ',ACCESSION.sub(' ',SOURCE_ID.sub(' ',TASK_ID.sub(' ',text))))
+        text=re.sub(r'(?<=\d),(?=\d{3}(?!\d))','',text)
+        values=[str(Decimal(n)*Decimal(str(_MAGNITUDE.get(unit.lower(),1)))) for n,unit in _FIGURE.findall(text)]
+        if values:found[str(ordinal)]=values[:12]
+    return found

@@ -193,7 +193,12 @@ async def _expanded_retrieval(function, symbol: str, keyword: str, limit: int, s
                 seen.add(key);rows.append(row)
             if len(rows)>=limit:break
     await attempt(keyword)
-    if not rows and not source_id:
+    # A Chinese question against English filings can return rows that do not contain the asked
+    # metric: 'cloud revenue' finds a balance sheet, the turn answers 'no verifiable data' and the
+    # number sits one paragraph away. Those variants are model-written translations of the same
+    # question, so a hit is now a miss with an escape hatch instead of a dead end.
+    chinese=any('\u4e00'<=ch<='\u9fff' for ch in keyword)
+    if not source_id and (not rows or chinese):
         for query in (await query_variants(keyword))[1:]:
             await attempt(query)
             if len(rows)>=limit:break

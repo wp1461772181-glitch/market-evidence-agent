@@ -41,3 +41,44 @@ def test_calculation_rejects_ungrounded_inputs_and_unsafe_or_invalid_arithmetic(
     from app.agent_workflow.calculation import calculate
     with pytest.raises(ValueError):
         calculate({'expression':expression,'inputs':[{'name':'a','value':value,'source_ordinal':1}],'decimals':2},turn().citations)
+
+
+def test_a_refused_calculation_hands_back_the_numbers_the_source_holds():
+    """'calculation_input_unbound' alone makes the model guess again; the candidates end the loop."""
+    import asyncio, json
+    from app.agent_workflow import direct
+    from app.agent_workflow.calculation import bindable_values
+    citations = [{'ordinal': 1, 'quote': 'Total revenue was 331,839 million for the year.'}]
+    # The unit is part of the number: '331,839 million' binds as 331839000000, which is exactly the
+    # value the model has to supply, and exactly what it could not guess.
+    assert bindable_values(citations, {'inputs': [{'name': 'a', 'source_ordinal': 1}]}) == {'1': ['331839000000.0']}
+    steps = iter([{'tool_calls': [{'id': 'c1', 'function': {'name': 'calculate', 'arguments': json.dumps(
+        {'expression': 'a*2', 'inputs': [{'name': 'a', 'value': '123', 'source_ordinal': 1}]})}}]}])
+    from app.agent_workflow.state import AgentRuntimeContext
+    async def emit(_): pass
+    turn = direct.Turn('算一下', AgentRuntimeContext('custom', 'test', 'dummy'), emit, [], {})
+    turn.route = 'A'
+    turn.citations = citations
+    turn.observations = [{'accepted_evidence': True}]
+    outcome = asyncio.run(turn.execute_read('calculate', {'expression': 'a*2', 'inputs': [
+        {'name': 'a', 'value': '123', 'source_ordinal': 1}], 'decimals': 2}))
+    assert outcome['ok'] is False and outcome['error_code'] == 'calculation_input_unbound'
+    assert outcome['bindable_values'] == {'1': ['331839000000.0']}
+
+
+def test_a_chinese_search_always_considers_model_written_variants(monkeypatch):
+    """An English filing answers a Chinese metric under English wording only."""
+    import asyncio
+    from app import agent_tools
+    calls = []
+
+    async def fake_retrieve(symbol, keyword, limit, source_id=None):
+        calls.append(keyword)
+        return {'ok': True, 'data': [] if keyword != 'cloud revenue' else [{'id': 'c1'}], 'as_of': None}
+
+    async def fake_variants(keyword):
+        return [keyword, 'cloud revenue']
+
+    monkeypatch.setattr('app.knowledge.query_understanding.query_variants', fake_variants)
+    result = asyncio.run(agent_tools._expanded_retrieval(fake_retrieve, 'MSFT', '云业务收入', 3, None))
+    assert 'cloud revenue' in calls and len(result['data']) == 1
