@@ -105,21 +105,11 @@ class KnowledgeRuntime:
     async def rerank(self,query,passages):
         return await self.executor.run_fn(self._rerank_exclusive,query,passages)
     def _rerank_exclusive(self,query,passages):
-        from .reranking import rerank,unload
-        released=False
-        try:
-            self.embedder.release_model();released=True
-            return rerank(query,passages,str(self.settings.reranker_path),self.settings.reranker_revision)
-        except Exception:
-            if not released:self.ready=False
-            raise
-        finally:
-            try:
-                if released:
-                    unload();self.embedder.reload_model()
-            except Exception as exc:
-                self.ready=False
-                raise RuntimeError('knowledge runtime unavailable after model restore failure') from exc
+        # Both models stay resident for the life of the process. Swapping one out for the other
+        # around every rerank meant reloading 2.4 GB of weights per search, which cost roughly ten
+        # seconds of every turn that read a filing; the pair now fits and the load happens once.
+        from .reranking import rerank
+        return rerank(query,passages,str(self.settings.reranker_path),self.settings.reranker_revision)
     def health(self):
         age=max(0.0,time.monotonic()-self.last_health_check)
         healthy=bool(self.ready and age<=30.0)

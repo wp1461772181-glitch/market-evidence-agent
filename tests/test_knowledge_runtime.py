@@ -81,24 +81,23 @@ def test_hybrid_rerank_forces_single_worker_even_when_configured_higher():
     assert runtime.executor.executor._max_workers==1
     runtime.executor.close()
 
-def test_rerank_restore_failure_marks_runtime_unavailable(monkeypatch):
+def test_reranking_keeps_both_models_resident(monkeypatch):
+    """Swapping the embedder out around every rerank meant reloading 2.4 GB per search."""
     from types import SimpleNamespace
-    import pytest
     import app.knowledge.reranking as reranking
     from app.knowledge.runtime import KnowledgeRuntime
+    calls=[]
     class Embedder:
         def encode(self,values):return values
-        def release_model(self):pass
-        def reload_model(self):raise OSError('reload failed')
+        def release_model(self):calls.append('release')
+        def reload_model(self):calls.append('reload')
     class Index:
         def close(self):pass
     settings=SimpleNamespace(strategy='hybrid_rerank',max_concurrency=4,queue_capacity=0,reranker_path='unused',reranker_revision='fixed')
     runtime=KnowledgeRuntime(settings,Embedder(),Index(),0.0);runtime.ready=True
     monkeypatch.setattr(reranking,'rerank',lambda *args: [(0,1.0)])
-    monkeypatch.setattr(reranking,'unload',lambda:None)
-    with pytest.raises(RuntimeError,match='runtime unavailable after model restore failure'):
-        runtime._rerank_exclusive('q',['p'])
-    assert runtime.ready is False
+    assert runtime._rerank_exclusive('q',['p'])==[(0,1.0)]
+    assert calls==[] and runtime.ready is True
     runtime.executor.close()
 
 def test_runtime_readiness_requires_low_confidence_table(monkeypatch):
