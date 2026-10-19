@@ -121,7 +121,7 @@ class ToolPolicy:
     actionable_error:str='Correct the typed arguments, choose a returned source, or explain the missing evidence.'
 
 EXTRA=(
- ('calculate',CalculateArgs,'read','Calculate derived figures from cited source values. Only a..z, + - * / parentheses and constants 0,1,100. Inputs must occur in the chosen evidence. Formula and parents are recorded; derived results are not official originals.'),
+ ('calculate',CalculateArgs,'read','Calculate derived figures from cited source values. Only a..z, + - * / parentheses, the constants 0, 1, 100 and powers of ten for unit conversion (1000, 10000, 1000000, 100000000, 1000000000, 1000000000000). Inputs must occur in the chosen evidence. Formula and parents are recorded; derived results are not official originals.'),
  ('read_workspace',WorkspaceArgs,'read','Read a saved forecast/version timeline, analysis history/original, learning status, knowledge chunks/candidates, importable catalogue or revision candidates. Private records remain owner-scoped.'),
  ('start_historical_replay',ReplayArgs,'costly','Propose a retrospective replay for a specific past decision date; this is not a forward prediction. Confirmation required.'),
  ('revise_forecast',RevisionArgs,'costly','Propose a manual revision of an exact saved forecast version with exact saved source references. Confirmation required.'),

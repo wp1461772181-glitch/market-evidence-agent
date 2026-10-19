@@ -1422,7 +1422,12 @@ class Turn:
         stop=None
         while not(stop or self.budget()):
             self.audit['decision_steps']+=1
-            decision=await self.decision()
+            try:decision=await self.decision()
+            except HTTPException as exc:
+                # A provider that keeps sending broken responses ends gathering, not the turn: the
+                # closing call is smaller and the evidence already gathered still answers.
+                if getattr(exc,'detail',None) not in RETRYABLE_PROVIDER or not self.observations:raise
+                self.audit['provider_failure']=exc.detail;stop='provider_unstable';break
             if not isinstance(decision,dict):stop='provider_protocol_invalid';break
             calls=decision.get('tool_calls') or []
             if not calls:
@@ -1558,15 +1563,17 @@ class Turn:
         # Finalization never receives tools, capabilities or rejected bodies.
         try:closing=(await self.decision(True)).get('content') or ''
         except Exception:closing='已完成：取得 '+str(len(self.citations))+' 项来源；未完成：剩余请求。'
-        if stop=='turn_budget' and self.observations:
-            # Stopping to keep the wait reasonable is not a failure: the answer stands on its evidence.
-            result=self.finish(closing,reason='turn_budget')
+        if stop in {'turn_budget','provider_unstable'} and self.observations:
+            # Stopping to keep the wait reasonable, or because the provider kept failing, is not a
+            # failure of the answer: it stands on the evidence already gathered.
+            result=self.finish(closing,reason=stop)
             if result['status']!='failed' and re.search(r'\[\d+\]',result['answer']):
-                result['answer']+='\n\n（为控制等待时间，本轮基于已取得的资料作答。）'
-                self.audit['stop_reason']='turn_budget';result['reason']='turn_budget'
+                result['answer']+='\n\n'+('（为控制等待时间，本轮基于已取得的资料作答。）' if stop=='turn_budget' else '（模型这次的响应不完整，本轮基于已取得的资料作答。）')
+                self.audit['stop_reason']=stop;result['reason']=stop
                 return result
         notes={'no_progress':'几次检索都没有得到新的结果，已停止。',
             'turn_budget':'为控制等待时间，本轮在已取得的资料上停止。',
+            'provider_unstable':'模型这次的响应不完整，本轮在已取得的资料上停止。',
             'tool_failures':f'“{self.audit.get("failed_tool","工具")}”工具连续失败 {self.audit.get("failed_attempts",3)} 次（原因：{self.audit.get("failure_code","tool_unavailable")}），已停止重试。',
             'provider_protocol_invalid':'模型返回了无效工具协议，已停止。'}
         # The model closing is untrusted even though the stop notice is generated.

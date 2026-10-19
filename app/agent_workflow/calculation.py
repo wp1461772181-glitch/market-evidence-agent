@@ -4,6 +4,8 @@ import re
 import unicodedata
 from decimal import Decimal, InvalidOperation, localcontext
 from .semantic import _FIGURE, _MAGNITUDE, PERIOD_TEXT, ACCESSION, SOURCE_ID, TASK_ID
+# Percent and unit factors only: a power of ten converts a cited value (to 亿 or billions), it adds no figure.
+CONSTANTS=frozenset({0,1,100,1000,10**4,10**6,10**8,10**9,10**12})
 
 
 def calculate(args, citations):
@@ -24,7 +26,7 @@ def calculate(args, citations):
     if not values or len(values)>8:raise ValueError('invalid_calculation')
     def evaluate(node):
         if isinstance(node,ast.Name) and node.id in values:return values[node.id]
-        if isinstance(node,ast.Constant) and type(node.value) is int and node.value in {0,1,100}:return Decimal(node.value)
+        if isinstance(node,ast.Constant) and type(node.value) is int and node.value in CONSTANTS:return Decimal(node.value)
         if isinstance(node,ast.UnaryOp) and isinstance(node.op,(ast.UAdd,ast.USub)):
             value=evaluate(node.operand);return value if isinstance(node.op,ast.UAdd) else -value
         if isinstance(node,ast.BinOp) and isinstance(node.op,(ast.Add,ast.Sub,ast.Mult,ast.Div)):
