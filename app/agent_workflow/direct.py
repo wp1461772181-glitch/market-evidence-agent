@@ -1292,6 +1292,12 @@ class Turn:
             args={k:self.scope.get(k) for k in ('symbol','company','latest','form','financial_only') if self.scope.get(k) is not None}
             args['query']=self.scope.get('query') or self.question[:400]
             initial=await self.execute_read('search_knowledge',args);self.accept('search_knowledge',args,initial);await self.publish_result('search_knowledge',initial)
+            from .financials import xbrl_metrics_for
+            wanted=xbrl_metrics_for(self.scope.get('metrics') or [])
+            if wanted and self.scope.get('symbol'):
+                # A figure the filing reported in XBRL is read exactly instead of being hunted in prose.
+                figures_args={'symbol':self.scope['symbol'],'metrics':wanted}
+                figures=await self.execute_read('query_financials',figures_args);self.accept('query_financials',figures_args,figures);await self.publish_result('query_financials',figures)
             self.audit['retrieval_gate']='sufficient_evidence' if self.observations else 'zero_evidence'
             self.no_new=0  # The mandatory prelude is not an attempted repeated agent search.
         stop=None

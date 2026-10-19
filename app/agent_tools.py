@@ -327,6 +327,39 @@ async def query_sec_filings(symbol: str, form: str | None = None, accession_numb
     return {"ok":True,"data":[{k:_json(v) for k,v in r.items()} for r in rows],"source":"sec_filing_inventory (saved inventory)","as_of":_json(rows[0]["observed_at"]) if rows else None,
             "error_code":"no_source" if not rows else None}
 
+class FinancialsArgs(SymbolArgs):
+    metrics: list[Literal["revenue","cost_of_revenue","gross_profit","operating_income","net_income","operating_cash_flow","total_assets","cash_and_equivalents","total_liabilities","stockholders_equity"]] | None = Field(default=None, max_length=10)
+    fiscal_year: int | None = Field(default=None, ge=1990, le=2100)
+    fiscal_period: Literal["FY","Q1","Q2","Q3","Q4"] | None = None
+    form: Literal["10-K","10-Q"] | None = None
+    latest: bool = False
+    limit: int = Field(default=20, ge=1, le=40)
+
+@tool(args_schema=FinancialsArgs)
+async def query_financials(symbol: str, metrics: list[str] | None = None, fiscal_year: int | None = None,
+                           fiscal_period: str | None = None, form: str | None = None, latest: bool = False,
+                           limit: int = 20) -> dict:
+    """Exact figures each saved 10-K/10-Q reported in XBRL: revenue, cost of revenue, gross profit, operating income, net income, operating cash flow, total assets, cash, total liabilities, stockholders equity. Each row states its fiscal year/quarter, period dates and unit. Prefer it over filing text for these numbers."""
+    from .knowledge.runtime import current_research_context
+    from .agent_workflow.financials import figure_rows
+    context=current_research_context()
+    cutoff=context.cutoff if context and context.cutoff else datetime.now(UTC)
+    params={"symbol":symbol,"cutoff":cutoff}
+    filters=" AND form=:form" if form else ""
+    if form:params["form"]=form
+    filings=await _query("SELECT id, symbol, form, accession_number, filed_at, source_url, content_source_url, content_financials FROM sec_filing_inventory WHERE symbol=:symbol AND form IN ('10-K','10-Q','20-F') AND content_status='fetched' AND content_financials IS NOT NULL AND observed_at<=:cutoff AND filed_at<=CAST(:cutoff AS date)"+filters+" ORDER BY filed_at DESC, accession_number DESC LIMIT 12",params)
+    if latest:filings=filings[:1]
+    rows=[];seen=set()
+    # The newest filing restates older periods too; its figure for a period is the one kept.
+    for filing in filings:
+        for row in figure_rows(filing,metrics=metrics,fiscal_year=fiscal_year,fiscal_period=fiscal_period):
+            key=(row["metric"],row["period_start"],row["period_end"])
+            if key in seen:continue
+            seen.add(key);rows.append(row)
+    rows=rows[:limit]
+    return {"ok":True,"data":[{k:_json(v) for k,v in r.items()} for r in rows],"source":"sec_filing_inventory.content_financials (saved XBRL)",
+            "as_of":rows[0]["filed_at"] if rows else None,"error_code":"no_reported_figures" if not rows else None}
+
 @tool(args_schema=FAQArgs)
 async def query_research_faq(keyword: str) -> dict:
     """Answer a natural language question from the approved research FAQ."""
@@ -496,7 +529,7 @@ async def query_material_analysis(symbol: str, accession_number: str | None = No
 
 from .agent_web_research import web_research
 
-TOOL_REGISTRY={item.name:item for item in [query_stock_prices,query_latest_forecast,query_materials,query_sec_filings,query_research_faq,query_material_analysis,search_material_analysis,web_research]}
+TOOL_REGISTRY={item.name:item for item in [query_stock_prices,query_latest_forecast,query_materials,query_sec_filings,query_financials,query_research_faq,query_material_analysis,search_material_analysis,web_research]}
 def tool_schemas(*, owner: bool = True):
     from .agent_tool_catalog import schemas
     return schemas(owner=owner)

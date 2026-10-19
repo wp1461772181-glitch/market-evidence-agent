@@ -101,6 +101,19 @@ def _restore_citations(items,credential):
     verified.append({**item,'chunk_id':None,'document_id':None} if live else
                     {'ordinal':ordinal,'chunk_id':None,'title':'来源已失效','section':'','source_url':None,'source_type':'unavailable','truncated':False})
     continue
+   if item.get('source_type')=='reported_figure':
+    # A reported figure lives while the filing's saved XBRL still renders exactly this line.
+    from .models import SecFilingInventory
+    from .agent_workflow.financials import figure_rows
+    try:
+     source=session.get(SecFilingInventory,UUID(item.get('source_id','')))
+     filing={'id':source.id,'symbol':source.symbol,'form':source.form,'accession_number':source.accession_number,'filed_at':source.filed_at,
+             'source_url':source.source_url,'content_source_url':source.content_source_url,'content_financials':source.content_financials} if source else None
+     valid=bool(filing and any(row['excerpt']==item.get('quote') for row in figure_rows(filing)))
+    except (ValueError,TypeError,AttributeError):valid=False
+    verified.append({**item,'chunk_id':None,'document_id':None} if valid else
+                    {'ordinal':ordinal,'chunk_id':None,'title':'来源已失效','section':'','source_url':None,'source_type':'unavailable','truncated':False})
+    continue
    if item.get('source_type') in {'saved_filing','saved_ai_analysis','official_filing','ai_analysis'} and not item.get('chunk_id'):
     from .models import SecFilingInventory
     from .models import UploadedEvidence

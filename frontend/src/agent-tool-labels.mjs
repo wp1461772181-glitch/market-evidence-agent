@@ -8,6 +8,7 @@ export const TOOL_LABELS = {
   query_latest_forecast: "已保存预测",
   query_materials: "已保存材料",
   query_sec_filings: "SEC 申报",
+  query_financials: "已披露财务数字",
   query_research_faq: "研究问答库",
   query_material_analysis: "已保存的 AI 分析",
   search_material_analysis: "AI 分析检索",
