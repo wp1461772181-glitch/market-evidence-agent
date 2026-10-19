@@ -1,0 +1,1274 @@
+{
+ "suite_id": "market-evidence-dialogue-writes-2026-10-19",
+ "notes": "所有者写操作端到端套件。每组一个新对话，全部 owner 身份；先只读查询临时库确认目标真实存在（2026-10-19 首次快照：研究队列为 AAPL/MSFT/GOOGL/AMZN/NVDA/META/TSLA；行情只有 AAPL/AMZN/GOOGL/META/MSFT/NVDA/SPY/TSLA；MSFT 10-K 2026-07-29 尚无 AI 分析）。写用例使用 AMD（初始不在队列、无行情）、INTC（初始不在队列）、ORCL（初始不在队列、无网页来源）、CRM（初始不在队列）、MSFT（10-K/10-Q）等；队列会随用例变化，db_check 以运行时的实际查询为准。判定以用户可见结果为准：该出卡时出卡；确认后用人话说清做了什么或为什么没做成，不出现内部代码，不自相矛盾；写入能在临时库查到；下一轮能用上刚写入的东西。db_check 只执行单条只读 SELECT/WITH，库名必须以 test_g6_shadow_ 开头。不测 index、retry_document_index、withdraw_knowledge_document、review_knowledge_candidate：这些会碰与线上共享的检索索引，而影子环境 RAG 关闭。",
+ "cases": [
+  {
+   "id": "W01",
+   "title": "研究队列：加入→确认→查看→移出→确认→再问",
+   "identity": "owner",
+   "steps": [
+    {
+     "text": "研究队列里现在有哪些股票？",
+     "check": {
+      "card": false,
+      "tools_include": [
+       "query_research_queue"
+      ],
+      "answer_any": [
+       [
+        "MSFT"
+       ]
+      ],
+      "answer_no_codes": true,
+      "no_dropped": false
+     }
+    },
+    {
+     "text": "把 AMD 加入研究队列。",
+     "check": {
+      "card": "write_confirmation",
+      "proposed_include": [
+       "add_to_research_queue"
+      ],
+      "write_outcome": [
+       "proposed"
+      ],
+      "answer_no_codes": true,
+      "no_dropped": false
+     }
+    },
+    {
+     "kind": "confirm_card",
+     "check": {
+      "write_outcome": [
+       "executed"
+      ],
+      "consent_status": [
+       "complete"
+      ],
+      "answer_any": [
+       [
+        "AMD"
+       ],
+       [
+        "加入",
+        "添加",
+        "队列"
+       ]
+      ],
+      "answer_no_codes": true,
+      "no_dropped": false
+     }
+    },
+    {
+     "kind": "db_check",
+     "label": "AMD in queue",
+     "sql": "select count(*) from agent_research_queue where symbols::text like '%\"AMD\"%'",
+     "expect": {
+      "op": "gt",
+      "value": 0
+     }
+    },
+    {
+     "text": "现在队列里有什么？",
+     "check": {
+      "card": false,
+      "tools_include": [
+       "query_research_queue"
+      ],
+      "answer_any": [
+       [
+        "AMD"
+       ]
+      ],
+      "answer_no_codes": true,
+      "no_dropped": false
+     }
+    },
+    {
+     "text": "把 AMD 从研究队列移出。",
+     "check": {
+      "card": "write_confirmation",
+      "proposed_include": [
+       "remove_from_research_queue"
+      ],
+      "write_outcome": [
+       "proposed"
+      ],
+      "answer_no_codes": true,
+      "no_dropped": false
+     }
+    },
+    {
+     "kind": "confirm_card",
+     "check": {
+      "write_outcome": [
+       "executed"
+      ],
+      "consent_status": [
+       "complete"
+      ],
+      "answer_any": [
+       [
+        "AMD"
+       ],
+       [
+        "移出",
+        "移除",
+        "删除"
+       ]
+      ],
+      "answer_no_codes": true,
+      "no_dropped": false
+     }
+    },
+    {
+     "kind": "db_check",
+     "label": "AMD removed from queue",
+     "sql": "select count(*) from agent_research_queue where symbols::text like '%\"AMD\"%'",
+     "expect": {
+      "op": "eq",
+      "value": 0
+     }
+    },
+    {
+     "text": "再确认一下，队列里现在有什么？",
+     "check": {
+      "card": false,
+      "tools_include": [
+       "query_research_queue"
+      ],
+      "answer_absent_or_negative": {
+       "term": "AMD",
+       "unless": [
+        "不在",
+        "没有",
+        "已移出",
+        "移除"
+       ]
+      },
+      "answer_no_codes": true,
+      "no_dropped": false
+     }
+    }
+   ]
+  },
+  {
+   "id": "W02",
+   "title": "网页新闻：搜两条→保存第二条网页来源→确认→追问已保存来源",
+   "identity": "owner",
+   "steps": [
+    {
+     "text": "帮我搜两条甲骨文（ORCL）最近的新闻。",
+     "check": {
+      "card": false,
+      "tools_include": [
+       "web_research"
+      ],
+      "max_seconds": 240,
+      "no_dropped": false
+     }
+    },
+    {
+     "text": "把第二条新闻的网页原文抓取保存为网页来源。",
+     "check": {
+      "card": "write_confirmation",
+      "proposed_include": [
+       "ingest_web_source"
+      ],
+      "write_outcome": [
+       "proposed"
+      ],
+      "answer_no_codes": true,
+      "no_dropped": false
+     }
+    },
+    {
+     "kind": "confirm_card",
+     "check": {
+      "write_outcome": [
+       "executed"
+      ],
+      "consent_status": [
+       "complete"
+      ],
+      "answer_any": [
+       [
+        "保存",
+        "已",
+        "网页",
+        "来源"
+       ]
+      ],
+      "answer_no_codes": true,
+      "no_dropped": false,
+      "answer_no_ids": true
+     }
+    },
+    {
+     "kind": "db_check",
+     "label": "new ORCL web source",
+     "sql": "select count(*) from agent_web_sources where symbol='ORCL' and fetched_at > now() - interval '30 minutes'",
+     "expect": {
+      "op": "gt",
+      "value": 0
+     }
+    },
+    {
+     "text": "刚保存的那条网页讲了什么？",
+     "check": {
+      "card": false,
+      "tools_any": [
+       [
+        "search_knowledge",
+        "query_materials"
+       ]
+      ],
+      "answer_any": [
+       [
+        "ORCL",
+        "甲骨文"
+       ],
+       [
+        "新闻",
+        "报道",
+        "快讯",
+        "消息"
+       ]
+      ],
+      "answer_no_codes": true,
+      "citation_types_any": [
+       [
+        "web_news",
+        "web"
+       ]
+      ],
+      "no_dropped": false
+     }
+    }
+   ]
+  },
+  {
+   "id": "W03",
+   "title": "媒体材料：把网页正文保存为上传材料→确认→追问材料内容",
+   "identity": "owner",
+   "steps": [
+    {
+     "text": "把下面这段内容作为材料上传到微软名下，不用访问链接，正文我已经给你：标题《Microsoft Copilot 改版观察（对话测试 2026-10-19）》，来源链接 https://www.investing.com/news/stock-market-news/microsoft-revamps-copilot-with-code-generation-agentic-ai-tools-4917410 ，发布时间 2026-09-25。正文：微软为 Copilot 增加代码生成、常驻 AI agent 和 Office 智能体工具；报道称这些功能面向企业客户分批推出。以上是整理摘要，不是原文。",
+     "check": {
+      "card": "write_confirmation",
+      "proposed_include": [
+       "save_material_evidence"
+      ],
+      "write_outcome": [
+       "proposed"
+      ],
+      "answer_no_codes": true,
+      "max_seconds": 180,
+      "no_dropped": false
+     }
+    },
+    {
+     "kind": "confirm_card",
+     "check": {
+      "write_outcome": [
+       "executed"
+      ],
+      "consent_status": [
+       "complete"
+      ],
+      "answer_any": [
+       [
+        "保存",
+        "材料",
+        "已存在",
+        "无需"
+       ]
+      ],
+      "answer_no_codes": true,
+      "no_dropped": false
+     }
+    },
+    {
+     "kind": "db_check",
+     "label": "MSFT material saved",
+     "sql": "select count(*) from uploaded_evidence where symbol='MSFT' and title like '%Copilot 改版观察%'",
+     "expect": {
+      "op": "gt",
+      "value": 0
+     }
+    },
+    {
+     "text": "刚才保存的那份微软材料讲了什么？",
+     "check": {
+      "card": false,
+      "tools_any": [
+       [
+        "search_knowledge",
+        "query_materials"
+       ]
+      ],
+      "answer_any": [
+       [
+        "Copilot",
+        "微软"
+       ]
+      ],
+      "answer_no_codes": true,
+      "citation_types_any": [
+       [
+        "uploaded_media",
+        "uploaded_evidence"
+       ]
+      ],
+      "no_dropped": false
+     }
+    }
+   ]
+  },
+  {
+   "id": "W04",
+   "title": "SEC：扫描官方申报目录→确认；拉取最新 10-Q→确认；刷新→确认",
+   "identity": "owner",
+   "steps": [
+    {
+     "text": "扫描一下特斯拉的 SEC 官方申报目录。",
+     "check": {
+      "card": "write_confirmation",
+      "proposed_include": [
+       "scan_official"
+      ],
+      "write_outcome": [
+       "proposed"
+      ],
+      "answer_no_codes": true,
+      "no_dropped": false
+     }
+    },
+    {
+     "kind": "confirm_card",
+     "check": {
+      "write_outcome": [
+       "executed"
+      ],
+      "consent_status": [
+       "complete"
+      ],
+      "answer_any": [
+       [
+        "扫描",
+        "申报",
+        "SEC"
+       ]
+      ],
+      "answer_no_codes": true,
+      "max_seconds": 300,
+      "no_dropped": false
+     }
+    },
+    {
+     "kind": "db_check",
+     "label": "official scan run",
+     "sql": "select count(*) from official_monitor_runs_v2 where started_at > now() - interval '30 minutes'",
+     "expect": {
+      "op": "gt",
+      "value": 0
+     }
+    },
+    {
+     "text": "拉取特斯拉最新一份 10-Q 的原文。",
+     "check": {
+      "card": "write_confirmation",
+      "proposed_any": [
+       [
+        "fetch_sec",
+        "refresh_sec"
+       ]
+      ],
+      "write_outcome": [
+       "proposed"
+      ],
+      "answer_no_codes": true,
+      "no_dropped": false
+     }
+    },
+    {
+     "kind": "confirm_card",
+     "check": {
+      "write_outcome": [
+       "executed"
+      ],
+      "consent_status": [
+       "complete"
+      ],
+      "answer_any": [
+       [
+        "10-Q",
+        "原文",
+        "拉取",
+        "保存"
+       ]
+      ],
+      "answer_no_codes": true,
+      "max_seconds": 300,
+      "no_dropped": false
+     }
+    },
+    {
+     "text": "刷新特斯拉这份 10-Q 的原文。",
+     "check": {
+      "card": "write_confirmation",
+      "proposed_any": [
+       [
+        "refresh_sec",
+        "fetch_sec"
+       ]
+      ],
+      "write_outcome": [
+       "proposed"
+      ],
+      "answer_no_codes": true,
+      "no_dropped": false
+     }
+    },
+    {
+     "kind": "confirm_card",
+     "check": {
+      "write_outcome": [
+       "executed"
+      ],
+      "consent_status": [
+       "complete"
+      ],
+      "answer_any": [
+       [
+        "刷新",
+        "原文",
+        "10-Q"
+       ]
+      ],
+      "answer_no_codes": true,
+      "max_seconds": 300,
+      "no_dropped": false
+     }
+    },
+    {
+     "kind": "db_check",
+     "label": "SEC fetch/refresh request recorded",
+     "sql": "select count(*) from agent_action_requests where created_at > now() - interval '30 minutes' and action in ('fetch_sec','refresh_sec')",
+     "expect": {
+      "op": "gt",
+      "value": 0
+     }
+    }
+   ]
+  },
+  {
+   "id": "W05",
+   "title": "AI 分析：对已保存的 MSFT 10-K 生成分析→确认→问进度",
+   "identity": "owner",
+   "steps": [
+    {
+     "text": "对微软已保存的最新一份 10-K 生成 AI 分析。",
+     "check": {
+      "card": "write_confirmation",
+      "proposed_include": [
+       "analyze"
+      ],
+      "write_outcome": [
+       "proposed"
+      ],
+      "answer_no_codes": true,
+      "no_dropped": false
+     }
+    },
+    {
+     "kind": "confirm_card",
+     "check": {
+      "write_outcome": [
+       "executed"
+      ],
+      "consent_status": [
+       "complete"
+      ],
+      "answer_any": [
+       [
+        "分析",
+        "任务",
+        "队列",
+        "开始",
+        "提交"
+       ]
+      ],
+      "answer_no_codes": true,
+      "max_seconds": 300,
+      "no_dropped": false
+     }
+    },
+    {
+     "kind": "db_check",
+     "label": "MSFT 10-K analysis job exists",
+     "sql": "select count(*) from material_analysis_jobs where source_id='16a94cf4-abdd-45fc-9594-f6d0c82e7065'",
+     "expect": {
+      "op": "gt",
+      "value": 0
+     }
+    },
+    {
+     "text": "这份分析现在到哪一步了？",
+     "check": {
+      "card": false,
+      "answer_any": [
+       [
+        "分析"
+       ],
+       [
+        "进行",
+        "完成",
+        "排队",
+        "稍后",
+        "还没有",
+        "已"
+       ]
+      ],
+      "answer_no_codes": true,
+      "max_seconds": 240,
+      "no_dropped": false
+     }
+    }
+   ]
+  },
+  {
+   "id": "W06",
+   "title": "翻译：把已保存的苹果 10-Q AI 分析翻译成英文→确认",
+   "identity": "owner",
+   "steps": [
+    {
+     "text": "把苹果最新一份 10-Q 的 AI 分析翻译成英文。",
+     "check": {
+      "card": "write_confirmation",
+      "proposed_include": [
+       "translate_content"
+      ],
+      "write_outcome": [
+       "proposed"
+      ],
+      "answer_no_codes": true,
+      "max_seconds": 240,
+      "no_dropped": false
+     }
+    },
+    {
+     "kind": "confirm_card",
+     "check": {
+      "write_outcome": [
+       "executed"
+      ],
+      "consent_status": [
+       "complete"
+      ],
+      "answer_any": [
+       [
+        "翻译",
+        "英文",
+        "完成"
+       ]
+      ],
+      "answer_no_codes": true,
+      "max_seconds": 360,
+      "no_dropped": false
+     }
+    },
+    {
+     "kind": "db_check",
+     "label": "new material analysis translation",
+     "sql": "select count(*) from ai_content_translations where content_kind='material_analysis' and created_at > now() - interval '30 minutes'",
+     "expect": {
+      "op": "gt",
+      "value": 0
+     }
+    }
+   ]
+  },
+  {
+   "id": "W07",
+   "title": "预测：新建 AAPL 预测→确认→问最新预测；修订预测→确认",
+   "identity": "owner",
+   "steps": [
+    {
+     "text": "给苹果做一份新的研究预测。",
+     "check": {
+      "card": "write_confirmation",
+      "proposed_include": [
+       "forecast"
+      ],
+      "write_outcome": [
+       "proposed"
+      ],
+      "answer_no_codes": true,
+      "max_seconds": 240,
+      "no_dropped": false
+     }
+    },
+    {
+     "kind": "confirm_card",
+     "check": {
+      "write_outcome": [
+       "executed"
+      ],
+      "consent_status": [
+       "complete"
+      ],
+      "answer_any": [
+       [
+        "预测",
+        "任务",
+        "队列",
+        "开始",
+        "提交"
+       ]
+      ],
+      "answer_no_codes": true,
+      "max_seconds": 300,
+      "no_dropped": false
+     }
+    },
+    {
+     "kind": "db_check",
+     "label": "new AAPL forecast job",
+     "sql": "select count(*) from forecast_jobs_v2 where symbol='AAPL' and created_at > now() - interval '30 minutes'",
+     "expect": {
+      "op": "gt",
+      "value": 0
+     }
+    },
+    {
+     "text": "苹果最新的预测是什么？",
+     "check": {
+      "card": false,
+      "answer_any": [
+       [
+        "苹果",
+        "AAPL"
+       ],
+       [
+        "预测"
+       ]
+      ],
+      "answer_no_codes": true,
+      "max_seconds": 240,
+      "no_dropped": false
+     }
+    },
+    {
+     "text": "在苹果最新那份预测上做一次修订，把微软最新 10-K 作为新增依据。",
+     "check": {
+      "card": "write_confirmation",
+      "proposed_include": [
+       "revise_forecast"
+      ],
+      "write_outcome": [
+       "proposed"
+      ],
+      "answer_no_codes": true,
+      "max_seconds": 300,
+      "no_dropped": false
+     }
+    },
+    {
+     "kind": "confirm_card",
+     "check": {
+      "write_outcome": [
+       "executed"
+      ],
+      "consent_status": [
+       "complete"
+      ],
+      "answer_any": [
+       [
+        "修订",
+        "预测",
+        "任务"
+       ]
+      ],
+      "answer_no_codes": true,
+      "max_seconds": 300,
+      "no_dropped": false
+     }
+    }
+   ]
+  },
+  {
+   "id": "W08",
+   "title": "初始化行情：AMD（库里无行情）→确认→问收盘价",
+   "identity": "owner",
+   "steps": [
+    {
+     "text": "AMD 还没有行情，帮我初始化最近一年的每日行情。",
+     "check": {
+      "card": "write_confirmation",
+      "proposed_include": [
+       "initialize_prices"
+      ],
+      "write_outcome": [
+       "proposed"
+      ],
+      "answer_no_codes": true,
+      "max_seconds": 240,
+      "no_dropped": false
+     }
+    },
+    {
+     "kind": "confirm_card",
+     "check": {
+      "write_outcome": [
+       "executed"
+      ],
+      "consent_status": [
+       "complete"
+      ],
+      "answer_any": [
+       [
+        "行情",
+        "初始化",
+        "完成",
+        "任务"
+       ]
+      ],
+      "answer_no_codes": true,
+      "max_seconds": 360,
+      "no_dropped": false
+     }
+    },
+    {
+     "kind": "db_check",
+     "label": "AMD prices inserted",
+     "sql": "select count(*) from market_prices where symbol='AMD'",
+     "expect": {
+      "op": "gt",
+      "value": 0
+     }
+    },
+    {
+     "text": "AMD 最新收盘价是多少？",
+     "check": {
+      "card": false,
+      "tools_any": [
+       [
+        "query_stock_prices"
+       ]
+      ],
+      "answer_any": [
+       [
+        "AMD",
+        "收盘",
+        "美元",
+        "2026-10"
+       ]
+      ],
+      "answer_no_codes": true,
+      "max_seconds": 180,
+      "no_dropped": false
+     }
+    }
+   ]
+  },
+  {
+   "id": "W09",
+   "title": "卡片操作：取消；再提后改选；同一张卡重复确认；发新消息后确认旧卡",
+   "identity": "owner",
+   "steps": [
+    {
+     "text": "把 AMD 加入研究队列。",
+     "check": {
+      "card": "write_confirmation",
+      "proposed_include": [
+       "add_to_research_queue"
+      ],
+      "write_outcome": [
+       "proposed"
+      ],
+      "answer_no_codes": true,
+      "no_dropped": false
+     }
+    },
+    {
+     "kind": "cancel_card",
+     "check": {
+      "write_outcome": [
+       "cancelled"
+      ],
+      "consent_status": [
+       "cancelled"
+      ],
+      "answer_any": [
+       [
+        "取消"
+       ]
+      ],
+      "answer_no_codes": true,
+      "no_dropped": false
+     }
+    },
+    {
+     "text": "把 AMD 加入研究队列。",
+     "check": {
+      "card": "write_confirmation",
+      "proposed_include": [
+       "add_to_research_queue"
+      ],
+      "write_outcome": [
+       "proposed"
+      ],
+      "answer_no_codes": true,
+      "no_dropped": false
+     }
+    },
+    {
+     "kind": "choose_card",
+     "label": "换个操作",
+     "check": {
+      "write_outcome": [
+       "cancelled"
+      ],
+      "consent_status": [
+       "cancelled"
+      ],
+      "answer_any": [
+       [
+        "取消",
+        "没有执行",
+        "换"
+       ]
+      ],
+      "answer_excludes": [
+       "已加入",
+       "已添加"
+      ],
+      "answer_no_codes": true,
+      "no_dropped": false
+     }
+    },
+    {
+     "text": "把 INTC 加入研究队列。",
+     "check": {
+      "card": "write_confirmation",
+      "proposed_include": [
+       "add_to_research_queue"
+      ],
+      "write_outcome": [
+       "proposed"
+      ],
+      "answer_no_codes": true,
+      "no_dropped": false
+     }
+    },
+    {
+     "kind": "confirm_card",
+     "check": {
+      "write_outcome": [
+       "executed"
+      ],
+      "consent_status": [
+       "complete"
+      ],
+      "answer_any": [
+       [
+        "INTC"
+       ]
+      ],
+      "answer_no_codes": true,
+      "no_dropped": false
+     }
+    },
+    {
+     "kind": "db_check",
+     "label": "INTC in queue once",
+     "sql": "select count(*) from agent_research_queue q, jsonb_array_elements_text(q.symbols::jsonb) s where s.value='INTC'",
+     "expect": {
+      "op": "eq",
+      "value": 1
+     }
+    },
+    {
+     "kind": "reconfirm_card",
+     "check": {
+      "write_outcome": [
+       "executed",
+       "already_complete"
+      ],
+      "consent_status": [
+       "complete"
+      ],
+      "answer_no_codes": true,
+      "no_dropped": false
+     }
+    },
+    {
+     "kind": "db_check",
+     "label": "INTC still in queue once after repeat confirm",
+     "sql": "select count(*) from agent_research_queue q, jsonb_array_elements_text(q.symbols::jsonb) s where s.value='INTC'",
+     "expect": {
+      "op": "eq",
+      "value": 1
+     }
+    },
+    {
+     "text": "把 AMD 加入研究队列。",
+     "check": {
+      "card": "write_confirmation",
+      "proposed_include": [
+       "add_to_research_queue"
+      ],
+      "write_outcome": [
+       "proposed"
+      ],
+      "answer_no_codes": true,
+      "no_dropped": false
+     }
+    },
+    {
+     "text": "研究队列里现在有哪些股票？",
+     "check": {
+      "card": false,
+      "tools_include": [
+       "query_research_queue"
+      ],
+      "answer_any": [
+       [
+        "INTC"
+       ]
+      ],
+      "answer_no_codes": true,
+      "no_dropped": false
+     }
+    },
+    {
+     "kind": "stale_confirm",
+     "check": {
+      "consent_status": [
+       "proposed",
+       "cancelled"
+      ],
+      "answer_any": [
+       [
+        "失效",
+        "过期",
+        "无效",
+        "不匹配",
+        "请重新",
+        "无法",
+        "未执行",
+        "没有执行"
+       ]
+      ],
+      "answer_no_codes": true,
+      "no_dropped": false
+     }
+    },
+    {
+     "kind": "db_check",
+     "label": "stale confirm did not add AMD",
+     "sql": "select count(*) from agent_research_queue where symbols::text like '%\"AMD\"%'",
+     "expect": {
+      "op": "eq",
+      "value": 0
+     }
+    },
+    {
+     "text": "队列里现在有哪些股票？",
+     "check": {
+      "card": false,
+      "tools_include": [
+       "query_research_queue"
+      ],
+      "answer_any": [
+       [
+        "INTC"
+       ]
+      ],
+      "answer_absent_or_negative": {
+       "term": "AMD",
+       "unless": [
+        "不在",
+        "没有",
+        "已移出",
+        "移除"
+       ]
+      },
+      "answer_no_codes": true,
+      "no_dropped": false
+     }
+    }
+   ]
+  },
+  {
+   "id": "W10",
+   "title": "批准后同轮继续：加入研究队列并回答最近一期营收",
+   "identity": "owner",
+   "steps": [
+    {
+     "text": "先把 MSFT 从研究队列移出。",
+     "check": {
+      "card": "write_confirmation",
+      "proposed_include": [
+       "remove_from_research_queue"
+      ],
+      "write_outcome": [
+       "proposed"
+      ],
+      "answer_no_codes": true,
+      "no_dropped": false
+     }
+    },
+    {
+     "kind": "confirm_card",
+     "check": {
+      "write_outcome": [
+       "executed"
+      ],
+      "consent_status": [
+       "complete"
+      ],
+      "answer_any": [
+       [
+        "MSFT"
+       ]
+      ],
+      "answer_no_codes": true,
+      "no_dropped": false
+     }
+    },
+    {
+     "text": "把 MSFT 加入研究队列，然后告诉我它最近一期营收。",
+     "check": {
+      "card": "write_confirmation",
+      "proposed_include": [
+       "add_to_research_queue"
+      ],
+      "write_outcome": [
+       "proposed"
+      ],
+      "answer_no_codes": true,
+      "no_dropped": false
+     }
+    },
+    {
+     "kind": "confirm_card",
+     "check": {
+      "write_outcome": [
+       "executed"
+      ],
+      "consent_status": [
+       "complete"
+      ],
+      "answer_any": [
+       [
+        "331,839",
+        "331.8",
+        "3,318",
+        "3318"
+       ]
+      ],
+      "answer_no_codes": true,
+      "max_seconds": 300,
+      "no_dropped": false
+     }
+    },
+    {
+     "kind": "db_check",
+     "label": "MSFT back in queue",
+     "sql": "select count(*) from agent_research_queue q, jsonb_array_elements_text(q.symbols::jsonb) s where s.value='MSFT'",
+     "expect": {
+      "op": "eq",
+      "value": 1
+     }
+    }
+   ]
+  },
+  {
+   "id": "W11",
+   "title": "一次请求两个写操作：保存网页来源 + 加入研究队列→一次确认",
+   "identity": "owner",
+   "steps": [
+    {
+     "text": "帮我搜两条 Salesforce（CRM）最近的新闻。",
+     "check": {
+      "card": false,
+      "tools_include": [
+       "web_research"
+      ],
+      "max_seconds": 240,
+      "no_dropped": false
+     }
+    },
+    {
+     "text": "把第一条新闻的网页原文抓取保存为网页来源，同时把 CRM 加入研究队列。",
+     "check": {
+      "card": "write_confirmation",
+      "proposed_include": [
+       "ingest_web_source",
+       "add_to_research_queue"
+      ],
+      "write_outcome": [
+       "proposed"
+      ],
+      "answer_no_codes": true,
+      "max_seconds": 240,
+      "no_dropped": false
+     }
+    },
+    {
+     "kind": "confirm_card",
+     "check": {
+      "write_outcome": [
+       "executed"
+      ],
+      "consent_status": [
+       "complete"
+      ],
+      "answer_any": [
+       [
+        "保存",
+        "加入",
+        "CRM"
+       ]
+      ],
+      "answer_no_codes": true,
+      "max_seconds": 300,
+      "no_dropped": false
+     }
+    },
+    {
+     "kind": "db_check",
+     "label": "CRM in queue",
+     "sql": "select count(*) from agent_research_queue q, jsonb_array_elements_text(q.symbols::jsonb) s where s.value='CRM'",
+     "expect": {
+      "op": "eq",
+      "value": 1
+     }
+    },
+    {
+     "kind": "db_check",
+     "label": "new CRM web source",
+     "sql": "select count(*) from agent_web_sources where symbol='CRM' and fetched_at > now() - interval '30 minutes'",
+     "expect": {
+      "op": "gt",
+      "value": 0
+     }
+    }
+   ]
+  },
+  {
+   "id": "W12",
+   "title": "卡片出现后直接打字“同意”（不按按钮）→记录行为",
+   "identity": "owner",
+   "steps": [
+    {
+     "text": "把 AMD 加入研究队列。",
+     "check": {
+      "card": "write_confirmation",
+      "proposed_include": [
+       "add_to_research_queue"
+      ],
+      "write_outcome": [
+       "proposed"
+      ],
+      "answer_no_codes": true,
+      "no_dropped": false
+     }
+    },
+    {
+     "text": "同意",
+     "check": {
+      "card": true,
+      "write_outcome": [
+       "proposed"
+      ],
+      "answer_no_codes": true,
+      "no_dropped": false
+     }
+    },
+    {
+     "kind": "cancel_card",
+     "check": {
+      "write_outcome": [
+       "cancelled"
+      ],
+      "consent_status": [
+       "cancelled"
+      ],
+      "answer_any": [
+       [
+        "取消"
+       ]
+      ],
+      "answer_no_codes": true,
+      "no_dropped": false
+     }
+    },
+    {
+     "kind": "db_check",
+     "label": "typed consent did not add AMD",
+     "sql": "select count(*) from agent_research_queue where symbols::text like '%\"AMD\"%'",
+     "expect": {
+      "op": "eq",
+      "value": 0
+     }
+    }
+   ]
+  },
+  {
+   "id": "W13",
+   "title": "申报相关性：把 MSFT 10-Q 标记为相关→确认",
+   "identity": "owner",
+   "steps": [
+    {
+     "text": "把微软申报期截至 2026-03-31 的那份 10-Q（2026-04-29 提交）标记为相关（accepted）。",
+     "check": {
+      "card": "write_confirmation",
+      "proposed_include": [
+       "review_filing"
+      ],
+      "write_outcome": [
+       "proposed"
+      ],
+      "answer_no_codes": true,
+      "no_dropped": false
+     }
+    },
+    {
+     "kind": "confirm_card",
+     "check": {
+      "write_outcome": [
+       "executed"
+      ],
+      "consent_status": [
+       "complete"
+      ],
+      "answer_any": [
+       [
+        "相关",
+        "标记",
+        "记录",
+        "accepted",
+        "已"
+       ]
+      ],
+      "answer_no_codes": true,
+      "no_dropped": false
+     }
+    },
+    {
+     "kind": "db_check",
+     "label": "MSFT 10-Q review accepted",
+     "sql": "select review_status from sec_filing_inventory where id='646e4983-cf3f-4bed-88de-0a03c8af2a51'",
+     "expect": {
+      "op": "equals",
+      "value": "accepted"
+     }
+    }
+   ]
+  }
+ ]
+}
