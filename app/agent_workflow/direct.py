@@ -1558,6 +1558,7 @@ class Turn:
                 self.audit['stop_reason']='turn_budget';result['reason']='turn_budget'
                 return result
         notes={'no_progress':'几次检索都没有得到新的结果，已停止。',
+            'turn_budget':'为控制等待时间，本轮在已取得的资料上停止。',
             'tool_failures':f'“{self.audit.get("failed_tool","工具")}”工具连续失败 {self.audit.get("failed_attempts",3)} 次（原因：{self.audit.get("failure_code","tool_unavailable")}），已停止重试。',
             'provider_protocol_invalid':'模型返回了无效工具协议，已停止。'}
         # The model closing is untrusted even though the stop notice is generated.
