@@ -314,3 +314,62 @@ def test_a_stalled_turn_keeps_tool_codes_in_audit_only():
     text = turn.stalled_notice('no_progress')
     assert 'provider_timeout' not in text and 'web_research' in text
     assert turn.audit['failed_tools'] == [{'tool': 'web_research', 'error_code': 'provider_timeout'}]
+
+
+def test_a_confirmed_price_outage_names_the_data_source_and_a_next_step(monkeypatch):
+    operations = [{'name': 'initialize_prices', 'arguments': {'symbol': 'AMD', 'days': 366}}]
+    value = {'ok': False, 'status': 'complete', 'data': [
+        {'ok': False, 'error_code': 'market_data_unavailable',
+         'reason': consent.failure_reason('market_data_unavailable')}]}
+    turn = _confirmation_turn(monkeypatch, value, operations)
+
+    result = asyncio.run(turn.consent_reply())
+    answer = result['answer']
+    assert result['status'] == 'failed'
+    assert '初始化历史行情（AMD）' in answer and '行情数据源' in answer and '稍后再试' in answer
+    assert 'market_data_unavailable' not in answer and 'write_service_failed' not in answer
+
+
+def test_a_confirmed_revision_rejection_names_the_source_problem_and_a_next_step(monkeypatch):
+    operations = [{'name': 'revise_forecast',
+                   'arguments': {'version_id': '11111111-1111-4111-8111-111111111111', 'source_refs': []}}]
+    value = {'ok': False, 'status': 'complete', 'data': [
+        {'ok': False, 'error_code': 'revision_source_symbol_mismatch',
+         'reason': consent.failure_reason('revision_source_symbol_mismatch')}]}
+    turn = _confirmation_turn(monkeypatch, value, operations)
+
+    answer = asyncio.run(turn.consent_reply())['answer']
+    assert '修正预测' in answer and '不属于这个预测版本的股票' in answer and '同一只股票' in answer
+    assert 'revision_source_symbol_mismatch' not in answer and 'write_service_failed' not in answer
+
+
+def test_a_confirmed_price_outage_keeps_its_specific_code_through_consent(owner):
+    from app.market_data import MarketDataError
+    operation = {'name': 'initialize_prices', 'arguments': {'symbol': 'AMD', 'days': 366}}
+    conversation = 'price-outage-' + uuid.uuid4().hex[:8]
+    card = consent.propose(owner, conversation, [operation], {'title': '初始化历史行情'})
+    token = card['choices'][0]['value'].split(':', 1)[1]
+
+    def handler(*_):
+        raise MarketDataError('Yahoo Finance request failed for AMD: HTTP Error 429: Too Many Requests')
+
+    outcome = consent.execute(owner, conversation, token, [operation], handler)['data'][0]
+    assert outcome['error_code'] == 'market_data_unavailable'
+    assert '行情数据源' in outcome['reason']
+    assert 'Yahoo' not in outcome['reason'] and '429' not in outcome['reason']
+
+
+def test_a_confirmed_revision_rejection_keeps_its_specific_code_through_consent(owner):
+    operation = {'name': 'revise_forecast',
+                 'arguments': {'version_id': '11111111-1111-4111-8111-111111111111', 'source_refs': []}}
+    conversation = 'revision-refused-' + uuid.uuid4().hex[:8]
+    card = consent.propose(owner, conversation, [operation], {'title': '修正预测'})
+    token = card['choices'][0]['value'].split(':', 1)[1]
+
+    def handler(*_):
+        raise ValueError('revision_source_symbol_mismatch')
+
+    outcome = consent.execute(owner, conversation, token, [operation], handler)['data'][0]
+    assert outcome['error_code'] == 'revision_source_symbol_mismatch'
+    assert '不属于这个预测版本的股票' in outcome['reason']
+    assert 'write_service_failed' not in str(outcome)

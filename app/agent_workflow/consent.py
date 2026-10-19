@@ -33,6 +33,16 @@ FAILURE_REASONS={
  'unsupported_operation':'这项操作不受支持。',
  'batch_stopped':'前一项没有完成，这项没有执行。',
  'dependency_failed':'这项依赖的前一项没有完成，所以没有执行。',
+ 'forecast_version_not_found':'没有找到要修订的预测版本，可能已经不存在。',
+ 'forecast_version_not_revisable':'这个预测版本不能再修订：目标日期已过，或版本状态不允许。',
+ 'revision_source_not_found':'没有找到这条来源，可能已经从资料库移除。',
+ 'revision_source_symbol_mismatch':'这条来源不属于这个预测版本的股票，不能用于修订。',
+ 'revision_source_unavailable':'这条来源在预测作出时还不可用，不能用于这次修订。',
+ 'revision_source_unchanged':'这条来源与上次修订相比没有新内容，不需要再修订。',
+ 'revision_already_queued':'同一份来源的修订已经在排队或执行中，请等它完成。',
+ 'revision_rejected':'这次修订没有通过版本或来源校验，操作没有完成。',
+ 'market_data_unavailable':'行情数据源暂时连不上，或被限流，操作没有完成。',
+ 'already_reviewed':'这份申报已经有人工核验结论，结论记录后不能修改，所以这次没有重复记录。',
  'write_service_failed':'执行时服务返回了未预期的错误，操作没有完成。',
 }
 
@@ -78,6 +88,15 @@ def failure_outcome(exc):
         elif 'filename' in message or 'TXT, Markdown' in message:reason='文件名无效，或文件类型不是 TXT、Markdown、PDF。'
         else:reason=failure_reason('invalid_material')
         return {'ok':False,'error_code':'invalid_material','reason':reason}
+    from ..sec_filings import SecFilingsError
+    if isinstance(exc,SecFilingsError) and 'immutable human review decision' in str(exc):
+        # A review decision is recorded once by design; a second one is not a failed service.
+        return {'ok':False,'error_code':'already_reviewed','reason':failure_reason('already_reviewed')}
+    from ..market_data import MarketDataError
+    if isinstance(exc,MarketDataError):
+        # A provider outage or rate limit is retryable and has nothing to do with the saved write:
+        # the user needs to know the data source is down, not that some write service failed.
+        return {'ok':False,'error_code':'market_data_unavailable','reason':failure_reason('market_data_unavailable')}
     code=str(exc)
     known={
      'web_body_unavailable':'page_fetch_blocked','challenge_page':'page_fetch_blocked',
@@ -87,6 +106,14 @@ def failure_outcome(exc):
      'confirmation_snapshot_missing':'source_changed','confirmation_snapshot_mismatch':'source_changed',
      'requested_entity_missing':'entity_mismatch','owner_login_required':'owner_login_required',
      'unknown_tool':'unsupported_operation','invalid_published_at':'invalid_published_at',
+     'market_data_unavailable':'market_data_unavailable',
+     'forecast_version_not_found':'forecast_version_not_found',
+     'forecast_version_not_revisable':'forecast_version_not_revisable',
+     'revision_source_not_found':'revision_source_not_found',
+     'revision_source_symbol_mismatch':'revision_source_symbol_mismatch',
+     'revision_source_unavailable':'revision_source_unavailable',
+     'revision_source_unchanged':'revision_source_unchanged',
+     'revision_already_queued':'revision_already_queued','revision_rejected':'revision_rejected',
     }
     if code in known:
         return {'ok':False,'error_code':known[code],'reason':failure_reason(known[code])}

@@ -101,3 +101,10 @@ def test_a_filing_review_card_names_the_filing(monkeypatch):
     turn=_turn('把这份 10-Q 标记为相关');turn.scope={'symbol':'MSFT'}
     rows=asyncio.run(turn.describe_targets('review_filing',{'source_id':'00000000-0000-4000-8000-000000000002','decision':'accepted'}))
     assert rows[0]['title']=='msft-20260331.htm'
+
+def test_a_filing_that_already_has_a_review_says_so_instead_of_failing_vaguely():
+    from app.agent_workflow import consent
+    from app.sec_filings import SecFilingsError
+    out=consent.failure_outcome(SecFilingsError('SEC filing already has an immutable human review decision'))
+    assert out['error_code']=='already_reviewed' and '不能修改' in out['reason']
+    assert 'already_reviewed' in direct.FAILURE_NEXT_STEPS

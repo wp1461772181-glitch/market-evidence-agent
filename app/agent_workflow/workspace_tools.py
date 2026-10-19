@@ -14,6 +14,32 @@ def private_source(db,source_type,identity,context):
     return owner==context.owner_hash
 
 
+# The V2 forecast API reports a refused revision as FastAPI's HTTPException; its English detail is
+# the only classification it exposes.  Translate it at the handler boundary so a confirmed write
+# says which version or source is wrong instead of collapsing into write_service_failed.
+REVISION_REJECTIONS={
+ 'forecast version was not found':'forecast_version_not_found',
+ 'forecast version has an incompatible root':'forecast_version_not_revisable',
+ 'forecast target has expired; create an evaluation instead':'forecast_version_not_revisable',
+ 'forecast version has an invalid target contract':'forecast_version_not_revisable',
+ 'source_refs must not repeat a source':'revision_rejected',
+ 'official filing source was not found':'revision_source_not_found',
+ 'uploaded media source was not found':'revision_source_not_found',
+ 'source does not belong to the forecast symbol':'revision_source_symbol_mismatch',
+ 'source is not available at this decision time':'revision_source_unavailable',
+ 'manual revision with this unchanged source snapshot is already queued; wait for it to finish':'revision_already_queued',
+ 'manual revision source is unchanged from the selected forecast':'revision_source_unchanged',
+ 'manual revision source is unchanged from the selected forecast and has no new successful analysis':'revision_source_unchanged',
+ 'manual revision source was not newly available after the selected forecast':'revision_source_unavailable',
+ 'manual revision source snapshot and analysis are unchanged from the previous result':'revision_source_unchanged',
+ 'official filing requires an exact timezone-aware SEC acceptance timestamp':'revision_rejected',
+}
+def revision_rejection(exc):
+    detail=str(getattr(exc,'detail',''))
+    if detail.startswith('revision source snapshot is invalid:'):return 'revision_rejected'
+    return REVISION_REJECTIONS.get(detail)
+
+
 def find_revision_candidates(symbol: str, version_id_str: str | None, db):
     from ..symbols import normalize_market_symbol
     from ..models import UploadedEvidence, SecFilingInventory
@@ -181,9 +207,15 @@ def write_workspace(name,args,key,context):
     with SessionLocal() as db:
         if name=='start_historical_replay':value=forecasts.create_v2_historical_replay(forecasts.HistoricalReplayRequest.model_validate(args),key,db)
         elif name=='revise_forecast':
+            from fastapi import HTTPException
             for ref in args['source_refs']:
                 if not private_source(db,ref.get('source_type'),ref['source_id'],context):raise ValueError('source_not_owned')
-            value=forecasts.create_v2_manual_revision_job(UUID(args['version_id']),forecasts.ManualRevisionJobRequest(source_refs=args['source_refs']),key,db)
+            try:
+                value=forecasts.create_v2_manual_revision_job(UUID(args['version_id']),forecasts.ManualRevisionJobRequest(source_refs=args['source_refs']),key,db)
+            except HTTPException as exc:
+                code=revision_rejection(exc)
+                if not code:raise
+                raise ValueError(code) from exc
         elif name=='retry_document_index':value=library.retry_document(args['document_id'],x_chat_session=context.identity_credential,x_app_access_key=None)
         elif name=='withdraw_knowledge_document':value=library.withdraw_document(args['document_id'],x_chat_session=context.identity_credential,x_app_access_key=None)
         elif name=='translate_content':

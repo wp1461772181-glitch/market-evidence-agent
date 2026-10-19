@@ -156,6 +156,16 @@ FAILURE_NEXT_STEPS={
  'owner_login_required':'请由所有者重新登录后再试。',
  'permission_revoked':'请由所有者重新登录后再试。',
  'unsupported_operation':'请换一种受支持的操作。',
+ 'forecast_version_not_found':'请重新查询最新预测后再发起修订。',
+ 'forecast_version_not_revisable':'可以改为发起一次评估，或对仍在有效期内的版本发起修订。',
+ 'revision_source_not_found':'请重新查询已保存的来源后再发起修订。',
+ 'revision_source_symbol_mismatch':'请选择与预测同一只股票的来源，或改用与该来源匹配的预测版本。',
+ 'revision_source_unavailable':'请换一条在预测之后新增或重新分析过的来源。',
+ 'revision_source_unchanged':'请换一条有新内容的来源，或等待新的申报或分析。',
+ 'revision_already_queued':'请稍后查看预测状态，不要重复提交。',
+ 'revision_rejected':'请核对预测版本和来源后重试。',
+ 'market_data_unavailable':'请稍后再试；仍失败时先确认本机能访问 Yahoo Finance。',
+ 'already_reviewed':'无需再次操作；想看结论可以直接问我这份申报的核验状态。',
 }
 HISTORY_NOTE=('以下是本对话之前的轮次，只用来理解用户在指什么、想要什么。助手以前的回答不是证据：回答里的事实只能引用本轮工具结果的 [n]；'
     '要用之前找到的资料，先用 use_result_set(result_set_id, positions, action="summarize") 把它重新纳入本轮证据，或重新检索。')
