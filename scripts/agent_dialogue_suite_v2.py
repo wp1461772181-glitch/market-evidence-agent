@@ -11,6 +11,11 @@ Keys are read into memory only and never printed, logged or written to the resul
 values carry one-time consent capabilities, so the result file keeps only the button label and the
 value's kind (confirm/cancel/change/reply), never the value itself.
 
+Cases run in parallel (``--parallel``, default 4).  A case that reads or writes state another case
+also touches declares ``"serial_group": "<name>"`` in the suite; cases in one group run one at a
+time in file order, while different groups and ungrouped cases run concurrently.  Each case still
+has its own conversation and card tracking, and its whole output is printed as one block.
+
 Usage:
     .venv-rag/bin/python scripts/agent_dialogue_suite_v2.py --base http://127.0.0.1:9031 \
         --db test_g6_shadow_20261019 --suite docs/dialogue-tests/2026-10-19-suite-writes.json \
@@ -20,6 +25,8 @@ Usage:
         --suite docs/dialogue-tests/2026-10-19-suite-v2.json
 """
 import argparse, json, os, re, secrets, subprocess, sys, time, urllib.error, urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
 
 ROOT = '/Users/wupeng/monash-ai/projects/market-evidence-agent'
 CREDENTIALS = os.path.expanduser('~/.dsh/.credentials.yaml')
@@ -38,6 +45,7 @@ CONTRADICTIONS = ('没有生成确认卡', '未生成确认卡', '没有出现�
 CODE_RE = re.compile(r'(?<![A-Za-z0-9_])[a-z][a-z0-9]*(?:_[a-z0-9]+)+(?![A-Za-z0-9_])')
 UUID_RE = re.compile(r'\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b')
 PSQL_ENV = {**os.environ, 'PATH': os.path.expanduser('~/.orbstack/bin') + ':' + os.environ.get('PATH', '')}
+PRINT_LOCK = Lock()  # one completed case is printed at a time, so parallel cases never interleave
 
 
 class ApiError(Exception):
@@ -462,7 +470,11 @@ def should_retry(row, pressed, db, card):
     return True
 
 
-def run_case(case, base, db, model, owner, identity=None, retries=1):
+def emit_line(line):
+    print(line, flush=True)
+
+
+def run_case(case, base, db, model, owner, identity=None, retries=1, emit=emit_line):
     session = owner if (identity or case.get('identity', 'owner')) == 'owner' else secrets.token_hex(32)
     conversation = None
     last_card = None
@@ -481,7 +493,7 @@ def run_case(case, base, db, model, owner, identity=None, retries=1):
             row = {'step': index, 'kind': kind, 'seconds': 0, 'label': label,
                    'db': outcome, 'checks': [{'name': 'db: ' + label, 'ok': outcome['ok'], 'detail': outcome['detail']}]}
             rows.append(row)
-            print(f"{case['id']}.{index} 0.0s db {label} {'PASS' if outcome['ok'] else 'FAIL ' + outcome['detail']}", flush=True)
+            emit(f"{case['id']}.{index} 0.0s db {label} {'PASS' if outcome['ok'] else 'FAIL ' + outcome['detail']}")
             continue
 
         full_card = None
@@ -492,28 +504,28 @@ def run_case(case, base, db, model, owner, identity=None, retries=1):
                 if not full_card:
                     row = {'step': index, 'kind': kind, 'blocked': 'no confirmed card to confirm again'}
                     rows.append(row)
-                    print(f"{case['id']}.{index} BLOCKED {row['blocked']}", flush=True)
+                    emit(f"{case['id']}.{index} BLOCKED {row['blocked']}")
                     continue
             elif kind == 'stale_confirm':
                 full_card = stale_card
                 if not full_card:
                     row = {'step': index, 'kind': kind, 'blocked': 'no earlier card was invalidated by a message'}
                     rows.append(row)
-                    print(f"{case['id']}.{index} BLOCKED {row['blocked']}", flush=True)
+                    emit(f"{case['id']}.{index} BLOCKED {row['blocked']}")
                     continue
             else:
                 full_card = last_card
                 if not full_card:
                     row = {'step': index, 'kind': kind, 'blocked': 'no card to press'}
                     rows.append(row)
-                    print(f"{case['id']}.{index} BLOCKED {row['blocked']}", flush=True)
+                    emit(f"{case['id']}.{index} BLOCKED {row['blocked']}")
                     continue
             pressed = pick_choice(full_card, kind, step)
             if not pressed:
                 row = {'step': index, 'kind': kind, 'blocked': 'no matching choice on the card',
                        'card': {k: v for k, v in full_card.items() if k != 'choices_full'}}
                 rows.append(row)
-                print(f"{case['id']}.{index} BLOCKED {row['blocked']}", flush=True)
+                emit(f"{case['id']}.{index} BLOCKED {row['blocked']}")
                 continue
             payload = {**model, 'conversation_id': conversation, 'message': pressed.get('value'),
                        'pending_request_id': full_card['request_id'], 'display_message': pressed.get('label')}
@@ -541,8 +553,8 @@ def run_case(case, base, db, model, owner, identity=None, retries=1):
             if attempt < retries and should_retry(row, pressed, db, full_card):
                 retries_used.append({'status': row.get('status'), 'reason': row.get('reason'),
                                      'seconds': attempt_seconds})
-                print(f"{case['id']}.{index} retry {attempt + 1}: {row.get('status')}/{row.get('reason')} "
-                      f"after {attempt_seconds}s", flush=True)
+                emit(f"{case['id']}.{index} retry {attempt + 1}: {row.get('status')}/{row.get('reason')} "
+                     f"after {attempt_seconds}s")
                 payload['conversation_id'] = conversation
                 time.sleep(2)
                 started = time.monotonic()
@@ -581,11 +593,68 @@ def run_case(case, base, db, model, owner, identity=None, retries=1):
         rows.append(row)
         failed = [c['name'] for c in row['checks'] if not c['ok']]
         write = (row.get('audit') or {}).get('write_outcome')
-        print(f"{case['id']}.{index} {row.get('seconds')}s {row.get('status')}/{row.get('reason')} "
-              f"tools={[t['name'] for t in row.get('tools') or []]} card={bool(row.get('card'))} "
-              f"proposed={[op.get('name') for op in row.get('operations') or [] if isinstance(op, dict)]} "
-              f"write={write} {'PASS' if not failed else 'FAIL ' + '; '.join(failed)}", flush=True)
+        emit(f"{case['id']}.{index} {row.get('seconds')}s {row.get('status')}/{row.get('reason')} "
+             f"tools={[t['name'] for t in row.get('tools') or []]} card={bool(row.get('card'))} "
+             f"proposed={[op.get('name') for op in row.get('operations') or [] if isinstance(op, dict)]} "
+             f"write={write} {'PASS' if not failed else 'FAIL ' + '; '.join(failed)}")
     return rows
+
+
+def print_block(case, lines):
+    """Print one finished case as a single block; the lock keeps parallel cases from interleaving."""
+    with PRINT_LOCK:
+        print(f"\n== {case['id']} {case.get('title', '')} ==")
+        for line in lines:
+            print(line)
+        sys.stdout.flush()
+
+
+def case_blocks(cases):
+    """Return worker jobs.  One serial_group is one job, so its cases run in file order, never together."""
+    groups, blocks = {}, []
+    for index, case in enumerate(cases):
+        group = case.get('serial_group')
+        if not group:
+            blocks.append([(index, case)])
+            continue
+        group = str(group)
+        if group not in groups:
+            groups[group] = []
+            blocks.append(groups[group])
+        groups[group].append((index, case))
+    return blocks
+
+
+def run_block(items, base, db, model, owner, identity, retries):
+    results = []
+    for index, case in items:
+        lines = []
+        try:
+            rows = run_case(case, base, db, model, owner, identity, retries, emit=lines.append)
+        except BaseException:
+            print_block(case, lines)
+            raise
+        print_block(case, lines)
+        results.append((index, case, rows,
+                        all(c['ok'] for r in rows for c in r.get('checks', []))
+                        and not any(r.get('blocked') for r in rows)))
+    return results
+
+
+def run_attempt(cases, parallel, base, db, model, owner, identity, retries):
+    if parallel == 1:
+        results = []
+        for block in case_blocks(cases):
+            results.extend(run_block(block, base, db, model, owner, identity, retries))
+        return results
+    blocks = case_blocks(cases)
+    with ThreadPoolExecutor(max_workers=parallel, thread_name_prefix='dialogue') as pool:
+        futures = [pool.submit(run_block, block, base, db, model, owner, identity, retries)
+                   for block in blocks]
+        results = []
+        for future in as_completed(futures):
+            results.extend(future.result())
+    return results
 
 
 def main(argv):
@@ -596,12 +665,16 @@ def main(argv):
                                                         'docs/dialogue-tests/2026-10-19-suite-v2.json'))
     parser.add_argument('--cases', default='')
     parser.add_argument('--repeat', type=int, default=1)
+    parser.add_argument('--parallel', type=int, default=4,
+                        help='run up to N cases at once; cases in one serial_group still run in order (default 4)')
     parser.add_argument('--retries', type=int, default=1, help='retry a transient provider failure once (default 1)')
     parser.add_argument('--out', default='/tmp/market-g6/dialogue-v2')
     parser.add_argument('--identity', choices=['owner', 'guest'], help='run every case as this identity')
     parser.add_argument('--profile', choices=sorted(PROFILES), default='tokenplan',
                         help='model profile (default: tokenplan)')
     args = parser.parse_args(argv[1:])
+    if args.parallel < 1:
+        raise SystemExit('--parallel must be at least 1')
     if not args.db.startswith(SHADOW_DB_PREFIX):
         raise SystemExit(f'refusing database {args.db!r}: only {SHADOW_DB_PREFIX}... may be used')
     suite = json.load(open(args.suite, encoding='utf-8'))
@@ -616,12 +689,11 @@ def main(argv):
     stamp = time.strftime('%Y%m%d-%H%M%S')
     report = []
     for attempt in range(1, args.repeat + 1):
-        for case in cases:
-            print(f"\n== {case['id']} {case.get('title', '')} ==", flush=True)
-            rows = run_case(case, args.base, args.db, model, owner, args.identity, args.retries)
+        results = run_attempt(cases, args.parallel, args.base, args.db, model, owner,
+                              args.identity, args.retries)
+        for index, case, rows, passed in sorted(results, key=lambda item: item[0]):
             report.append({'case': case['id'], 'title': case.get('title'), 'attempt': attempt, 'rows': rows,
-                           'passed': all(c['ok'] for r in rows for c in r.get('checks', []))
-                           and not any(r.get('blocked') for r in rows)})
+                           'passed': passed})
     path = os.path.join(args.out, f'results-{stamp}.json')
     json.dump({'suite': suite.get('suite_id'), 'profile': args.profile, 'cases': report},
               open(path, 'w', encoding='utf-8'), ensure_ascii=False, indent=1)

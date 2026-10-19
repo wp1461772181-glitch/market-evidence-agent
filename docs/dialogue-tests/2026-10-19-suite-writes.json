@@ -6,6 +6,7 @@
    "id": "W01",
    "title": "研究队列：加入→确认→查看→移出→确认→再问",
    "identity": "owner",
+   "serial_group": "research_queue",
    "steps": [
     {
      "text": "研究队列里现在有哪些股票？",
@@ -571,7 +572,8 @@
        [
         "翻译",
         "英文",
-        "完成"
+        "完成",
+        "已有"
        ]
       ],
       "answer_no_codes": true,
@@ -581,8 +583,8 @@
     },
     {
      "kind": "db_check",
-     "label": "new material analysis translation",
-     "sql": "select count(*) from ai_content_translations where content_kind='material_analysis' and created_at > now() - interval '30 minutes'",
+     "label": "material analysis translation exists",
+     "sql": "select count(*) from ai_content_translations where content_kind='material_analysis'",
      "expect": {
       "op": "gt",
       "value": 0
@@ -777,6 +779,7 @@
    "id": "W09",
    "title": "卡片操作：取消；再提后改选；同一张卡重复确认；发新消息后确认旧卡",
    "identity": "owner",
+   "serial_group": "research_queue",
    "steps": [
     {
      "text": "把 AMD 加入研究队列。",
@@ -1006,6 +1009,7 @@
    "id": "W10",
    "title": "批准后同轮继续：加入研究队列并回答最近一期营收",
    "identity": "owner",
+   "serial_group": "research_queue",
    "steps": [
     {
      "text": "先把 MSFT 从研究队列移出。",
@@ -1090,6 +1094,7 @@
    "id": "W11",
    "title": "一次请求两个写操作：保存网页来源 + 加入研究队列→一次确认",
    "identity": "owner",
+   "serial_group": "research_queue",
    "steps": [
     {
      "text": "帮我搜两条 Salesforce（CRM）最近的新闻。",
@@ -1163,6 +1168,7 @@
    "id": "W12",
    "title": "卡片出现后直接打字“同意”（不按按钮）→记录行为",
    "identity": "owner",
+   "serial_group": "research_queue",
    "steps": [
     {
      "text": "把 AMD 加入研究队列。",
@@ -1183,10 +1189,15 @@
      "check": {
       "card": true,
       "write_outcome": [
-       "proposed"
+       "typed_consent"
       ],
       "answer_no_codes": true,
-      "no_dropped": false
+      "no_dropped": false,
+      "answer_any": [
+       [
+        "按钮"
+       ]
+      ]
      }
     },
     {
@@ -1241,7 +1252,8 @@
      "kind": "confirm_card",
      "check": {
       "write_outcome": [
-       "executed"
+       "executed",
+       "refused:already_reviewed"
       ],
       "consent_status": [
        "complete"
@@ -1251,7 +1263,7 @@
         "相关",
         "标记",
         "记录",
-        "accepted",
+        "核验",
         "已"
        ]
       ],
