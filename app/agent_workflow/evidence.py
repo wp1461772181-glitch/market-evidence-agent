@@ -237,11 +237,69 @@ def unsupported_numbers(answer,citations):
     return bool(unsupported_number_values(answer,citations))
 
 
-def unsupported_number_values(answer,citations):
+_DASHES=re.compile('[‐‑‒–—−]')
+# Never figures: a form or a section reference states no amount whatever the evidence says.
+_ALWAYS_IDENTIFIERS=re.compile(r'\b(?:10-K|10-Q|8-K|20-F|6-K|S-1|DEF\s*14A)\b|\b(?:Note|Item|Part|CIK)\s*\d+[A-Z]?\b',re.I)
+# Identifiers and names that carry digits: accepted only where the turn's evidence shows them.
+_GROUNDED_IDENTIFIERS=re.compile(
+    r'\b\d{10}-\d{2}-\d{6}\b|\b\d{18}\b|[\w.-]+\.(?:htm|html|pdf|xml|txt)\b'
+    r'|(?:Exhibit|EX-|附件|附录)\s*\d+(?:\.\d+)?'
+    r'|\b[A-Z][A-Za-z]+(?:\s[A-Z][A-Za-z]+)?\s\d{1,4}(?![,.]?\d)(?!\s*(?:%|％|万亿|千万|百万|亿|万|千|million|billion|thousand|trillion|bn|mn|美元|元|dollars?|USD|倍))',re.I)
+_SCALE=((re.compile(r'\(?\s*in\s+millions|百万美元|单位[:：]\s*百万',re.I),1e6),
+        (re.compile(r'\(?\s*in\s+thousands|千美元|单位[:：]\s*千',re.I),1e3),
+        (re.compile(r'\(?\s*in\s+billions|十亿美元',re.I),1e9))
+_CLAIM_NUMBER=re.compile(r'(\d+(?:\.\d+)?)\s*(万亿|千万|百万|亿|万|千|trillion|billion|million|thousand|bn|mn|b|k|m)?(?![A-Za-z])(\s*(?:%|％))?',re.I)
+
+
+def identifier_tokens(text):
+    """Digit-bearing names and identifiers in a passage: forms, sections, accessions, file names, product names."""
+    text=_DASHES.sub('-',text)
+    return [m.group(0) for m in _ALWAYS_IDENTIFIERS.finditer(text)]+[m.group(0) for m in _GROUNDED_IDENTIFIERS.finditer(text)]
+
+
+def _without_identifiers(passage,grounds):
+    passage=_DASHES.sub('-',passage)
+    passage=_ALWAYS_IDENTIFIERS.sub(' ',passage)
+    def keep(match):
+        token=' '.join(match.group(0).split()).casefold()
+        return ' ' if token in grounds else match.group(0)
+    return _GROUNDED_IDENTIFIERS.sub(keep,passage)
+
+
+def _significant(number):
+    digits=number.replace('.','').lstrip('0')
+    if '.' not in number:digits=digits.rstrip('0')
+    return max(len(digits),1)
+
+
+def _round_to(value,digits):
+    import math
+    if not value:return 0.0
+    return round(value,-int(math.floor(math.log10(abs(value))))+digits-1)
+
+
+def _claim_figures(text):
+    """Each stated amount with its precision; the same exclusions as ``figure_values``."""
+    from .semantic import ACCESSION,SOURCE_ID,TASK_ID,PERIOD_TEXT,_MAGNITUDE
+    text=unicodedata.normalize('NFKC',text).replace('萬','万').replace('億','亿')
+    text=re.sub(r'(?<=\d)T(?=\d{2}:)',' ',text)
+    text=PERIOD_TEXT.sub(' ',ACCESSION.sub(' ',SOURCE_ID.sub(' ',TASK_ID.sub(' ',text))))
+    text=re.sub(r'(?<=\d),(?=\d{3}(?!\d))','',text)
+    found=[]
+    for number,unit,percent in _CLAIM_NUMBER.findall(text):
+        value=round(float(number)*_MAGNITUDE.get(unit.lower(),1.0),4)
+        found.append((value,_significant(number),bool(unit or percent)))
+    return found
+
+
+def unsupported_number_values(answer,citations,*,question=''):
     """The candidate numbers no cited source supports, so a repair can name them.
 
     Same rules as ``unsupported_numbers``; the list only tells the rewriting model what to
-    drop or re-source, it never decides the answer.
+    drop or re-source, it never decides the answer.  A figure is supported when its cited source
+    states it: exactly, in the unit the source's table is in ("(In millions)" 32,000 is 320 亿),
+    or rounded to the precision the answer itself writes.  Digits inside identifiers and names
+    are not figures when the turn's evidence or the question shows that identifier.
     """
     from datetime import datetime, timedelta
     from .semantic import figure_values
@@ -254,40 +312,50 @@ def unsupported_number_values(answer,citations):
         re.I
     )
     indexed={str(c['ordinal']):c for c in citations}
+    evidence=' '.join(str(c.get(k) or '') for c in citations for k in ('quote','title','source_url'))+' '+str(question or '')
+    grounds=' '.join(_DASHES.sub('-',evidence).split()).casefold()
     rejected=[]
     for passage in cited_passages(answer):
         refs=re.findall(r'\[(\d+)\]',passage)
-        body=' '.join(str(indexed[r].get('quote',''))+' '+str(indexed[r].get('published_at',''))+' '+str(indexed[r].get('source_url',''))+' '+str(indexed[r].get('title','')) for r in refs if r in indexed)
+        cited=[indexed[r] for r in refs if r in indexed]
+        body=' '.join(str(c.get('quote',''))+' '+str(c.get('published_at',''))+' '+str(c.get('source_url',''))+' '+str(c.get('title','')) for c in cited)
         allowed=figure_values(body)
-        for r in refs:
-            if r in indexed:
-                pub = indexed[r].get('published_at') or indexed[r].get('filed_at') or indexed[r].get('trading_date')
-                if pub and isinstance(pub, str):
-                    try:
-                        dt = datetime.fromisoformat(pub.replace('Z', '+00:00'))
-                        allowed.add(float(dt.day))
-                        allowed.add(float((dt + timedelta(hours=8)).day))
-                        allowed.add(float((dt - timedelta(hours=8)).day))
-                        allowed.add(float(dt.month))
-                        allowed.add(float((dt + timedelta(hours=8)).month))
-                    except (ValueError, TypeError):
-                        pass
+        for citation in cited:
+            quote=str(citation.get('quote',''))
+            for marker,scale in _SCALE:
+                if marker.search(quote):allowed|={round(v*scale,4) for v in figure_values(quote) if v>=1}
+            pub = citation.get('published_at') or citation.get('filed_at') or citation.get('trading_date')
+            if pub and isinstance(pub, str):
+                try:
+                    dt = datetime.fromisoformat(pub.replace('Z', '+00:00'))
+                    allowed.add(float(dt.day))
+                    allowed.add(float((dt + timedelta(hours=8)).day))
+                    allowed.add(float((dt - timedelta(hours=8)).day))
+                    allowed.add(float(dt.month))
+                    allowed.add(float((dt + timedelta(hours=8)).month))
+                except (ValueError, TypeError):
+                    pass
         checked=re.sub(r'\[\d+\](?:\([^)]*\))?','',passage)
         checked=re.sub(r'https?://\S+','',checked)
-        number=r'\d+(?:,\d{3})*(?:\.\d+)?'
-        magnitude=r'(?:万亿|千万|百万|亿|万|千|trillion|billion|million|thousand|bn|mn|b|k|m)?'
-        amounts=re.findall(number+r'\s*'+magnitude+r'\s*(?:美元|元|dollars?|USD|%|％)',checked,re.I)
-        amounts+=re.findall(r'\$\s*'+number+r'\s*'+magnitude,checked,re.I)
-        claim=figure_values(' '.join(amounts))
+        checked=_without_identifiers(checked,grounds)
         # Bare financial amounts are also claims. Strip only citation identities,
         # list labels and grounded date/period syntax, never arbitrary numbers.
         bare=re.sub(r'^\s*\d+[.、)]\s*','',checked)
         bare=date_pat.sub('',bare)
-        bare=re.sub(r'\d+(?:\.\d+)?\s*(?:天|日|个月|年|周|条|篇|份|项|页|行|个|次|点|位|名|步|轮|倍|小时|分|秒|days?|hours?|items?|times?|points?)', ' ', bare)
-        claim|=figure_values(bare)
-        # Exclude list numbering and calendar years to avoid false positive claim rejections
-        claim={v for v in claim if not(1.0<=v<=10.0 and v==int(v)) and not(1990<=v<=2035 and v==int(v))}
-        rejected.extend(v for v in claim if v not in allowed and not(v/100 in allowed and re.search(r'%|％|百分',passage)))
+        bare=re.sub(r'\d+(?:\.\d+)?\s*(?:天|日|个月|年|周|条|篇|份|项|页|行|个|次|点|位|名|步|轮|倍|小时|分|秒|字符|字|days?|hours?|items?|times?|points?|characters?|chars?)', ' ', bare)
+        number=r'\d+(?:,\d{3})*(?:\.\d+)?'
+        magnitude=r'(?:万亿|千万|百万|亿|万|千|trillion|billion|million|thousand|bn|mn|b|k|m)?'
+        # Amounts with a currency or percent are read before list labels are stripped: "0.5万亿美元"
+        # must not become "5万亿美元".
+        amounts=re.findall(number+r'\s*'+magnitude+r'\s*(?:美元|元|dollars?|USD|%|％)',checked,re.I)
+        amounts+=re.findall(r'\$\s*'+number+r'\s*'+magnitude,checked,re.I)
+        percent=bool(re.search(r'%|％|百分',passage))
+        for value,digits,scaled in _claim_figures(' '.join(amounts))+_claim_figures(bare):
+            # Exclude list numbering and calendar years to avoid false positive claim rejections
+            if (1.0<=value<=10.0 and value==int(value)) or (1990<=value<=2035 and value==int(value)):continue
+            if value in allowed or (percent and value/100 in allowed):continue
+            if (digits>=3 or (digits>=2 and scaled)) and any(_round_to(a,digits)==_round_to(value,digits) for a in allowed if a):continue
+            rejected.append(value)
     return sorted(set(rejected))
 
 # Claim validation only. These concepts never route a request or choose a tool.
