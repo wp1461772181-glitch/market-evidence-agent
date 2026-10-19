@@ -97,8 +97,8 @@ def grade(check, row):
     return out
 
 
-def run_case(case, base, db, key, owner):
-    session = owner if case.get('identity', 'owner') == 'owner' else secrets.token_hex(32)
+def run_case(case, base, db, key, owner, identity=None):
+    session = owner if (identity or case.get('identity', 'owner')) == 'owner' else secrets.token_hex(32)
     conversation = None; last_card = None; rows = []
     for index, step in enumerate(case['steps'], 1):
         kind = step.get('kind', 'user')
@@ -130,6 +130,7 @@ def main(argv):
     parser.add_argument('--suite', default=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'docs/dialogue-tests/2026-10-19-suite-v2.json'))
     parser.add_argument('--cases', default=''); parser.add_argument('--repeat', type=int, default=1)
     parser.add_argument('--out', default='/tmp/market-g6/dialogue-v2')
+    parser.add_argument('--identity', choices=['owner', 'guest'], help='run every case as this identity')
     args = parser.parse_args(argv[1:])
     suite = json.load(open(args.suite, encoding='utf-8'))
     wanted = {c.strip().upper() for c in args.cases.split(',') if c.strip()}
@@ -139,7 +140,7 @@ def main(argv):
     os.makedirs(args.out, exist_ok=True); stamp = time.strftime('%Y%m%d-%H%M%S'); report = []
     for attempt in range(1, args.repeat + 1):
         for case in cases:
-            rows = run_case(case, args.base, args.db, key, owner)
+            rows = run_case(case, args.base, args.db, key, owner, args.identity)
             report.append({'case': case['id'], 'title': case['title'], 'attempt': attempt, 'rows': rows,
                            'passed': all(c['ok'] for r in rows for c in r.get('checks', [])) and not any(r.get('blocked') for r in rows)})
     path = os.path.join(args.out, f'results-{stamp}.json')
