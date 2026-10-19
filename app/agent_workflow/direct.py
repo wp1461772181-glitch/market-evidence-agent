@@ -462,6 +462,15 @@ class Turn:
             literal_issuer_ok=contains(self.scope.get('symbol') or '',trusted) or literal_ticker or not re.search(r'[A-Za-z]',mention) or await asyncio.to_thread(verified_pair,mention,self.scope.get('symbol'))
             if literal_issuer_ok and mention and normalized(mention).casefold() in normalized(trusted).casefold() and await asyncio.to_thread(verified_pair,self.scope.get('company'),self.scope.get('symbol')):
                 entities=[];self.audit['entity_mapping_verified']=True
+        if entities and self.scope.get('symbol') and self.scope.get('company'):
+            # Two companies in one request ("AAPL 的收盘价，再搜英伟达的新闻"): the classifier put one in
+            # symbol and the other in company.  Each is grounded in the user's words on its own; the
+            # pair is just not one issuer, so the request is about both.
+            from .entities import resolve_ticker
+            other=await asyncio.to_thread(resolve_ticker,self.scope['company'])
+            mention=self.scope.get('company_mention') or ''
+            if other and other!=self.scope['symbol'] and contains(self.scope['symbol'],trusted) and mention and normalized(mention).casefold() in normalized(trusted).casefold():
+                self.scope['symbols']=[self.scope['symbol'],other];entities=[];self.audit['multi_entity_scope']=self.scope['symbols']
         if entities:
             self.reference_stage(False,'classifier_entity_unbound',skipped=self.reference_value is None)
             self.pending=self.card('请确认这次指代的公司。',[]);return

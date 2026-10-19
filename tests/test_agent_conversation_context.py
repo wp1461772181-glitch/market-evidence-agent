@@ -70,3 +70,19 @@ def test_a_clarify_with_choices_still_asks_with_buttons():
         classifier=lambda _:'D',decider=lambda *_:{'content':'好的。'})
     result=asyncio.run(direct.run_direct_turn('把它的营业利润列出来。',ctx,emit=emit,messages=HISTORY))
     assert result['status']=='waiting_for_input' and [c['label'] for c in result['pending_request']['choices']]==['微软','谷歌']
+
+def test_two_companies_split_across_symbol_and_company_are_not_asked_about(monkeypatch):
+    from app.agent_workflow import entities
+    monkeypatch.setattr(entities,'ticker_records',lambda:[{'ticker':'AAPL','title':'APPLE INC'},{'ticker':'NVDA','title':'NVIDIA CORP'}])
+    seen,decide=_capture()
+    ctx=AgentRuntimeContext('custom','test','dummy',classifier=lambda _:{'category':'D','symbol':'AAPL','company':'NVIDIA','company_mention':'英伟达','days_back':7},decider=decide)
+    result=asyncio.run(direct.run_direct_turn('查一下 AAPL 最近的已保存收盘价，再搜一条英伟达的最新新闻。',ctx,emit=emit))
+    assert result['status']!='waiting_for_input' and seen
+    assert result['audit']['multi_entity_scope']==['AAPL','NVDA']
+
+def test_an_unfounded_company_is_still_asked_about(monkeypatch):
+    from app.agent_workflow import entities
+    monkeypatch.setattr(entities,'ticker_records',lambda:[{'ticker':'AAPL','title':'APPLE INC'},{'ticker':'NVDA','title':'NVIDIA CORP'}])
+    ctx=AgentRuntimeContext('custom','test','dummy',classifier=lambda _:{'category':'D','symbol':'AAPL','company':'NVIDIA','company_mention':'英伟达','days_back':7},decider=lambda *_:{'content':'好的。'})
+    result=asyncio.run(direct.run_direct_turn('查一下 AAPL 最近的已保存收盘价。',ctx,emit=emit))
+    assert result['status']=='waiting_for_input'
