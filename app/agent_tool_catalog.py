@@ -137,7 +137,7 @@ EXTRA=(
  ('select_stock',StockArgs,'client','Select the current stock in the browser without fetching new data.'),
  ('open_page',PageArgs,'client','Open a named existing workspace page without changing data.'),
  ('ask_user',CardArgs,'card','Ask for a missing entity or let the user choose between options. Use when the reference is ambiguous.'),
- ('use_result_set',ExistingArgs,'card','Select exact one-based positions from a returned result set; summarize or propose a confirmed import/analyze/index.'),
+ ('use_result_set',ExistingArgs,'card','Select exact one-based positions from a returned result set, then summarize them (for a set from an earlier turn: results returned in this turn are already numbered evidence, so cite their [n]) or propose a confirmed import/analyze/index.'),
  ('fetch_sec',FilingWriteArgs,'costly','Propose fetching a saved SEC filing original. Server confirmation required; optional accession or latest form.'),
  ('refresh_sec',FilingWriteArgs,'costly','Propose refreshing the original SEC document. Confirmation required.'),
  ('analyze',SourceWriteArgs,'costly','Propose paid AI analysis of an exact saved source. Confirmation required.'),

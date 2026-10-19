@@ -21,15 +21,18 @@ def repair(text,citations=(1,)):return {'content':text+''.join('['+str(n)+']' fo
     (repair('AMD 收盘价为 100 美元',(0,)),'invalid_citation'),
 ])
 def test_numeric_repair_is_single_tool_free_and_still_guarded(replacement,reason):
-    steps=iter([call('query_stock_prices',symbol='AMD'),{'content':'AMD 收盘价为 999 美元 [1]。'},replacement])
+    # A repair reply that calls a tool is never executed; it gets one more tool-free try (the same
+    # reply again here), so that case makes two repair calls instead of one.
+    steps=iter([call('query_stock_prices',symbol='AMD'),{'content':'AMD 收盘价为 999 美元 [1]。'},replacement,replacement])
+    retried=bool(replacement.get('tool_calls'))
     schemas=[];executed=[]
     def decide(messages,tools):schemas.append(tools);return next(steps)
     def execute(name,args):executed.append(name);return {'ok':True,'data':[{'id':'p','symbol':'AMD','close':100}]}
     ctx=AgentRuntimeContext('custom','test','dummy',classifier=lambda _:'D',decider=decide,executor=execute)
     result=asyncio.run(direct.run_direct_turn('AMD 收盘价',ctx,emit=emit))
     assert (result['status']=='succeeded')==(reason is None)
-    assert schemas[-1]==[] and len(schemas)==3
-    assert result['audit']['answer_repair_count']==1
+    assert schemas[2:]==[[]]*(2 if retried else 1) and len(schemas)==(4 if retried else 3)
+    assert result['audit']['answer_repair_count']==(2 if retried else 1)
     assert executed==['query_stock_prices'] and '999' not in result['answer']
     assert result['reason']==reason and '888' not in result['answer']
 

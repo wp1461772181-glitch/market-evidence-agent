@@ -91,6 +91,7 @@ def grade(check, row):
     for group in check.get('answer_any', []): add('answer has ' + '|'.join(group), contains_any(answer, group))
     for text in check.get('answer_excludes', []): add('answer lacks ' + text, text not in answer)
     if check.get('no_dropped', True): add('nothing dropped', '未能与来源核对' not in answer, '')
+    add('no protocol or placeholder', not re.search(r'DSML|<\|tool|<｜|已取得可核验来源|请拆成单独的一条再发', answer), '')
     if 'status' in check: add('status', row.get('status') in check['status'], row.get('status'))
     else: add('not failed', row.get('status') not in {'failed', 'ERROR'}, row.get('status'))
     if 'max_seconds' in check: add('time', (row.get('seconds') or 0) <= check['max_seconds'], row.get('seconds'))

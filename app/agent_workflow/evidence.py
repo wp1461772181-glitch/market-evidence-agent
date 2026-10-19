@@ -249,6 +249,8 @@ _GROUNDED_IDENTIFIERS=re.compile(
     r'\b\d{10}-\d{2}-\d{6}\b|\b\d{18}\b|[\w.-]+\.(?:htm|html|pdf|xml|txt)\b'
     r'|(?:Exhibit|EX-|附件|附录)\s*\d+(?:\.\d+)?'
     r'|\b[A-Z][A-Za-z]+(?:\s[A-Z][A-Za-z]+)?\s\d{1,4}(?![,.]?\d)(?!\s*(?:%|％|万亿|千万|百万|亿|万|千|million|billion|thousand|trillion|bn|mn|美元|元|dollars?|USD|倍))',re.I)
+# A link written without its scheme ("sec.gov/Archives/edgar/data/789019/…") names a source, not an amount.
+_BARE_LINK=re.compile(r'(?<![\w@/.-])(?:www\.)?(?:[a-z0-9-]+\.)+[a-z]{2,6}/[^\s|()\[\]（）<>，。；、]*',re.I)
 _SCALE=((re.compile(r'\(?\s*in\s+millions|百万美元|单位[:：]\s*百万',re.I),1e6),
         (re.compile(r'\(?\s*in\s+thousands|千美元|单位[:：]\s*千',re.I),1e3),
         (re.compile(r'\(?\s*in\s+billions|十亿美元',re.I),1e9))
@@ -347,6 +349,8 @@ def unsupported_number_values(answer,citations,*,question=''):
         headed={round(v/scale,4) for v in allowed if abs(v)>=1e6 for scale in (1e6,1e8,1e9)}
         checked=re.sub(r'\[\d+\](?:\([^)]*\))?','',passage)
         checked=re.sub(r'https?://\S+','',checked)
+        # Its digits are not figures when the turn's evidence shows that link; an unknown link keeps them.
+        checked=_BARE_LINK.sub(lambda m:' ' if m.group(0).casefold().rstrip('/.,;:') in grounds else m.group(0),checked)
         checked=_without_identifiers(checked,grounds)
         # Bare financial amounts are also claims. Strip only citation identities,
         # list labels and grounded date/period syntax, never arbitrary numbers.
@@ -470,9 +474,12 @@ def reviewed_passages(answer,citations,*,require_citations=False,check_claims=Tr
         if not stripped:continue
         uncertainty=reports_absence(stripped)
         is_leadin = bool(re.match(r'^(?:以下|根据|综上|总结|如上|经查询|查询结果|核验结果|提示|注意|说明|确认后|请核对|已为您|请注意)[^。！？\n]{0,35}[：:\n]?', stripped)) or (len(stripped) < 35 and stripped.endswith(('：', ':')))
+        # A heading names what follows ("## 二、营收对比", "**单季营收（FY2026 Q3）**"); one that states no
+        # amount asserts nothing to cite.
+        is_heading = bool(re.match(r'^#{1,6}\s',stripped) or re.fullmatch(r'\*\*[^*]+\*\*\s*[：:]?',stripped))
         has_factual_content = factual_claim(stripped)
         code=('invalid_citation' if citation_errors(stripped,citations) else
-              'missing_citation' if require_citations and has_factual_content and not re.search(r'\[\d+\]',stripped) and not uncertainty and not (is_leadin and not _CLAIM_AMOUNT.search(stripped)) and not (stripped.endswith(('：',':')) and not _CLAIM_AMOUNT.search(stripped)) else
+              'missing_citation' if require_citations and has_factual_content and not re.search(r'\[\d+\]',stripped) and not uncertainty and not ((is_leadin or is_heading) and not _CLAIM_AMOUNT.search(stripped)) and not (stripped.endswith(('：',':')) and not _CLAIM_AMOUNT.search(stripped)) else
               'unsupported_numeric_claim' if check_claims and unsupported_numbers(stripped,citations) else
               'unsupported_claim' if check_claims and unsupported_claims(stripped,citations) else None)
         if code:issues.append(code)
@@ -482,6 +489,40 @@ def reviewed_passages(answer,citations,*,require_citations=False,check_claims=Tr
 
 _ATOMIC_LINE = re.compile(r'^[|>#]|^[-*+]\s|^\d+[.)]\s')
 _TABLE_RULE = re.compile(r'^\|?[\s:|-]+\|?$')
+_BULLET = re.compile(r'^(?:[-*+]|\d+[.)])\s+')
+
+
+def _table_citations(lines):
+    """For each table row that carries no [n] of its own, the markers its table states elsewhere.
+
+    A table is cited as a unit: the caption above it, a note below it, a source column or another
+    row carries the [n].  The row's figures are still checked against exactly those sources.
+    """
+    inherited={};index=0
+    while index<len(lines):
+        if not lines[index].strip().startswith('|'):index+=1;continue
+        start=index
+        while index<len(lines) and lines[index].strip().startswith('|'):index+=1
+        before=next((lines[i] for i in range(start-1,-1,-1) if lines[i].strip()),'')
+        after=next((lines[i] for i in range(index,len(lines)) if lines[i].strip()),'')
+        markers=list(dict.fromkeys(re.findall(r'\[\d+\]',' '.join([before,*lines[start:index],after]))))
+        for row in range(start,index):
+            if markers and not re.search(r'\[\d+\]',lines[row]):inherited[row]=' '+''.join(markers)
+    return inherited
+
+
+def _reviewable_lines(answer):
+    """Each line to check, with the text it is checked as; table headers and rules are not claims."""
+    lines=answer.splitlines();inherited=_table_citations(lines);out=[]
+    for index,line in enumerate(lines):
+        stripped=line.strip()
+        if not stripped or _TABLE_RULE.match(stripped):out.append((line,stripped,None));continue
+        following=lines[index+1].strip() if index+1<len(lines) else ''
+        if stripped.startswith('|') and '-' in following and _TABLE_RULE.match(following):
+            # A header names columns ("| 期间 | 全年营业收入 |"); it states nothing to cite.
+            out.append((line,stripped,None));continue
+        out.append((line,stripped,stripped+inherited.get(index,'')))
+    return out
 
 
 def reviewed_answer(answer,citations,*,require_citations=False,check_claims=True):
@@ -494,19 +535,17 @@ def reviewed_answer(answer,citations,*,require_citations=False,check_claims=True
     sentence), and a prose line keeps the sentences that passed.
     """
     kept=[];issues=[]
-    lines=answer.splitlines()
-    for index,line in enumerate(lines):
-        stripped=line.strip()
-        if not stripped or _TABLE_RULE.match(stripped):
+    for line,stripped,checked in _reviewable_lines(answer):
+        if checked is None:
             kept.append(line);continue
-        following=lines[index+1].strip() if index+1<len(lines) else ''
-        if stripped.startswith('|') and '-' in following and _TABLE_RULE.match(following):
-            # A header names columns ("| 期间 | 全年营业收入 |"); it states nothing to cite.
-            kept.append(line);continue
-        accepted,line_issues=reviewed_passages(stripped,citations,require_citations=require_citations,check_claims=check_claims)
+        accepted,line_issues=reviewed_passages(checked,citations,require_citations=require_citations,check_claims=check_claims)
         if not line_issues:
             kept.append(line);continue
         issues.extend(line_issues)
+        bullet=_BULLET.match(stripped)
+        if bullet and accepted:
+            # A list item survives losing a sentence: keep its marker and the sentences that passed.
+            kept.append(bullet.group(0)+'。'.join(p[bullet.end():] if p.startswith(bullet.group(0)) else p for p in accepted));continue
         if _ATOMIC_LINE.match(stripped):continue
         if accepted:kept.append('。'.join(accepted))
     text='\n'.join(kept).strip()
@@ -515,12 +554,9 @@ def reviewed_answer(answer,citations,*,require_citations=False,check_claims=True
 
 def rejected_lines(answer,citations,*,require_citations=False,check_claims=True):
     """The lines ``reviewed_answer`` drops or trims, each with its first reason, for the repair."""
-    out=[];lines=answer.splitlines()
-    for index,line in enumerate(lines):
-        stripped=line.strip()
-        if not stripped or _TABLE_RULE.match(stripped):continue
-        following=lines[index+1].strip() if index+1<len(lines) else ''
-        if stripped.startswith('|') and '-' in following and _TABLE_RULE.match(following):continue
-        _,issues=reviewed_passages(stripped,citations,require_citations=require_citations,check_claims=check_claims)
+    out=[]
+    for _,stripped,checked in _reviewable_lines(answer):
+        if checked is None:continue
+        _,issues=reviewed_passages(checked,citations,require_citations=require_citations,check_claims=check_claims)
         if issues:out.append((stripped,issues[0]))
     return out
