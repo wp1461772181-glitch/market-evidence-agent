@@ -12,10 +12,21 @@ from app.agent_workflow.state import AgentRuntimeContext
 
 
 def test_cumulative_work_does_not_exhaust_healthy_turn():
+    # Successful work alone never stops a turn; only the wait (time, spend) ends gathering.
     turn = direct.Turn('hello', AgentRuntimeContext('custom', 'test', 'dummy'), None, [], {})
-    turn.started -= 10000
-    turn.audit.update(token_usage=10_000_000, tool_calls=500, distinct_successful_calls=500)
+    turn.audit.update(tool_calls=500, distinct_successful_calls=500)
     assert turn.budget() is None
+
+
+def test_a_long_wait_ends_gathering_but_not_the_turn():
+    turn = direct.Turn('hello', AgentRuntimeContext('custom', 'test', 'dummy'), None, [], {})
+    turn.started -= direct.SOFT_TURN_SECONDS + 1
+    assert turn.budget() == 'turn_budget' and turn.budget(soft=False) is None
+    turn.audit['token_usage'] = direct.SOFT_TURN_TOKENS + 1
+    turn.started += direct.SOFT_TURN_SECONDS
+    assert turn.budget() == 'turn_budget'
+    turn.started -= direct.HARD_TURN_SECONDS * 2
+    assert turn.budget(soft=False) == 'turn_budget'
 
 
 def test_decision_and_refused_call_ceilings_stop_a_runaway_turn():
