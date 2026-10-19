@@ -757,8 +757,11 @@ class Turn:
         return await self.model(self.tool_messages(closing),[] if closing else self.exposed_tools())
 
     def ground_arguments(self,name,args):
-        if self.refinement and name=='query_stock_prices' and 'price' not in self.scope.get('metrics',[]):
-            raise ValueError('read_channel_scope_mismatch')
+        if self.refinement and name=='query_stock_prices':
+            # The classifier copies the user's own word for the metric (收盘价, 股价), so the channel
+            # is compared by meaning: a news refinement must not turn into a price read.
+            from .evidence import canonical_metric
+            if 'price' not in {canonical_metric(m) for m in self.scope.get('metrics') or []}:raise ValueError('read_channel_scope_mismatch')
         text=self.original+' '+self.question
         catalogue=json.dumps([s['rows'] for s in self.sets],ensure_ascii=False,default=str)
         accepted=json.dumps([o['result'] for o in self.observations if o.get('accepted_evidence')],ensure_ascii=False,default=str)

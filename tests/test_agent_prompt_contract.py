@@ -54,3 +54,14 @@ def test_a_turn_stopped_by_the_time_cap_never_shows_its_internal_code():
     turn=direct.Turn('AMD 收盘价',ctx,emit,[],{})
     result=asyncio.run(turn.run())
     assert 'turn_budget' not in result['answer'] and '999' not in result['answer']
+
+def test_a_price_refinement_may_still_read_saved_prices():
+    turn=direct.Turn('最近5个交易日的走势呢？',AgentRuntimeContext('custom','test','dummy'),emit,[],{})
+    turn.refinement=True;turn.scope={'symbol':'AAPL','metrics':['收盘价']}
+    turn.ground_arguments('query_stock_prices',{'symbol':'AAPL','limit':5})
+
+def test_a_news_refinement_still_cannot_switch_to_prices():
+    import pytest
+    turn=direct.Turn('我要最近的行情，也就是半个月之内的',AgentRuntimeContext('custom','test','dummy'),emit,[],{})
+    turn.refinement=True;turn.scope={'symbol':'MU','metrics':[]}
+    with pytest.raises(ValueError):turn.ground_arguments('query_stock_prices',{'symbol':'MU'})
