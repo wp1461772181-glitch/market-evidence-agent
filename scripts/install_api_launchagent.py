@@ -26,7 +26,9 @@ def build_payload(project_root: Path) -> dict[str, object]:
         "KeepAlive": {"SuccessfulExit": False},
         "StandardOutPath": str(project_root / "logs" / "api-server.out.log"),
         "StandardErrorPath": str(project_root / "logs" / "api-server.err.log"),
-        "ProcessType": "Background",
+        # macOS throttles a Background-QoS process hard: the same retrieval call measured 17 s
+        # under it and 4 s as Interactive, which decided the latency of every agent turn.
+        "ProcessType": "Interactive",
     }
 
 
