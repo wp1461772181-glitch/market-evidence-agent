@@ -243,6 +243,13 @@ WRITE_TITLES={
  'add_to_research_queue':'加入研究队列','remove_from_research_queue':'移出研究队列',
  'review_filing':'申报相关性核验',
 }
+TYPED_CONSENT=re.compile(r'(?:同意|确认|确定|可以|好的?|行|执行吧?|批准|继续|ok(?:ay)?|yes)[。.!！~～]?',re.I)
+JOB_STATUS_WORDS={'queued':'排队中','pending':'排队中','submitted':'已提交','running':'进行中','executing':'进行中',
+ 'completed':'已完成','complete':'已完成','succeeded':'已完成','failed':'失败','error':'失败','cancelled':'已取消',
+ 'cancelling':'正在取消','blocked_data':'缺少数据'}
+# What a report written for a person never contains: an identifier, a tool's own name, a status word.
+_REPORT_IDENTIFIER=re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|\b[a-z]+(?:_[a-z]+)+\b',re.I)
+_REPORT_STATUS_WORD=re.compile(r'\b(?:pending|queued|created|completed|running|succeeded|ok)\b',re.I)
 SOURCE_KIND_TITLES={'official_filing':'SEC 申报','uploaded_media':'上传材料','ai_analysis':'已保存的 AI 分析',
  'faq':'研究问答','upload':'上传材料','sec':'SEC 申报','analysis':'AI 分析'}
 
@@ -272,22 +279,27 @@ EXECUTION_FACT_KEYS=('action','status','ok','error_code','title','filename','sou
                      'indexed','queued_chunks','job_id','reason','message','scanned')
 
 
-def execution_facts(value: dict) -> list[dict]:
+def execution_facts(value: dict,operations: list|None=None) -> list[dict]:
     """The facts of a confirmed execution, flattened, with no prose of any kind.
 
     A consent result is ``{data:[{outcome:{data:[...]}}]}`` for batched writes and a flat row for a
     single one, so each fact is merged most-specific-last.  The model narrates these; the key list
-    above is the whole vocabulary it may use, so a report cannot invent an outcome.
+    above is the whole vocabulary it may use, so a report cannot invent an outcome.  A handler that
+    reports only ``ok`` (the research queue) still names what ran: the card's operation at the same
+    position supplies the action and the symbol.
     """
     rows=[]
-    for item in value.get('data') or []:
+    for index,item in enumerate(value.get('data') or []):
         if not isinstance(item, dict):continue
+        operation=operations[index] if operations and index<len(operations) and isinstance(operations[index],dict) else {}
+        arguments=operation.get('arguments') if isinstance(operation.get('arguments'),dict) else {}
+        known={k:v for k,v in {'action':operation.get('name'),'symbol':arguments.get('symbol')}.items() if v}
         outcome=item.get('outcome') if isinstance(item.get('outcome'),dict) else {}
         nested=outcome.get('data') if isinstance(outcome.get('data'),list) else (
             item.get('data') if isinstance(item.get('data'),list) else [])
         for entry in nested or [{}]:
             source=entry if isinstance(entry,dict) else {}
-            merged={**item,**outcome,**source}
+            merged={**known,**item,**outcome,**source}
             fact={k:merged[k] for k in EXECUTION_FACT_KEYS if merged.get(k) is not None}
             if fact:rows.append(fact)
     return rows or [{'status':'complete','ok':value.get('ok',True)}]
@@ -320,7 +332,8 @@ def outcome_detail(fact: dict,zh: bool) -> str:
         return ('网页没有更新，没有重复保存' if fact.get('reason')=='not_newer' else '没有重复保存') if zh else 'not saved again'
     if status in {'complete','completed','succeeded','succeeded_no_change'}:return '已完成' if zh else 'done'
     if status in {'queued','running','pending','submitted'}:return '已提交，正在处理' if zh else 'submitted, in progress'
-    return str(status or '')
+    if not status and fact.get('ok') is not False:return '已完成' if zh else 'done'
+    return JOB_STATUS_WORDS.get(str(status),str(status)) if zh else str(status)
 
 
 def execution_fallback(facts: list[dict],question: str='',targets: list[dict]|None=None) -> str:
@@ -330,11 +343,16 @@ def execution_fallback(facts: list[dict],question: str='',targets: list[dict]|No
     name: the report has to say what was written even when the model never got to write it.
     """
     zh=bool(re.search(r'[\u3400-\u9fff]',question or ''))
-    confirmed=[str(t.get('title') or t.get('symbol') or '') for t in (targets or []) if isinstance(t,dict)]
+    confirmed=[str(t.get('title') or '') for t in (targets or []) if isinstance(t,dict)]
     lines=[]
     for index,fact in enumerate(facts):
-        named=fact.get('title') or fact.get('filename') or fact.get('source_url') or fact.get('symbol') or fact.get('action') or ''
-        name=named or (confirmed[index] if index<len(confirmed) else '')
+        # A title the user saw first; otherwise what the operation is and on which company \u2014 never a
+        # tool's own name, and never an empty pair of brackets.
+        action=str(fact.get('action') or '')
+        label=(WRITE_TITLES.get(action) or '\u64cd\u4f5c') if zh else (action.replace('_',' ') or 'operation')
+        name=(fact.get('title') or fact.get('filename') or fact.get('source_url')
+              or (confirmed[index] if index<len(confirmed) else '')
+              or ' '.join(x for x in (label,str(fact.get('symbol') or '')) if x))
         detail=outcome_detail(fact,zh)
         lines.append(f"- {name}（{detail}）" if zh else f"- {name} ({detail})")
     if any(fact.get('error_code') or fact.get('ok') is False or str(fact.get('status') or '') in {'failed','error'} for fact in facts):
@@ -1036,9 +1054,12 @@ class Turn:
         row={}
         if symbol:row['symbol']=symbol
         if args.get('url'):row['url']=args['url']
-        if name in {'analyze','import','index'} and args.get('source_id'):
+        if name in {'analyze','import','index','review_filing'} and args.get('source_id'):
+            # The card has to show which document the button will act on.
             row['title']=await asyncio.to_thread(source_display_title,kind,args['source_id']) or '所选来源'
             row['source_type']=SOURCE_KIND_TITLES.get(kind,kind)
+        if name=='review_filing' and args.get('decision'):
+            row['decision']={'accepted':'标记为相关','rejected':'标记为不相关'}.get(str(args['decision']),str(args['decision']))
         if name=='save_material_evidence' and args.get('title'):row['title']=args['title']
         if args.get('accession_number'):row['accession_number']=args['accession_number']
         if args.get('form'):row['form']=args['form']
@@ -1298,10 +1319,39 @@ class Turn:
             'status':(outcome or {}).get('status')} for operation,outcome in successes]
         return self.finish(head+'\n'.join(lines),status='failed',reason=codes[0],generated=True)
 
+    def system_state_text(self):
+        """What this turn read from the product's own state: the ground for an answer about that state."""
+        names={'query_system_status','query_research_queue','add_to_research_queue','remove_from_research_queue'}
+        return ' '.join(json.dumps(f['result'],ensure_ascii=False,default=str) for f in self.feedback
+                        if isinstance(f,dict) and f.get('name') in names and isinstance(f.get('result'),dict) and f['result'].get('ok'))
+
+    async def pressed_another_card(self,request_id,pending):
+        """A button on a card that is no longer the one waiting: say what became of it, not "try again"."""
+        try:status=(await asyncio.to_thread(consent.lookup,self.context.identity_credential,self.context.conversation_id,request_id)).get('status')
+        except Exception:status=None
+        # The card that is still waiting stays on screen.
+        if pending:self.pending=pending
+        waiting='waiting_for_input' if pending else 'succeeded'
+        if status=='complete':
+            self.audit['write_outcome']='already_complete'
+            return self.finish('这张确认卡已经执行过了，不会重复执行；结果见之前的回复。',status=waiting,generated=True)
+        if status in {'cancelled','cancelling'}:
+            self.audit['write_outcome']='cancelled'
+            return self.finish('这张确认卡已经取消，没有执行。',status=waiting,generated=True)
+        self.audit['write_outcome']='stale_card'
+        return self.finish('这张卡片已经失效：之后有了新的消息，所以它没有执行。如果还需要，请重新提出这项操作。',status=waiting,generated=True)
+
     async def consent_reply(self):
         pending=self.state.get('pending_request');request_id=self.state.get('requested_pending_id')
-        if not request_id:return None
-        if not pending or pending.get('id')!=request_id:raise ValueError('pending_request_mismatch')
+        if not request_id:
+            if pending and pending.get('reason')=='write_confirmation' and TYPED_CONSENT.fullmatch(self.original.strip()):
+                # Only the card's button carries the server-minted capability, so typed words never run
+                # a write (page text could be typed the same way).  Saying so beats proposing the card again.
+                self.pending=pending;self.audit['write_outcome']='typed_consent'
+                return self.finish('要执行这项操作，请点确认卡上的「同意」按钮。打字回复不会执行写操作：只有卡片按钮能确认，'
+                                   '这样网页内容或误输入都不能替你确认。',status='waiting_for_input',generated=True)
+            return None
+        if not pending or pending.get('id')!=request_id:return await self.pressed_another_card(request_id,pending)
         if pending.get('reason')!='write_confirmation':
             from .web_sources import timestamp
             expires=timestamp(pending.get('expires_at'))
@@ -1370,7 +1420,7 @@ class Turn:
             self.sets = [*self.sets, executed_set][-6:]
             self.new_sets.append(executed_set)
         resumed=await self.resume_after_execution(value,saved)
-        return resumed or await self.report_execution(value)
+        return resumed or await self.report_execution(value,operations=saved.get('operations'))
 
     async def resume_after_execution(self,value,saved):
         """Finish what the user asked for once the write it needed is done, in the same turn.
@@ -1381,14 +1431,19 @@ class Turn:
         """
         pending=self.state.get('pending_request') or {}
         request=pending.get('original_question')
-        facts=execution_facts(value)
+        facts=execution_facts(value,saved.get('operations'))
         queued=any(f.get('job_id') and str(f.get('job_status') or f.get('status') or '') in {'queued','running','pending','submitted'} for f in facts)
-        done=any(str(f.get('status') or '') in SYNC_DONE for f in facts)
+        # A write that reports only success (the research queue has no status word) is done too.
+        done=any(str(f.get('status') or '') in SYNC_DONE or (not f.get('status') and f.get('ok') is not False
+                 and not f.get('error_code') and not f.get('job_id')) for f in facts)
         if not request or queued or not done:return None
         self.completed_writes|={op.get('name') for op in saved.get('operations') or [] if isinstance(op,dict)}
         self.question=request
-        self.route=self.state.get('previous_category') if self.state.get('previous_category') in {'A','D'} else 'D'
         self.scope=copy.deepcopy(self.state.get('previous_scope') or {})
+        # "Add MSFT to the queue, then tell me its revenue" was classified as a write; what is left of it
+        # is a figure question, which reads the reported figures first like any other.
+        figure_question=bool(self.scope.get('metrics') and self.scope.get('symbol'))
+        self.route='A' if figure_question else (self.state.get('previous_category') if self.state.get('previous_category') in {'A','D'} else 'D')
         self.granted_actions=set();self.suggestion_used=True;self.resuming=True
         self.resume_note=('用户已批准并完成了这些操作：'+json.dumps(facts,ensure_ascii=False,default=str)+
             '。如果用户最初的请求还要求别的（例如读取刚取得的资料并回答），继续完成；不要再次提出同一操作，也不要提出新的写操作。'
@@ -1398,13 +1453,16 @@ class Turn:
         except Exception:return None
         answer=str(result.get('answer') or '').strip()
         if result.get('status')=='failed' or not answer:return None
+        # After a write-only request the continuation can only retell the write; when the check had to
+        # trim it, the plain report says the same without the "could not be verified" note.
+        if result.get('status')!='succeeded' and not figure_question:return None
         # A model that repeats an internal code from the facts is not allowed to show it.
         if any(str(f.get('error_code')) in answer for f in facts if f.get('error_code')):return None
         result['answer']=head+'\n\n'+answer
         self.audit['write_outcome']='executed';self.audit['resumed_after_approval']=True
         return result
 
-    async def report_execution(self,value,targets=None):
+    async def report_execution(self,value,targets=None,operations=None):
         """Report a completed write in the user's language from the facts the server recorded.
 
         The request itself travels with the facts: without it the model has nothing to infer the answer
@@ -1415,7 +1473,7 @@ class Turn:
         pending=self.state.get('pending_request') or {}
         request=pending.get('original_question') or self.original
         targets=targets if targets is not None else (pending.get('display') or {}).get('targets')
-        facts=execution_facts(value)
+        facts=execution_facts(value,operations)
         fallback=execution_fallback(facts,request,targets)
         language='Chinese' if re.search(r'[\u3400-\u9fff]',request) else 'English'
         # A queued job is not a finished operation: the user needs one sentence they can act on
@@ -1450,6 +1508,8 @@ class Turn:
                         r'(资料库里?已有|已经存在)[^。\n]{0,20}(无需|不必)[^。\n]{0,10}(再次|重复)',text):continue
                 # Codes belong to the audit; a report that copied one from the facts is rejected.
                 if any(str(f.get('error_code')) in text for f in facts if f.get('error_code')):continue
+                # So do identifiers, tool names and status words: the plain report says the same thing.
+                if _REPORT_IDENTIFIER.search(text) or (language=='Chinese' and _REPORT_STATUS_WORD.search(text)):continue
                 if queued and '好了' not in text and 'ask me' not in text.lower():text=text+'\n\n'+follow_up
                 self.audit['source']='model_execution_report'
                 return self.finish(text,generated=True)
@@ -1480,8 +1540,16 @@ class Turn:
                     if name == 'review_filing': return "相关性核验已记录。"
                     if name == 'query_system_status':
                         if not data: return "系统状态正常，暂无近期任务记录。"
-                        items = [f"- {r.get('symbol', '通用')}: {r.get('job_kind') or r.get('action') or '任务'} ({r.get('status') or r.get('job_status')})" for r in data[:5] if isinstance(r, dict)]
-                        return "**系统任务状态**：\n" + '\n'.join(items)
+                        # A person reads which company, what kind of task and how far along — not job kinds
+                        # and status words.
+                        items = []
+                        for r in data[:5]:
+                            if not isinstance(r, dict): continue
+                            kind = str(r.get('job_kind') or r.get('action') or '')
+                            state = str(r.get('status') or r.get('job_status') or '')
+                            subject = ' · '.join(x for x in (r.get('symbol'), r.get('title'), WRITE_TITLES.get(kind, '任务')) if x)
+                            items.append(f"- {subject}：{JOB_STATUS_WORDS.get(state, '状态未知')}")
+                        return "**任务状态**：\n" + '\n'.join(items)
                     return "操作已完成。"
                 answer='\n\n'.join(_fmt_op(f) for f in operational)
         if self.route in {'A','D'}:
@@ -1489,6 +1557,14 @@ class Turn:
             is_web = any(getattr(obs,'tool_name',None) in {'web_research','ingest_web_source'} or (isinstance(obs,dict) and (obs.get('name') in {'web_research','ingest_web_source'} or obs.get('route')=='public_web_research')) for obs in self.observations) or any(c.get('source_type')=='web' for c in self.citations)
             check_claims = not generated and (self.route=='A' or not is_web)
             require_citations = not generated and (self.route=='A' or (bool(self.observations) and not is_web and not self.pending))
+            state=self.system_state_text() if check_claims and not self.citations else ''
+            if state:
+                # An answer about the product's own state (the research queue, a task) has no source to
+                # cite; its check is that every figure it states is in that state.
+                from .evidence import unsupported_number_values
+                cited='\n'.join(line+' [1]' if line.strip() else line for line in answer.splitlines())
+                if not unsupported_number_values(cited,[{'ordinal':1,'quote':state,'source_type':'system_state'}]):
+                    check_claims=require_citations=False
             kept,issues=reviewed_answer(answer,self.citations,require_citations=require_citations,check_claims=check_claims)
             self.last_issues=list(issues)
             if issues:

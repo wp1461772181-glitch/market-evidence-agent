@@ -183,7 +183,9 @@ def test_a_card_press_is_stored_as_the_button_label_and_a_failed_turn_keeps_its_
     users = [args[3] for args, _ in stored if len(args) > 3 and args[2] == "user"]
     assert users == ["同意"]                                       # the history shows the button, not the token
     assistants = [(args[3], kwargs.get("status")) for args, kwargs in stored if len(args) > 3 and args[2] == "assistant"]
-    assert assistants and assistants[-1][1] == "failed" and assistants[-1][0].strip()   # never a blank bubble
+    # A press on a card that is no longer waiting is answered, not failed (2026-10-19): the user is
+    # told the card expired.  Either way the bubble is never blank.
+    assert assistants and assistants[-1][0].strip() and "失效" in assistants[-1][0]
     assert "event: delta" in wire and "event: done" in wire
     assert "pending_request_mismatch" not in assistants[-1][0]
 
