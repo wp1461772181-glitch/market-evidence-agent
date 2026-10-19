@@ -52,3 +52,21 @@ def test_a_reference_with_nothing_to_point_at_still_asks():
     ctx=AgentRuntimeContext('custom','test','dummy',classifier=lambda _:'D',decider=lambda *_:{'content':'好的。'})
     result=asyncio.run(direct.run_direct_turn('解释第二个',ctx,emit=emit,messages=[{'role':'user','content':'解释第二个'}]))
     assert result['status']=='waiting_for_input'
+
+def test_a_clarify_without_choices_continues_with_the_rewrite_as_a_hint():
+    seen,decide=_capture()
+    history=[{'role':'user','content':'先同时看一下微软（MSFT）和谷歌（GOOGL）最近一期年报的营收。'},
+             {'role':'assistant','content':'MSFT 营收 331,839 百万美元 [1]；GOOGL 营收 402,836 百万美元 [2]。'},
+             {'role':'user','content':'把它的营业利润列出来。'},{'role':'assistant','content':'需要补充信息：请问是微软还是谷歌？'},
+             {'role':'user','content':'微软。'}]
+    ctx=AgentRuntimeContext('custom','test','dummy',resolver=lambda _:{'relationship':'clarify','canonical_question':'列出微软（MSFT）最近一期年报的营业利润','referents':[]},
+        classifier=lambda _:'D',decider=decide)
+    result=asyncio.run(direct.run_direct_turn('微软。',ctx,emit=emit,messages=history))
+    assert result['status']!='waiting_for_input' and seen
+    assert any(m['role']=='system' and '列出微软（MSFT）最近一期年报的营业利润' in m['content'] for m in seen[0])
+
+def test_a_clarify_with_choices_still_asks_with_buttons():
+    ctx=AgentRuntimeContext('custom','test','dummy',resolver=lambda _:{'relationship':'clarify','question':'要看微软还是谷歌？','choices':['微软','谷歌']},
+        classifier=lambda _:'D',decider=lambda *_:{'content':'好的。'})
+    result=asyncio.run(direct.run_direct_turn('把它的营业利润列出来。',ctx,emit=emit,messages=HISTORY))
+    assert result['status']=='waiting_for_input' and [c['label'] for c in result['pending_request']['choices']]==['微软','谷歌']

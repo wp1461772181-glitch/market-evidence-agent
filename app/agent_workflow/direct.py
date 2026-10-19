@@ -411,7 +411,13 @@ class Turn:
                 if relationship=='new':return
         self.reference_stage(failure is None,failure)
         if value.relationship=='clarify':
-            self.pending=self.card(value.question or '请说明要查询哪家公司或哪份来源。',value.choices);return
+            if value.question and len(value.choices)>=2:
+                self.pending=self.card(value.question,value.choices);return
+            # A clarification with nothing to choose from is the resolver giving up, not a question for
+            # the user: the loop reads the conversation and asks with ask_user when it is truly ambiguous.
+            self.audit['resolver_clarify_deferred']=True
+            value=Reference(relationship='followup',canonical_question=value.canonical_question or self.original,referents=value.referents)
+            self.reference_value=value
         if value.relationship=='new':return
         self.followup=True
         self.refinement=value.relationship=='refinement'
