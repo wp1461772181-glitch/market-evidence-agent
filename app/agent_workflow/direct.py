@@ -1307,6 +1307,8 @@ class Turn:
                 self.last_rejected=rejected_lines(answer,self.citations,require_citations=require_citations,check_claims=check_claims)
                 kept=tidy_answer(kept)
                 self.audit['answer_issues']=issues
+                # What was removed and why, so a withheld line can be diagnosed instead of guessed at.
+                self.audit['rejected_lines']=[{'line':line[:200],'reason':code} for line,code in self.last_rejected[:5]]
                 reason=issues[0]
                 # Only the unsupported line is dropped; the rest keeps its own formatting.
                 if kept:

@@ -24,3 +24,13 @@ def test_tidy_closes_a_bold_marker_cut_in_half():
 
 def test_tidy_collapses_runs_of_blank_lines():
     assert tidy_answer('甲 [1]\n\n\n\n乙 [1]')=='甲 [1]\n\n乙 [1]'
+
+def test_the_audit_keeps_the_lines_the_check_removed():
+    import asyncio
+    from app.agent_workflow import direct
+    from app.agent_workflow.state import AgentRuntimeContext
+    async def emit(_):pass
+    turn=direct.Turn('AMD 收盘价',AgentRuntimeContext('custom','test','dummy'),emit,[],{})
+    turn.route='A';turn.citations=[{'ordinal':1,'quote':'100','source_type':'saved_price'}]
+    result=turn.finish('AMD 收盘价为 100 美元 [1]。\nAMD 开盘价为 999 美元 [1]。')
+    assert result['audit']['rejected_lines']==[{'line':'AMD 开盘价为 999 美元 [1]。','reason':'unsupported_numeric_claim'}]
