@@ -47,3 +47,17 @@ def test_identifier_grounding_holds_for_every_sentence_of_an_answer():
     names={**NAMES,'ordinal':2}
     answer='营收约 3,318 亿美元 [1]。Microsoft 365 商业云收入包含在内 [1]。'
     assert unsupported_number_values(answer,[FIGURE,names])==[]
+
+def test_a_saved_price_row_can_be_checked_beyond_its_close():
+    from app.agent_workflow.evidence import number_rows
+    citations=[]
+    number_rows('query_stock_prices',[{'id':'p1','symbol':'AAPL','trading_date':'2026-10-16','open':346.08,'high':347.82,'low':340.46,'close':343.46,'volume':58975123,'source':'yahoo','fetched_at':'2026-10-16T22:00:00+00:00'}],citations,{})
+    assert citations[0]['quote']=='343.46'
+    assert unsupported_number_values('| 2026-10-16 | 346.08 | 347.82 | 340.46 | 343.46 | 约 5,898 万 | [1]',citations)==[]
+    assert unsupported_number_values('| 2026-10-16 | 350.00 | [1]',citations)==[350.0]
+
+def test_a_table_header_names_columns_and_is_never_removed():
+    from app.agent_workflow.evidence import reviewed_answer
+    answer='| 期间 | 全年营业收入 | 来源 |\n|---|---|---|\n| FY2026 | 331,839 百万美元 | [1] |'
+    kept,issues=reviewed_answer(answer,[FIGURE],require_citations=True)
+    assert issues==[] and kept==answer

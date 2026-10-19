@@ -1577,8 +1577,9 @@ class Turn:
         except Exception:closing='已完成：取得 '+str(len(self.citations))+' 项来源；未完成：剩余请求。'
         if stop in {'turn_budget','provider_unstable'} and self.observations:
             # Stopping to keep the wait reasonable, or because the provider kept failing, is not a
-            # failure of the answer: it stands on the evidence already gathered.
-            result=self.finish(closing,reason=stop)
+            # failure of the answer: it stands on the evidence already gathered, checked and repaired
+            # like any answer.
+            result=await self.finish_answer(closing)
             if result['status']!='failed' and re.search(r'\[\d+\]',result['answer']):
                 result['answer']+='\n\n'+('（为控制等待时间，本轮基于已取得的资料作答。）' if stop=='turn_budget' else '（模型这次的响应不完整，本轮基于已取得的资料作答。）')
                 self.audit['stop_reason']=stop;result['reason']=stop
@@ -1588,8 +1589,12 @@ class Turn:
             'provider_unstable':'模型这次的响应不完整，本轮在已取得的资料上停止。',
             'tool_failures':f'“{self.audit.get("failed_tool","工具")}”工具连续失败 {self.audit.get("failed_attempts",3)} 次（原因：{self.audit.get("failure_code","tool_unavailable")}），已停止重试。',
             'provider_protocol_invalid':'模型返回了无效工具协议，已停止。'}
-        # The model closing is untrusted even though the stop notice is generated.
-        result=self.finish(closing,status='partially_succeeded' if self.observations else 'failed',reason=stop)
+        # The model closing is untrusted even though the stop notice is generated; with evidence in
+        # hand it is checked and repaired like any answer, and stays partial because the loop stopped.
+        if self.observations:
+            result=await self.finish_answer(closing)
+            if result['status']=='succeeded':result['status']='partially_succeeded'
+        else:result=self.finish(closing,status='failed',reason=stop)
         if self.observations and (result['status']=='failed' or not re.search(r'\[\d+\]',result['answer'])):
             # Invalid model prose must not discard independently verified partial evidence.
             self.audit['closing_guard']=result['reason']

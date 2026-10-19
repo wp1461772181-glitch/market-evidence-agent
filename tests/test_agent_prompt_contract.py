@@ -65,3 +65,15 @@ def test_a_news_refinement_still_cannot_switch_to_prices():
     turn=direct.Turn('我要最近的行情，也就是半个月之内的',AgentRuntimeContext('custom','test','dummy'),emit,[],{})
     turn.refinement=True;turn.scope={'symbol':'MU','metrics':[]}
     with pytest.raises(ValueError):turn.ground_arguments('query_stock_prices',{'symbol':'MU'})
+
+def test_a_capped_turn_still_repairs_its_closing_answer():
+    steps=iter([{'tool_calls':[{'id':'1','function':{'name':'query_stock_prices','arguments':json.dumps({'symbol':'AMD'})}}]},
+                {'content':'AMD 已保存收盘价 100 美元 [1]。'}])
+    def decide(messages,tools):
+        turn.started=time.monotonic()-100
+        return next(steps)
+    ctx=AgentRuntimeContext('custom','test','dummy',classifier=lambda _:'D',decider=decide,answerer=lambda messages:'AMD 已保存收盘价 999 美元 [1]。',
+        executor=lambda *_:{'ok':True,'data':[{'id':'p','symbol':'AMD','close':100}]})
+    turn=direct.Turn('AMD 收盘价',ctx,emit,[],{})
+    result=asyncio.run(turn.run())
+    assert result['status']=='succeeded' and result['answer'].startswith('AMD 已保存收盘价 100 美元 [1]')

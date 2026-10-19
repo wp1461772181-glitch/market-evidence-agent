@@ -222,7 +222,11 @@ def number_rows(name: str,rows: list[dict],citations: list[dict],scope: dict) ->
                 'observed_at':row.get('fetched_at') or row.get('observed_at'),'quote':body[:5000],
                 'trading_date':row.get('trading_date'),'source':row.get('source'),'fetched_at':row.get('fetched_at'),
                 'symbol':row.get('symbol') or scope.get('symbol'),'analysis_id':row.get('analysis_id'),'derived':kind=='ai_analysis','truncated':bool(row.get('truncated'))})
-        if kind=='saved_price':citations[ordinal-1]['quote']=str(row['close'])
+        if kind=='saved_price':
+            citations[ordinal-1]['quote']=str(row['close'])
+            # The quote stays the close (the restore check compares it); the row's other prices are
+            # kept beside it so an answer that states the open, high, low or volume can be checked.
+            citations[ordinal-1]['figures']=' '.join(f'{k} {row[k]}' for k in ('trading_date','open','high','low','close','volume') if row.get(k) is not None)
         row['citation']=f'[{ordinal}]';row['source_type']=kind
         accepted.append(row)
     return accepted
@@ -318,7 +322,7 @@ def unsupported_number_values(answer,citations,*,question=''):
     for passage in cited_passages(answer):
         refs=re.findall(r'\[(\d+)\]',passage)
         cited=[indexed[r] for r in refs if r in indexed]
-        body=' '.join(str(c.get('quote',''))+' '+str(c.get('published_at',''))+' '+str(c.get('source_url',''))+' '+str(c.get('title','')) for c in cited)
+        body=' '.join(str(c.get('quote',''))+' '+str(c.get('figures',''))+' '+str(c.get('published_at',''))+' '+str(c.get('source_url',''))+' '+str(c.get('title','')) for c in cited)
         allowed=figure_values(body)
         for citation in cited:
             quote=str(citation.get('quote',''))
@@ -487,9 +491,14 @@ def reviewed_answer(answer,citations,*,require_citations=False,check_claims=True
     sentence), and a prose line keeps the sentences that passed.
     """
     kept=[];issues=[]
-    for line in answer.splitlines():
+    lines=answer.splitlines()
+    for index,line in enumerate(lines):
         stripped=line.strip()
         if not stripped or _TABLE_RULE.match(stripped):
+            kept.append(line);continue
+        following=lines[index+1].strip() if index+1<len(lines) else ''
+        if stripped.startswith('|') and '-' in following and _TABLE_RULE.match(following):
+            # A header names columns ("| 期间 | 全年营业收入 |"); it states nothing to cite.
             kept.append(line);continue
         accepted,line_issues=reviewed_passages(stripped,citations,require_citations=require_citations,check_claims=check_claims)
         if not line_issues:
@@ -503,10 +512,12 @@ def reviewed_answer(answer,citations,*,require_citations=False,check_claims=True
 
 def rejected_lines(answer,citations,*,require_citations=False,check_claims=True):
     """The lines ``reviewed_answer`` drops or trims, each with its first reason, for the repair."""
-    out=[]
-    for line in answer.splitlines():
+    out=[];lines=answer.splitlines()
+    for index,line in enumerate(lines):
         stripped=line.strip()
         if not stripped or _TABLE_RULE.match(stripped):continue
+        following=lines[index+1].strip() if index+1<len(lines) else ''
+        if stripped.startswith('|') and '-' in following and _TABLE_RULE.match(following):continue
         _,issues=reviewed_passages(stripped,citations,require_citations=require_citations,check_claims=check_claims)
         if issues:out.append((stripped,issues[0]))
     return out
