@@ -26,3 +26,14 @@ def test_a_provider_failure_mid_loop_answers_from_the_evidence_gathered():
         executor=lambda *_:{'ok':True,'data':[{'id':'p','symbol':'AMD','close':100}]})
     result=asyncio.run(direct.run_direct_turn('AMD 收盘价',ctx,emit=emit))
     assert result['status']=='succeeded' and result['answer'].startswith('AMD 已保存收盘价 100 美元 [1]')
+
+def test_a_value_written_per_million_binds_and_its_result_may_be_restated_in_yi():
+    from app.agent_workflow.evidence import unsupported_number_values
+    figures=[{'ordinal':1,'source_type':'reported_figure','quote':'营业收入 FY2026：331,839,000,000 USD，约 3,318.39 亿美元，即 331,839 百万美元。'},
+             {'ordinal':2,'source_type':'reported_figure','quote':'营业收入 FY2025：281,724,000,000 USD，约 2,817.24 亿美元，即 281,724 百万美元。'}]
+    result=calculate({'expression':'a-b','inputs':[{'name':'a','value':'331839','source_ordinal':1},{'name':'b','value':'281724','source_ordinal':2}],'decimals':0},figures)
+    assert result['value']=='50115'
+    cited=figures+[{'ordinal':3,'source_type':'calculation','quote':json.dumps(result,ensure_ascii=False)}]
+    assert unsupported_number_values('差额为 50,115 百万美元 [3]',cited)==[]
+    assert unsupported_number_values('差额约 501.15 亿美元 [3]',cited)==[]
+    assert unsupported_number_values('差额约 600 亿美元 [3]',cited)==[6e10]

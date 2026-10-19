@@ -18,7 +18,9 @@ def calculate(args, citations):
         text=unicodedata.normalize('NFKC',str(source.get('quote',''))+' '+str(source.get('figures',''))).replace('萬','万').replace('億','亿')
         text=PERIOD_TEXT.sub(' ',ACCESSION.sub(' ',SOURCE_ID.sub(' ',TASK_ID.sub(' ',text))))
         text=re.sub(r'(?<=\d),(?=\d{3}(?!\d))','',text)
-        numbers={Decimal(n)*Decimal(str(_MAGNITUDE.get(unit.lower(),1))) for n,unit in _FIGURE.findall(text)}
+        found=_FIGURE.findall(text)
+        # "331,839 百万美元" may be bound as 331839 (computing in millions) as well as in full.
+        numbers={Decimal(n)*Decimal(str(_MAGNITUDE.get(unit.lower(),1))) for n,unit in found}|{Decimal(n) for n,unit in found if unit}
         try:value=Decimal(item['value'])
         except (InvalidOperation,TypeError):raise ValueError('invalid_calculation')
         if not value.is_finite() or value not in numbers:raise ValueError('calculation_input_unbound')

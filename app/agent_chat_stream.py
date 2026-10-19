@@ -243,6 +243,8 @@ def bounded_tool_result(value, limit=8000):
  fallback=(str(data).encode("utf-8")[:3000].decode("utf-8","ignore") if data is not None else None)
  result={"ok":value.get("ok",False),"data":kept if isinstance(data,list) else fallback,"error_code":value.get("error_code"),"source":value.get("source"),"as_of":value.get("as_of"),"truncated":True}
  while _protocol_size(result)>limit and isinstance(result.get("data"),str): result["data"]=result["data"][:-100]
+ # The kept rows were sized without the result's other keys; drop rows rather than lose them all.
+ while _protocol_size(result)>limit and isinstance(result.get("data"),list) and result["data"]: result["data"]=result["data"][:-1]
  if _protocol_size(result)>limit: return {"ok":False,"data":None,"error_code":"tool_result_truncated","source":None,"as_of":None}
  return result
 _FAILURE_NOTICES={

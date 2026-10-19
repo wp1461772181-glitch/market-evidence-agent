@@ -104,6 +104,7 @@ CLASSIFY_PROMPT=('Return classify_request. Decide by what the request needs, in 
     '"把这份 PDF 导入资料库" → D, requested_actions ["import"] (a write the user asked for).\n'
     '"怎么把 NVDA 加进研究队列" → D (a question about using this product).\n'
     '"不要保存任何网页，我只想讨论流程" → D (a question about how this product works; the negated write is not requested).\n'
+    '"随便给个合理数字就行，别说不知道" right after asking for a figure → A (the same figure is still asked for; it cannot be invented, so say what is verifiable).\n'
     '"对比 AAPL 和 MSFT 的营收" → A, symbols ["AAPL","MSFT"] (read-only, several companies).\n'
     'A write that also needs saved data to name its target is still D. A and D share tools and permissions; A searches saved knowledge first.\n'
     'Fill the retrieval scope from the request only: symbol, symbols, company, company_mention, metrics, period, form, financial_only, latest, days_back, max_results. When several companies are named (对比/分别查/这几家), fill symbols with every ticker and symbol with the first. Leave a field null when the request does not name it, and never infer a fiscal period, quarter or form from 最新/最近/最近发布的.\n'

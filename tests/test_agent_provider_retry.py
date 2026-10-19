@@ -48,3 +48,10 @@ def test_a_failed_repair_records_the_provider_reason():
     turn.model=boom
     result=asyncio.run(turn.finish_answer('AMD 收盘价为999美元[1]'))
     assert result['audit']['answer_repair_error']=='repair_unavailable:HTTPException:provider_timeout'
+
+def test_a_large_tool_result_keeps_the_rows_that_fit():
+    from app.agent_chat_stream import bounded_tool_result
+    # Rows sized so the kept rows fill the limit to within the result's own extra keys.
+    rows=[{'id':str(i),'excerpt':'x'*768} for i in range(11)]
+    bounded=bounded_tool_result({'ok':True,'data':rows,'source':'saved'})
+    assert bounded['ok'] and bounded['data'] and bounded['truncated']

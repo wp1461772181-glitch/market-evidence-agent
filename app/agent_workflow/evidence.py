@@ -328,6 +328,9 @@ def unsupported_number_values(answer,citations,*,question=''):
             quote=str(citation.get('quote',''))
             for marker,scale in _SCALE:
                 if marker.search(quote):allowed|={round(v*scale,4) for v in figure_values(quote) if v>=1}
+            if citation.get('source_type')=='calculation':
+                # A result computed on values bound per million is itself in millions.
+                allowed|={round(v*1e6,4) for v in figure_values(quote) if abs(v)>=1}
             pub = citation.get('published_at') or citation.get('filed_at') or citation.get('trading_date')
             if pub and isinstance(pub, str):
                 try:

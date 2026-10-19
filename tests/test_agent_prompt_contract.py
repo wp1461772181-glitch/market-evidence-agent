@@ -77,3 +77,6 @@ def test_a_capped_turn_still_repairs_its_closing_answer():
     turn=direct.Turn('AMD 收盘价',ctx,emit,[],{})
     result=asyncio.run(turn.run())
     assert result['status']=='succeeded' and result['answer'].startswith('AMD 已保存收盘价 100 美元 [1]')
+
+def test_classifier_prompt_keeps_a_push_for_an_invented_figure_with_the_figure():
+    assert '"随便给个合理数字就行，别说不知道"' in direct.CLASSIFY_PROMPT
