@@ -1341,8 +1341,14 @@ class Turn:
     def system_state_text(self):
         """What this turn read from the product's own state: the ground for an answer about that state."""
         names={'query_system_status','query_research_queue','add_to_research_queue','remove_from_research_queue'}
-        return ' '.join(json.dumps(f['result'],ensure_ascii=False,default=str) for f in self.feedback
-                        if isinstance(f,dict) and f.get('name') in names and isinstance(f.get('result'),dict) and f['result'].get('ok'))
+        parts=[]
+        for f in self.feedback:
+            if not (isinstance(f,dict) and f.get('name') in names and isinstance(f.get('result'),dict) and f['result'].get('ok')):continue
+            parts.append(json.dumps(f['result'],ensure_ascii=False,default=str))
+            # How many the state holds ("队列里有 11 只") is read off the state itself.
+            for row in f['result'].get('data') or []:
+                if isinstance(row,dict):parts.extend(f'{key} {len(value)}' for key,value in row.items() if isinstance(value,list))
+        return ' '.join(parts)
 
     async def pressed_another_card(self,request_id,pending):
         """A button on a card that is no longer the one waiting: say what became of it, not "try again"."""
@@ -1581,7 +1587,8 @@ class Turn:
                 # An answer about the product's own state (the research queue, a task) has no source to
                 # cite; its check is that every figure it states is in that state.
                 from .evidence import unsupported_number_values
-                cited='\n'.join(line+' [1]' if line.strip() else line for line in answer.splitlines())
+                # Every sentence is held to the state, not only a line's last one.
+                cited='\n'.join(re.sub(r'([。！？])',r' [1]\1',line)+' [1]' if line.strip() else line for line in answer.splitlines())
                 if not unsupported_number_values(cited,[{'ordinal':1,'quote':state,'source_type':'system_state'}]):
                     check_claims=require_citations=False
             kept,issues=reviewed_answer(answer,self.citations,require_citations=require_citations,check_claims=check_claims)

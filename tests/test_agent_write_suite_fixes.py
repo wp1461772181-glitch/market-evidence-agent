@@ -115,3 +115,10 @@ def test_a_review_that_was_already_recorded_is_reported_as_nothing_to_do_not_as_
     value={'ok':False,'status':'complete','data':[{'ok':False,'error_code':'already_reviewed','reason':consent.failure_reason('already_reviewed')}]}
     result=turn.confirmed_failure(value,{'operations':[{'name':'review_filing','arguments':{'symbol':'MSFT','source_id':'x','decision':'accepted'}}]})
     assert result['status']!='failed' and '不能修改' in result['answer'] and '没有完成' not in result['answer']
+
+def test_a_count_the_queue_implies_is_part_of_the_queue():
+    eleven=['AAPL','GOOGL','AMZN','NVDA','META','TSLA','IBM','INTC','CRM','MSFT','AMD']
+    turn=_turn('现在队列里有什么？');turn.route='D'
+    turn.feedback=[{'name':'query_research_queue','result':{'ok':True,'data':[{'symbols':eleven}],'source':'owner queue','as_of':'2026-10-19T11:08:13.5+00:00'}}]
+    result=turn.finish('研究队列现在有 11 只股票：'+'、'.join(eleven)+'。这次更新在 2026-10-19 11:08 UTC 完成。')
+    assert result['status']=='succeeded' and 'AMD' in result['answer']
