@@ -108,6 +108,9 @@ CLASSIFY_PROMPT=('Return classify_request. Decide by what the request needs, in 
     'write_condition=newer_than_saved only when the user makes the write conditional on being newer. '
     'explicit_task_change=true only when the user positively switches task, metric or channel; a time or count change alone keeps the previous task and channel.\n'
     'company_mention copies the user\'s own words for the company; company holds the English issuer name; the server verifies that pair against official data.')
+REFUSAL_WORDS={'write_tool_not_granted':'这项写入不是你在这句话里明确要求的','write_negated':'你说了不要执行','owner_login_required':'只有所有者能执行',
+ 'write_not_proposed':'没有生成确认卡','scan_official_first':'需要先扫描该股票的 SEC 目录','comparison_citation_required':'需要先取得库内申报和网页日期',
+ 'comparison_date_unavailable':'缺少可比较的日期','not_newer':'网页日期没有更新','already_exists':'资料已存在','suggestion_limit':'本轮已经提过一次建议'}
 HISTORY_NOTE=('以下是本对话之前的轮次，只用来理解用户在指什么、想要什么。助手以前的回答不是证据：回答里的事实只能引用本轮工具结果的 [n]；'
     '要用之前找到的资料，先用 use_result_set(result_set_id, positions, action="summarize") 把它重新纳入本轮证据，或重新检索。')
 UNDERSTANDING_NOTE='对当前问题的理解（来自前置步骤，仅供参考，可能有误；以用户原话和对话为准；时间窗口 days_back 与结果条数 max_results 按这里执行，除非用户原话另有说明）：'
@@ -695,7 +698,7 @@ class Turn:
         if self.owner:
             unavailable=[p.name for p in definitions().values() if p.level in {'reversible','costly'} and p.name not in self.granted_actions]
             instruction+=('\n当前身份：所有者。本轮可直接提出确认卡的写操作：'+('、'.join(sorted(self.granted_actions)) or '无')+
-                '；其他需要批准的操作（'+'、'.join(unavailable)+'）可以直接调用或用 request_action 建议，服务器会把它变成待用户确认的卡片。')
+                '；其他需要批准的操作（'+'、'.join(unavailable)+'）不能直接调用，确有必要时用 request_action 建议一次，由用户在卡片上决定。')
         else:
             instruction+=('\n当前身份：游客。抓取、导入、初始化、索引、AI 分析任务、预测、扫描等写操作只有所有者能确认；游客要求时直接说明这一点，'
                 '不要改用无关的读取或卡片代替。扫描官方申报不是读取已存申报。')
@@ -977,7 +980,7 @@ class Turn:
             older=next((c for c in self.citations if c['ordinal']==ordinal and c.get('source_type') in {'official_filing','saved_filing'}),None)
             if ordinal is not None and not older:return self.write_error(name,'comparison_date_unavailable')
             operation['comparison_citations']=[copy.deepcopy(older)] if older else []
-        display={'title':'这是 agent 的建议，不是你的要求：'+name,'agent_suggestion':True,'targets':[operation['arguments']],'alternative':str(args.get('reason') or '')[:400]}
+        display={'title':'这是 Agent 的建议，不是你的要求：'+WRITE_TITLES.get(name,name),'agent_suggestion':True,'targets':[operation['arguments']],'alternative':str(args.get('reason') or '')[:400]}
         self.pending=await asyncio.to_thread(consent.propose,self.context.identity_credential,self.context.conversation_id,[operation],display,question=self.request_words())
         self.pending['choices'][0]['label']='授权发现目标，查看确认卡' if name in {'fetch_sec','refresh_sec'} else ('批准建议，查看正文确认卡' if operation.get('grant_only') else '批准并执行')
         self.suggestion_used=True;self.audit['write_outcome']='proposed'
@@ -1271,7 +1274,7 @@ class Turn:
             hints={'scan_official_first':'先请求扫描该股票的 SEC 目录并确认，再拉取具体申报。','comparison_citation_required':'先取得库内申报及网页日期，再请求比较并按条件导入。','comparison_date_unavailable':'补充可核验的库内申报和网页发布日期后再比较。','not_newer':'网页日期没有更新，无需入库。','already_exists':'资料已存在，无需重复入库。','write_negated':'当前请求否定了该操作，保持不执行；需要改变时请明确提出新请求。','write_not_proposed':'请说明要执行的具体操作和目标，以便生成系统确认卡。'}
             next_step=hints.get(code,'如需执行，请在确认卡上点击确认；没有出现卡片时，请直接说明要执行的操作和目标。') if self.owner else '请由所有者登录后通过系统确认卡执行。'
             noted=any(op in answer for op in ('操作未执行','未执行','没有执行','请确认','确认卡','卡片','可在卡片上','需要确认','无法执行','仅所有者','只有所有者'))
-            if not noted:answer+='\n操作未执行：'+code+'。下一步：'+next_step
+            if not noted:answer+='\n操作未执行：'+REFUSAL_WORDS.get(code,'这一步没有生成确认卡')+'（'+code+'）。下一步：'+next_step
         self.audit.update(stop_reason=reason,elapsed_ms=round((time.monotonic()-self.started)*1000))
         return {'answer':answer[:30000],'citations':self.citations,'status':status,'reason':reason,'route':self.route,
             'audit':self.audit,'final_protocol':self.final_protocol,'pending_request':self.pending,'result_sets':self.sets,'previous_category':self.route,'previous_scope':self.scope}
@@ -1388,7 +1391,10 @@ class Turn:
                 if self.budget(soft=False):stop=self.budget(soft=False);break
                 function=call.get('function',{});name=function.get('name')
                 if name in definitions() and name not in {t['function']['name'] for t in self.exposed_tools()}:
-                    code='owner_login_required' if not self.owner and not definitions()[name].guest else 'write_tool_not_granted'
+                    # An ungranted write is refused, never converted: page text can make a model call
+                    # one, and a card the user might click is the wrong answer to an injected request.
+                    write=definitions()[name].level in {'reversible','costly'}
+                    code='owner_login_required' if not self.owner and not definitions()[name].guest else ('write_negated' if write and vetoed(name,self.authorization_question) else 'write_tool_not_granted')
                     self.audit['tool_calls']+=1;outcome=self.write_error(name,code);self.feedback.append(outcome)
                     self.protocol.append({'role':'tool','tool_call_id':call['id'],'content':json.dumps(outcome)});batch_failed=True;continue
                 try:
