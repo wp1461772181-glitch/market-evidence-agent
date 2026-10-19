@@ -86,3 +86,11 @@ def test_an_unfounded_company_is_still_asked_about(monkeypatch):
     ctx=AgentRuntimeContext('custom','test','dummy',classifier=lambda _:{'category':'D','symbol':'AAPL','company':'NVIDIA','company_mention':'英伟达','days_back':7},decider=lambda *_:{'content':'好的。'})
     result=asyncio.run(direct.run_direct_turn('查一下 AAPL 最近的已保存收盘价。',ctx,emit=emit))
     assert result['status']=='waiting_for_input'
+
+def test_a_clarify_that_only_repeats_the_users_words_continues_instead_of_asking():
+    seen,decide=_capture()
+    ctx=AgentRuntimeContext('custom','test','dummy',resolver=lambda _:{'relationship':'clarify','question':'总结一下你刚刚找到的两条新闻。',
+        'choices':['第一条','第二条'],'canonical_question':'总结上一条回复中列出的两条苹果营收新闻','referents':[]},
+        classifier=lambda _:'D',decider=decide)
+    result=asyncio.run(direct.run_direct_turn('总结一下你刚刚找到的两条新闻。',ctx,emit=emit,messages=HISTORY))
+    assert result['status']!='waiting_for_input' and seen

@@ -121,3 +121,18 @@ def test_selecting_from_this_turns_own_results_says_they_are_already_evidence():
 def test_the_closing_instruction_asks_for_an_answer_not_a_progress_report():
     text=_turn().tool_messages(True)[0]['content']
     assert '明确列出已完成和未完成的部分' not in text and '不要写出任何工具调用' in text
+
+def test_a_date_written_with_spaces_is_a_date_not_three_figures():
+    filing=[{'ordinal':1,'source_type':'official_filing','quote':'Quarterly report 10-Q','title':'MSFT 10-Q'}]
+    assert unsupported_number_values('| 2026-01-28 | 10-Q | 截至 2025 年 12 月 31 日的季度报告 [1] |',filing)==[]
+    assert unsupported_number_values('交易日为 2026 年 10 月 16 日，统计到 2025 年 12 月 [1]。',filing)==[]
+
+def test_a_question_mark_inside_a_title_does_not_split_the_cited_line():
+    text='1. **《Nvidia 与 Apple 股票：2026 年哪一只更值得买入？》（KuCoin，2026-10-18）** [1]'
+    news=[{'ordinal':1,'source_type':'web','quote':'Nvidia vs Apple stock: which one to buy?','title':'Nvidia 与 Apple 股票：2026 年哪一只更值得买入？'}]
+    kept,issues=reviewed_answer(text,news,require_citations=True)
+    assert issues==[] and kept==text
+
+def test_a_numbered_item_that_loses_a_sentence_keeps_a_clean_marker():
+    kept,issues=reviewed_answer('1. 营收为 109,417 百万美元 [1]。另有 999 亿美元的说法。',SEGMENTS,require_citations=True)
+    assert issues and kept=='1. 营收为 109,417 百万美元 [1]'

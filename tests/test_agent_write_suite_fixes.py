@@ -108,3 +108,10 @@ def test_a_filing_that_already_has_a_review_says_so_instead_of_failing_vaguely()
     out=consent.failure_outcome(SecFilingsError('SEC filing already has an immutable human review decision'))
     assert out['error_code']=='already_reviewed' and '不能修改' in out['reason']
     assert 'already_reviewed' in direct.FAILURE_NEXT_STEPS
+
+def test_a_review_that_was_already_recorded_is_reported_as_nothing_to_do_not_as_a_failure():
+    from app.agent_workflow import consent
+    turn=_turn('confirm:tok',{'pending_request':{'id':'r','reason':'write_confirmation','original_question':'把这份 10-Q 标记为相关'}})
+    value={'ok':False,'status':'complete','data':[{'ok':False,'error_code':'already_reviewed','reason':consent.failure_reason('already_reviewed')}]}
+    result=turn.confirmed_failure(value,{'operations':[{'name':'review_filing','arguments':{'symbol':'MSFT','source_id':'x','decision':'accepted'}}]})
+    assert result['status']!='failed' and '不能修改' in result['answer'] and '没有完成' not in result['answer']

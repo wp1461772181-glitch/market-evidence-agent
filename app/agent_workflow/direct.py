@@ -253,6 +253,7 @@ WRITE_TITLES={
  'add_to_research_queue':'加入研究队列','remove_from_research_queue':'移出研究队列',
  'review_filing':'申报相关性核验',
 }
+NOTHING_TO_DO={'already_reviewed','duplicate_source'}
 TYPED_CONSENT=re.compile(r'(?:同意|确认|确定|可以|好的?|行|执行吧?|批准|继续|ok(?:ay)?|yes)[。.!！~～]?',re.I)
 JOB_STATUS_WORDS={'queued':'排队中','pending':'排队中','submitted':'已提交','running':'进行中','executing':'进行中',
  'completed':'已完成','complete':'已完成','succeeded':'已完成','failed':'失败','error':'失败','cancelled':'已取消',
@@ -511,7 +512,11 @@ class Turn:
                 if relationship=='new':return
         self.reference_stage(failure is None,failure)
         if value.relationship=='clarify':
-            if value.question and len(value.choices)>=2:
+            # A clarification is a question the user can answer by choosing.  One whose "question" is just
+            # the user's own message is the resolver hedging on a rewrite it already made.
+            def words(text):return re.sub(r'[\s。.!！?？,，、:：]+','',str(text or ''))
+            own=words(value.question) in {words(self.original),words(self.user_words())}
+            if value.question and not own and len(set(value.choices))>=2:
                 self.pending=self.card(value.question,value.choices);return
             # A clarification with nothing to choose from is the resolver giving up, not a question for
             # the user: the loop reads the conversation and asks with ask_user when it is truly ambiguous.
@@ -1314,20 +1319,24 @@ class Turn:
                 code=str(outcome.get('error_code') or 'write_service_failed');codes.append(code)
                 label=self.operation_label(operation) or '这项操作'
                 reason=outcome.get('reason') or consent.failure_reason(code)
-                if zh:
+                if zh and code in NOTHING_TO_DO:
+                    lines.append(f'- {label}：{reason}' if successes else f'{label}：{reason}')
+                elif zh:
                     step=FAILURE_NEXT_STEPS.get(code,'请稍后重试；如果仍然失败，换一个来源或链接再试。')
                     lines.append((f'- {label}：{reason}下一步：{step}' if successes
                                   else f'{label}没有完成：{reason}下一步：{step}'))
                 else:
                     lines.append(f'{label} did not complete: the write service did not finish it. '
                                  'Next step: try again shortly, or use another source.')
-        head=f'有 {len(failures)} 项已确认的操作没有完成：' if not successes and len(failures)>1 and zh else ''
+        # A review already recorded or a duplicate is the request's end state, not a failure.
+        nothing_to_do=all(code in NOTHING_TO_DO for code in codes)
+        head=f'有 {len(failures)} 项已确认的操作没有完成：' if not successes and len(failures)>1 and zh and not nothing_to_do else ''
         self.audit['write_outcome']='refused:'+codes[0]
         self.audit['confirmed_write_failure']=[{'operation':(operation or {}).get('name'),
             'error_code':str((outcome or {}).get('error_code') or 'write_service_failed')} for operation,outcome in failures]
         self.audit['confirmed_write_success']=[{'operation':(operation or {}).get('name'),
             'status':(outcome or {}).get('status')} for operation,outcome in successes]
-        return self.finish(head+'\n'.join(lines),status='failed',reason=codes[0],generated=True)
+        return self.finish(head+'\n'.join(lines),status='succeeded' if nothing_to_do else 'failed',reason=codes[0],generated=True)
 
     def system_state_text(self):
         """What this turn read from the product's own state: the ground for an answer about that state."""

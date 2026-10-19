@@ -15,10 +15,17 @@ def contains(term: str, text: str) -> bool:
     return bool(re.search(pattern,text,re.I))
 
 
+_TITLE_PUNCTUATION=str.maketrans({'？':'','！':'','。':'','?':'','!':'','.':''})
+_TITLE_RESTORED=str.maketrans({v:k for k,v in {'？':'','！':'','。':'','?':'','!':'','.':''}.items()})
+
+
 def cited_passages(answer):
+    # A title in 《》 is one name even when it asks a question ("……哪一只更值得买入？"): its punctuation
+    # does not end the sentence that cites it.
+    protected=re.sub(r'《[^》\n]{0,300}》',lambda m:m.group(0).translate(_TITLE_PUNCTUATION),answer)
     # Both “fact[1]。” and “fact。[1]” bind the marker to the same sentence.
-    normalized=re.sub(r'([。！？.!?])(\s*(?:\[\d+\]\s*)+)',lambda m:m[2].strip()+m[1],answer)
-    return re.split(r'[。！？\n]|(?<=[.!?])\s+',normalized)
+    normalized=re.sub(r'([。！？.!?])(\s*(?:\[\d+\]\s*)+)',lambda m:m[2].strip()+m[1],protected)
+    return [part.translate(_TITLE_RESTORED) for part in re.split(r'[。！？\n]|(?<=[.!?])\s+',normalized)]
 
 
 def normalized_period(text):
@@ -311,8 +318,10 @@ def unsupported_number_values(answer,citations,*,question=''):
     from .semantic import figure_values
     from .language import simplified
     answer=simplified(answer)
+    # Chinese dates are often typeset with spaces ("2025 年 12 月 31 日"), and a CJK neighbour is a word
+    # character, so the date is bounded by digits rather than by \b.
     date_pat = re.compile(
-        r'\b(?:\d{4}[-/年])?\d{1,2}[-/月]\d{1,2}日?\b|'
+        r'(?<!\d)(?:\d{4}\s*[-/年]\s*)?\d{1,2}\s*[-/月]\s*\d{1,2}(?:\s*日)?(?!\d)|(?<!\d)\d{4}\s*年\s*\d{1,2}\s*月|'
         r'\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2}\b|'
         r'\b\d{1,2}\s+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\b',
         re.I
@@ -538,14 +547,15 @@ def reviewed_answer(answer,citations,*,require_citations=False,check_claims=True
     for line,stripped,checked in _reviewable_lines(answer):
         if checked is None:
             kept.append(line);continue
-        accepted,line_issues=reviewed_passages(checked,citations,require_citations=require_citations,check_claims=check_claims)
+        # A list marker is not a sentence ("1." would otherwise split off as one).
+        bullet=_BULLET.match(stripped)
+        accepted,line_issues=reviewed_passages(checked[bullet.end():] if bullet else checked,citations,require_citations=require_citations,check_claims=check_claims)
         if not line_issues:
             kept.append(line);continue
         issues.extend(line_issues)
-        bullet=_BULLET.match(stripped)
         if bullet and accepted:
             # A list item survives losing a sentence: keep its marker and the sentences that passed.
-            kept.append(bullet.group(0)+'。'.join(p[bullet.end():] if p.startswith(bullet.group(0)) else p for p in accepted));continue
+            kept.append(bullet.group(0)+'。'.join(accepted));continue
         if _ATOMIC_LINE.match(stripped):continue
         if accepted:kept.append('。'.join(accepted))
     text='\n'.join(kept).strip()
@@ -557,6 +567,7 @@ def rejected_lines(answer,citations,*,require_citations=False,check_claims=True)
     out=[]
     for _,stripped,checked in _reviewable_lines(answer):
         if checked is None:continue
-        _,issues=reviewed_passages(checked,citations,require_citations=require_citations,check_claims=check_claims)
+        bullet=_BULLET.match(stripped)
+        _,issues=reviewed_passages(checked[bullet.end():] if bullet else checked,citations,require_citations=require_citations,check_claims=check_claims)
         if issues:out.append((stripped,issues[0]))
     return out
