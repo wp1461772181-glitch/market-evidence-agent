@@ -197,7 +197,9 @@ async def _retrieve(query:str, *, faq:bool, symbol:str|None=None, limit:int=5, a
     ordered=[by_id[str(hit['id'])] for hit in ranked if str(hit['id']) in by_id]
     if strategy=='hybrid_rerank' and ordered:
         try:
-            pairs=await runtime.rerank(query,[chunk.answer for chunk,_doc in ordered])
+            # Twelve candidates is where the vector ranking stops being close: reranking all fifty
+            # cost fifteen seconds per search, and every turn that searched waited for it.
+            pairs=await runtime.rerank(query,[chunk.answer for chunk,_doc in ordered[:12]])
             ordered=[ordered[index] for index,_score in pairs[:10]]
         except Exception as exc: raise KnowledgeUnavailable('reranker backend is unavailable','knowledge_reranker_unavailable') from exc
     # Number citations against the shared turn manifest before rendering evidence.
