@@ -356,9 +356,9 @@ def unsupported_number_values(answer,citations,*,question=''):
         for value,digits,scaled,unitless in _claim_figures(' '.join(amounts))+_claim_figures(bare):
             # Exclude list numbering and calendar years to avoid false positive claim rejections
             if (1.0<=value<=10.0 and value==int(value)) or (1990<=value<=2035 and value==int(value)):continue
-            grounds=allowed|headed if unitless else allowed
-            if value in grounds or (percent and value/100 in allowed):continue
-            if (digits>=3 or (digits>=2 and scaled)) and any(_round_to(a,digits)==_round_to(value,digits) for a in grounds if a):continue
+            support=allowed|headed if unitless else allowed
+            if value in support or (percent and value/100 in allowed):continue
+            if (digits>=3 or (digits>=2 and scaled)) and any(_round_to(a,digits)==_round_to(value,digits) for a in support if a):continue
             rejected.append(value)
     return sorted(set(rejected))
 

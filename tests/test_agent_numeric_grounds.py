@@ -41,3 +41,9 @@ def test_a_figure_written_in_a_millions_table_matches_the_full_reported_value():
     assert unsupported_number_values('| FY2026 营业收入（百万美元） | 331,839 [1] |',[FIGURE])==[]
     assert unsupported_number_values('| FY2026 营业收入（亿美元） | 3,318.39 [1] |',[FIGURE])==[]
     assert unsupported_number_values('| FY2026 营业收入（百万美元） | 331,000 [1] |',[FIGURE])==[331000.0]
+
+def test_identifier_grounding_holds_for_every_sentence_of_an_answer():
+    # The name is shown by another source of the turn, not by the one this sentence cites.
+    names={**NAMES,'ordinal':2}
+    answer='营收约 3,318 亿美元 [1]。Microsoft 365 商业云收入包含在内 [1]。'
+    assert unsupported_number_values(answer,[FIGURE,names])==[]
