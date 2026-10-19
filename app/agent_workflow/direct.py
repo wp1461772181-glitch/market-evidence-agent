@@ -1610,15 +1610,21 @@ class Turn:
     async def agent_loop(self):
         """The tool loop and the closing answer: shared by a new request and a resumed one."""
         if self.route=='A':
-            args={k:self.scope.get(k) for k in ('symbol','company','latest','form','financial_only') if self.scope.get(k) is not None}
-            args['query']=self.scope.get('query') or self.question[:400]
-            initial=await self.execute_read('search_knowledge',args);self.accept('search_knowledge',args,initial);await self.publish_result('search_knowledge',initial)
             from .financials import xbrl_metrics_for
-            wanted=xbrl_metrics_for(self.scope.get('metrics') or [])
+            wanted=xbrl_metrics_for(self.scope.get('metrics') or []);covered=False
             if wanted and self.scope.get('symbol'):
                 # A figure the filing reported in XBRL is read exactly instead of being hunted in prose.
                 figures_args={'symbol':self.scope['symbol'],'metrics':wanted}
                 figures=await self.execute_read('query_financials',figures_args);self.accept('query_financials',figures_args,figures);await self.publish_result('query_financials',figures)
+                found={row.get('metric') for row in (self.last_accepted or {}).get('data') or [] if isinstance(row,dict)}
+                # When the reported figures answer every metric asked about one company, the knowledge
+                # search only adds prose: in production it tripled what the model reads and took the same
+                # question from 6 s to 36 s.  The model can still search when it needs more.
+                covered=set(wanted)<=found and len(self.scope.get('symbols') or [])<=1
+            if not covered:
+                args={k:self.scope.get(k) for k in ('symbol','company','latest','form','financial_only') if self.scope.get(k) is not None}
+                args['query']=self.scope.get('query') or self.question[:400]
+                initial=await self.execute_read('search_knowledge',args);self.accept('search_knowledge',args,initial);await self.publish_result('search_knowledge',initial)
             self.audit['retrieval_gate']='sufficient_evidence' if self.observations else 'zero_evidence'
             self.no_new=0  # The mandatory prelude is not an attempted repeated agent search.
         stop=None

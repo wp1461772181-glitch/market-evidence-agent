@@ -116,3 +116,33 @@ def test_saved_data_turn_reads_reported_figures_when_the_metric_is_one_of_them()
     result=asyncio.run(direct.run_direct_turn('查 MSFT 最近一期年报的营业收入',ctx,emit=emit))
     assert ('query_financials',{'symbol':'MSFT','metrics':['revenue'],'latest':False,'limit':20}) in [(n,{k:v for k,v in a.items() if v is not None}) for n,a in executed]
     assert result['status']=='succeeded' and '331,839,000,000' in result['answer']
+
+REVENUE_ROW={'source_id':'f1','symbol':'MSFT','form':'10-K','source_type':'reported_figure','metric':'revenue',
+    'title':'MSFT 10-K · 营业收入 FY2026','filed_at':'2026-07-29','excerpt':'营业收入（Revenue）FY2026：331,839,000,000 USD。'}
+
+def _figure_turn(rows,metrics=('营业收入',),symbols=None):
+    from app.agent_workflow import direct
+    from app.agent_workflow.state import AgentRuntimeContext
+    executed=[]
+    def execute(name,args):
+        executed.append(name)
+        return {'ok':True,'data':copy.deepcopy(rows) if name=='query_financials' else []}
+    async def emit(_):pass
+    scope={'category':'A','symbol':'MSFT','metrics':list(metrics),'days_back':None,**({'symbols':symbols} if symbols else {})}
+    ctx=AgentRuntimeContext('custom','test','dummy',classifier=lambda _:scope,
+        decider=lambda *_:{'content':'MSFT FY2026 营业收入为 331,839,000,000 美元 [1]。'},executor=execute)
+    asyncio.run(direct.run_direct_turn('查 MSFT 最近一期年报的营业收入',ctx,emit=emit))
+    return executed
+
+def test_a_figure_the_reported_figures_cover_skips_the_knowledge_search():
+    executed=_figure_turn([REVENUE_ROW])
+    assert executed[0]=='query_financials' and 'search_knowledge' not in executed
+
+def test_a_figure_with_no_reported_value_still_searches_the_knowledge_base():
+    assert 'search_knowledge' in _figure_turn([])
+
+def test_a_figure_covered_only_in_part_still_searches_the_knowledge_base():
+    assert 'search_knowledge' in _figure_turn([REVENUE_ROW],metrics=('营业收入','营业利润'))
+
+def test_two_companies_still_search_the_knowledge_base():
+    assert 'search_knowledge' in _figure_turn([REVENUE_ROW],symbols=['MSFT','GOOGL'])
