@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 import os
 import re
 import hashlib
@@ -192,16 +193,21 @@ async def _expanded_retrieval(function, symbol: str, keyword: str, limit: int, s
             if key not in seen:
                 seen.add(key);rows.append(row)
             if len(rows)>=limit:break
-    await attempt(keyword)
     # A Chinese question against English filings can return rows that do not contain the asked
     # metric: 'cloud revenue' finds a balance sheet, the turn answers 'no verifiable data' and the
     # number sits one paragraph away. Those variants are model-written translations of the same
     # question, so a hit is now a miss with an escape hatch instead of a dead end.
     chinese=any('\u4e00'<=ch<='\u9fff' for ch in keyword)
+    # Written while the first search runs: the extra recall must not cost its latency.
+    speculative=asyncio.ensure_future(query_variants(keyword)) if (not source_id and chinese) else None
+    await attempt(keyword)
     if not source_id and (not rows or chinese):
-        for query in (await query_variants(keyword))[1:]:
+        variants=await speculative if speculative is not None else await query_variants(keyword)
+        for query in variants[1:]:
             await attempt(query)
             if len(rows)>=limit:break
+    elif speculative is not None:
+        speculative.cancel()
     if first is None:first={'ok':True,'data':[],'source':'knowledge','as_of':None}
     return {**first,"data":rows[:limit],"as_of":max((str(row.get("observed_at")) for row in rows if isinstance(row,dict) and row.get("observed_at")),default=first.get("as_of"))}
 

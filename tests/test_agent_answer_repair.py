@@ -113,3 +113,21 @@ def test_repair_is_told_which_numbers_the_source_check_rejected():
     assert result['status']=='succeeded'
     repair_request=[m for m in json.loads(seen[-1]) if m.get('role')=='user'][-1]['content']
     assert '999' in repair_request and 'unsupported_numbers' in repair_request
+
+
+def test_repair_names_the_source_that_holds_a_rejected_number():
+    """Dropping a figure is the last resort; re-sourcing it keeps the answer."""
+    seen=[]
+    def decide(messages,tools):
+        seen.append(json.dumps(messages,ensure_ascii=False,default=str))
+        return repair('AMD 收盘价为 100 美元')
+    ctx=AgentRuntimeContext('custom','test','dummy',classifier=lambda _:'D',decider=decide)
+    turn=direct.Turn('AMD 营收',ctx,emit,[],{})
+    turn.route='A';turn.observations=[{'accepted_evidence':True}]
+    # The figure lives in the second source; the draft attached it to the first.
+    turn.citations=[{'ordinal':1,'quote':'AMD 已保存收盘价 100','source_type':'saved_price'},
+                    {'ordinal':2,'quote':'Total revenue 331,839 million','source_type':'official_filing'}]
+    asyncio.run(turn.finish_answer('AMD 营收为 331,839 百万美元 [1]。'))
+    payload=json.loads([m for m in json.loads(seen[0]) if m.get('role')=='user'][-1]['content'])
+    assert payload['unsupported_numbers']==[331839000000.0]
+    assert payload['rejected_numbers_appear_in']=={'331839000000.0':['2']}
