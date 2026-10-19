@@ -67,4 +67,6 @@ def test_a_refused_write_never_names_a_tool_the_user_cannot_call():
     turn.write_reasons = {'scan_official': 'write_not_proposed'}
     result = asyncio.run(turn.finish_answer('没有可执行的操作。'))
     assert 'request_action' not in result['answer']
-    assert '确认卡' in result['answer'] and 'write_not_proposed' in result['answer']
+    # Product requirement (2026-10-19): the code is audit-only; the user reads the next step.
+    assert '确认卡' in result['answer'] and 'write_not_proposed' not in result['answer']
+    assert result['audit']['write_outcome'] == 'refused:write_not_proposed'

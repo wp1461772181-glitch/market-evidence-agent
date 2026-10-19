@@ -131,8 +131,32 @@ CLASSIFY_PROMPT=('Return classify_request. Decide by what the request needs, in 
     'explicit_task_change=true only when the user positively switches task, metric or channel; a time or count change alone keeps the previous task and channel.\n'
     'company_mention copies the user\'s own words for the company; company holds the English issuer name; the server verifies that pair against official data.')
 REFUSAL_WORDS={'write_tool_not_granted':'这项写入不是你在这句话里明确要求的','write_negated':'你说了不要执行','owner_login_required':'只有所有者能执行',
- 'write_not_proposed':'没有生成确认卡','scan_official_first':'需要先扫描该股票的 SEC 目录','comparison_citation_required':'需要先取得库内申报和网页日期',
- 'comparison_date_unavailable':'缺少可比较的日期','not_newer':'网页日期没有更新','already_exists':'资料已存在','suggestion_limit':'本轮已经提过一次建议'}
+ 'write_not_proposed':'这项操作没有执行','scan_official_first':'需要先扫描该股票的 SEC 目录','comparison_citation_required':'需要先取得库内申报和网页日期',
+ 'comparison_date_unavailable':'缺少可比较的日期','not_newer':'网页日期没有更新','already_exists':'资料库里已有这条','suggestion_limit':'本轮已经提过一次建议',
+ 'write_service_failed':'执行时服务出错，操作没有完成','page_fetch_blocked':'网页被站点拒绝或没有可用正文','page_without_text':'网页只抓到很少的文字',
+ 'invalid_published_at':'来源的发布日期无法使用',
+ 'content_too_large':'内容超过单次保存的大小上限','duplicate_source':'资料库里已有同样的内容','source_changed':'网页内容在确认后发生了变化',
+ 'entity_mismatch':'网页正文没有出现这只股票或这家公司','invalid_source_url':'来源链接不是可保存的 HTTPS 链接','invalid_material':'材料没有通过校验'}
+# A confirmed failure already passed the card, so the only useful next step is about the write
+# itself: never send the user back to a confirmation card they have just pressed.
+FAILURE_NEXT_STEPS={
+ 'page_fetch_blocked':'可以换一个能正常打开的原文链接，或稍后再试。',
+ 'page_without_text':'可以换一个转载了全文的链接再试。',
+ 'invalid_published_at':'可以核对原文日期后重新提交。',
+ 'content_too_large':'可以截取关键片段或拆分后再保存。',
+ 'content_empty':'请补充正文后再保存。',
+ 'content_unreadable':'请换一个可读取的文本或 PDF 再保存。',
+ 'duplicate_source':'无需再次保存。',
+ 'source_changed':'请重新抓取并确认最新内容。',
+ 'entity_mismatch':'请换一篇提到这家公司的来源。',
+ 'invalid_source_url':'请换一个原文的 HTTPS 链接。',
+ 'invalid_title':'请修改标题后重试。',
+ 'invalid_symbol':'请换成有效的美股代码后重试。',
+ 'invalid_material':'请检查标题、来源链接和正文后重试。',
+ 'owner_login_required':'请由所有者重新登录后再试。',
+ 'permission_revoked':'请由所有者重新登录后再试。',
+ 'unsupported_operation':'请换一种受支持的操作。',
+}
 HISTORY_NOTE=('以下是本对话之前的轮次，只用来理解用户在指什么、想要什么。助手以前的回答不是证据：回答里的事实只能引用本轮工具结果的 [n]；'
     '要用之前找到的资料，先用 use_result_set(result_set_id, positions, action="summarize") 把它重新纳入本轮证据，或重新检索。')
 UNDERSTANDING_NOTE='对当前问题的理解（来自前置步骤，仅供参考，可能有误；以用户原话和对话为准；时间窗口 days_back 与结果条数 max_results 按这里执行，除非用户原话另有说明）：'
@@ -244,7 +268,7 @@ def source_display_title(source_type,source_id):
     return None
 
 
-EXECUTION_FACT_KEYS=('action','status','ok','error_code','title','symbol','created','inserted',
+EXECUTION_FACT_KEYS=('action','status','ok','error_code','title','filename','source_url','symbol','created','inserted',
                      'indexed','queued_chunks','job_id','reason','message','scanned')
 
 
@@ -269,6 +293,36 @@ def execution_facts(value: dict) -> list[dict]:
     return rows or [{'status':'complete','ok':value.get('ok',True)}]
 
 
+def execution_rows(value: dict) -> list[dict]:
+    """The handler rows of a consent result, whether they sit at the top level or under ``data``."""
+    rows=[]
+    for item in value.get('data') or []:
+        if not isinstance(item,dict):continue
+        outcome=item.get('outcome') if isinstance(item.get('outcome'),dict) else item
+        nested=outcome.get('data') if isinstance(outcome.get('data'),list) else [outcome]
+        rows.extend(row for row in nested if isinstance(row,dict))
+    return rows
+
+
+def short_text(value,limit=80):
+    text=' '.join(str(value or '').split())
+    return text if len(text)<=limit else text[:limit-1]+'…'
+
+
+def outcome_detail(fact: dict,zh: bool) -> str:
+    """One written outcome in words a person can read; the code never appears here."""
+    status=fact.get('status');error=fact.get('error_code')
+    if error:
+        return ('未完成：'+(fact.get('reason') or consent.failure_reason(error))) if zh else 'failed: the service did not complete this operation'
+    if status=='created':return '已保存' if zh else 'saved'
+    if status=='already_exists':return '资料库里已有这条，没有重复保存' if zh else 'already in the library; not saved again'
+    if status=='completed_without_write':
+        return ('网页没有更新，没有重复保存' if fact.get('reason')=='not_newer' else '没有重复保存') if zh else 'not saved again'
+    if status in {'complete','completed','succeeded','succeeded_no_change'}:return '已完成' if zh else 'done'
+    if status in {'queued','running','pending','submitted'}:return '已提交，正在处理' if zh else 'submitted, in progress'
+    return str(status or '')
+
+
 def execution_fallback(facts: list[dict],question: str='',targets: list[dict]|None=None) -> str:
     """What the user gets when the model cannot phrase the report: the same facts, plainly.
 
@@ -277,19 +331,16 @@ def execution_fallback(facts: list[dict],question: str='',targets: list[dict]|No
     """
     zh=bool(re.search(r'[\u3400-\u9fff]',question or ''))
     confirmed=[str(t.get('title') or t.get('symbol') or '') for t in (targets or []) if isinstance(t,dict)]
-    done={'created','complete','completed','succeeded','succeeded_no_change'}
     lines=[]
     for index,fact in enumerate(facts):
-        named=fact.get('title') or fact.get('symbol') or fact.get('action') or ''
+        named=fact.get('title') or fact.get('filename') or fact.get('source_url') or fact.get('symbol') or fact.get('action') or ''
         name=named or (confirmed[index] if index<len(confirmed) else '')
-        status=fact.get('status');error=fact.get('error_code')
-        if error:detail=('未成功：'+error) if zh else ('failed: '+error)
-        elif status in done:detail='已完成' if zh else 'done'
-        elif status=='already_exists':detail='已存在，无需重复' if zh else 'already exists'
-        elif status in {'queued','running','pending'}:detail='已提交，正在处理' if zh else 'submitted, in progress'
-        else:detail=str(status or '')
+        detail=outcome_detail(fact,zh)
         lines.append(f"- {name}（{detail}）" if zh else f"- {name} ({detail})")
-    head='已完成你确认的操作：' if zh else 'The operations you approved finished:'
+    if any(fact.get('error_code') or fact.get('ok') is False or str(fact.get('status') or '') in {'failed','error'} for fact in facts):
+        head='你的确认操作有未完成项：' if zh else 'Some approved operations did not finish:'
+    else:
+        head='已完成你确认的操作：' if zh else 'The operations you approved finished:'
     return head+'\n'+'\n'.join(lines)
 
 
@@ -697,8 +748,10 @@ class Turn:
         which tools it tried and which failed, and saying that lets the user narrow the question.
         """
         tried=[f['name'] for f in self.feedback if isinstance(f,dict) and f.get('name')]
-        failed=[f"{f.get('name')}:{f.get('error_code')}" for f in self.feedback
-                if isinstance(f,dict) and f.get('error_code')]
+        failed=[f.get('name') for f in self.feedback if isinstance(f,dict) and f.get('error_code')]
+        # Codes explain the stop to the audit and to a developer; the user only needs which part failed.
+        self.audit['failed_tools']=[{'tool':f.get('name'),'error_code':f.get('error_code')} for f in self.feedback
+                                    if isinstance(f,dict) and f.get('error_code')]
         lines=[]
         if tried:lines.append('本轮已尝试：'+'、'.join(dict.fromkeys(tried))+'。')
         if failed:lines.append('其中未成功：'+'、'.join(dict.fromkeys(failed))+'。')
@@ -986,6 +1039,7 @@ class Turn:
         if name in {'analyze','import','index'} and args.get('source_id'):
             row['title']=await asyncio.to_thread(source_display_title,kind,args['source_id']) or '所选来源'
             row['source_type']=SOURCE_KIND_TITLES.get(kind,kind)
+        if name=='save_material_evidence' and args.get('title'):row['title']=args['title']
         if args.get('accession_number'):row['accession_number']=args['accession_number']
         if args.get('form'):row['form']=args['form']
         if args.get('days'):row['days']=args['days']
@@ -1014,6 +1068,7 @@ class Turn:
             operation['entity_aliases']=self.scope.get('_entity_aliases',[])
             pub=timestamp(web.get('published_at'));operation['published_at']=web.get('published_at')
             display.update(title=web.get('title'),url=args['url'],web_date=web.get('published_at'),alternative='也可抓取最新 SEC 官方文件。')
+            display['targets']=[{**(display.get('targets') or [{}])[0],'title':web.get('title') or args['url']}]
             if args.get('newer_than') is not None:
                 older=next((c for c in self.citations if c['ordinal']==args['newer_than'] and c['source_type'] in {'official_filing','saved_filing'}),None)
                 olddate=timestamp(older.get('published_at')) if older else None
@@ -1176,6 +1231,73 @@ class Turn:
         self.audit['write_outcome']='proposed'
         return {'ok':True,'data':[{'status':'awaiting_confirmation','count':len(operations)}]}
 
+    def operation_label(self,operation):
+        """What the user approved, named the way the card named it: a title, not a tool id."""
+        name=operation.get('name') if isinstance(operation,dict) else ''
+        args=operation.get('arguments') if isinstance(operation,dict) and isinstance(operation.get('arguments'),dict) else {}
+        if name=='save_material_evidence':
+            return '保存材料《'+short_text(args.get('title') or args.get('source_url') or '未命名材料')+'》'
+        if name=='ingest_web_source':
+            snapshot=operation.get('snapshot') if isinstance(operation.get('snapshot'),dict) else {}
+            return '保存网页《'+short_text(snapshot.get('title') or args.get('url') or '未命名网页')+'》'
+        label=WRITE_TITLES.get(name,name or '操作')
+        return label+(f'（{args["symbol"]}）' if args.get('symbol') else '')
+
+    def completed_without_write(self,rows,saved):
+        """A duplicate or an older page is a finished request, not a refusal."""
+        operations=saved.get('operations') or []
+        zh=bool(re.search(r'[\u3400-\u9fff]',self.request_words()))
+        lines=[]
+        for index,row in enumerate(rows):
+            label=self.operation_label(operations[index] if index<len(operations) else {}) or '这项资料'
+            newer=row.get('status')=='not_newer' or row.get('reason')=='not_newer'
+            if zh:lines.append(label+'：'+('网页日期没有更新，无需入库，也没有重复保存。' if newer else '资料库里已有这条，没有重复保存。'))
+            else:lines.append(label+': '+('the page is not newer, so nothing was saved again.' if newer else 'the library already has this item, so nothing was saved again.'))
+        return '\n'.join(lines)
+
+    def confirmed_failure(self,value,saved):
+        """The card was pressed, so report both sides of a batch and keep codes out of the prose.
+
+        The code is kept in the audit only: the user saw the card and needs the cause, not the
+        service's internal vocabulary.
+        """
+        operations=saved.get('operations') or []
+        successes=[];failures=[]
+        for index,item in enumerate(value.get('data') or []):
+            if not isinstance(item,dict):continue
+            outcome=item.get('outcome') if isinstance(item.get('outcome'),dict) else item
+            target=(operations[index] if index<len(operations) else {},outcome)
+            (successes if outcome.get('ok',True) else failures).append(target)
+        if not failures:failures=[({}, {'error_code':value.get('error_code') or 'write_service_failed','reason':value.get('reason')})]
+        zh=bool(re.search(r'[\u3400-\u9fff]',self.request_words()))
+        lines=[];codes=[]
+        if successes:
+            lines.append('已完成：' if zh else 'Completed:')
+            for operation,outcome in successes[:8]:
+                label=self.operation_label(operation) or '这项操作'
+                detail=outcome_detail(outcome,zh)
+                lines.append(f'- {label}：{detail}。' if zh else f'- {label}: {detail}.')
+        if failures:
+            if successes:lines.append('没有完成：' if zh else 'Not completed:')
+            for operation,outcome in failures[:8]:
+                code=str(outcome.get('error_code') or 'write_service_failed');codes.append(code)
+                label=self.operation_label(operation) or '这项操作'
+                reason=outcome.get('reason') or consent.failure_reason(code)
+                if zh:
+                    step=FAILURE_NEXT_STEPS.get(code,'请稍后重试；如果仍然失败，换一个来源或链接再试。')
+                    lines.append((f'- {label}：{reason}下一步：{step}' if successes
+                                  else f'{label}没有完成：{reason}下一步：{step}'))
+                else:
+                    lines.append(f'{label} did not complete: the write service did not finish it. '
+                                 'Next step: try again shortly, or use another source.')
+        head=f'有 {len(failures)} 项已确认的操作没有完成：' if not successes and len(failures)>1 and zh else ''
+        self.audit['write_outcome']='refused:'+codes[0]
+        self.audit['confirmed_write_failure']=[{'operation':(operation or {}).get('name'),
+            'error_code':str((outcome or {}).get('error_code') or 'write_service_failed')} for operation,outcome in failures]
+        self.audit['confirmed_write_success']=[{'operation':(operation or {}).get('name'),
+            'status':(outcome or {}).get('status')} for operation,outcome in successes]
+        return self.finish(head+'\n'.join(lines),status='failed',reason=codes[0],generated=True)
+
     async def consent_reply(self):
         pending=self.state.get('pending_request');request_id=self.state.get('requested_pending_id')
         if not request_id:return None
@@ -1217,33 +1339,23 @@ class Turn:
         if second_card:
             self.pending=second_card;self.audit['write_outcome']='proposed'
             return self.finish('已批准建议并取得目标资料，请核对新的确认卡；确认后才执行写入或原文下载。',status='waiting_for_input',generated=True)
-        for item in value.get('data',[]):
-            outcome=item.get('outcome',{}) if isinstance(item,dict) else {}
-            for row in outcome.get('data',[]):
-                if row.get('status') in {'not_newer','already_exists'}:
-                    self.write_error('ingest_web_source',row['status'])
-                    return self.finish('已完成比较，无需入库。',generated=True)
+        rows=execution_rows(value)
+        no_write={'not_newer','already_exists','completed_without_write'}
+        if rows and all(row.get('status') in no_write for row in rows):
+            self.audit['write_outcome']='refused:'+str(rows[0].get('status'))
+            return self.finish(self.completed_without_write(rows,saved),generated=True)
         if not value.get('ok'):
-
-            code=value.get('error_code') or next((r.get('error_code') for r in value.get('data',[]) if r.get('error_code')),'write_service_failed')
-            if not re.fullmatch(r'[a-z_]{1,80}',str(code)):code='write_service_failed'
-            self.write_error('approved_operation',code)
-            return self.finish('确认后的操作未能完成。',status='failed',reason=code,generated=True)
+            return self.confirmed_failure(value,saved)
         self.audit['write_outcome']='executed'
-        flat_data = []
-        for it in value.get('data', []):
-            if isinstance(it, dict) and isinstance(it.get('data'), list):
-                flat_data.extend(it['data'])
-            elif isinstance(it, dict):
-                flat_data.append(it)
+        executed_names={op.get('name') for op in saved.get('operations') or [] if isinstance(op,dict)}
         executed_rows = []
-        for it in flat_data:
-            if isinstance(it, dict) and ('id' in it or 'source_id' in it) and 'title' in it:
+        for it in execution_rows(value):
+            if ('id' in it or 'source_id' in it) and 'title' in it:
                 executed_rows.append({
                     'id': str(it.get('id') or it.get('source_id')),
                     'title': it['title'],
                     'symbol': it.get('symbol') or self.scope.get('symbol'),
-                    'source_type': it.get('source_type', 'uploaded_media'),
+                    'source_type': it.get('source_type') or ('web_news' if 'ingest_web_source' in executed_names else 'uploaded_media'),
                 })
         if executed_rows:
             executed_set = {
@@ -1252,7 +1364,7 @@ class Turn:
                 'conversation': self.context.conversation_id,
                 'rows': executed_rows,
                 'scope': {'symbol': executed_rows[0].get('symbol')},
-                'tool': 'save_material_evidence',
+                'tool': 'ingest_web_source' if 'ingest_web_source' in executed_names else 'save_material_evidence',
                 'created_at': datetime.now(UTC).isoformat()
             }
             self.sets = [*self.sets, executed_set][-6:]
@@ -1278,12 +1390,16 @@ class Turn:
         self.route=self.state.get('previous_category') if self.state.get('previous_category') in {'A','D'} else 'D'
         self.scope=copy.deepcopy(self.state.get('previous_scope') or {})
         self.granted_actions=set();self.suggestion_used=True;self.resuming=True
-        self.resume_note='用户已批准并完成了这些操作：'+json.dumps(facts,ensure_ascii=False,default=str)+'。如果用户最初的请求还要求别的（例如读取刚取得的资料并回答），继续完成；不要再次提出同一操作，也不要提出新的写操作。'
+        self.resume_note=('用户已批准并完成了这些操作：'+json.dumps(facts,ensure_ascii=False,default=str)+
+            '。如果用户最初的请求还要求别的（例如读取刚取得的资料并回答），继续完成；不要再次提出同一操作，也不要提出新的写操作。'
+            'status 为 already_exists 的条目只说明资料库里已有、没有重复保存，不要再说已保存。')
         head=execution_fallback(facts,request,(pending.get('display') or {}).get('targets'))
         try:result=await self.agent_loop()
         except Exception:return None
         answer=str(result.get('answer') or '').strip()
         if result.get('status')=='failed' or not answer:return None
+        # A model that repeats an internal code from the facts is not allowed to show it.
+        if any(str(f.get('error_code')) in answer for f in facts if f.get('error_code')):return None
         result['answer']=head+'\n\n'+answer
         self.audit['write_outcome']='executed';self.audit['resumed_after_approval']=True
         return result
@@ -1315,10 +1431,12 @@ class Turn:
         messages=[{'role':'system','content':(
             f'The operations below were already executed and the user approved them. Report the result to the '
             f'user in {language}, at most six sentences. Use ONLY these facts: what succeeded, what was skipped '
-            f'or already existed and why, and what failed and why. Name the company and the material by the '
-            f'titles in what_was_targeted. Never print a job identifier, a source identifier or an internal '
-            f'status word (created, completed, ok, queued): describe in plain words what happened. Never add an '
-            f'outcome that is not stated here, and never promise a further action.')},
+            f'or already existed and why, and what failed and why. Name each saved material by its title in '
+            f'what_was_targeted, never by the ticker alone. If an item already exists in the library, say only '
+            f'that the library already has it and it was not saved again; never also say it was saved. Never print '
+            f'a job identifier, a source identifier, an internal error code or an internal status word (created, '
+            f'completed, ok, queued): describe in plain words what happened. Never add an outcome that is not '
+            f'stated here, and never promise a further action.')},
             {'role':'user','content':json.dumps(payload,ensure_ascii=False,default=str)}]
         for attempt in range(2):
             try:
@@ -1327,6 +1445,11 @@ class Turn:
                 if not isinstance(text,str) or not text.strip() or message.get('tool_calls'):continue
                 text=text.strip()
                 if any(m in text for m in MARKERS) or len(text)>2000:continue
+                # "已保存" and "资料库里已有（无需再次操作）" cannot both be true of the same write.
+                if any(f.get('status')=='created' for f in facts) and re.search(
+                        r'(资料库里?已有|已经存在)[^。\n]{0,20}(无需|不必)[^。\n]{0,10}(再次|重复)',text):continue
+                # Codes belong to the audit; a report that copied one from the facts is rejected.
+                if any(str(f.get('error_code')) in text for f in facts if f.get('error_code')):continue
                 if queued and '好了' not in text and 'ask me' not in text.lower():text=text+'\n\n'+follow_up
                 self.audit['source']='model_execution_report'
                 return self.finish(text,generated=True)
@@ -1392,10 +1515,11 @@ class Turn:
         if not self.resuming and not self.pending and self.audit.get('write_outcome')!='executed' and (requested or self.write_reasons):
             code=next(iter(self.write_reasons.values()),'write_not_proposed')
             self.audit['write_outcome']='refused:'+code
-            hints={'scan_official_first':'先请求扫描该股票的 SEC 目录并确认，再拉取具体申报。','comparison_citation_required':'先取得库内申报及网页日期，再请求比较并按条件导入。','comparison_date_unavailable':'补充可核验的库内申报和网页发布日期后再比较。','not_newer':'网页日期没有更新，无需入库。','already_exists':'资料已存在，无需重复入库。','write_negated':'当前请求否定了该操作，保持不执行；需要改变时请明确提出新请求。','write_not_proposed':'请说明要执行的具体操作和目标，以便生成系统确认卡。'}
+            hints={'scan_official_first':'先请求扫描该股票的 SEC 目录并确认，再拉取具体申报。','comparison_citation_required':'先取得库内申报及网页日期，再请求比较并按条件导入。','comparison_date_unavailable':'补充可核验的库内申报和网页发布日期后再比较。','not_newer':'网页日期没有更新，无需入库。','already_exists':'资料库里已有这条，无需重复保存。','write_negated':'当前请求否定了该操作，保持不执行；需要改变时请明确提出新请求。','write_not_proposed':'请说明要执行的具体操作和目标，以便生成系统确认卡。'}
             next_step=hints.get(code,'如需执行，请在确认卡上点击确认；没有出现卡片时，请直接说明要执行的操作和目标。') if self.owner else '请由所有者登录后通过系统确认卡执行。'
             noted=any(op in answer for op in ('操作未执行','未执行','没有执行','请确认','确认卡','卡片','可在卡片上','需要确认','无法执行','仅所有者','只有所有者'))
-            if not noted:answer+='\n操作未执行：'+REFUSAL_WORDS.get(code,'这一步没有生成确认卡')+'（'+code+'）。下一步：'+next_step
+            # The code stays in audit.write_outcome; the user gets words, never internal vocabulary.
+            if not noted:answer+='\n操作未执行：'+REFUSAL_WORDS.get(code,'这项操作没有执行')+'。下一步：'+next_step
         self.audit.update(stop_reason=reason,elapsed_ms=round((time.monotonic()-self.started)*1000))
         return {'answer':answer[:30000],'citations':self.citations,'status':status,'reason':reason,'route':self.route,
             'audit':self.audit,'final_protocol':self.final_protocol,'pending_request':self.pending,'result_sets':self.sets,'previous_category':self.route,'previous_scope':self.scope}
@@ -1405,7 +1529,7 @@ class Turn:
         completed_without_write=set(self.write_reasons.values())
         if completed_without_write and completed_without_write<={'already_exists','not_newer'} and not self.pending and not re.search(r'\[\d+\]',answer):
             # Use the actual server outcome, never exempt arbitrary model prose.
-            notice='资料已存在，无需再次入库。' if 'already_exists' in completed_without_write else '已完成日期比较，网页没有更新，无需入库。'
+            notice='资料库里已有这条，没有重复保存。' if 'already_exists' in completed_without_write else '已完成日期比较，网页没有更新，无需入库。'
             return self.finish(notice,generated=True)
         result=self.finish(answer)
         if result['reason'] not in REPAIRABLE or not self.observations or self.pending or self.budget(soft=False):

@@ -4,7 +4,7 @@ import hashlib
 from datetime import UTC,datetime
 from urllib.parse import urlsplit,urlunsplit,parse_qsl,urlencode
 from sqlalchemy import select,or_,text
-from ..agent_web_research import validate_public_url,_get_public,extract_page,MAX_PAGE_BYTES,is_challenge_page,is_boilerplate_page
+from ..agent_web_research import validate_public_url,_get_public,extract_page,MAX_PAGE_BYTES,is_challenge_page,boilerplate_reason
 from ..knowledge.models import KnowledgeDocument
 from ..knowledge.repository import document_integrity
 from ..knowledge.sources import SourceDocument,_snapshot_hash
@@ -36,7 +36,9 @@ def as_document(row):
 
 def save_snapshot(db,identity,page,*,symbol=None,company=None):
     url=canonical_url(page['url']);body=str(page.get('excerpt') or '')[:5000].strip()
-    if not body or is_boilerplate_page(body):raise ValueError('web_body_unavailable')
+    if not body:raise ValueError('web_body_unavailable')
+    blocked=boilerplate_reason(body)
+    if blocked:raise ValueError(blocked)
     content_hash=hashlib.sha256(body.encode()).hexdigest();url_hash=hashlib.sha256(url.encode()).hexdigest()
     # Serializing per owner also covers simultaneous different URLs with identical bodies.
     db.execute(text('SELECT pg_advisory_xact_lock(hashtext(:key))'),{'key':'web-ingest:'+identity})

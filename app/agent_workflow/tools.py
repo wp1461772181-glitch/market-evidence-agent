@@ -13,6 +13,14 @@ from .models import AgentWebSource
 
 def safe(value):return json.loads(json.dumps(value,default=str,ensure_ascii=False))
 def result(rows,source):return {'ok':True,'data':safe(rows),'source':source,'as_of':datetime.now(UTC).isoformat()}
+def publication_time(value):
+    """A date-only value is UTC midnight: the source gave a calendar day, not a local clock time."""
+    if isinstance(value,datetime):
+        parsed=value
+    else:
+        try:parsed=datetime.fromisoformat(str(value or '').strip().replace('Z','+00:00'))
+        except ValueError:raise ValueError('invalid_published_at')
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
 def error(code):return {'ok':False,'data':[],'error_code':code,'hint':'用 request_action 请求用户批准' if code=='write_tool_not_granted' else '请修正参数或选择已返回的来源；没有资料时可先联网查找。'}
 
 
@@ -201,12 +209,8 @@ def execute_costly(operation,key,context):
     if name=='save_material_evidence':
         from ..manual_evidence import create_uploaded_evidence
         from ..knowledge.models import KnowledgeUploadOwner
-        from datetime import datetime
         raw_pub=args['published_at']
-        try:
-            pub_dt=datetime.fromisoformat(raw_pub.replace('Z','+00:00'))
-        except Exception:
-            pub_dt=datetime.now(UTC)
+        pub_dt=publication_time(raw_pub)
         content_bytes=args['content'].encode('utf-8')
         title=args['title']
         filename=f"{title[:50].replace('/','_')}.md"
@@ -246,8 +250,8 @@ def execute_costly(operation,key,context):
         aliases = list(operation.get('entity_aliases', []))
         if args.get('company') and args['company'] not in aliases: aliases.append(args['company'])
         if args.get('symbol') and args['symbol'] not in aliases: aliases.append(args['symbol'])
-        accepted,_=gate_row('',{**page,'source_type':'web'},company=args.get('company'),symbol=args.get('symbol'),metrics=[],entity_aliases=aliases)
-        if not accepted:raise ValueError('requested_entity_missing')
+        accepted,gated=gate_row('',{**page,'source_type':'web'},company=args.get('company'),symbol=args.get('symbol'),metrics=[],entity_aliases=aliases)
+        if not accepted:raise ValueError(gated)
         if operation.get('condition'):
             from .web_sources import timestamp
             before=timestamp(operation['condition'].get('saved_date'));after=timestamp(page.get('published_at'))
@@ -255,7 +259,8 @@ def execute_costly(operation,key,context):
                 return {'ok':True,'status':'completed_without_write','reason':'not_newer'}
         with SessionLocal() as db:
             value=save_snapshot(db,context.owner_hash,page,symbol=args.get('symbol'),company=args.get('company'));db.commit()
-            return value
+            # The report names the material the user reviewed, not just its ticker.
+            return {**value,'title':str(page.get('title') or args['url']).strip()[:300] or args['url']}
     if name=='initialize_prices':
         from ..market_data_ingestion import ingest_market_data
         now=datetime.now(UTC);value=ingest_market_data([args['symbol']],(now-timedelta(days=args['days'])).date(),now.date(),now)

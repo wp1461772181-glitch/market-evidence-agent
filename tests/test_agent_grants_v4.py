@@ -64,5 +64,6 @@ def test_failed_proposal_preserves_specific_next_step(monkeypatch):
     monkeypatch.setattr(sec_sources,'prepare_filing',lambda *_,**__:(_ for _ in ()).throw(ValueError('sec_discovery_unavailable')))
     result,_,_=run(monkeypatch,'拉取INTC财报',grants=['fetch_sec'],steps=[call('fetch_sec',{'symbol':'INTC'})])
     assert result['audit']['write_outcome']=='refused:sec_discovery_unavailable'
-    assert 'sec_discovery_unavailable' in result['answer'] and '下一步' in result['answer']
+    # Product requirement (2026-10-19): internal codes stay in the audit, never in the visible text.
+    assert 'sec_discovery_unavailable' not in result['answer'] and '下一步' in result['answer']
 

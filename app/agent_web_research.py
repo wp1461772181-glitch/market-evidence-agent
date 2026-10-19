@@ -368,17 +368,28 @@ BOILERPLATE_MARKERS = ("oops, something went wrong", "access denied", "403 forbi
                        "页面不存在", "访问被拒绝", "请开启 javascript", "请启用 javascript")
 
 
+def boilerplate_reason(text: object) -> str | None:
+    """Why a page's text is not an article: a block/error page, or a page with almost no prose.
+
+    The boolean gate below is used by web research; a confirmed write also needs the difference,
+    because "the site refused us" and "the page was mostly images" lead to different next steps.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return None
+    prose = re.sub(r"[\s#*_>|\-–—•·]+", " ", _MARKDOWN_LINK.sub(" ", text)).strip()
+    if any(marker in text[:400].lower() for marker in BOILERPLATE_MARKERS) and len(prose) < 600:
+        return 'page_fetch_blocked'
+    link_chars = len(text) - len(_MARKDOWN_LINK.sub("", text))
+    if len(text) >= 300 and link_chars / len(text) >= 0.6 and len(prose) < 300:
+        return 'page_without_text'
+    return None
+
+
 def is_boilerplate_page(text: object) -> bool:
     """True for the text of an error, block or navigation page: it opens with an error phrase and holds
     hardly any prose once links are taken out, or it is mostly links.  Such text is not what a page says
     and must not be listed as a source (a news page that merely mentions an error is not touched)."""
-    if not isinstance(text, str) or not text.strip():
-        return False
-    prose = re.sub(r"[\s#*_>|\-–—•·]+", " ", _MARKDOWN_LINK.sub(" ", text)).strip()
-    if any(marker in text[:400].lower() for marker in BOILERPLATE_MARKERS) and len(prose) < 600:
-        return True
-    link_chars = len(text) - len(_MARKDOWN_LINK.sub("", text))
-    return len(text) >= 300 and link_chars / len(text) >= 0.6 and len(prose) < 300
+    return boilerplate_reason(text) is not None
 
 
 def extract_page(body: str, url: str, fetched_at: datetime) -> dict:
