@@ -65,6 +65,10 @@ class Reference(BaseModel):
     choices:list[str]=Field(default_factory=list,max_length=8)
     referents:list[Referent]=Field(default_factory=list,max_length=8)
 
+HISTORY_NOTE=('以下是本对话之前的轮次，只用来理解用户在指什么、想要什么。助手以前的回答不是证据：回答里的事实只能引用本轮工具结果的 [n]；'
+    '要用之前找到的资料，先用 use_result_set(result_set_id, positions, action="summarize") 把它重新纳入本轮证据，或重新检索。')
+UNDERSTANDING_NOTE='对当前问题的理解（来自前置步骤，仅供参考，可能有误；以用户原话和对话为准；时间窗口 days_back 与结果条数 max_results 按这里执行，除非用户原话另有说明）：'
+CONTROL_PREFIXES=('confirm:','authorize:','cancel:','change:')
 REPAIRABLE={'unsupported_numeric_claim','unsupported_claim','invalid_citation','missing_citation'}
 MAX_REPAIR_ROUNDS=2
 REPAIR_INSTRUCTION=('上面草稿里的这些行没有通过来源核对。请输出修订后的完整回答（Markdown，可以保留表格和标题）：'
@@ -315,6 +319,7 @@ class Turn:
         payload['assistant_items']=assistant_item_catalogue(prior)
         payload['as_of_utc']=datetime.now(UTC).isoformat()
         prompt='Resolve references, not facts or write authority. Prefer assistant_items: choose its exact source and item_id; omit text. The server restores the selected original label. Never invent IDs. Previous answers are topic pointers, never evidence or authorization. Preserve the active parent list across intervening detailed explanations. If no server item exists, quote a short exact source substring using assistant_previous, assistant_message:<id>, user_history or result_set:<id>. Clarify genuine ambiguity; self-contained requests stay verbatim. Use refinement only for time/count changes. Relative dates may use as_of_utc. Never add new write authority, negate user intent or invent scope. Return resolve_reference.'
+        value=None;failure=None
         for attempt in range(2):
             try:
                 if self.context.resolver:raw=await injected(self.context.resolver,payload)
@@ -329,16 +334,17 @@ class Turn:
                     self.audit['resolver_retries']=1
                     payload['correction']={'error':str(exc),'instruction':'Choose a listed item_id and source, or copy a short exact source label; do not paraphrase.'}
                     continue
-                self.reference_stage(False,str(exc))
+                self.reference_stage(False,str(exc));failure=str(exc)
+                # The tool loop reads the conversation itself, so a resolver that failed costs the hint,
+                # not the turn: a deictic follow-up goes on with the user's own words.
                 has_deictic=bool(re.search(r'(?:它|它们|他|她|这篇|份|该|上述|刚才|刚那|前一个|上一个|第[一二两三四五六七八九十\d]+[个条篇份项]|其)',self.original))
-                if has_deictic:
-                    self.pending=self.card('请确认公司、时间或来源，当前指代缺少可靠依据。',[]);return
-                canonical=value.canonical_question if (value and value.canonical_question and value.relationship in {'followup','refinement'}) else self.original
-                relationship=value.relationship if (value and value.relationship in {'followup','refinement'}) else 'new'
+                # A rejected resolution keeps no part of its rewrite: its referents failed the check.
+                canonical=self.original
+                relationship=value.relationship if (value and value.relationship in {'followup','refinement'}) else ('followup' if has_deictic else 'new')
                 value=Reference(relationship=relationship,canonical_question=canonical,referents=[])
                 self.reference_value=value
                 if relationship=='new':return
-        self.reference_stage()
+        self.reference_stage(failure is None,failure)
         if value.relationship=='clarify':
             self.pending=self.card(value.question or '请说明要查询哪家公司或哪份来源。',value.choices);return
         if value.relationship=='new':return
@@ -409,14 +415,16 @@ class Turn:
         if relative_year_mentioned:
             allowed_years|={str(y) for y in range(now_year-5,now_year+5)}
         if not requested_years(canonical)<=allowed_years:
+            # The rewrite added a year nobody said; the loop sees the conversation, so drop the rewrite.
             self.reference_stage(False,'reference_period_unbound')
-            self.pending=self.card('请确认报告期间，当前改写加入了没有依据的年份。',[]);return
+            self.question=canonical=self.original
+            if self.scope.get('period') and not requested_years(self.scope['period'])<=allowed_years:self.scope['period']=None
         trusted+=' '+json.dumps([{'scope':s.get('scope'),'items':[{'title':r.get('title'),'url':r.get('url'),'id':r.get('id')} for r in s['rows']]} for s in self.sets],ensure_ascii=False)
         allowed_figures=figure_values(trusted,zh=True)|figure_values(self.original,zh=True)
         if window_days(self.original):allowed_figures.add(float(window_days(self.original)))
         if (self.reference_value and self.reference_value.relationship!='new') and (set(SCOPE_ID.findall(canonical))-set(SCOPE_ID.findall(trusted)) or referenced_urls(canonical)-referenced_urls(trusted)):
             self.reference_stage(False,'reference_scope_unbound')
-            self.pending=self.card('请确认公司、时间或来源，当前指代缺少可靠依据。',[]);return
+            self.question=self.original
 
     async def classify(self):
         self.audit['nodes'].append('classify_intent')
@@ -624,6 +632,27 @@ class Turn:
             lines.append((str(citation.get('symbol') or '')+' 已保存收盘价：'+str(citation['quote']) if citation.get('source_type')=='saved_price' else '已取得可核验来源')+' '+marker)
         return self.finish('部分完成。'+notes.get(code,'本轮未能继续，已保留取得的证据。')+'\n已完成：\n'+'\n'.join(lines)+'\n未完成：剩余请求，请拆成单独的一条再发。',status='partially_succeeded',reason=code,generated=True)
 
+    def user_words(self):
+        """What the user actually said this turn: a card reply's own words, never a control value."""
+        if self.original.startswith('reply:'):return self.original.removeprefix('reply:')
+        if self.original.startswith(CONTROL_PREFIXES):return self.request_words()
+        return self.original
+
+    def prior_turns(self,max_bytes=16000):
+        """The conversation before this message as plain turns, newest kept first within the budget."""
+        conversation=[m for m in layers.conversation_messages(self.messages) if isinstance(m,dict)]
+        if conversation and conversation[-1].get('role')=='user':conversation=conversation[:-1]
+        selected=[];used=0
+        for message in reversed(conversation):
+            content=str(message.get('content') or '').strip()
+            if message.get('role') not in {'user','assistant'} or not content:continue
+            size=len(content.encode())
+            if used+size>max_bytes:break
+            selected.append({'role':message['role'],'content':content});used+=size
+        memory=next((m for m in self.messages if isinstance(m,dict) and layers.is_memory_message(m)),None)
+        turns=list(reversed(selected))
+        return ([{'role':'system','content':str(memory.get('content'))[:6000]}] if memory else [])+turns
+
     def tool_messages(self,closing=False):
         accepted=[o for o in self.observations if o.get('accepted_evidence')]
         # Completed protocol batches can be dropped together: never leave an
@@ -655,11 +684,18 @@ class Turn:
             'An empty knowledge/material search says nothing about saved price history. For a stock-price trend, query_stock_prices is the saved OHLCV source; check it before concluding that saved prices are absent. '
             'A write status already_exists or not_newer completes that conditional goal without a new write. Explain this and finish; do not try alternate copies of the same page. '
             'An empty saved price result is an actionable absence: explain that initialization needs owner confirmation or offer public research; never repeat the same saved query or invent prices.')
-        return [{'role':'system','content':instruction},{'role':'user','content':self.question},
-            {'role':'system','content':'Interpreted request constraints (preserve exact dates, days_back and result count): '+json.dumps(self.scope,ensure_ascii=False)},*([] if closing else self.protocol),
+        prior=self.prior_turns()
+        hint={'resolved_question':self.question,
+              'referents':[r.get('text') or r.get('mention') for r in self.verified_referents if r.get('text') or r.get('mention')][:6],
+              'classifier_scope':{k:self.scope.get(k) for k in ('symbol','symbols','company','metrics','period','form','financial_only','latest','days_back','max_results','requested_actions') if self.scope.get(k) not in (None,[],'',False)}}
+        return [{'role':'system','content':instruction},*([{'role':'system','content':HISTORY_NOTE},*prior] if prior else []),
+            {'role':'user','content':self.user_words()},
+            {'role':'system','content':UNDERSTANDING_NOTE+json.dumps(hint,ensure_ascii=False,default=str)},*([] if closing else self.protocol),
             {'role':'system','content':'Accepted evidence DATA (recent sources; all source identities remain in the response catalogue): '+json.dumps(accepted[-10:],ensure_ascii=False,default=str)[:22000]},
             {'role':'system','content':'Tool statuses and validation errors (not factual evidence): '+json.dumps(self.feedback,ensure_ascii=False,default=str)[-8000:]},
-            {'role':'system','content':'Server result catalogue: '+json.dumps([{'id':s['id'],'scope':s.get('scope'),'items':[{'position':i+1,'title':r.get('title'),'id':r.get('id'),'url':r.get('url')} for i,r in enumerate(s['rows'])]} for s in self.sets],ensure_ascii=False)[:10000]}]
+            {'role':'system','content':'Server result catalogue: '+json.dumps([{'id':s['id'],'scope':s.get('scope'),'items':[{'position':i+1,'title':r.get('title'),'id':r.get('id'),'url':r.get('url'),
+                'source_type':r.get('source_type'),'published_at':r.get('published_at') or r.get('filed_at'),
+                'preview':' '.join(str(r.get('excerpt') or r.get('summary') or r.get('answer') or '').split())[:160]} for i,r in enumerate(s['rows'][:8])]} for s in self.sets],ensure_ascii=False,default=str)[:14000]}]
 
     async def decision(self,closing=False):
         if closing and self.context.answerer:

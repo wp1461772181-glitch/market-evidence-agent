@@ -207,7 +207,9 @@ def test_reference_still_rejects_a_url_not_in_the_catalogue(owned):
     state={'result_sets':[{'id':'saved','owner':owner_hash('owner'),'conversation':'c','rows':[page('Apple')],'scope':{'company':'Apple'},'tool':'web_research'}]}
     r,c,_,_=run('导入刚才那条',route='D',owner=True,grants=['ingest_web_source'],state=state,
         resolver=lambda _:{'relationship':'followup','canonical_question':'导入 Apple 新闻 https://other.example.org/Apple/1。'})
-    assert r['pending_request']['reason']=='missing_information' and not c
+    # The forged URL is dropped with the rewrite; it never becomes an argument or a card target.
+    assert 'other.example.org' not in json.dumps([c,r['pending_request']],ensure_ascii=False,default=str)
+    assert r['audit']['stages']['resolver']['validator']['rejected_reason']=='reference_scope_unbound'
 
 
 def test_parallel_web_proposals_freeze_every_requested_target_in_one_card(owned,monkeypatch):
@@ -327,7 +329,9 @@ def test_time_scope_prose_is_not_mistaken_for_a_new_company():
 def test_resolver_cannot_invent_a_fiscal_year_removed_by_numeric_parser():
     r,c,_,_=run('它的营收呢',messages=[{'role':'user','content':'Micron FY2025 report'}],
         resolver=lambda _:{'relationship':'followup','canonical_question':'Micron FY2030 revenue'})
-    assert r['pending_request'] and not c
+    # The invented year is dropped with the rewrite; the turn goes on with the user's own words.
+    assert not r['pending_request'] and 'FY2030' not in json.dumps(c,ensure_ascii=False)
+    assert r['audit']['stages']['resolver']['validator']['rejected_reason']=='reference_period_unbound'
 
 def test_conditional_newer_save_requires_an_explicit_comparison_ordinal(owned):
     p=page('Apple',1)

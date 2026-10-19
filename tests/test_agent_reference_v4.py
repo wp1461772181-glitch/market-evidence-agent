@@ -48,7 +48,8 @@ def test_forged_referent_is_rejected_before_classification():
     resolver=lambda _:{'relationship':'followup','canonical_question':'解释Palantir',
         'referents':[{'mention':'第二个','text':'Palantir','source':'assistant_previous'}]}
     result,calls=run('解释第二个',resolver=resolver,messages=HISTORY)
-    assert result['status']=='waiting_for_input' and not calls
+    # The forged referent never reaches the answer model; the turn goes on with the user's words.
+    assert not result['pending_request'] and 'Palantir' not in json.dumps(calls,ensure_ascii=False)
     assert result['audit']['stages']['resolver']['validator']['passed'] is False
 
 def test_bad_copied_quote_gets_one_correction_attempt_and_keeps_source_validation():
@@ -68,7 +69,7 @@ def test_repeated_bad_reference_stays_rejected_after_single_correction():
         attempts.append(payload)
         return {'relationship':'followup','canonical_question':'解释Palantir','referents':[{'mention':'第二个','text':'Palantir','source':'assistant_previous'}]}
     result,calls=run('解释第二个',resolver=resolver,messages=HISTORY)
-    assert len(attempts)==2 and not calls and result['pending_request']
+    assert len(attempts)==2 and not result['pending_request'] and 'Palantir' not in json.dumps(calls,ensure_ascii=False)
     assert result['audit']['stages']['resolver']['validator']['passed'] is False
 
 def test_fullwidth_and_whitespace_copy_is_valid():
