@@ -151,6 +151,32 @@ def _restore_citations(items,credential):
     except (ValueError,TypeError):
      verified.append({'ordinal':ordinal,'chunk_id':None,'title':'来源已失效','section':'','source_url':None,'source_type':'unavailable','truncated':False})
     continue
+   if item.get('source_type')=='saved_material' and not item.get('chunk_id'):
+    # The material search used while knowledge retrieval is off cites a saved upload or filing by
+    # id.  It stays live while its quote is still part of that unchanged text and, for an upload,
+    # while the upload is this owner's (an unmapped legacy upload only for the configured owner).
+    from .models import SecFilingInventory,UploadedEvidence
+    from .knowledge.models import KnowledgeUploadOwner
+    from .agent_tools import saved_filing_excerpt
+    from .agent_chat_identity import owner_credential_matches
+    def flat(text):return ' '.join(str(text or '').split())
+    quote=flat(item.get('quote')).strip('… ');url=None
+    try:
+     identity=UUID(item.get('source_id',''))
+     upload=session.get(UploadedEvidence,identity)
+     if upload is not None:
+      mapping=session.query(KnowledgeUploadOwner).filter(KnowledgeUploadOwner.upload_id==identity).first()
+      intact=bool(upload.raw_content and upload.content_sha256 and hashlib.sha256(upload.raw_content).hexdigest()==upload.content_sha256)
+      mine=(mapping.owner_hash==owner) if mapping else owner_credential_matches(credential)
+      valid=bool(quote and intact and mine and quote in flat(upload.content_text));url=upload.source_url
+     else:
+      filing=session.get(SecFilingInventory,identity)
+      valid=bool(quote and filing and saved_filing_excerpt(filing)[1] and quote in flat(filing.content_excerpt))
+      url=(filing.content_source_url or filing.source_url) if filing else None
+    except (ValueError,TypeError,AttributeError):valid=False
+    verified.append({**item,'chunk_id':None,'document_id':None,'source_url':url} if valid else
+                    {'ordinal':ordinal,'chunk_id':None,'title':'来源已失效','section':'','source_url':None,'source_type':'unavailable','truncated':False})
+    continue
    if item.get('source_type')=='saved_workspace':
     from .agent_workflow.workspace_tools import read_workspace
     from .agent_workflow.state import AgentRuntimeContext

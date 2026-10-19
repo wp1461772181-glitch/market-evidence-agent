@@ -377,7 +377,7 @@
      }
     },
     {
-     "text": "拉取特斯拉最新一份 10-Q 的原文。",
+     "text": "重新从 SEC 下载一次特斯拉最新一份 10-Q 的原文，库里已有也重新下载。",
      "check": {
       "card": "write_confirmation",
       "proposed_any": [
