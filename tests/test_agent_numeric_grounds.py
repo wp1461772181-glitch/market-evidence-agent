@@ -36,3 +36,8 @@ def test_a_name_with_a_number_the_evidence_never_shows_is_still_checked():
 def test_an_invented_amount_is_still_rejected():
     assert unsupported_number_values('营收 500 亿美元 [1]',[NAMES])==[5e10]
     assert unsupported_number_values('Revenue 331,750 [1]',[NAMES])==[331750.0]
+
+def test_a_figure_written_in_a_millions_table_matches_the_full_reported_value():
+    assert unsupported_number_values('| FY2026 营业收入（百万美元） | 331,839 [1] |',[FIGURE])==[]
+    assert unsupported_number_values('| FY2026 营业收入（亿美元） | 3,318.39 [1] |',[FIGURE])==[]
+    assert unsupported_number_values('| FY2026 营业收入（百万美元） | 331,000 [1] |',[FIGURE])==[331000.0]

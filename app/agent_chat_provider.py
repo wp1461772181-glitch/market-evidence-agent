@@ -160,7 +160,9 @@ def _merge_delta(message, calls, delta):
     if details is not None:
         if not isinstance(details,list):raise HTTPException(502,'provider_incompatible_response')
         message.setdefault('reasoning_details',[]).extend(details)
-    if len(json.dumps({k:v for k,v in message.items() if k.startswith('reasoning_')}).encode())>16000:
+    # Measured with JSON escapes, so a Chinese reasoning trace counts six bytes a character: 16 KB was
+    # about 2,700 characters, which a classifier's reasoning on a long conversation could exceed.
+    if len(json.dumps({k:v for k,v in message.items() if k.startswith('reasoning_')}).encode())>64000:
         raise HTTPException(502,'provider_protocol_too_large')
     parts=delta.get('tool_calls',[])
     if not isinstance(parts,list):raise HTTPException(502,'provider_incompatible_response')

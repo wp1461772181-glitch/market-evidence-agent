@@ -248,7 +248,7 @@ _GROUNDED_IDENTIFIERS=re.compile(
 _SCALE=((re.compile(r'\(?\s*in\s+millions|百万美元|单位[:：]\s*百万',re.I),1e6),
         (re.compile(r'\(?\s*in\s+thousands|千美元|单位[:：]\s*千',re.I),1e3),
         (re.compile(r'\(?\s*in\s+billions|十亿美元',re.I),1e9))
-_CLAIM_NUMBER=re.compile(r'(\d+(?:\.\d+)?)\s*(万亿|千万|百万|亿|万|千|trillion|billion|million|thousand|bn|mn|b|k|m)?(?![A-Za-z])(\s*(?:%|％))?',re.I)
+_CLAIM_NUMBER=re.compile(r'(\$\s*)?(\d+(?:\.\d+)?)\s*(万亿|千万|百万|亿|万|千|trillion|billion|million|thousand|bn|mn|b|k|m)?(?![A-Za-z])(\s*(?:%|％))?(\s*(?:美元|元|dollars?|USD))?',re.I)
 
 
 def identifier_tokens(text):
@@ -286,9 +286,9 @@ def _claim_figures(text):
     text=PERIOD_TEXT.sub(' ',ACCESSION.sub(' ',SOURCE_ID.sub(' ',TASK_ID.sub(' ',text))))
     text=re.sub(r'(?<=\d),(?=\d{3}(?!\d))','',text)
     found=[]
-    for number,unit,percent in _CLAIM_NUMBER.findall(text):
+    for dollar,number,unit,percent,currency in _CLAIM_NUMBER.findall(text):
         value=round(float(number)*_MAGNITUDE.get(unit.lower(),1.0),4)
-        found.append((value,_significant(number),bool(unit or percent)))
+        found.append((value,_significant(number),bool(unit or percent),not(dollar or unit or percent or currency)))
     return found
 
 
@@ -335,6 +335,9 @@ def unsupported_number_values(answer,citations,*,question=''):
                     allowed.add(float((dt + timedelta(hours=8)).month))
                 except (ValueError, TypeError):
                     pass
+        # A full reported value may be written bare in a table headed in millions, 亿 or billions; a
+        # number that carries its own unit ("54.2 美元") is held to that unit.
+        headed={round(v/scale,4) for v in allowed if abs(v)>=1e6 for scale in (1e6,1e8,1e9)}
         checked=re.sub(r'\[\d+\](?:\([^)]*\))?','',passage)
         checked=re.sub(r'https?://\S+','',checked)
         checked=_without_identifiers(checked,grounds)
@@ -350,11 +353,12 @@ def unsupported_number_values(answer,citations,*,question=''):
         amounts=re.findall(number+r'\s*'+magnitude+r'\s*(?:美元|元|dollars?|USD|%|％)',checked,re.I)
         amounts+=re.findall(r'\$\s*'+number+r'\s*'+magnitude,checked,re.I)
         percent=bool(re.search(r'%|％|百分',passage))
-        for value,digits,scaled in _claim_figures(' '.join(amounts))+_claim_figures(bare):
+        for value,digits,scaled,unitless in _claim_figures(' '.join(amounts))+_claim_figures(bare):
             # Exclude list numbering and calendar years to avoid false positive claim rejections
             if (1.0<=value<=10.0 and value==int(value)) or (1990<=value<=2035 and value==int(value)):continue
-            if value in allowed or (percent and value/100 in allowed):continue
-            if (digits>=3 or (digits>=2 and scaled)) and any(_round_to(a,digits)==_round_to(value,digits) for a in allowed if a):continue
+            grounds=allowed|headed if unitless else allowed
+            if value in grounds or (percent and value/100 in allowed):continue
+            if (digits>=3 or (digits>=2 and scaled)) and any(_round_to(a,digits)==_round_to(value,digits) for a in grounds if a):continue
             rejected.append(value)
     return sorted(set(rejected))
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio,copy,hashlib,inspect,json,os,re,time,uuid
 from datetime import UTC,datetime
 from pydantic import BaseModel,ConfigDict,Field
+from fastapi import HTTPException
 from ..agent_chat_provider import decision_request,decision_session
 from ..agent_progress import progress_watchdog,mark_progress
 from ..agent_chat_identity import owner_credential_matches
@@ -46,6 +47,8 @@ SCOPE_NOTICE={
 }
 MARKERS=('<｜｜DSML｜｜','<|tool_calls|>','<|python|>')
 TRANSIENT={'tool_timeout','provider_timeout','provider_network_error','rate_limited','http_5xx'}
+RETRYABLE_PROVIDER={'provider_protocol_too_large','provider_incomplete_stream','provider_incomplete_response',
+ 'provider_timeout','provider_network_error','provider_error','provider_incompatible_response'}
 # Each attempt of a slow-reachability tool costs a whole per-tool budget, so an immediate retry
 # turns one bad search into minutes of silence. Public web research gets a single attempt.
 MAX_ATTEMPTS={'web_research':1}
@@ -328,6 +331,17 @@ class Turn:
         if soft and (elapsed>SOFT_TURN_SECONDS or self.audit['token_usage']>SOFT_TURN_TOKENS):return 'turn_budget'
         return None
 
+    async def provider_request(self,messages,tool_schemas):
+        # A truncated stream or an over-long reasoning trace is a property of one sampled response;
+        # the same request asked again usually succeeds.  A rejected key or model never does.
+        for attempt in range(2):
+            try:
+                async with progress_watchdog(IDLE_SECONDS):
+                    return await decision_request(self.context.provider,self.context.model,self.context.api_key,messages,tool_schemas,self.context.base_url)
+            except HTTPException as exc:
+                if attempt or getattr(exc,'detail',None) not in RETRYABLE_PROVIDER:raise
+                self.audit['provider_retries']=self.audit.get('provider_retries',0)+1
+
     async def model(self,messages,tool_schemas,*,protocol_retries=1):
         # The same knob as the door: a request that was accepted may grow by the tool results this
         # turn itself produces, and nothing more.
@@ -335,8 +349,7 @@ class Turn:
         if size>layers.RUNNING_REQUEST_BYTES:raise ValueError('chat_context_too_large')
         for attempt in range(protocol_retries+1):
             self.audit['model_calls']+=1
-            async with progress_watchdog(IDLE_SECONDS):
-                response,message=await decision_request(self.context.provider,self.context.model,self.context.api_key,messages,tool_schemas,self.context.base_url)
+            response,message=await self.provider_request(messages,tool_schemas)
             mark_progress()
             usage=response.get('usage',{}) if isinstance(response,dict) else {}
             actual=usage.get('total_tokens')
@@ -1357,7 +1370,8 @@ class Turn:
                     if isinstance(repaired,tuple):repaired=repaired[1]
                 else:repaired=await self.model(messages,[],protocol_retries=0)
             except Exception as exc:
-                self.audit['answer_repair_error']='repair_unavailable:'+type(exc).__name__;break
+                detail=getattr(exc,'detail',None)
+                self.audit['answer_repair_error']='repair_unavailable:'+type(exc).__name__+(':'+detail if isinstance(detail,str) and re.fullmatch(r'[a-z_]{3,80}',detail) else '');break
             if not isinstance(repaired,dict) or repaired.get('tool_calls') or not isinstance(repaired.get('content'),str) or not repaired['content'].strip():
                 self.audit['answer_repair_error']='invalid_repair_response';break
             text=re.sub(r'^\s*```[A-Za-z]*\s*\n|\n?\s*```\s*$','',repaired['content'].strip())
