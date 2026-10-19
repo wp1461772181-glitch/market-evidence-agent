@@ -376,12 +376,13 @@ FILING_EXCERPT_BYTES = 12_000
 CITATION_QUOTE_CHARACTERS = 5000
 
 
-def saved_filing_excerpt(record, *, limit: int=FILING_EXCERPT_BYTES) -> tuple[str, bool]:
+def saved_filing_excerpt(record, *, limit: int=FILING_EXCERPT_BYTES, legacy: bool=False) -> tuple[str, bool]:
     """The excerpt a tool shows for one saved filing, and whether its body matches.
 
     Both the reading tool and the citation verifier must derive this the same way:
     the verifier compares the quoted text with it, so a divergence reports a live
     citation as expired. ``record`` is a row mapping or a SecFilingInventory.
+    ``legacy`` reproduces the previous excerpt rule, so quotes saved under it still verify.
     """
     def field(name):
         return record.get(name) if isinstance(record, dict) else getattr(record, name, None)
@@ -390,24 +391,46 @@ def saved_filing_excerpt(record, *, limit: int=FILING_EXCERPT_BYTES) -> tuple[st
     digest=field("content_text_sha256") if full else field("content_excerpt_sha256")
     if not body or not digest or hashlib.sha256(body.encode()).hexdigest()!=digest:
         return "", False
-    return _substantive_excerpt(body, limit=limit), True
+    return (_legacy_substantive_excerpt if legacy else _substantive_excerpt)(body, limit=limit), True
 
 
-def _substantive_excerpt(body: str, limit: int=3000) -> str:
-    """Select substantive filing text while reporting that it is only an excerpt."""
-    text=body or ""
-    # SEC HTML extraction can start with thousands of XBRL contexts. Prefer an
-    # actual statement heading to a cover or a table-of-contents Item entry.
-    statement=re.search(r"(?im)^[ \t]*(?:[A-Z][A-Z &'(),.-]+ )?(?:CONDENSED |CONSOLIDATED |COMBINED )*(?:BALANCE SHEETS|STATEMENTS OF (?:OPERATIONS|INCOME|CASH FLOWS|COMPREHENSIVE INCOME|SHAREHOLDERS.? EQUITY))\b[^\n]*",text)
-    item=re.search(r"(?im)^[ \t]*item\s+\d+(?:\.\d+)?\b[^\n]*",text)
-    start=statement.start() if statement else item.start() if item else 0
-    passage=text[start:]
+_LEGACY_STATEMENT=re.compile(r"(?im)^[ \t]*(?:[A-Z][A-Z &'(),.-]+ )?(?:CONDENSED |CONSOLIDATED |COMBINED )*(?:BALANCE SHEETS|STATEMENTS OF (?:OPERATIONS|INCOME|CASH FLOWS|COMPREHENSIVE INCOME|SHAREHOLDERS.? EQUITY))\b[^\n]*")
+# Issuers title the same statements differently: Microsoft writes INCOME STATEMENTS, Apple
+# CONSOLIDATED STATEMENTS OF OPERATIONS.  A heading is only the statement itself when figures
+# follow it; the same words in the table of contents are followed by page numbers.
+_STATEMENT=re.compile(r"(?im)^[ \t]*(?:[A-Z][A-Z &'(),.-]+ )?(?:CONDENSED |CONSOLIDATED |COMBINED )*(?:BALANCE SHEETS|STATEMENTS OF (?:OPERATIONS|INCOME|EARNINGS|CASH FLOWS|COMPREHENSIVE INCOME|SHAREHOLDERS.? EQUITY|STOCKHOLDERS.? EQUITY)|(?:COMPREHENSIVE )?INCOME STATEMENTS|CASH FLOWS? STATEMENTS|(?:STOCKHOLDERS|SHAREHOLDERS).? EQUITY STATEMENTS)\b[^\n]*")
+_TABLE_SIGNAL=re.compile(r"\(in (?:millions|thousands|billions)|\b\d{1,3}(?:,\d{3})+\b",re.I)
+_ITEM=re.compile(r"(?im)^[ \t]*item\s+\d+(?:\.\d+)?\b[^\n]*")
+
+
+def _clip(passage: str, limit: int) -> str:
     # The limit applies to the UTF-8 tool payload, including multibyte text.
     clipped=passage.encode('utf-8')[:limit].decode('utf-8','ignore')
     if len(clipped)<len(passage):
         boundary=clipped.rfind('\n')
         if boundary>=limit//2: clipped=clipped[:boundary]
     return clipped
+
+
+def _substantive_excerpt(body: str, limit: int=3000) -> str:
+    """Select substantive filing text while reporting that it is only an excerpt."""
+    text=body or ""
+    start=None;first=None
+    for match in _STATEMENT.finditer(text):
+        if first is None:first=match.start()
+        if len(_TABLE_SIGNAL.findall(text[match.end():match.end()+800]))>=3:start=match.start();break
+    if start is None:start=first
+    if start is None:
+        item=_ITEM.search(text);start=item.start() if item else 0
+    return _clip(text[start:],limit)
+
+
+def _legacy_substantive_excerpt(body: str, limit: int=3000) -> str:
+    text=body or ""
+    statement=_LEGACY_STATEMENT.search(text)
+    item=_ITEM.search(text)
+    start=statement.start() if statement else item.start() if item else 0
+    return _clip(text[start:],limit)
 
 def _safe_source_url(value: str | None) -> str | None:
     if not value:return None

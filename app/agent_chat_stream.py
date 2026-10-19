@@ -126,8 +126,10 @@ def _restore_citations(items,credential):
       source=session.get(SecFilingInventory,identity)
       excerpt,digest_ok=saved_filing_excerpt(source) if source else ("",False)
       # The quote is what the tool showed the model, so it has to be derived the
-      # same way here; anything else reports a live citation as expired.
-      valid=bool(digest_ok and item.get('quote')==excerpt[:CITATION_QUOTE_CHARACTERS])
+      # same way here; anything else reports a live citation as expired.  A quote
+      # saved before the excerpt rule changed is checked against the rule it was made with.
+      valid=bool(digest_ok and (item.get('quote')==excerpt[:CITATION_QUOTE_CHARACTERS]
+                 or item.get('quote')==saved_filing_excerpt(source,legacy=True)[0][:CITATION_QUOTE_CHARACTERS]))
       if valid:
        verified.append({**item,'chunk_id':None,'document_id':None,'source_url':source.content_source_url or source.source_url,
                         'published_at':source.filed_at.isoformat(),'observed_at':source.content_observed_at.isoformat() if source.content_observed_at else None})
