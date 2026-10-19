@@ -121,8 +121,13 @@ def wait_for_api(base, seconds=60):
     raise SystemExit(f'API did not answer within {seconds}s: {last}')
 
 
-def psql(db, sql, timeout=60):
-    if not db.startswith(SHADOW_DB_PREFIX):
+# --production lets the runner read the product database's audit and consent rows (read-only) to grade a
+# release smoke; db_check steps stay limited to scratch databases.
+PRODUCTION_AUDIT = False
+
+
+def psql(db, sql, timeout=60, audit=False):
+    if not db.startswith(SHADOW_DB_PREFIX) and not (audit and PRODUCTION_AUDIT and db == 'market_evidence'):
         raise SystemExit(f'refusing database {db!r}: only {SHADOW_DB_PREFIX}... may be used')
     out = subprocess.run(
         ['docker', 'exec', '-e', 'PGOPTIONS=-c default_transaction_read_only=on',
@@ -139,7 +144,7 @@ def audit_of(db, conversation, turn):
     sql = ("select coalesce(tool_calls->'audit','null') from agent_messages where conversation_id='%s' "
            "and turn_id='%s' and role='assistant' order by sequence desc limit 1" % (conversation, turn))
     try:
-        return json.loads(psql(db, sql) or 'null') or {}
+        return json.loads(psql(db, sql, audit=True) or 'null') or {}
     except Exception:
         return {}
 
@@ -150,7 +155,7 @@ def consent_of(db, request_id):
     sql = ("select coalesce(json_build_object('status',status,'operations',operations,'display',display)::text,'null') "
            "from agent_consents where id='%s'" % request_id)
     try:
-        return json.loads(psql(db, sql) or 'null') or {}
+        return json.loads(psql(db, sql, audit=True) or 'null') or {}
     except Exception:
         return {}
 
@@ -675,14 +680,20 @@ def main(argv):
     parser.add_argument('--retries', type=int, default=1, help='retry a transient provider failure once (default 1)')
     parser.add_argument('--out', default='/tmp/market-g6/dialogue-v2')
     parser.add_argument('--identity', choices=['owner', 'guest'], help='run every case as this identity')
+    parser.add_argument('--production', action='store_true',
+                        help='grade a release smoke against the product database (read-only audit; no db_check)')
     parser.add_argument('--profile', choices=sorted(PROFILES), default='tokenplan',
                         help='model profile (default: tokenplan)')
     args = parser.parse_args(argv[1:])
     if args.parallel < 1:
         raise SystemExit('--parallel must be at least 1')
-    if not args.db.startswith(SHADOW_DB_PREFIX):
+    global PRODUCTION_AUDIT
+    PRODUCTION_AUDIT = bool(args.production)
+    if not args.db.startswith(SHADOW_DB_PREFIX) and not (args.production and args.db == 'market_evidence'):
         raise SystemExit(f'refusing database {args.db!r}: only {SHADOW_DB_PREFIX}... may be used')
     suite = json.load(open(args.suite, encoding='utf-8'))
+    if args.production and any(step.get('kind') == 'db_check' for case in suite['cases'] for step in case['steps']):
+        raise SystemExit('--production runs no db_check steps')
     wanted = {c.strip().upper() for c in args.cases.split(',') if c.strip()}
     cases = [c for c in suite['cases'] if not wanted or c['id'] in wanted]
     if not cases:

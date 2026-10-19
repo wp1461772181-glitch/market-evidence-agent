@@ -1,0 +1,40 @@
+{
+ "suite": "production release smoke (owner): one reversible write and back, a reported figure, typed consent",
+ "notes": "Runs against the product with --production (read-only audit, no db_check). Every write here is undone in the same case: AMD must not be in the owner's research queue before the run, and is not after it.",
+ "cases": [
+  {
+   "id": "P01",
+   "title": "研究队列：加入 AMD → 确认 → 查看 → 移出 → 确认 → 恢复原样",
+   "identity": "owner",
+   "serial_group": "research_queue",
+   "steps": [
+    {"text": "研究队列里现在有哪些股票？", "check": {"answer_any": [["AAPL", "MSFT", "NVDA"]], "answer_no_codes": true, "no_dropped": false}},
+    {"text": "把 AMD 加入研究队列。", "check": {"card": "write_confirmation", "proposed_include": ["add_to_research_queue"], "write_outcome": ["proposed"], "answer_no_codes": true, "no_dropped": false}},
+    {"kind": "confirm_card", "check": {"write_outcome": ["executed"], "consent_status": ["complete"], "answer_any": [["AMD"]], "answer_no_codes": true, "no_dropped": false}},
+    {"text": "现在队列里有什么？", "check": {"answer_any": [["AMD"]], "answer_no_codes": true, "no_dropped": false}},
+    {"text": "把 AMD 从研究队列移出。", "check": {"card": "write_confirmation", "proposed_include": ["remove_from_research_queue"], "write_outcome": ["proposed"], "answer_no_codes": true, "no_dropped": false}},
+    {"kind": "confirm_card", "check": {"write_outcome": ["executed"], "consent_status": ["complete"], "answer_any": [["AMD"]], "answer_no_codes": true, "no_dropped": false}},
+    {"text": "再看一下研究队列。", "check": {"answer_absent_or_negative": ["AMD"], "answer_no_codes": true, "no_dropped": false}}
+   ]
+  },
+  {
+   "id": "P02",
+   "title": "财报数字：最近一期年报营收（XBRL 披露值）",
+   "identity": "owner",
+   "steps": [
+    {"text": "查微软最近一期年报披露的全年营业收入。", "check": {"tools_include": ["query_financials"], "answer_any": [["331,839", "3,318"]], "answer_no_codes": true}}
+   ]
+  },
+  {
+   "id": "P03",
+   "title": "打字同意不执行写操作，取消后不留痕",
+   "identity": "owner",
+   "serial_group": "research_queue",
+   "steps": [
+    {"text": "把 AMD 加入研究队列。", "check": {"card": "write_confirmation", "write_outcome": ["proposed"], "answer_no_codes": true, "no_dropped": false}},
+    {"text": "同意", "check": {"card": true, "write_outcome": ["typed_consent"], "answer_any": [["按钮"]], "answer_no_codes": true, "no_dropped": false}},
+    {"kind": "cancel_card", "check": {"write_outcome": ["cancelled"], "answer_any": [["取消"]], "answer_no_codes": true, "no_dropped": false}}
+   ]
+  }
+ ]
+}
