@@ -469,7 +469,7 @@ def reviewed_passages(answer,citations,*,require_citations=False,check_claims=Tr
         is_leadin = bool(re.match(r'^(?:以下|根据|综上|总结|如上|经查询|查询结果|核验结果|提示|注意|说明|确认后|请核对|已为您|请注意)[^。！？\n]{0,35}[：:\n]?', stripped)) or (len(stripped) < 35 and stripped.endswith(('：', ':')))
         has_factual_content = factual_claim(stripped)
         code=('invalid_citation' if citation_errors(stripped,citations) else
-              'missing_citation' if require_citations and has_factual_content and not re.search(r'\[\d+\]',stripped) and not uncertainty and not (is_leadin and not re.search(r'\d', stripped)) else
+              'missing_citation' if require_citations and has_factual_content and not re.search(r'\[\d+\]',stripped) and not uncertainty and not (is_leadin and not _CLAIM_AMOUNT.search(stripped)) and not (stripped.endswith(('：',':')) and not _CLAIM_AMOUNT.search(stripped)) else
               'unsupported_numeric_claim' if check_claims and unsupported_numbers(stripped,citations) else
               'unsupported_claim' if check_claims and unsupported_claims(stripped,citations) else None)
         if code:issues.append(code)

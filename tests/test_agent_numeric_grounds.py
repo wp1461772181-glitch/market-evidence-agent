@@ -61,3 +61,11 @@ def test_a_table_header_names_columns_and_is_never_removed():
     answer='| 期间 | 全年营业收入 | 来源 |\n|---|---|---|\n| FY2026 | 331,839 百万美元 | [1] |'
     kept,issues=reviewed_answer(answer,[FIGURE],require_citations=True)
     assert issues==[] and kept==answer
+
+def test_a_lead_in_without_an_amount_needs_no_citation_however_long():
+    from app.agent_workflow.evidence import reviewed_answer
+    lead='微软最近一期年报（10-K，2026-07-29 提交，覆盖截至 2026-06-30 的财年）中的全年营业收入：'
+    kept,issues=reviewed_answer(lead+'\n- FY2026 营业收入 331,839 百万美元 [1]',[FIGURE],require_citations=True)
+    assert issues==[] and kept.startswith(lead)
+    kept,issues=reviewed_answer('营业收入为 3,318 亿美元：\n- 详见 [1]',[FIGURE],require_citations=True)
+    assert issues==['missing_citation']
