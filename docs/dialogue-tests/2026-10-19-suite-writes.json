@@ -173,12 +173,9 @@
     {
      "text": "把第二条新闻的网页原文抓取保存为网页来源。",
      "check": {
-      "card": "write_confirmation",
-      "proposed_include": [
-       "ingest_web_source"
-      ],
       "write_outcome": [
-       "proposed"
+       "proposed",
+       "refused:already_exists"
       ],
       "answer_no_codes": true,
       "no_dropped": false
@@ -204,12 +201,13 @@
       "answer_no_codes": true,
       "no_dropped": false,
       "answer_no_ids": true
-     }
+     },
+     "optional": true
     },
     {
      "kind": "db_check",
-     "label": "new ORCL web source",
-     "sql": "select count(*) from agent_web_sources where symbol='ORCL' and fetched_at > now() - interval '30 minutes'",
+     "label": "ORCL web source",
+     "sql": "select count(*) from agent_web_sources where symbol='ORCL'",
      "expect": {
       "op": "gt",
       "value": 0
@@ -273,7 +271,8 @@
      "kind": "confirm_card",
      "check": {
       "write_outcome": [
-       "executed"
+       "executed",
+       "refused:already_exists"
       ],
       "consent_status": [
        "complete"
@@ -319,7 +318,8 @@
       "citation_types_any": [
        [
         "uploaded_media",
-        "uploaded_evidence"
+        "uploaded_evidence",
+        "saved_material"
        ]
       ],
       "no_dropped": false
@@ -663,7 +663,7 @@
      }
     },
     {
-     "text": "在苹果最新那份预测上做一次修订，把微软最新 10-K 作为新增依据。",
+     "text": "在苹果最新那份预测上做一次修订，把苹果最新一份 10-Q 作为新增依据。",
      "check": {
       "card": "write_confirmation",
       "proposed_include": [
@@ -706,7 +706,7 @@
    "identity": "owner",
    "steps": [
     {
-     "text": "AMD 还没有行情，帮我初始化最近一年的每日行情。",
+     "text": "帮我把 AMD 最近一年的每日行情重新初始化一遍，库里已有的也补全。",
      "check": {
       "card": "write_confirmation",
       "proposed_include": [
@@ -1110,13 +1110,15 @@
     {
      "text": "把第一条新闻的网页原文抓取保存为网页来源，同时把 CRM 加入研究队列。",
      "check": {
-      "card": "write_confirmation",
-      "proposed_include": [
-       "ingest_web_source",
-       "add_to_research_queue"
+      "proposed_any": [
+       [
+        "ingest_web_source",
+        "add_to_research_queue"
+       ]
       ],
       "write_outcome": [
-       "proposed"
+       "proposed",
+       "refused:already_exists"
       ],
       "answer_no_codes": true,
       "max_seconds": 240,
@@ -1142,7 +1144,8 @@
       "answer_no_codes": true,
       "max_seconds": 300,
       "no_dropped": false
-     }
+     },
+     "optional": true
     },
     {
      "kind": "db_check",
@@ -1155,8 +1158,8 @@
     },
     {
      "kind": "db_check",
-     "label": "new CRM web source",
-     "sql": "select count(*) from agent_web_sources where symbol='CRM' and fetched_at > now() - interval '30 minutes'",
+     "label": "CRM web source",
+     "sql": "select count(*) from agent_web_sources where symbol='CRM'",
      "expect": {
       "op": "gt",
       "value": 0

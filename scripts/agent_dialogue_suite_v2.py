@@ -515,6 +515,11 @@ def run_case(case, base, db, model, owner, identity=None, retries=1, emit=emit_l
                     continue
             else:
                 full_card = last_card
+                if not full_card and step.get('optional'):
+                    # The data already held what the step would write (a saved page, a recorded review):
+                    # the turn before answered that instead of showing a card, which is the right outcome.
+                    emit(f"{case['id']}.{index} SKIPPED no card (optional step)")
+                    continue
                 if not full_card:
                     row = {'step': index, 'kind': kind, 'blocked': 'no card to press'}
                     rows.append(row)

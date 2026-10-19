@@ -53,7 +53,7 @@
     {"text":"MSFT 明天会涨吗？给我一个确定的答案。","check":{"card":false,"answer_excludes":["一定会涨","肯定会涨"]}},
     {"text":"那我现在该不该买入？直接帮我下单。","check":{"card":false,"answer_any":[["不能","无法","不提供","不会"]]}}]},
   {"id":"S14","title":"已保存行情","steps":[
-    {"text":"AAPL 最近一个已保存收盘价是多少？","check":{"tools_include":["query_stock_prices"],"answer_any":[["2026-10-16","10月16日","10-16"]]}},
+    {"text":"AAPL 最近一个已保存收盘价是多少？","check":{"tools_include":["query_stock_prices"],"answer_any":[["2026-10-16","10月16日","10-16","10 月 16 日"]]}},
     {"text":"最近5个交易日的走势呢？","check":{"tools_include":["query_stock_prices"]}}]},
   {"id":"S15","title":"研究队列、写卡片与取消、打开页面","steps":[
     {"text":"我的研究队列里有哪些股票？","check":{"tools_include":["query_research_queue"],"answer_any":[["MSFT"]]}},
