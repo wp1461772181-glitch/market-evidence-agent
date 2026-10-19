@@ -115,6 +115,7 @@ HISTORY_NOTE=('以下是本对话之前的轮次，只用来理解用户在指�
     '要用之前找到的资料，先用 use_result_set(result_set_id, positions, action="summarize") 把它重新纳入本轮证据，或重新检索。')
 UNDERSTANDING_NOTE='对当前问题的理解（来自前置步骤，仅供参考，可能有误；以用户原话和对话为准；时间窗口 days_back 与结果条数 max_results 按这里执行，除非用户原话另有说明）：'
 CONTROL_PREFIXES=('confirm:','authorize:','cancel:','change:')
+SYNC_DONE={'complete','completed','created','succeeded','succeeded_no_change','already_exists'}
 REPAIRABLE={'unsupported_numeric_claim','unsupported_claim','invalid_citation','missing_citation'}
 MAX_REPAIR_ROUNDS=2
 REPAIR_INSTRUCTION=('上面草稿里的这些行没有通过来源核对。请输出修订后的完整回答（Markdown，可以保留表格和标题）：'
@@ -286,6 +287,7 @@ class Turn:
         # repeats itself has not run out of progress, it has lost the result it already holds.
         self.replays={};self.replayed=0
         self.last_issues=[];self.last_rejected=[]
+        self.completed_writes=set();self.resume_note=None;self.resuming=False
 
     async def expander(self,query):
         """Model-written retrieval variants for one query.
@@ -710,7 +712,8 @@ class Turn:
               'classifier_scope':{k:self.scope.get(k) for k in ('symbol','symbols','company','metrics','period','form','financial_only','latest','days_back','max_results','requested_actions') if self.scope.get(k) not in (None,[],'',False)}}
         return [{'role':'system','content':instruction},*([{'role':'system','content':HISTORY_NOTE},*prior] if prior else []),
             {'role':'user','content':self.user_words()},
-            {'role':'system','content':UNDERSTANDING_NOTE+json.dumps(hint,ensure_ascii=False,default=str)},*([] if closing else self.protocol),
+            {'role':'system','content':UNDERSTANDING_NOTE+json.dumps(hint,ensure_ascii=False,default=str)},
+            *([{'role':'system','content':self.resume_note}] if self.resume_note else []),*([] if closing else self.protocol),
             {'role':'system','content':'Accepted evidence DATA (recent sources; all source identities remain in the response catalogue): '+json.dumps(accepted[-10:],ensure_ascii=False,default=str)[:22000]},
             {'role':'system','content':'Tool statuses and validation errors (not factual evidence): '+json.dumps(self.feedback,ensure_ascii=False,default=str)[-8000:]},
             {'role':'system','content':'Server result catalogue: '+json.dumps([{'id':s['id'],'scope':s.get('scope'),'items':[{'position':i+1,'title':r.get('title'),'id':r.get('id'),'url':r.get('url'),
@@ -914,6 +917,7 @@ class Turn:
 
     async def propose(self,name,args):
         if not self.owner:return self.write_error(name,'owner_login_required')
+        if name in self.completed_writes:return tools.error('already_executed')
         if not self.write_allowed(name):return self.write_error(name,'write_negated' if name in self.granted_actions else 'write_tool_not_granted')
         operation={'name':name,'arguments':copy.deepcopy(args)}
         title=WRITE_TITLES.get(name,name)
@@ -1167,7 +1171,36 @@ class Turn:
             }
             self.sets = [*self.sets, executed_set][-6:]
             self.new_sets.append(executed_set)
-        return await self.report_execution(value)
+        resumed=await self.resume_after_execution(value,saved)
+        return resumed or await self.report_execution(value)
+
+    async def resume_after_execution(self,value,saved):
+        """Finish what the user asked for once the write it needed is done, in the same turn.
+
+        "Fetch the latest 10-K and tell me the revenue" is one request: the approval runs the fetch,
+        and the revenue still has to be read.  A queued job is not done yet, so it keeps the report
+        that tells the user to ask again.  The continuation is granted no write of its own.
+        """
+        pending=self.state.get('pending_request') or {}
+        request=pending.get('original_question')
+        facts=execution_facts(value)
+        queued=any(f.get('job_id') and str(f.get('job_status') or f.get('status') or '') in {'queued','running','pending','submitted'} for f in facts)
+        done=any(str(f.get('status') or '') in SYNC_DONE for f in facts)
+        if not request or queued or not done:return None
+        self.completed_writes|={op.get('name') for op in saved.get('operations') or [] if isinstance(op,dict)}
+        self.question=request
+        self.route=self.state.get('previous_category') if self.state.get('previous_category') in {'A','D'} else 'D'
+        self.scope=copy.deepcopy(self.state.get('previous_scope') or {})
+        self.granted_actions=set();self.suggestion_used=True;self.resuming=True
+        self.resume_note='用户已批准并完成了这些操作：'+json.dumps(facts,ensure_ascii=False,default=str)+'。如果用户最初的请求还要求别的（例如读取刚取得的资料并回答），继续完成；不要再次提出同一操作，也不要提出新的写操作。'
+        head=execution_fallback(facts,request,(pending.get('display') or {}).get('targets'))
+        try:result=await self.agent_loop()
+        except Exception:return None
+        answer=str(result.get('answer') or '').strip()
+        if result.get('status')=='failed' or not answer:return None
+        result['answer']=head+'\n\n'+answer
+        self.audit['write_outcome']='executed';self.audit['resumed_after_approval']=True
+        return result
 
     async def report_execution(self,value,targets=None):
         """Report a completed write in the user's language from the facts the server recorded.
@@ -1268,7 +1301,7 @@ class Turn:
         if not answer:answer='模型返回了无效工具协议，请重试。';reason='provider_protocol_invalid';status='failed'
 
         requested=self.scope.get('requested_actions') or []
-        if not self.pending and self.audit.get('write_outcome')!='executed' and (requested or self.write_reasons):
+        if not self.resuming and not self.pending and self.audit.get('write_outcome')!='executed' and (requested or self.write_reasons):
             code=next(iter(self.write_reasons.values()),'write_not_proposed')
             self.audit['write_outcome']='refused:'+code
             hints={'scan_official_first':'先请求扫描该股票的 SEC 目录并确认，再拉取具体申报。','comparison_citation_required':'先取得库内申报及网页日期，再请求比较并按条件导入。','comparison_date_unavailable':'补充可核验的库内申报和网页发布日期后再比较。','not_newer':'网页日期没有更新，无需入库。','already_exists':'资料已存在，无需重复入库。','write_negated':'当前请求否定了该操作，保持不执行；需要改变时请明确提出新请求。','write_not_proposed':'请说明要执行的具体操作和目标，以便生成系统确认卡。'}
@@ -1348,6 +1381,10 @@ class Turn:
         if self.route=='C':return await self.answer_c()
         if self.route=='B':
             return await self.answer_b()
+        return await self.agent_loop()
+
+    async def agent_loop(self):
+        """The tool loop and the closing answer: shared by a new request and a resumed one."""
         if self.route=='A':
             args={k:self.scope.get(k) for k in ('symbol','company','latest','form','financial_only') if self.scope.get(k) is not None}
             args['query']=self.scope.get('query') or self.question[:400]
