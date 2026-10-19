@@ -5,7 +5,8 @@ from app.agent_workflow.state import AgentRuntimeContext
 
 async def emit(_):pass
 def call(name,**args):return {'tool_calls':[{'id':name,'function':{'name':name,'arguments':json.dumps(args)}}]}
-def repair(text,citations=(1,)):return {'content':json.dumps({'claims':[{'text':text,'citations':list(citations)}]},ensure_ascii=False)}
+# The repair returns a Markdown answer, as the model writes any answer; markers bind the sources.
+def repair(text,citations=(1,)):return {'content':text+''.join('['+str(n)+']' for n in citations)}
 
 @pytest.mark.parametrize('replacement,reason',[
     (repair('AMD 收盘价为 100 美元'),None),
@@ -13,11 +14,11 @@ def repair(text,citations=(1,)):return {'content':json.dumps({'claims':[{'text':
     (call('initialize_prices',symbol='AMD'),'unsupported_numeric_claim'),
     (repair('AMD 收盘价为 100 美元',(99,)),'invalid_citation'),
     (repair('AMD CEO 已辞职'),'unsupported_claim'),
-    ({'content':'unstructured 100 dollars [1]'},'unsupported_numeric_claim'),
-    (repair('AMD 收盘价为 100 美元 [99]'),'unsupported_numeric_claim'),
-    (repair('AMD 收盘价为 100 美元',(True,)),'unsupported_numeric_claim'),
-    (repair('AMD 收盘价为 100 美元',(-1,)),'unsupported_numeric_claim'),
-    (repair('AMD 收盘价为 100 美元',(0,)),'unsupported_numeric_claim'),
+    ({'content':'unstructured 100 dollars [1]'},None),
+    (repair('AMD 收盘价为 100 美元 [99]'),'invalid_citation'),
+    (repair('AMD 收盘价为 100 美元',(True,)),'missing_citation'),
+    (repair('AMD 收盘价为 100 美元',(-1,)),'missing_citation'),
+    (repair('AMD 收盘价为 100 美元',(0,)),'invalid_citation'),
 ])
 def test_numeric_repair_is_single_tool_free_and_still_guarded(replacement,reason):
     steps=iter([call('query_stock_prices',symbol='AMD'),{'content':'AMD 收盘价为 999 美元 [1]。'},replacement])
@@ -47,7 +48,8 @@ def test_structured_repair_binds_each_sentence_and_rejects_a_second_bad_number()
     steps=iter([call('query_stock_prices',symbol='AMD'),{'content':'AMD 收盘价为999美元[1]。'},repair('AMD 收盘价为100美元。AMD 收盘价为888美元')])
     ctx=AgentRuntimeContext('custom','test','dummy',classifier=lambda _:'D',decider=lambda *_:next(steps),executor=lambda *_:{'ok':True,'data':[{'id':'p','symbol':'AMD','close':100}]})
     result=asyncio.run(direct.run_direct_turn('AMD 收盘价',ctx,emit=emit))
-    assert result['reason']=='unsupported_numeric_claim' and '888' not in result['answer'] and result['audit']['answer_repair_count']==1
+    # The unbound first sentence and the unsupported second one both stay out of the answer.
+    assert result['reason'] in {'missing_citation','unsupported_numeric_claim'} and '888' not in result['answer'] and result['audit']['answer_repair_count']==1
 
 def test_repair_never_retries_a_malformed_native_protocol(monkeypatch):
     calls=[]
@@ -131,3 +133,30 @@ def test_repair_names_the_source_that_holds_a_rejected_number():
     payload=json.loads([m for m in json.loads(seen[0]) if m.get('role')=='user'][-1]['content'])
     assert payload['unsupported_numbers']==[331839000000.0]
     assert payload['rejected_numbers_appear_in']=={'331839000000.0':['2']}
+
+
+def test_repair_accepts_a_fenced_markdown_answer():
+    steps=iter([call('query_stock_prices',symbol='AMD'),{'content':'AMD 收盘价为 999 美元 [1]。'},
+                {'content':'```markdown\n| 项目 | 数值 |\n|---|---|\n| AMD 收盘价 | 100 美元 [1] |\n```'}])
+    ctx=AgentRuntimeContext('custom','test','dummy',classifier=lambda _:'D',decider=lambda *_:next(steps),executor=lambda *_:{'ok':True,'data':[{'id':'p','symbol':'AMD','close':100}]})
+    result=asyncio.run(direct.run_direct_turn('AMD 收盘价',ctx,emit=emit))
+    assert result['status']=='succeeded' and '| AMD 收盘价 | 100 美元 [1] |' in result['answer']
+    assert 'answer_repair_error' not in result['audit'] and '```' not in result['answer']
+
+def test_repair_keeps_the_version_with_fewer_unsupported_lines():
+    draft='- 收盘价 999 美元 [1]\n- 开盘价 998 美元 [1]\n- 最高价 997 美元 [1]\n- 成交量 100 [1]'
+    better='- 收盘价 100 美元 [1]\n- 开盘价 998 美元 [1]'
+    steps=iter([call('query_stock_prices',symbol='AMD'),{'content':draft},{'content':better},{'content':better}])
+    ctx=AgentRuntimeContext('custom','test','dummy',classifier=lambda _:'D',decider=lambda *_:next(steps),executor=lambda *_:{'ok':True,'data':[{'id':'p','symbol':'AMD','close':100}]})
+    result=asyncio.run(direct.run_direct_turn('AMD 行情',ctx,emit=emit))
+    assert result['status']=='partially_succeeded' and '收盘价 100 美元 [1]' in result['answer']
+    assert len(result['audit']['answer_issues'])==1 and '998' not in result['answer']
+
+def test_a_failed_repair_call_is_recorded_with_its_cause():
+    def steps():
+        yield call('query_stock_prices',symbol='AMD');yield {'content':'AMD 收盘价为 999 美元 [1]。'}
+        raise RuntimeError('provider down')
+    it=steps()
+    ctx=AgentRuntimeContext('custom','test','dummy',classifier=lambda _:'D',decider=lambda *_:next(it),executor=lambda *_:{'ok':True,'data':[{'id':'p','symbol':'AMD','close':100}]})
+    result=asyncio.run(direct.run_direct_turn('AMD 收盘价',ctx,emit=emit))
+    assert result['audit']['answer_repair_error']=='repair_unavailable:RuntimeError'

@@ -495,3 +495,14 @@ def reviewed_answer(answer,citations,*,require_citations=False,check_claims=True
         if accepted:kept.append('。'.join(accepted))
     text='\n'.join(kept).strip()
     return text,issues
+
+
+def rejected_lines(answer,citations,*,require_citations=False,check_claims=True):
+    """The lines ``reviewed_answer`` drops or trims, each with its first reason, for the repair."""
+    out=[]
+    for line in answer.splitlines():
+        stripped=line.strip()
+        if not stripped or _TABLE_RULE.match(stripped):continue
+        _,issues=reviewed_passages(stripped,citations,require_citations=require_citations,check_claims=check_claims)
+        if issues:out.append((stripped,issues[0]))
+    return out
