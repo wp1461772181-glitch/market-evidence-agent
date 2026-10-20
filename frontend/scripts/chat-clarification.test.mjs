@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeClarification, selectedClarification, manualClarification, clarificationTitle, isActiveClarification } from '../src/chat-clarification.mjs';
+import { normalizeClarification, selectedClarification, selectedOptions, manualClarification, clarificationTitle, isActiveClarification } from '../src/chat-clarification.mjs';
 
 test('selection card keeps request identity and rejects a forged choice', () => {
   const card = normalizeClarification({request_id:'11111111-1111-4111-8111-111111111111',reason:'symbol_suggestion',
@@ -89,4 +89,28 @@ test('agent suggestions stay visibly distinct and preserve server authorization 
  const ordinary=normalizeClarification({...card,display:{agent_suggestion:'true'}});
  assert.notEqual(ordinary.display.agent_suggestion,true);
  assert.notEqual(clarificationTitle(ordinary),'Agent 建议：请决定是否批准');
+});
+
+test('a revision card keeps its materials and sends only ticked ones with the capability', () => {
+  const token='t'.repeat(43);
+  const card=normalizeClarification({request_id:'11111111-1111-4111-8111-111111111111',reason:'choose_revision_sources',
+    choices:[{label:'用所选材料修订',value:'confirm:'+token},{label:'取消',value:'cancel:11111111-1111-4111-8111-111111111111'}],
+    options:[{value:'1',label:'Gemini 发布会报道',detail:'上传材料 · 2026-10-15 发布 · 预测后发布的新材料'},{value:'2',label:'10-Q'},
+             {value:'x',label:'forged'},{value:'3',label:''}],select:{min:1,max:2}});
+  assert.equal(clarificationTitle(card),'请选择用于修订的材料');
+  assert.deepEqual(card.options.map(option=>option.value),['1','2']);
+  assert.deepEqual(card.select,{min:1,max:2});
+  assert.deepEqual(selectedOptions(card,['2','1']),
+    {message:'confirm:'+token+':1.2',pendingRequestId:'11111111-1111-4111-8111-111111111111',label:'用所选的 2 份材料修订'});
+  assert.throws(()=>selectedOptions(card,[]),/invalid_clarification_choice/);
+  assert.throws(()=>selectedOptions(card,['9']),/invalid_clarification_choice/);
+  assert.throws(()=>selectedOptions(card,['1','1']),/invalid_clarification_choice/);
+  assert.throws(()=>selectedOptions({...card,choices:card.choices.slice(1)},['1']),/invalid_clarification_choice/);
+});
+
+test('a card without materials keeps its old shape', () => {
+  const card=normalizeClarification({request_id:'11111111-1111-4111-8111-111111111111',reason:'write_confirmation',
+    choices:[{label:'同意',value:'confirm:'+'t'.repeat(43)}]});
+  assert.equal('options' in card,false);
+  assert.equal('select' in card,false);
 });

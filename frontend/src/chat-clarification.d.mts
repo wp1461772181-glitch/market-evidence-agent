@@ -1,5 +1,6 @@
 import type { AgentClarification } from './api';
 export function normalizeClarification(value: unknown): AgentClarification|null;
+export function selectedOptions(value: {request_id:string;choices:Array<{value:string}>;options?:Array<{value:string}>;select?:{min:number;max:number}}, values:string[]): {message:string;pendingRequestId:string;label:string};
 export function selectedClarification(value: {request_id:string;choices:Array<{value:string}>}, choice:string): {message:string;pendingRequestId:string};
 export function manualClarification(value: {request_id:string}, reply:string): {message:string;pendingRequestId:string};
 export function clarificationTitle(value: {reason:string}): string;

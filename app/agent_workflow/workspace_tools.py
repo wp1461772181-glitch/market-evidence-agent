@@ -30,7 +30,7 @@ REVISION_REJECTIONS={
  'manual revision with this unchanged source snapshot is already queued; wait for it to finish':'revision_already_queued',
  'manual revision source is unchanged from the selected forecast':'revision_source_unchanged',
  'manual revision source is unchanged from the selected forecast and has no new successful analysis':'revision_source_unchanged',
- 'manual revision source was not newly available after the selected forecast':'revision_source_unavailable',
+ 'manual revision source is outside the revision window of the selected forecast':'revision_source_outside_window',
  'manual revision source snapshot and analysis are unchanged from the previous result':'revision_source_unchanged',
  'official filing requires an exact timezone-aware SEC acceptance timestamp':'revision_rejected',
 }
@@ -40,130 +40,70 @@ def revision_rejection(exc):
     return REVISION_REJECTIONS.get(detail)
 
 
-def find_revision_candidates(symbol: str, version_id_str: str | None, db):
-    from ..symbols import normalize_market_symbol
-    from ..models import UploadedEvidence, SecFilingInventory
+def usable_for_revision(db,source_type,identity,context):
+    """An upload someone else privately owns stays theirs; the owner's own and unowned library uploads
+    (the workspace lists those to everyone) may revise the owner's forecast, as the workspace allows."""
+    if source_type!='uploaded_media':return True
+    from ..knowledge.models import KnowledgeUploadOwner
+    owner=db.scalar(select(KnowledgeUploadOwner.owner_hash).where(KnowledgeUploadOwner.upload_id==UUID(identity)))
+    return owner is None or owner==context.owner_hash
+
+
+def current_forecast(db,symbol):
+    """The newest version of the symbol's newest forward-looking forecast; a historical replay is a
+    retrospective study, never the forecast a user means by "the forecast"."""
+    from ..forecast_v2_models import ForecastJobV2,ForecastVersionV2
+    roots=db.scalars(select(ForecastVersionV2).where(ForecastVersionV2.symbol==symbol,ForecastVersionV2.root_id==ForecastVersionV2.id)
+                     .order_by(ForecastVersionV2.created_at.desc(),ForecastVersionV2.id.desc())).all()
+    for root in roots:
+        job=db.get(ForecastJobV2,root.job_id)
+        if job is not None and job.time_mode=='historical_research':continue
+        return db.scalars(select(ForecastVersionV2).where(ForecastVersionV2.root_id==root.id)
+                          .order_by(ForecastVersionV2.version_no.desc(),ForecastVersionV2.created_at.desc())).first()
+    return None
+
+
+def revision_plan(symbol,version_id=None,context=None,mentioned=()):
+    """What revising a forecast can use right now: the version, its window and the allowed materials.
+
+    ``status`` is ``ready`` with candidates, or says why there is nothing to offer: ``no_forecast``,
+    ``version_not_found``, ``target_expired``, ``version_not_revisable`` or ``no_candidates``.  With
+    nothing to offer, ``excluded`` holds the newest materials and why each does not count; ``mentioned``
+    says the same of the materials the user named.
+    """
+    from datetime import UTC,date,datetime
+    from ..forecast_revision_candidates import REVISION_LOOKAHEAD,REVISION_LOOKBACK,assess_revision_sources,unknown_source
     from ..forecast_v2_models import ForecastVersionV2
-    from datetime import UTC, timedelta
-    try:
-        norm_symbol = normalize_market_symbol(symbol)
-    except Exception:
-        return {'symbol': symbol, 'status': 'invalid_symbol', 'candidates': []}
-
-    version = None
-    if version_id_str:
-        try:
-            version = db.get(ForecastVersionV2, UUID(version_id_str))
-        except Exception:
-            pass
-    if not version:
-        root_candidates = db.scalars(
-            select(ForecastVersionV2)
-            .where(ForecastVersionV2.symbol == norm_symbol, ForecastVersionV2.root_id == ForecastVersionV2.id)
-            .order_by(ForecastVersionV2.created_at.desc(), ForecastVersionV2.id.desc())
-        ).all()
-        root = next((c for c in root_candidates if getattr(c, 'time_mode', None) != 'historical_research'), None)
-        if root:
-            version = db.scalars(
-                select(ForecastVersionV2)
-                .where(ForecastVersionV2.root_id == root.id)
-                .order_by(ForecastVersionV2.version_no.desc(), ForecastVersionV2.created_at.desc())
-            ).first()
-
-    if not version:
-        return {
-            'symbol': norm_symbol,
-            'status': 'no_forecast_version',
-            'message': f'系统内未找到 {norm_symbol} 的有效预测版本。',
-            'candidates': []
-        }
-
-    decision_at = version.decision_at
-    if not decision_at.tzinfo:
-        decision_at = decision_at.replace(tzinfo=UTC)
-
-    start_past = decision_at - timedelta(days=30)
-    end_future = decision_at + timedelta(days=3)
-
-    candidates = []
-    uploads = db.scalars(
-        select(UploadedEvidence)
-        .where(UploadedEvidence.symbol == norm_symbol)
-        .order_by(UploadedEvidence.published_at.desc())
-    ).all()
-    for u in uploads:
-        pub = u.published_at
-        if pub and not pub.tzinfo: pub = pub.replace(tzinfo=UTC)
-        obs = u.observed_at
-        if obs and not obs.tzinfo: obs = obs.replace(tzinfo=UTC)
-        if not pub: continue
-        if decision_at <= pub <= end_future:
-            candidates.append({
-                'source_id': str(u.id),
-                'source_type': 'uploaded_media',
-                'title': u.title,
-                'published_at': pub.isoformat(),
-                'observed_at': obs.isoformat() if obs else None,
-                'category': 'new_material',
-                'badge': '新发布材料',
-                'credibility_stars': u.credibility_stars,
-            })
-        elif obs and obs > decision_at and start_past <= pub < decision_at:
-            candidates.append({
-                'source_id': str(u.id),
-                'source_type': 'uploaded_media',
-                'title': u.title,
-                'published_at': pub.isoformat(),
-                'observed_at': obs.isoformat() if obs else None,
-                'category': 'past_supplementary',
-                'badge': '过往补充材料',
-                'credibility_stars': u.credibility_stars,
-            })
-
-    filings = db.scalars(
-        select(SecFilingInventory)
-        .where(SecFilingInventory.symbol == norm_symbol, SecFilingInventory.content_status == 'fetched')
-        .order_by(SecFilingInventory.filed_at.desc())
-    ).all()
-    for f in filings:
-        pub = f.filed_at
-        if pub and not pub.tzinfo: pub = pub.replace(tzinfo=UTC)
-        obs = f.observed_at
-        if obs and not obs.tzinfo: obs = obs.replace(tzinfo=UTC)
-        if not pub: continue
-        if decision_at <= pub <= end_future:
-            candidates.append({
-                'source_id': str(f.id),
-                'source_type': 'official_filing',
-                'title': f.content_document_name or f.primary_document or f"{f.form} 申报",
-                'published_at': pub.isoformat(),
-                'observed_at': obs.isoformat() if obs else None,
-                'category': 'new_material',
-                'badge': '新发布材料',
-                'credibility_stars': 5,
-            })
-        elif obs and obs > decision_at and start_past <= pub < decision_at:
-            candidates.append({
-                'source_id': str(f.id),
-                'source_type': 'official_filing',
-                'title': f.content_document_name or f.primary_document or f"{f.form} 申报",
-                'published_at': pub.isoformat(),
-                'observed_at': obs.isoformat() if obs else None,
-                'category': 'past_supplementary',
-                'badge': '过往补充材料',
-                'credibility_stars': 5,
-            })
-
-    candidates.sort(key=lambda x: x['published_at'], reverse=True)
-    return {
-        'symbol': norm_symbol,
-        'version_id': str(version.id),
-        'version_no': version.version_no,
-        'decision_at': decision_at.isoformat(),
-        'status': 'success',
-        'count': len(candidates),
-        'candidates': candidates[:15],
-    }
+    from ..market_time import xnys_session_close_at
+    from ..symbols import normalize_market_symbol
+    try:symbol=normalize_market_symbol(symbol)
+    except ValueError:return {'status':'no_forecast','symbol':str(symbol)}
+    with SessionLocal() as db:
+        if version_id:
+            version=db.get(ForecastVersionV2,UUID(version_id))
+            if version is None or version.symbol!=symbol:return {'status':'version_not_found','symbol':symbol}
+        else:
+            version=current_forecast(db,symbol)
+            if version is None:return {'status':'no_forecast','symbol':symbol}
+        decided=version.decision_at if version.decision_at.tzinfo else version.decision_at.replace(tzinfo=UTC)
+        root=db.get(ForecastVersionV2,version.root_id) or version
+        target=root.target_contract.get('target_end_date') if isinstance(root.target_contract,dict) else None
+        plan={'symbol':symbol,'version_id':str(version.id),'version_no':version.version_no,'decision_at':decided.isoformat(),
+              'target_end_date':target,'window_start':(decided-REVISION_LOOKBACK).isoformat(),
+              'window_end':(decided+REVISION_LOOKAHEAD).isoformat(),'candidates':[]}
+        try:expired=datetime.now(UTC)>=xnys_session_close_at(date.fromisoformat(str(target)))
+        except (TypeError,ValueError):return {**plan,'status':'version_not_revisable'}
+        if expired:return {**plan,'status':'target_expired'}
+        assessed=assess_revision_sources(db,version)
+        for row in assessed:
+            if row['category'] and context is not None and not usable_for_revision(db,row['source_type'],row['source_id'],context):
+                row.update(category=None,reason='not_found',reason_text='资料库里没有找到这份材料')
+        candidates=[{k:v for k,v in row.items() if k not in ('reason','reason_text')} for row in assessed if row['category']]
+        by_key={(row['source_type'],row['source_id']):row for row in assessed}
+        named=[by_key.get((ref.get('source_type'),str(ref.get('source_id')))) or unknown_source(db,symbol,ref) for ref in mentioned]
+        excluded=[row for row in assessed if row['reason'] and row['reason']!='not_published_yet'][:3]
+        return {**plan,'status':'ready' if candidates else 'no_candidates','candidates':candidates,
+                'excluded':[] if candidates else excluded,'mentioned':named}
 
 
 def read_workspace(args,context):
@@ -182,7 +122,7 @@ def read_workspace(args,context):
             value=forecasts.get_v2_stock_workspace(symbol,db)
         elif kind=='revision_candidates':
             if not symbol:return error('symbol_required')
-            value=find_revision_candidates(symbol,identity,db)
+            value=revision_plan(symbol,identity,context)
         elif kind=='learning':
             from ..jev_learning import jev_learning_status
             value=jev_learning_status(db=db,symbol=symbol)
@@ -209,7 +149,7 @@ def write_workspace(name,args,key,context):
         elif name=='revise_forecast':
             from fastapi import HTTPException
             for ref in args['source_refs']:
-                if not private_source(db,ref.get('source_type'),ref['source_id'],context):raise ValueError('source_not_owned')
+                if not usable_for_revision(db,ref.get('source_type'),ref['source_id'],context):raise ValueError('source_not_owned')
             try:
                 value=forecasts.create_v2_manual_revision_job(UUID(args['version_id']),forecasts.ManualRevisionJobRequest(source_refs=args['source_refs']),key,db)
             except HTTPException as exc:
@@ -228,5 +168,8 @@ def write_workspace(name,args,key,context):
         elif name=='review_knowledge_candidate':value=library.review_candidate(args['candidate_id'],library.ReviewRequest(approved=args['approved'],reviewer=args['reviewer']),x_chat_session=context.identity_credential,x_app_access_key=None)
         elif name=='import_sources':value=library.import_existing(library.ImportRequest.model_validate(args),x_chat_session=context.identity_credential,x_app_access_key=None)
         else:raise ValueError('unknown_tool')
+        if name in {'revise_forecast','start_historical_replay'} and isinstance(value,dict) and value.get('id'):
+            # A forecast job is queued, not done: the report reads job_id and status from a flat row.
+            return {'ok':True,'data':[{'job_id':str(value['id']),'status':value.get('status'),'symbol':value.get('symbol'),'action':name}]}
         return {'ok':True,'data':safe(value)}
 

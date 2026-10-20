@@ -1,0 +1,335 @@
+{
+ "suite": "forecast revision: the user ticks the materials, the window is 30 days back and 7 days forward",
+ "notes": "Shadow only. The scratch database holds an AAPL forecast made 2026-10-14 and two AAPL materials seeded after it (/tmp/market-g7/seed_shadow.sql): one published 2 days after, one 5 days after (offered only under the 7-day window). GOOGL's forecast (2026-09-27) has one backfilled upload saved by an earlier shadow run; META's forecast has nothing in its window and NVDA has no forecast. There is no forecast worker in the shadow, so a submitted revision stays queued. Run /tmp/market-g7/reset_shadow.sql before a run: a queued revision of the same material is refused by design.",
+ "cases": [
+  {
+   "id": "R01",
+   "title": "苹果：列出窗口内材料 → 勾选一份 → 提交 → 问进度",
+   "identity": "owner",
+   "serial_group": "aapl_revision",
+   "steps": [
+    {
+     "text": "帮我修订一下苹果（AAPL）的预测。",
+     "check": {
+      "card": "choose_revision_sources",
+      "proposed_include": [
+       "revise_forecast"
+      ],
+      "write_outcome": [
+       "proposed"
+      ],
+      "answer_any": [
+       [
+        "勾选"
+       ]
+      ],
+      "tools_exclude": [
+       "query_sec_filings"
+      ],
+      "answer_no_codes": true,
+      "no_dropped": false
+     }
+    },
+    {
+     "kind": "db_check",
+     "label": "the 5-day material is offered",
+     "sql": "select count(*) from agent_consents where status='proposed' and operations::text like '%a7e10000-0000-4000-8000-000000000002%' and operations::text like '%a7e10000-0000-4000-8000-000000000001%'",
+     "expect": {
+      "op": "gt",
+      "value": 0
+     }
+    },
+    {
+     "kind": "select_card",
+     "contains": [
+      "App Store"
+     ],
+     "check": {
+      "write_outcome": [
+       "executed"
+      ],
+      "consent_status": [
+       "complete"
+      ],
+      "answer_any": [
+       [
+        "已提交修订"
+       ],
+       [
+        "App Store"
+       ],
+       [
+        "修订好了吗"
+       ]
+      ],
+      "answer_excludes": [
+       "queued",
+       "result_version_id",
+       "iPhone 18"
+      ],
+      "answer_no_codes": true,
+      "no_dropped": false
+     }
+    },
+    {
+     "kind": "db_check",
+     "label": "only the ticked material was sent",
+     "sql": "select count(*) from forecast_jobs_v2 where kind='manual_revision' and source_refs::text like '%a7e10000-0000-4000-8000-000000000002%' and source_refs::text not like '%a7e10000-0000-4000-8000-000000000001%'",
+     "expect": {
+      "op": "gt",
+      "value": 0
+     }
+    },
+    {
+     "text": "修订好了吗？",
+     "check": {
+      "card": false,
+      "tools_any": [
+       [
+        "query_system_status",
+        "query_latest_forecast"
+       ]
+      ],
+      "answer_any": [
+       [
+        "排队",
+        "还在",
+        "计算中",
+        "尚未",
+        "进行中",
+        "还没有",
+        "等待"
+       ]
+      ],
+      "answer_no_codes": true,
+      "no_dropped": false
+     }
+    }
+   ]
+  },
+  {
+   "id": "R02",
+   "title": "谷歌：先问预测（要说清概率指什么）→ 用户原话「修正那个快照」→ 出材料卡，或在两种快照间追问",
+   "identity": "owner",
+   "steps": [
+    {
+     "text": "当前有谷歌股价的预测？",
+     "check": {
+      "tools_include": [
+       "query_latest_forecast"
+      ],
+      "answer_any": [
+       [
+        "343.92",
+        "350.8",
+        "337.04",
+        "2%"
+       ]
+      ],
+      "answer_excludes": [
+       "不含任何目标价"
+      ],
+      "answer_no_codes": true,
+      "no_dropped": false
+     }
+    },
+    {
+     "text": "那我要修正那个快照，帮我修正这个快照",
+     "check": {
+      "card": true,
+      "answer_any": [
+       [
+        "勾选",
+        "指哪",
+        "哪一份",
+        "哪个"
+       ]
+      ],
+      "tools_exclude": [
+       "query_sec_filings"
+      ],
+      "answer_no_codes": true,
+      "no_dropped": false
+     }
+    }
+   ]
+  },
+  {
+   "id": "R07",
+   "title": "谷歌：明说修正预测快照 → 卡片列出窗口内材料 → 取消",
+   "identity": "owner",
+   "steps": [
+    {
+     "text": "帮我修正谷歌那份股价预测快照。",
+     "check": {
+      "card": "choose_revision_sources",
+      "proposed_include": [
+       "revise_forecast"
+      ],
+      "write_outcome": [
+       "proposed"
+      ],
+      "answer_any": [
+       [
+        "勾选"
+       ]
+      ],
+      "tools_exclude": [
+       "query_sec_filings"
+      ],
+      "answer_no_codes": true,
+      "no_dropped": false
+     }
+    },
+    {
+     "kind": "cancel_card",
+     "check": {
+      "write_outcome": [
+       "cancelled"
+      ],
+      "answer_any": [
+       [
+        "取消"
+       ]
+      ],
+      "answer_no_codes": true,
+      "no_dropped": false
+     }
+    }
+   ]
+  },
+  {
+   "id": "R03",
+   "title": "苹果：打字同意不执行，取消后不留任务",
+   "identity": "owner",
+   "serial_group": "aapl_revision",
+   "steps": [
+    {
+     "text": "用新材料修订苹果的预测。",
+     "check": {
+      "card": "choose_revision_sources",
+      "write_outcome": [
+       "proposed"
+      ],
+      "answer_no_codes": true,
+      "no_dropped": false
+     }
+    },
+    {
+     "text": "同意",
+     "check": {
+      "card": true,
+      "write_outcome": [
+       "typed_consent"
+      ],
+      "answer_any": [
+       [
+        "勾选"
+       ]
+      ],
+      "answer_no_codes": true,
+      "no_dropped": false
+     }
+    },
+    {
+     "kind": "cancel_card",
+     "check": {
+      "write_outcome": [
+       "cancelled"
+      ],
+      "answer_any": [
+       [
+        "取消"
+       ]
+      ],
+      "answer_no_codes": true,
+      "no_dropped": false
+     }
+    }
+   ]
+  },
+  {
+   "id": "R05",
+   "title": "Meta：窗口内没有材料，直接说明规则和下一步",
+   "identity": "owner",
+   "steps": [
+    {
+     "text": "帮我修正一下 Meta 的预测快照。",
+     "check": {
+      "card": false,
+      "write_outcome": [
+       "refused:no_candidates"
+      ],
+      "answer_any": [
+       [
+        "没有符合条件的材料"
+       ],
+       [
+        "7 天"
+       ],
+       [
+        "30 天"
+       ],
+       [
+        "生成一个新预测"
+       ]
+      ],
+      "tools_exclude": [
+       "query_sec_filings"
+      ],
+      "answer_no_codes": true,
+      "no_dropped": false,
+      "answer_excludes": [
+       "操作未执行",
+       "确认卡"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "R06",
+   "title": "英伟达：没有已保存的预测",
+   "identity": "owner",
+   "steps": [
+    {
+     "text": "修订一下英伟达（NVDA）的预测。",
+     "check": {
+      "card": false,
+      "answer_any": [
+       [
+        "还没有已保存的预测",
+        "没有已保存的预测",
+        "没有可以修订"
+       ]
+      ],
+      "answer_no_codes": true,
+      "no_dropped": false,
+      "write_outcome": [
+       "refused:no_forecast"
+      ],
+      "answer_excludes": [
+       "操作未执行",
+       "确认卡"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "R04",
+   "title": "游客不能修订",
+   "identity": "guest",
+   "steps": [
+    {
+     "text": "帮我修订一下苹果的预测。",
+     "check": {
+      "card": false,
+      "answer_no_codes": true,
+      "no_dropped": false
+     }
+    }
+   ]
+  }
+ ]
+}

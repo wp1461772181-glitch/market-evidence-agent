@@ -11,7 +11,7 @@ import { AgentChatLifecycle, chatContext } from "./agentChatLifecycle.js";
 import { KnowledgeAdminPage } from './KnowledgeAdminPage';
 import { ContextMeter } from "./ContextMeter";
 import { restoreConversationAfterPersistence, restoreConversationSafely } from "./chat-session.mjs";
-import { normalizeClarification, selectedClarification, manualClarification, clarificationTitle, isActiveClarification } from "./chat-clarification.mjs";
+import { normalizeClarification, selectedClarification, selectedOptions, manualClarification, clarificationTitle, isActiveClarification } from "./chat-clarification.mjs";
 import { toolLabel } from "./agent-tool-labels.mjs";
 import { addToWatchlist, queueAddTicker, watchlistSnapshot } from "./watchlist-bridge.mjs";
 import { createArchive, createSerializedWriter, isPickerCancelled, mergeConversation, serializeArchive, validateArchive, writeAtomically, type ArchiveConversation, type ChatArchive } from "./chat-archive.mjs";
@@ -36,9 +36,9 @@ function toolResultSummary(value:unknown):string {
   return "";
 }
 type FileHandle = { name: string; getFile: () => Promise<File>; createWritable: () => Promise<{ write: (value: string) => Promise<void>; close: () => Promise<void> }> };
-type ChatSession = { conversationId:string|null; loadingProfiles:boolean; mutationPending:boolean; profilePath:string; importProfiles:(file:File)=>Promise<void>; exportProfiles:()=>void; provider: AgentChatProvider; model: string; key: string; baseUrl: string; displayName: string; profiles: ModelProfile[]; selectedId: string | null; storage: string; storageError: string; selectProfile: (id: string) => void; saveProfile: (p: ModelProfile) => Promise<void>; verified: boolean; state: State; status: string; restoring:boolean; messages: AgentChatMessage[]; draft: string; setDraft: (v: string) => void; send: (e: FormEvent) => Promise<void>; choose:(value:string,requestId:string)=>Promise<void>; replyToCard:(value:string,requestId:string)=>Promise<void>; cancel: () => void; clear: () => void; openConversation:(id:string,created?:string)=>Promise<void>; archive: ChatArchive | null; archiveView: ArchiveConversation | null; fileName: string; archiveStatus: string; connectFile: () => Promise<void>; disconnectFile: () => void; exportArchive: () => void; importArchive: (file: File) => Promise<void>; selectArchive: (id:string) => void; returnLive: () => void };
+type ChatSession = { conversationId:string|null; loadingProfiles:boolean; mutationPending:boolean; profilePath:string; importProfiles:(file:File)=>Promise<void>; exportProfiles:()=>void; provider: AgentChatProvider; model: string; key: string; baseUrl: string; displayName: string; profiles: ModelProfile[]; selectedId: string | null; storage: string; storageError: string; selectProfile: (id: string) => void; saveProfile: (p: ModelProfile) => Promise<void>; verified: boolean; state: State; status: string; restoring:boolean; messages: AgentChatMessage[]; draft: string; setDraft: (v: string) => void; send: (e: FormEvent) => Promise<void>; choose:(value:string,requestId:string)=>Promise<void>; chooseOptions:(values:string[],requestId:string)=>Promise<void>; replyToCard:(value:string,requestId:string)=>Promise<void>; cancel: () => void; clear: () => void; openConversation:(id:string,created?:string)=>Promise<void>; archive: ChatArchive | null; archiveView: ArchiveConversation | null; fileName: string; archiveStatus: string; connectFile: () => Promise<void>; disconnectFile: () => void; exportArchive: () => void; importArchive: (file: File) => Promise<void>; selectArchive: (id:string) => void; returnLive: () => void };
 const Context = createContext<ChatSession | null>(null);
-const WRITE_CARDS = new Set(["write_confirmation", "confirm_write", "choose_write_action"]);
+const WRITE_CARDS = new Set(["write_confirmation", "confirm_write", "choose_write_action", "choose_revision_sources"]);
 function Icon({ children }: { children: ReactNode }) {
   return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{children}</svg>;
 }
@@ -50,10 +50,12 @@ const PencilIcon = () => <Icon><path d="M4 20h4l10.5-10.5a2.1 2.1 0 0 0-3-3L5 17
 const ArchiveIcon = () => <Icon><path d="M4 5h16v3H4V5z" /><path d="M5.5 8v10.5a1.5 1.5 0 0 0 1.5 1.5h10a1.5 1.5 0 0 0 1.5-1.5V8" /><path d="M9.5 12h5" /></Icon>;
 const SendIcon = () => <Icon><path d="M12 19V5" /><path d="M5.5 11.5L12 5l6.5 6.5" /></Icon>;
 
-function ClarificationCard({clarification,active,onChoose,onReply}:{clarification:NonNullable<AgentChatMessage["clarification"]>;active:boolean;onChoose:(value:string)=>Promise<void>;onReply:(value:string)=>Promise<void>}) {
+function ClarificationCard({clarification,active,onChoose,onChooseMany,onReply}:{clarification:NonNullable<AgentChatMessage["clarification"]>;active:boolean;onChoose:(value:string)=>Promise<void>;onChooseMany:(values:string[])=>Promise<void>;onReply:(value:string)=>Promise<void>}) {
   const { t } = useLocale();
   const [reply,setReply]=useState("");
-  const write=WRITE_CARDS.has(clarification.reason), confirm=["write_confirmation","confirm_write"].includes(clarification.reason);
+  const [picked,setPicked]=useState<string[]>([]);
+  const options=clarification.options??[], limits=clarification.select??{min:1,max:options.length};
+  const write=WRITE_CARDS.has(clarification.reason), confirm=["write_confirmation","confirm_write","choose_revision_sources"].includes(clarification.reason);
   const title=t(clarificationTitle(clarification));
   return <div className={`agent-clarification-card${write?" is-write":""}${active?"":" is-locked"}`} role="group" aria-label={title}>
     <strong>{title}</strong>
@@ -68,10 +70,20 @@ function ClarificationCard({clarification,active,onChoose,onReply}:{clarificatio
       {clarification.display.alternative&&<p>{clarification.display.alternative}</p>}
       {write&&<small>{t("确认有效期为十分钟；改变目标需要重新确认。")}</small>}
     </div>}
+    {options.length>0&&<fieldset className="agent-clarification-picks" disabled={!active}>
+      {options.map(option=><label key={option.value}>
+        <input type="checkbox" checked={picked.includes(option.value)}
+          onChange={event=>setPicked(current=>event.target.checked?(current.length<limits.max?[...current,option.value]:current):current.filter(value=>value!==option.value))} />
+        <span><span className="agent-pick-title">{option.label}</span>{option.detail&&<small>{option.detail}</small>}</span>
+      </label>)}
+      {active&&picked.length<limits.min&&<small className="agent-pick-hint">{t("至少勾选一份材料")}</small>}
+    </fieldset>}
     <div className="agent-clarification-options">{clarification.choices.map((choice,index)=>{
       const cancel=/^cancel:/.test(choice.value);
+      const ticks=options.length>0&&/^confirm:/.test(choice.value);
       const kind=write&&confirm&&index===0?"is-primary":write&&(cancel||(confirm&&index===clarification.choices.length-1))?"is-quiet":"";
-      return <button type="button" className={kind} key={choice.value} disabled={!active} onClick={()=>void onChoose(choice.value)}>{t(choice.label)}</button>;
+      return <button type="button" className={kind} key={choice.value} disabled={!active||(ticks&&picked.length<limits.min)}
+        onClick={()=>void (ticks?onChooseMany(picked):onChoose(choice.value))}>{t(choice.label)}</button>;
     })}</div>
     {!write&&<form className="agent-clarification-reply" onSubmit={event=>{event.preventDefault();if(active&&reply.trim())void onReply(reply)}}>
       <label>{t("手动输入")}<input value={reply} onChange={event=>setReply(event.target.value)} maxLength={4000} disabled={!active} placeholder={t("也可以输入自己的回答")} /></label>
@@ -175,6 +187,12 @@ export function AgentChatProviderRoot({ children }: { children: ReactNode }) {
     const queued=queueAddTicker(value); if(queued) addToWatchlist(queued);
     await sendContent(selection.message,selection.pendingRequestId,card.choices.find(choice=>choice.value===value)?.label);
   }
+  async function chooseOptions(values:string[],requestId:string) {
+    const card=messages.at(-1)?.clarification;
+    if (!card || card.request_id!==requestId) return;
+    const selection=selectedOptions(card,values);
+    await sendContent(selection.message,selection.pendingRequestId,selection.label);
+  }
   async function replyToCard(value:string,requestId:string) {
     const card=messages.at(-1)?.clarification;
     if (!card || card.request_id!==requestId || archiveView) return;
@@ -221,7 +239,7 @@ export function AgentChatProviderRoot({ children }: { children: ReactNode }) {
   }
   const clear = () => { const previous=latestMessages.current;let lastUser=-1;for(let i=previous.length-1;i>=0;i--)if(previous[i].role==="user"){lastUser=i;break;}const completed=state==="sending"?previous.slice(0,Math.max(0,lastUser)):previous;if(handle.current&&completed.length)void persistConversation(completed); lifecycle.current.invalidate();setRestoring(false);setArchiveView(null);if(importedReadOnly){setImportedReadOnly(false);setArchive(archiveRef.current);}clearAgentConversation(); setConversationId(null); setMessages([]); latestMessages.current=[]; setDraft(""); localId.current=crypto.randomUUID();createdAt.current=new Date().toISOString();try{window.localStorage.setItem(`market-evidence-agent:local-chat-id:${getChatMode()}:v1`,localId.current);}catch{}setState(verified ? "ready" : "idle"); setStatus(""); };
   const visibleMessages=archiveView?archiveView.messages as AgentChatMessage[]:messages;
-  return <Context.Provider value={{ conversationId,loadingProfiles,mutationPending,profilePath,importProfiles,exportProfiles,provider, model, key, baseUrl, displayName:active?.display_name??"",profiles,selectedId,storage,storageError,selectProfile,saveProfile,verified, state, status, restoring,messages:visibleMessages, draft, setDraft, send, choose, replyToCard, cancel, clear,openConversation,archive,archiveView,fileName,archiveStatus,connectFile,disconnectFile,exportArchive,importArchive,selectArchive,returnLive }}>{children}</Context.Provider>;
+  return <Context.Provider value={{ conversationId,loadingProfiles,mutationPending,profilePath,importProfiles,exportProfiles,provider, model, key, baseUrl, displayName:active?.display_name??"",profiles,selectedId,storage,storageError,selectProfile,saveProfile,verified, state, status, restoring,messages:visibleMessages, draft, setDraft, send, choose, chooseOptions, replyToCard, cancel, clear,openConversation,archive,archiveView,fileName,archiveStatus,connectFile,disconnectFile,exportArchive,importArchive,selectArchive,returnLive }}>{children}</Context.Provider>;
 }
 function readLocalConversationId(){try{const key=`market-evidence-agent:local-chat-id:${getChatMode()}:v1`,existing=window.localStorage.getItem(key);if(existing&&/^[\w-]{1,80}$/.test(existing))return existing;const id=crypto.randomUUID();window.localStorage.setItem(key,id);return id;}catch{return crypto.randomUUID();}}
 function archiveMessages(messages:AgentChatMessage[]){return messages.filter(m=>m.role==="user"||m.role==="assistant").map(m=>({role:m.role as "user"|"assistant",content:m.content,...(m.status?{status:m.status as "failed"|"cancelled"}:{}),...(m.role==="assistant"&&m.citations?{citations:m.citations}:{}),...(m.role==="assistant"&&m.tool_trace?{tool_trace:m.tool_trace.map(x=>({call_id:x.call_id,name:x.name,arguments:x.arguments,result:x.result,status:x.status as "running"|"complete"|"not_found"|"failed"|"cancelled"}))}:{})}));}
@@ -308,7 +326,7 @@ export function AgentChatPanel({ onSettings,onModeChange }: { onSettings: () => 
             <div className="agent-thread">{c.messages.map((m, i) => <article data-turn-index={m.role==="user"?turnPreviews.findIndex(turn=>turn.userIndex===i):undefined} id={`chat-message-${i}`} className={`agent-message is-${m.role}${i===lastIndex?" is-last":""}`} key={i}>
               {m.role !== "user"&&<div className="agent-tool-badges">{m.reused_sources&&<span className="tool-badge status-complete">{t("复用已核实来源")}</span>}{m.tool_trace?.map((tool,j)=><span key={`${tool.name}-${j}`} className={`tool-badge status-${tool.status}`}>{t(toolLabel(tool.name))} · {t(tool.status === "complete" ? (tool.card ? "执行完成" : "已完成") : tool.status === "not_found" ? "没有匹配记录" : tool.status === "failed" ? "查询失败" : tool.status === "cancelled" ? "已取消" : tool.status === "submitted" ? "已提交" : "执行中")}{toolResultSummary(tool.result)&&` · ${toolResultSummary(tool.result)}`}</span>)}</div>}
               {m.role==="user"?<div className="agent-user-bubble"><p>{m.content}</p><button type="button" className="agent-user-copy" aria-label={copied===i?t("已复制"):copied===-i-1?t("复制失败"):t("复制问题")} title={t("复制问题")} onClick={()=>void copyAnswer(m.content,i)}>{copied===i?<CheckIcon />:<CopyIcon />}</button></div>:<div className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{table:({node,...props})=><div className="markdown-table-wrap"><table {...props}/></div>,a:({node,...props})=>{const href=String(props.href??"");const match=href.match(/^#citation-(\d+)$/);const citation=match?m.citations?.find(item=>(item.ordinal??m.citations!.indexOf(item)+1)===Number(match[1])):undefined;if(match&&!citation)return <span className="citation-unmatched">{props.children}</span>;return <a {...props} href={citation?href:props.href} onClick={event=>{if(!citation)return;event.preventDefault();setOpenCitationTurn(i);["web","web_news","official_filing","saved_filing","saved_ai_analysis","reported_figure"].includes(citation.source_type)&&citation.source_url?window.open(citation.source_url,"_blank","noopener,noreferrer"):citation.chunk_id?void showCitation(citation.chunk_id,citation.source_type==="unavailable"):undefined}} target={citation?undefined:"_blank"} rel={citation?undefined:"noopener noreferrer"}/>} }}>{m.content.replace(/\[(\d+)\]/g,"[$1](#citation-$1)")}</ReactMarkdown></div>}
-              {m.role==="assistant"&&m.clarification&&<ClarificationCard clarification={m.clarification} active={isActiveClarification(c.messages,i,Boolean(c.archiveView))&&!c.restoring&&c.verified&&c.state!=="sending"&&c.state!=="testing"} onChoose={value=>c.choose(value,m.clarification!.request_id)} onReply={value=>c.replyToCard(value,m.clarification!.request_id)} />}
+              {m.role==="assistant"&&m.clarification&&<ClarificationCard clarification={m.clarification} active={isActiveClarification(c.messages,i,Boolean(c.archiveView))&&!c.restoring&&c.verified&&c.state!=="sending"&&c.state!=="testing"} onChoose={value=>c.choose(value,m.clarification!.request_id)} onChooseMany={values=>c.chooseOptions(values,m.clarification!.request_id)} onReply={value=>c.replyToCard(value,m.clarification!.request_id)} />}
               {m.role === "assistant" && m.status && m.status !== "complete" && m.status !== "succeeded" && <small>{t(m.status === "cancelled" ? "本轮已取消，未生成完整回答。" : m.status === "waiting_for_input" ? "等待选择后继续" : m.status === "running" ? "任务运行中，可稍后查询状态" : m.status === "partially_succeeded" ? "部分来源可用；缺项已标出" : "本轮失败；已保留已生成内容。")}</small>}
               {m.role === "assistant"&&m.content&&<>
                 <div className="agent-answer-actions">

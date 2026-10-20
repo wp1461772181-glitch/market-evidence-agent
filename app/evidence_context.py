@@ -825,6 +825,26 @@ def _same_event_state(old: EvidenceEventVersionV2, current: EvidenceEventVersion
     )
 
 
+def source_state_differs(
+    frozen: EvidenceEventVersionV2, row: SecFilingInventory | UploadedEvidence, *, source_type: str
+) -> bool:
+    """Whether a source's stored state now differs from one frozen snapshot, without storing anything.
+
+    The comparison a revision freeze makes (content, review fingerprint, extraction schema), so the
+    materials offered for a revision are the ones the freeze would treat as changed.
+    """
+    now = datetime.now(UTC)
+    if source_type == "official_filing":
+        candidate = _candidate_from_filing(row, decision_at=now)
+    else:
+        candidate = _candidate_from_upload(row, decision_at=now)
+    return not (
+        frozen.content_sha256 == candidate.content_sha256
+        and frozen.review_fingerprint == _digest(candidate.review_snapshot)
+        and frozen.extraction_schema_version == CONTEXT_SCHEMA_VERSION
+    )
+
+
 def _discovery_kind(
     candidate: _Candidate, previous_decision_at: datetime | None, *, has_prior: bool
 ) -> Literal["initial", "new_publication", "backfill_discovered"]:

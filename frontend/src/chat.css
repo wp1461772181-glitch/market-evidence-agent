@@ -154,6 +154,14 @@
 .agent-clarification-card.is-write { border-color: #b8d7cd; background: linear-gradient(180deg, #f6fbf9, #fff); }
 .agent-clarification-card.is-locked { opacity: .62; }
 .agent-clarification-options { display: flex; flex-wrap: wrap; gap: 8px; }
+.agent-clarification-picks { display: grid; gap: 6px; margin: 0; padding: 0; border: 0; min-width: 0; }
+.agent-clarification-picks label { display: flex; gap: 10px; align-items: flex-start; padding: 8px 10px; border: 1px solid var(--c-line-strong); border-radius: 10px; background: var(--c-surface); cursor: pointer; }
+.agent-clarification-picks label:has(input:checked) { border-color: var(--c-accent); background: var(--c-tint); }
+.agent-clarification-picks input { margin-top: 3px; flex: none; accent-color: var(--c-accent); }
+.agent-clarification-picks span { display: grid; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
+.agent-clarification-picks .agent-pick-title { font: 13px/1.4 var(--sans); color: var(--c-ink); }
+.agent-clarification-picks small { font: 12px/1.4 var(--sans); color: var(--c-muted); }
+.agent-clarification-picks .agent-pick-hint { color: var(--c-muted); }
 .agent-clarification-options button { padding: 8px 14px; border: 1px solid var(--c-line-strong); border-radius: 999px; background: var(--c-surface); color: var(--c-ink); font: 13px/1.3 var(--sans); cursor: pointer; transition: background .12s, border-color .12s, transform .12s; max-width: 100%; text-align: left; }
 .agent-clarification-options button:hover:not(:disabled), .agent-clarification-options button:focus-visible { border-color: var(--c-accent); background: var(--c-tint); outline: none; }
 .agent-clarification-options button.is-primary { border-color: var(--c-accent); background: var(--c-accent); color: #fff; font-weight: 600; }

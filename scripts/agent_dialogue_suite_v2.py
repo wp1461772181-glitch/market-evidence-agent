@@ -4,7 +4,7 @@ Each case runs in its own conversation (a ``new_session`` step starts another on
 or as a fresh guest.  For every user turn the runner records the answer, every tool call with its
 arguments, every citation, the card the turn ended on, the elapsed time and the turn's audit (read
 from ``agent_messages``), then applies the case's checks.  Cards can be pressed the way the web
-panel does it (``cancel_card``, ``confirm_card``, ``choose_card``, ``reconfirm_card``,
+panel does it (``cancel_card``, ``confirm_card``, ``choose_card``, ``select_card`` (tick a revision card's materials), ``reconfirm_card``,
 ``stale_confirm``), and a case may assert on the temporary database with ``db_check``.
 
 Keys are read into memory only and never printed, logged or written to the result file.  Card
@@ -228,7 +228,7 @@ def summarise(events):
             display = data.get('display') or {}
             card = {'request_id': data.get('request_id'), 'reason': data.get('reason'),
                     'question': data.get('question'), 'title': display.get('title'),
-                    'targets': display.get('targets'),
+                    'targets': display.get('targets'), 'options': data.get('options') or [],
                     'choices': [choice_summary(c) for c in (data.get('choices') or []) if isinstance(c, dict)],
                     'choices_full': [c for c in (data.get('choices') or []) if isinstance(c, dict)]}
         elif kind == 'done':
@@ -377,6 +377,20 @@ def pick_choice(card, kind, step):
             if str(choice.get('value') or '').startswith('cancel:'):
                 return choice
         return None
+    if kind == 'select_card':
+        # Tick materials on a revision card (by position or by words in the title), then press its
+        # button: the value is the capability followed by the ticked option values, as the panel sends.
+        options = [o for o in card.get('options') or [] if isinstance(o, dict)]
+        wanted = step.get('positions') or []
+        words = step.get('contains') or []
+        if isinstance(words, str):
+            words = [words]
+        ticked = [o['value'] for index, o in enumerate(options, 1)
+                  if index in wanted or any(str(word) in str(o.get('label') or '') for word in words)]
+        confirm = next((c for c in choices if str(c.get('value') or '').startswith('confirm:')), None)
+        if not ticked or not confirm:
+            return None
+        return {'label': f'用所选的 {len(ticked)} 份材料修订', 'value': f"{confirm['value']}:{'.'.join(ticked)}"}
     if kind == 'choose_card':
         keywords = step.get('label') or step.get('contains') or ''
         if isinstance(keywords, str):
@@ -503,7 +517,7 @@ def run_case(case, base, db, model, owner, identity=None, retries=1, emit=emit_l
 
         full_card = None
         pressed = None
-        if kind in {'cancel_card', 'confirm_card', 'choose_card', 'reconfirm_card', 'stale_confirm'}:
+        if kind in {'cancel_card', 'confirm_card', 'choose_card', 'select_card', 'reconfirm_card', 'stale_confirm'}:
             if kind == 'reconfirm_card':
                 full_card = confirmed_card
                 if not full_card:
@@ -588,7 +602,7 @@ def run_case(case, base, db, model, owner, identity=None, retries=1, emit=emit_l
                 row['operations'] = summarise_operations(consent.get('operations'))
 
         new_card = row.pop('card_full', None)
-        if kind in {'confirm_card', 'reconfirm_card'}:
+        if kind in {'confirm_card', 'select_card', 'reconfirm_card'}:
             if full_card:
                 confirmed_card = full_card
             last_card = new_card

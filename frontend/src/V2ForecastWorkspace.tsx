@@ -349,7 +349,8 @@ export function V2ForecastWorkspace({ symbol, filings, priceHistory, mode, onOpe
     });
     const priorContentHashes = new Set(parentSources.flatMap((item) => typeof item.content_sha256 === "string" ? [item.content_sha256] : []));
     const parentDecisionAt = Date.parse(matchingRevisionParent.decision_at);
-    const maxForwardTime = parentDecisionAt + 3 * 24 * 60 * 60 * 1000;
+    // The revision window the server enforces: seven days after the forecast, thirty days before it.
+    const maxForwardTime = parentDecisionAt + 7 * 24 * 60 * 60 * 1000;
     const minBackwardTime = parentDecisionAt - 30 * 24 * 60 * 60 * 1000;
 
     const analysisItems = revisionMaterialMetadata?.parentVersionId === chosenVersionId ? revisionMaterialMetadata.items : [];

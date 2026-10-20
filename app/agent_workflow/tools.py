@@ -139,7 +139,7 @@ async def _dispatch(name,args,context,is_owner,emit):
                 if args.get('job_id'):statement=statement.where(KnowledgeDocument.id==uuid.UUID(args['job_id']))
                 rows=[{'id':str(r.id),'title':r.title,'status':r.status,'source_type':r.source_type} for r in db.scalars(statement.limit(args['limit']))]
             else:
-                table={'monitor':'official_monitor_runs_v2','evaluations':'forecast_evaluations_v2','replays':'forecast_jobs_v2'}[kind]
+                table={'monitor':'official_monitor_runs_v2','evaluations':'forecast_evaluations_v2','replays':'forecast_jobs_v2','revisions':'forecast_jobs_v2'}[kind]
                 from sqlalchemy import inspect
                 available={c['name'] for c in inspect(db.bind).get_columns(table)}
                 columns=[n for n in ('id','symbol','status','created_at','started_at','completed_at','evaluated_at','target_date') if n in available]
@@ -149,6 +149,8 @@ async def _dispatch(name,args,context,is_owner,emit):
                     else:return error('symbol_filter_unavailable')
                 if args.get('job_id'):filters+=(' AND ' if filters else ' WHERE ')+"CAST(id AS text)=:job_id"
                 if kind=='replays':filters+=(' AND ' if filters else ' WHERE ')+"time_mode='historical_research'"
+                # "Is the revision done?": the manual revisions of a forecast, newest first.
+                if kind=='revisions':filters+=(' AND ' if filters else ' WHERE ')+"kind='manual_revision'"
                 rows=db.execute(text('SELECT '+','.join(columns)+' FROM '+table+filters+' ORDER BY '+('created_at' if 'created_at' in available else 'id')+' DESC LIMIT :limit'),args).mappings().all()
             if kind=='jobs':
                 from .actions import _status

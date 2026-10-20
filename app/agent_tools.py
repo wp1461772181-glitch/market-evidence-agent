@@ -224,24 +224,41 @@ async def query_stock_prices(symbol: str, limit: int = 5, days: int | None = Non
     rows = await _query("SELECT id, symbol, trading_date, open, high, low, close, volume, source, fetched_at FROM market_prices WHERE symbol=:symbol"+filters+" ORDER BY trading_date DESC LIMIT :limit", {"symbol":symbol,"limit":limit,"lower":str(lower) if lower else None,"upper":str(upper)})
     return {"ok":True,"data":[{k:_json(v) for k,v in r.items()} for r in rows],"source":"market_prices","as_of":_json(rows[0]["fetched_at"]) if rows else None}
 
+def forecast_target(contract):
+    """What a forecast's probabilities are about: the close on one date against an anchor close."""
+    if not isinstance(contract,dict) or not isinstance(contract.get('anchor_close'),(int,float)):return None
+    anchor=float(contract['anchor_close']);threshold=float(contract.get('threshold') or 0)
+    above,below,pct=round(anchor*(1+threshold),2),round(anchor*(1-threshold),2),round(threshold*100,2)
+    end,start=contract.get('target_end_date'),contract.get('anchor_date')
+    return {'anchor_date':start,'anchor_close':round(anchor,2),'threshold_pct':pct,'target_end_date':end,
+            'horizon_sessions':contract.get('horizon_sessions'),'bullish_above':above,'bearish_below':below,
+            'meaning':(f'预测 {end} 的收盘价相对 {start} 收盘价 {round(anchor,2)} 的涨跌：bullish（看多）= 收盘高于 {above}（涨超 {pct:g}%），'
+                       f'bearish（看空）= 低于 {below}（跌超 {pct:g}%），neutral（中性）= 在两者之间。')}
+
 def forecast_snapshot(row):
     """The exact saved forecast projection shared by read tools and citation restore."""
     brief=row.get('research_brief')
     probabilities=next((row.get(k) for k in ('decision_probabilities','joint_probabilities','baseline_probabilities') if row.get(k) not in (None,'null')),None)
-    data={k:_json(v) for k,v in row.items() if k not in ('research_brief','decision_probabilities','joint_probabilities','baseline_probabilities')}
+    data={k:_json(v) for k,v in row.items() if k not in ('research_brief','decision_probabilities','joint_probabilities','baseline_probabilities','target_contract','parent_version_id')}
     data['probabilities']=probabilities
+    data['target']=forecast_target(row.get('target_contract'))
     data['research_brief_summary']=str(brief)[:1200] if brief is not None else None
     return data
 
 @tool(args_schema=SymbolArgs)
 async def query_latest_forecast(symbol: str) -> dict:
     """Read the latest saved research forecast snapshot."""
+    columns="id, root_id, version_no, decision_at, model_status, decision_probabilities, joint_probabilities, baseline_probabilities, research_brief, created_at, target_contract, parent_version_id"
     try:
-        rows = await _query("SELECT id, root_id, version_no, decision_at, model_status, decision_probabilities, joint_probabilities, baseline_probabilities, research_brief, created_at FROM forecast_versions_v2 WHERE symbol=:symbol AND root_id IN (SELECT id FROM forecast_versions_v2 WHERE symbol=:symbol AND root_id=id ORDER BY created_at DESC, id DESC LIMIT 1) ORDER BY version_no DESC, created_at DESC, id DESC LIMIT 1", {"symbol":symbol})
+        rows = await _query("SELECT "+columns+" FROM forecast_versions_v2 WHERE symbol=:symbol AND root_id IN (SELECT id FROM forecast_versions_v2 WHERE symbol=:symbol AND root_id=id ORDER BY created_at DESC, id DESC LIMIT 1) ORDER BY version_no DESC, created_at DESC, id DESC LIMIT 1", {"symbol":symbol})
         if rows:
             row=rows[0]
-            data=forecast_snapshot(row)
-            return {"ok":True,"data":[data],"source":"forecast_versions_v2 workspace current root","as_of":_json(row["created_at"])}
+            data=[forecast_snapshot(row)]
+            if row.get("parent_version_id"):
+                # A revision is read with the version it revised, so "what changed" has both sides.
+                parent=await _query("SELECT "+columns+" FROM forecast_versions_v2 WHERE id=:id AND symbol=:symbol", {"id":row["parent_version_id"],"symbol":symbol})
+                if parent:data.append({**forecast_snapshot(parent[0]),"role":"previous_version"})
+            return {"ok":True,"data":data,"source":"forecast_versions_v2 workspace current root","as_of":_json(row["created_at"])}
         return {"ok":True,"data":[],"source":"forecast_versions_v2 workspace current root","as_of":None}
     except Exception:
         raise

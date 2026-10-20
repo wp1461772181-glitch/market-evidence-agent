@@ -594,7 +594,7 @@
   },
   {
    "id": "W07",
-   "title": "预测：新建 AAPL 预测→确认→问最新预测；修订预测→确认",
+   "title": "预测：新建 AAPL 预测→确认→问最新预测；点名 10-Q 修订→卡片只列窗口内材料并说明 10-Q 为何不在→取消",
    "identity": "owner",
    "steps": [
     {
@@ -665,12 +665,17 @@
     {
      "text": "在苹果最新那份预测上做一次修订，把苹果最新一份 10-Q 作为新增依据。",
      "check": {
-      "card": "write_confirmation",
+      "card": "choose_revision_sources",
       "proposed_include": [
        "revise_forecast"
       ],
       "write_outcome": [
        "proposed"
+      ],
+      "answer_any": [
+       [
+        "勾选"
+       ]
       ],
       "answer_no_codes": true,
       "max_seconds": 300,
@@ -678,23 +683,26 @@
      }
     },
     {
-     "kind": "confirm_card",
+     "kind": "db_check",
+     "label": "the card says why the named 10-Q is not listed",
+     "sql": "select count(*) from agent_consents where status='proposed' and operations::text like '%revise_forecast%' and display->>'alternative' like '%你提到的%10-Q%'",
+     "expect": {
+      "op": "gt",
+      "value": 0
+     }
+    },
+    {
+     "kind": "cancel_card",
      "check": {
       "write_outcome": [
-       "executed"
-      ],
-      "consent_status": [
-       "complete"
+       "cancelled"
       ],
       "answer_any": [
        [
-        "修订",
-        "预测",
-        "任务"
+        "取消"
        ]
       ],
       "answer_no_codes": true,
-      "max_seconds": 300,
       "no_dropped": false
      }
     }

@@ -24,6 +24,7 @@ from .evidence_context import EvidenceContextError, freeze_evidence_context
 from .forecast_evaluation_v2 import JEV_LOG_LOSS_EPSILON
 from .forecast_contract import future_xnys_sessions, latest_completed_xnys_session
 from .forecast_jobs import ForecastJobError, enqueue_job
+from .forecast_revision_candidates import window_category
 from .jev_learning import jev_learning_status
 from .forecast_v2_models import ForecastEvaluationV2, ForecastJobV2, ForecastVersionV2, OfficialMonitorRunV2
 from .market_time import xnys_session_close_at
@@ -531,8 +532,10 @@ def _validate_manual_revision_sources(
         )
         if not event.is_new and not newly_analyzed_after_parent:
             raise V2RequestError("manual revision source is unchanged from the selected forecast and has no new successful analysis")
-        if key not in previous_sources and event.published_at <= parent_cutoff and event.observed_at <= parent_cutoff:
-            raise V2RequestError("manual revision source was not newly available after the selected forecast")
+        # A material the forecast did not use must be published within seven days after it, or within
+        # the thirty days before it and stored only after it: the same window the workspace offers.
+        if key not in previous_sources and window_category(parent_cutoff, event.published_at, event.observed_at) is None:
+            raise V2RequestError("manual revision source is outside the revision window of the selected forecast")
 
     current_event_ids = {key: str(event.id) for key, event in events.items()}
     for existing in matching_refs:

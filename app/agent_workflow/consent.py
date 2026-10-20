@@ -39,6 +39,7 @@ FAILURE_REASONS={
  'revision_source_symbol_mismatch':'这条来源不属于这个预测版本的股票，不能用于修订。',
  'revision_source_unavailable':'这条来源在预测作出时还不可用，不能用于这次修订。',
  'revision_source_unchanged':'这条来源与上次修订相比没有新内容，不需要再修订。',
+ 'revision_source_outside_window':'这份材料不在可修订的时间范围内：只能用预测后 7 天内发布的新材料，或预测前 30 天内发布、预测后才收录的材料。',
  'revision_already_queued':'同一份来源的修订已经在排队或执行中，请等它完成。',
  'revision_rejected':'这次修订没有通过版本或来源校验，操作没有完成。',
  'market_data_unavailable':'行情数据源暂时连不上，或被限流，操作没有完成。',
@@ -113,6 +114,7 @@ def failure_outcome(exc):
      'revision_source_symbol_mismatch':'revision_source_symbol_mismatch',
      'revision_source_unavailable':'revision_source_unavailable',
      'revision_source_unchanged':'revision_source_unchanged',
+     'revision_source_outside_window':'revision_source_outside_window',
      'revision_already_queued':'revision_already_queued','revision_rejected':'revision_rejected',
     }
     if code in known:
@@ -121,11 +123,14 @@ def failure_outcome(exc):
 
 def digest(value):return hashlib.sha256(json.dumps(value,sort_keys=True,ensure_ascii=False,separators=(',',':')).encode()).hexdigest()
 
-def propose(credential,conversation,operations,display,*,question='',now=None):
+def propose(credential,conversation,operations,display,*,question='',now=None,options=None):
     """Mint one card and keep the request that produced it.
 
     A press on the card sends only the button's value, so the turn that executes the write has no
     other way to learn what the user asked: the request travels with the card instead.
+
+    With ``options`` the card lists choices the user ticks (the materials of a forecast revision); the
+    button then sends the capability followed by the ticked values, and only listed values are valid.
     """
     if not owner_credential_matches(credential):raise ConsentError('owner_login_required')
     if not operations or len(operations)>8:raise ConsentError('invalid_write_targets')
@@ -133,9 +138,14 @@ def propose(credential,conversation,operations,display,*,question='',now=None):
     with SessionLocal() as db:
         row=AgentConsent(owner_hash=owner_hash(credential),conversation_id=conversation,capability_hash=digest(token),payload_digest=digest(operations),operations=operations,display=display,expires_at=expires,status='proposed')
         db.add(row);db.commit();identity=str(row.id)
-    return {'id':identity,'reason':'write_confirmation','display':display,'original_question':question,
+    card={'id':identity,'reason':'write_confirmation','display':display,'original_question':question,
         'expires_at':expires.isoformat(),
         'choices':[{'label':'同意','value':'confirm:'+token},{'label':'换个操作','value':'change:'+identity},{'label':'取消','value':'cancel:'+identity}]}
+    if options:
+        card.update(reason='choose_revision_sources',options=options,select={'min':1,'max':len(options)},
+                    question='勾选要用于修订的材料（可多选），然后点「用所选材料修订」。',
+                    choices=[{'label':'用所选材料修订','value':'confirm:'+token},{'label':'取消','value':'cancel:'+identity}])
+    return card
 
 def lookup(credential,conversation,request_id):
     if not owner_credential_matches(credential):raise ConsentError('owner_login_required')

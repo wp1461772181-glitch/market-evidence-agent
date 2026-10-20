@@ -29,7 +29,7 @@ WRITE_ARGUMENTS={
  'ingest_web_source':{'url':'https://example.org/amd'},
  'initialize_prices':{'symbol':'AMD'},'scan_official':{'symbol':'AMD'},
  'start_historical_replay':{'symbol':'AMD','decision_date':'2025-01-02'},
- 'revise_forecast':{'version_id':'11111111-1111-4111-8111-111111111111','source_refs':[{'source_type':'official_filing','source_id':'11111111-1111-4111-8111-111111111111'}]},
+ 'revise_forecast':{'symbol':'AAPL','version_id':'11111111-1111-4111-8111-111111111111'},
  'retry_document_index':{'document_id':'11111111-1111-4111-8111-111111111111'},
  'translate_content':{'kind':'analysis','record_id':'11111111-1111-4111-8111-111111111111'},
  'review_knowledge_candidate':{'candidate_id':'11111111-1111-4111-8111-111111111111','approved':True},

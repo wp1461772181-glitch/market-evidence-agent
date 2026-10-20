@@ -34,7 +34,8 @@ async def _direct_agent_turn(state: AgentWorkflowState, runtime: Runtime[AgentRu
     answer = result["answer"]
     if result.get("pending_request"):
         pending=result["pending_request"]
-        await publish({"event":"clarification","request_id":pending["id"],"reason":pending["reason"],"choices":pending["choices"],"display":pending.get("display"),"question":pending.get("question")})
+        await publish({"event":"clarification","request_id":pending["id"],"reason":pending["reason"],"choices":pending["choices"],"display":pending.get("display"),"question":pending.get("question"),
+                       **({"options":pending["options"],"select":pending.get("select")} if pending.get("options") else {})})
     try:
         get_stream_writer()({"event": "delta", "text": answer})
         get_stream_writer()({"event": "done", "status": result.get("status", "complete"), "reason": result.get("reason"),

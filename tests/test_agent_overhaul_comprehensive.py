@@ -16,7 +16,7 @@ from app.agent_tool_catalog import (
 )
 from app.agent_workflow.direct import execution_facts, execution_fallback, Turn
 from app.agent_workflow.references import assistant_item_catalogue
-from app.agent_workflow.workspace_tools import find_revision_candidates
+from app.forecast_revision_candidates import revision_candidates
 from app.database import Base, SessionLocal, engine
 from app.models import UploadedEvidence, SecFilingInventory
 from app.forecast_v2_models import ForecastVersionV2, ForecastJobV2
@@ -117,8 +117,8 @@ def test_assistant_item_catalogue_supports_bullets():
     assert '谷歌' in items[3]['text']
 
 
-def test_find_revision_candidates_filtering():
-    """Verify the 3-day forward (new material) + 30-day backward (past backfill) rule in find_revision_candidates."""
+def test_revision_candidates_filtering():
+    """The 7-day forward (new material) + 30-day backward (backfill) rule of the shared revision window."""
     test_symbol = 'TREV'
     now = datetime.now(UTC)
     decision_at = now - timedelta(days=10)
@@ -160,10 +160,10 @@ def test_find_revision_candidates_filtering():
 
 
 
-        # 1. New material: pub within [decision_at, decision_at + 3 days]
+        # 1. New material: pub within [decision_at, decision_at + 7 days]
         u1 = UploadedEvidence(
             symbol=test_symbol,
-            title='New material within 3 days',
+            title='New material within 7 days',
             source_url='https://example.com/1',
             published_at=decision_at + timedelta(days=2),
             observed_at=now,
@@ -205,12 +205,12 @@ def test_find_revision_candidates_filtering():
             raw_content=b'test3',
             content_text='test3',
         )
-        # 4. Too late material: pub > decision_at + 3 days -> should NOT appear
+        # 4. Too late material: pub > decision_at + 7 days -> should NOT appear
         u4 = UploadedEvidence(
             symbol=test_symbol,
             title='Too late material',
             source_url='https://example.com/4',
-            published_at=decision_at + timedelta(days=5),
+            published_at=decision_at + timedelta(days=8),
             observed_at=now,
             credibility_stars=4,
             credibility_reason='test',
@@ -224,21 +224,20 @@ def test_find_revision_candidates_filtering():
         db.commit()
 
         try:
-            res = find_revision_candidates(test_symbol, str(version.id), db)
-            assert res['status'] == 'success'
-            titles = [c['title'] for c in res['candidates']]
-            assert 'New material within 3 days' in titles
+            rows = revision_candidates(db, version)
+            titles = [c['title'] for c in rows]
+            assert 'New material within 7 days' in titles
             assert 'Backfilled past material within 30 days' in titles
             assert 'Too old past material' not in titles
             assert 'Too late material' not in titles
 
-            new_mat = next(c for c in res['candidates'] if c['title'] == 'New material within 3 days')
-            assert new_mat['category'] == 'new_material'
-            assert new_mat['badge'] == '新发布材料'
+            new_mat = next(c for c in rows if c['title'] == 'New material within 7 days')
+            assert new_mat['category'] == 'new'
+            assert new_mat['badge'] == '预测后发布的新材料'
 
-            past_mat = next(c for c in res['candidates'] if c['title'] == 'Backfilled past material within 30 days')
-            assert past_mat['category'] == 'past_supplementary'
-            assert past_mat['badge'] == '过往补充材料'
+            past_mat = next(c for c in rows if c['title'] == 'Backfilled past material within 30 days')
+            assert past_mat['category'] == 'backfilled'
+            assert past_mat['badge'] == '预测前发布、预测后才收录的材料'
         finally:
             db.delete(u1)
             db.delete(u2)

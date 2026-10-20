@@ -83,8 +83,12 @@ def _restore_citations(items,credential):
       from .forecast_v2_models import ForecastVersionV2
       from .agent_tools import forecast_snapshot
       source=session.get(ForecastVersionV2,UUID(item.get('source_id','')))
-      payload={key:getattr(source,key) for key in ('id','root_id','version_no','decision_at','model_status','decision_probabilities','joint_probabilities','baseline_probabilities','research_brief','created_at')} if source else {}
-      valid=bool(source and source.symbol==item.get('symbol') and forecast_snapshot(payload)==json.loads(item.get('quote','{}')))
+      payload={key:getattr(source,key) for key in ('id','root_id','version_no','decision_at','model_status','decision_probabilities','joint_probabilities','baseline_probabilities','research_brief','created_at','target_contract')} if source else {}
+      # The cited row also carries the gate's notes and the reader's labels; what must still hold is
+      # every value of the saved projection.
+      quoted=json.loads(item.get('quote','{}'))
+      valid=bool(source and source.symbol==item.get('symbol') and isinstance(quoted,dict)
+                 and all(quoted.get(key)==value for key,value in json.loads(json.dumps(forecast_snapshot(payload),default=str)).items()))
      verified.append(item if valid else {'ordinal':ordinal,'source_type':'unavailable','title':'来源已失效','section':'','truncated':False})
     except (ValueError,TypeError):verified.append({'ordinal':ordinal,'source_type':'unavailable','title':'来源已失效','section':'','truncated':False})
     continue
@@ -395,7 +399,9 @@ async def stream_chat(payload:StreamRequest,request:Request,x_chat_session:str|N
     elif kind=="status":
      yield frame("status",{"status":event["status"],**({"step":event["step"]} if "step" in event else {})})
     elif kind=="clarification":
-     yield frame("clarification",{key:event.get(key) for key in ("request_id","reason","choices","display","question")})
+     card={key:event.get(key) for key in ("request_id","reason","choices","display","question")}
+     if event.get("options"):card.update(options=event["options"],select=event.get("select"))
+     yield frame("clarification",card)
     elif kind=="done":
      terminal=True
      citation_sidecar=event.get("citations",[])
@@ -406,6 +412,8 @@ async def stream_chat(payload:StreamRequest,request:Request,x_chat_session:str|N
       pending=event["pending_request"]
       protocol["clarification"]={"request_id":pending["id"],"reason":pending.get("reason"),
                                  "choices":pending.get("choices") or _legacy_clarification_choices(pending.get("reason")),"display":pending.get("display"),"question":pending.get("question")}
+      # A revision card lists the materials to tick; the restored history shows the same card.
+      if pending.get("options"):protocol["clarification"].update(options=pending["options"],select=pending.get("select"))
      if restored:protocol["citations"]=restored
      if event.get("reason") in {"retrieval_unavailable","zero_evidence","web_page_excerpt_unavailable","missing_source_coverage","publisher_date_unavailable"} or str(event.get("reason","")).startswith(("requested_","weak_")):
       await asyncio.to_thread(_record_low_confidence,payload.message,cid,turn,owner_hash(x_chat_session),event["reason"])
@@ -533,7 +541,7 @@ async def get_messages(conversation_id:str,x_chat_session:str|None=Header(defaul
    if not isinstance(clarification,dict): continue
    pending=[trace for trace in (item.get("tool_trace") or []) if trace.get("status") in {"submitted","running"}]
    if not pending: continue
-   if clarification.get("reason")=="write_confirmation":
+   if clarification.get("reason") in {"write_confirmation","choose_revision_sources"}:
     status=consent_state(clarification.get("request_id"))
    else:
     # An ask/clarify card is answered by the next message in the conversation.

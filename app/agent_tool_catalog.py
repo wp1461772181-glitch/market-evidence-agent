@@ -27,7 +27,7 @@ class KnowledgeArgs(Args):
     limit:int=Field(default=5,ge=1,le=10)
 class QueueArgs(SymbolArgs):pass
 class StatusArgs(Args):
-    kind:Literal['jobs','monitor','evaluations','replays','knowledge']
+    kind:Literal['jobs','monitor','evaluations','replays','revisions','knowledge']
     symbol:str|None=Field(default=None,pattern=r'^[A-Za-z]{1,5}(?:[.-][A-Za-z]{1,2})?$')
     job_id:str|None=Field(default=None,pattern=r'^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$')
     limit:int=Field(default=5,ge=1,le=20)
@@ -77,9 +77,12 @@ class WorkspaceArgs(Args):
     source_type:Literal['official_filing','uploaded_media','faq','upload','sec','analysis']='official_filing'
 class ReplayArgs(SymbolArgs):
     decision_date:str=Field(pattern=r'^\d{4}-\d{2}-\d{2}$')
-class RevisionArgs(Args):
-    version_id:str=Field(pattern=r'^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$')
-    source_refs:list[SourceRef]=Field(min_length=1,max_length=10)
+class RevisionArgs(SymbolArgs):
+    # No sources to use: the server lists what the revision window allows and the user ticks them on a
+    # card.  The materials the user named only get an explanation when the window excludes them.
+    version_id:str|None=Field(default=None,pattern=r'^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$')
+    mentioned_sources:list[SourceRef]=Field(default_factory=list,max_length=5,
+        description='Saved materials the user explicitly named for this revision (returned by a read in this turn). Only used to tell the user whether each can be used; never ticks or chooses anything.')
 class DocumentArgs(Args):
     document_id:str=Field(pattern=r'^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$')
 class TranslateArgs(Args):
@@ -124,13 +127,13 @@ EXTRA=(
  ('calculate',CalculateArgs,'read','Calculate derived figures from cited source values. Only a..z, + - * / parentheses, the constants 0, 1, 100 and powers of ten for unit conversion (1000, 10000, 1000000, 100000000, 1000000000, 1000000000000). Inputs must occur in the chosen evidence. Formula and parents are recorded; derived results are not official originals.'),
  ('read_workspace',WorkspaceArgs,'read','Read a saved forecast/version timeline, analysis history/original, learning status, knowledge chunks/candidates, importable catalogue or revision candidates. Private records remain owner-scoped.'),
  ('start_historical_replay',ReplayArgs,'costly','Propose a retrospective replay for a specific past decision date; this is not a forward prediction. Confirmation required.'),
- ('revise_forecast',RevisionArgs,'costly','Propose a manual revision of an exact saved forecast version with exact saved source references. Confirmation required.'),
+ ('revise_forecast',RevisionArgs,'costly','Revise the saved forecast of a symbol (its latest version, or version_id). Call it directly: the server lists the saved materials the revision rule allows (published within 7 days after that forecast, or within the 30 days before it and stored after it) and the user ticks the ones to use on a card. You never choose the materials; if the user named some, pass them as mentioned_sources so the user hears whether they qualify. When none qualify, or the forecast has expired, the user is told why. Confirmation required.'),
  ('retry_document_index',DocumentArgs,'costly','Propose retrying embeddings for an exact failed knowledge document. Confirmation required.'),
  ('translate_content',TranslateArgs,'costly','Propose paid English translation of one saved analysis or forecast brief. Confirmation required.'),
  ('review_knowledge_candidate',CandidateArgs,'costly','Propose approving or rejecting one saved knowledge candidate with the named reviewer. Confirmation required.'),
  ('import_sources',ImportArgs,'costly','Propose importing exact FAQ/upload/SEC/analysis IDs from a returned catalogue. Confirmation required.'),
  ('search_knowledge',KnowledgeArgs,'read','Search saved knowledge and filings before public research. Empty results do not stop web research.'),
- ('query_system_status',StatusArgs,'read','Read existing jobs, monitor, evaluation, replay or indexing status. Never starts work.'),
+ ('query_system_status',StatusArgs,'read','Read existing jobs, monitor, evaluation, replay, forecast revision (kind revisions: queued, running or done) or indexing status. Never starts work.'),
  ('query_research_queue',Empty,'read','Read the owner queue, or ask the guest browser to display its local queue.'),
  ('add_to_research_queue',QueueArgs,'reversible','Add a requested symbol: owner database requires server confirmation; guest browser-local queue needs no server write.'),
  ('remove_from_research_queue',QueueArgs,'reversible','Remove a requested symbol, keeping materials and history. Owner database requires server confirmation; guest browser-local only.'),

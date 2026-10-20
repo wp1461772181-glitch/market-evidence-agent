@@ -1,0 +1,23 @@
+{
+ "suite": "production release smoke (owner): forecast reading and revision requests that write nothing",
+ "notes": "Runs against the product with --production (read-only audit, no db_check). On 2026-10-20 no forecast in the product has material inside its revision window, so each request must end with the reason and no card; nothing is written.",
+ "cases": [
+  {
+   "id": "P04",
+   "title": "谷歌：问预测（说清概率指什么、新旧两版）→ 原话要求修正快照 → 说明没有可用材料或追问是哪份快照",
+   "identity": "owner",
+   "steps": [
+    {"text": "当前有谷歌股价的预测？", "check": {"tools_include": ["query_latest_forecast"], "answer_any": [["343.92", "350.8", "337.04", "2%"]], "answer_excludes": ["不含任何目标价"], "answer_no_codes": true, "no_dropped": false}},
+    {"text": "那我要修正那个快照，帮我修正这个快照", "check": {"answer_any": [["没有符合条件的材料", "指哪", "哪一份", "哪个"]], "answer_excludes": ["操作未执行"], "tools_exclude": ["query_sec_filings"], "answer_no_codes": true, "no_dropped": false}}
+   ]
+  },
+  {
+   "id": "P05",
+   "title": "苹果：要求修订 → 窗口内没有材料，说明规则和最近材料为什么不算",
+   "identity": "owner",
+   "steps": [
+    {"text": "帮我修订一下苹果的预测。", "check": {"card": false, "write_outcome": ["refused:no_candidates"], "answer_any": [["没有符合条件的材料"], ["7 天"], ["30 天"]], "answer_excludes": ["操作未执行"], "answer_no_codes": true, "no_dropped": false}}
+   ]
+  }
+ ]
+}

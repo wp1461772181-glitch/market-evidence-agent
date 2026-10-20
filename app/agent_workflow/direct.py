@@ -162,6 +162,7 @@ FAILURE_NEXT_STEPS={
  'revision_source_symbol_mismatch':'请选择与预测同一只股票的来源，或改用与该来源匹配的预测版本。',
  'revision_source_unavailable':'请换一条在预测之后新增或重新分析过的来源。',
  'revision_source_unchanged':'请换一条有新内容的来源，或等待新的申报或分析。',
+ 'revision_source_outside_window':'请重新让我修订，我只会列出时间范围内的材料。',
  'revision_already_queued':'请稍后查看预测状态，不要重复提交。',
  'revision_rejected':'请核对预测版本和来源后重试。',
  'market_data_unavailable':'请稍后再试；仍失败时先确认本机能访问 Yahoo Finance。',
@@ -254,6 +255,10 @@ WRITE_TITLES={
  'review_filing':'申报相关性核验',
 }
 NOTHING_TO_DO={'already_reviewed','duplicate_source'}
+# Cards whose button runs a write: the confirmation card, and the revision card on which the user
+# ticks the materials (its button carries the same server-minted capability).
+WRITE_CARD_REASONS={'write_confirmation','choose_revision_sources'}
+REVISION_CARD_LIMIT=10
 TYPED_CONSENT=re.compile(r'(?:同意|确认|确定|可以|好的?|行|执行吧?|批准|继续|ok(?:ay)?|yes)[。.!！~～]?',re.I)
 JOB_STATUS_WORDS={'queued':'排队中','pending':'排队中','submitted':'已提交','running':'进行中','executing':'进行中',
  'completed':'已完成','complete':'已完成','succeeded':'已完成','failed':'失败','error':'失败','cancelled':'已取消',
@@ -290,6 +295,49 @@ EXECUTION_FACT_KEYS=('action','status','ok','error_code','title','filename','sou
                      'indexed','queued_chunks','job_id','reason','message','scanned')
 
 
+def ticked_positions(value: str,card: dict) -> list[int]:
+    """The options the user ticked on a revision card: distinct, on the card, within its limits."""
+    options={str(o.get('value')) for o in card.get('options') or [] if isinstance(o,dict)}
+    limits=card.get('select') or {}
+    picks=value.split('.') if value else []
+    if not picks or len(set(picks))!=len(picks) or not set(picks)<=options:raise ValueError('confirmation_parameter_mismatch')
+    if not int(limits.get('min',1))<=len(picks)<=int(limits.get('max',REVISION_CARD_LIMIT)):raise ValueError('confirmation_parameter_mismatch')
+    return [int(p) for p in picks]
+
+
+def material_words(material: dict) -> str:
+    """A material as the user knows it: its title, what it is and when it was published."""
+    title=material.get('title') or '这份材料'
+    detail='，'.join(x for x in (material.get('kind'),(str(material.get('published_at') or '')[:10]+' 发布') if material.get('published_at') else '') if x)
+    return f'《{title}》'+(f'（{detail}）' if detail else '')
+
+
+def revision_notice(plan: dict) -> str:
+    """Why a forecast cannot be revised now, in the user's terms, with the next step to take."""
+    symbol=plan.get('symbol') or '这只股票'
+    status=plan.get('status')
+    if status=='no_forecast':
+        return f'{symbol} 还没有已保存的预测，所以没有可以修订的对象。可以让我先生成一个预测。'
+    if status=='version_not_found':
+        return f'没有找到要修订的 {symbol} 预测版本，可能已经不存在。可以先问我「{symbol} 现在的预测是什么」，再说要修订哪一版。'
+    version=f'v{plan.get("version_no")}';decided=str(plan.get('decision_at',''))[:10]
+    if status in {'target_expired','version_not_revisable'}:
+        target=plan.get('target_end_date')
+        when=f'目标日 {target} 已经过了' if status=='target_expired' and target else '目标设置无效'
+        return f'{symbol} 这份预测（{version}，{decided} 作出）的{when}，不能再修订。可以查看它的评估结果，或让我生成一个新预测。'
+    start=str(plan.get('window_start',''))[:10];end=str(plan.get('window_end',''))[:10]
+    named=[f'- 你提到的{material_words(m)}：{m["reason_text"]}。' for m in plan.get('mentioned') or [] if not m.get('category')]
+    named_ids={m.get('source_id') for m in plan.get('mentioned') or []}
+    recent=[f'- {material_words(m)}：{m["reason_text"]}。' for m in plan.get('excluded') or [] if m.get('source_id') not in named_ids]
+    why=('\n\n'+'\n'.join(named) if named else '')+('\n\n资料库里最近的材料为什么不算：\n'+'\n'.join(recent) if recent else '')
+    return (f'{symbol} 当前的预测是 {version}（{decided} 作出）。能用来修订它的材料有两类：\n'
+            f'- 预测后 7 天内（{decided} 至 {end}）发布的新材料；\n'
+            f'- 预测前 30 天内（{start} 起）发布、但在这次预测之后才收录进资料库的材料。\n'
+            '已经用在这次预测里、内容和核验状态都没有变化的材料不算。资料库里目前没有符合条件的材料，所以现在还不能修订。'
+            +why+'\n\n'
+            '有了新材料（例如保存一篇新闻、上传材料或拉取新的 SEC 申报）后再来修订；如果想按最新的行情和资料重新预测，可以让我生成一个新预测。')
+
+
 def execution_facts(value: dict,operations: list|None=None) -> list[dict]:
     """The facts of a confirmed execution, flattened, with no prose of any kind.
 
@@ -306,8 +354,10 @@ def execution_facts(value: dict,operations: list|None=None) -> list[dict]:
         arguments=operation.get('arguments') if isinstance(operation.get('arguments'),dict) else {}
         known={k:v for k,v in {'action':operation.get('name'),'symbol':arguments.get('symbol')}.items() if v}
         outcome=item.get('outcome') if isinstance(item.get('outcome'),dict) else {}
+        data=item.get('data')
+        # A handler that reports one object (a queued job) is one row, not "no status, so done".
         nested=outcome.get('data') if isinstance(outcome.get('data'),list) else (
-            item.get('data') if isinstance(item.get('data'),list) else [])
+            data if isinstance(data,list) else [data] if isinstance(data,dict) else [])
         for entry in nested or [{}]:
             source=entry if isinstance(entry,dict) else {}
             merged={**known,**item,**outcome,**source}
@@ -385,6 +435,7 @@ class Turn:
         self.audit={'tool_calls':0,'distinct_successful_calls':0,'retry_count':0,'decision_steps':0,'model_calls':0,'token_usage':0,'usage_mode':'actual','nodes':[],'stop_reason':None,'stages':{}}
         self.reference_value=None;self.verified_referents=[]
         self.granted_actions=set();self.write_reasons={}
+        self.revision_notice=None;self.revision_picks=[]
         self.suggestion_used=False
         self.new_sets=[];self.invalid_calls=set();self.completed=set();self.protocol=[];self.final_protocol={};self.active_call_id=None;self.last_accepted=None
         # An identical call is replayed from here instead of ending the turn: the model that
@@ -917,7 +968,7 @@ class Turn:
                 if clean_val not in trusted and clean_val not in normalized(trusted):
                     raise ValueError('scope_not_grounded')
         if any(identity not in trusted for identity in args.get('source_ids',[])):raise ValueError('scope_not_grounded')
-        for ref in args.get('source_refs',[]):
+        for ref in [*args.get('source_refs',[]),*args.get('mentioned_sources',[])]:
             if not isinstance(ref,dict) or any(value not in trusted for value in SCOPE_ID.findall(json.dumps(ref))):raise ValueError('scope_not_grounded')
         # A tool cannot silently broaden the entity fixed by the classifier.
         named=[str(v) for v in (self.scope.get('symbols') or []) if v]
@@ -1087,6 +1138,7 @@ class Turn:
         if not self.owner:return self.write_error(name,'owner_login_required')
         if name in self.completed_writes:return tools.error('already_executed')
         if not self.write_allowed(name):return self.write_error(name,'write_negated' if name in self.granted_actions else 'write_tool_not_granted')
+        if name=='revise_forecast':return await self.propose_revision(args)
         operation={'name':name,'arguments':copy.deepcopy(args)}
         title=WRITE_TITLES.get(name,name)
         if name=='scan_official' and args.get('days'):title=f'回补 {args["days"]} 天官方申报'
@@ -1131,6 +1183,51 @@ class Turn:
         self.proposals.append(([operation],display))
         self.audit['write_outcome']='proposed'
         return {'ok':True,'data':[{'status':'awaiting_confirmation','title':display.get('title')}]}
+
+    async def propose_revision(self,args):
+        """Offer the materials the revision window allows on a card the user ticks.
+
+        The model names only the forecast; the server lists the materials, so it cannot pick a source
+        the user did not choose.  With nothing to offer, the turn ends with the reason instead.
+        """
+        if self.proposals or self.pending:return tools.error('revision_needs_its_own_card')
+        from .workspace_tools import revision_plan
+        plan=await asyncio.to_thread(revision_plan,args.get('symbol') or self.scope.get('symbol') or '',args.get('version_id'),
+                                     self.context,args.get('mentioned_sources') or [])
+        if plan['status']!='ready':
+            # The notice is the whole answer: why there is nothing to revise and what to do instead.
+            self.revision_notice=revision_notice(plan)
+            self.write_reasons['revise_forecast']=plan['status']
+            return {'ok':True,'data':[{'status':plan['status'],'note':'The server tells the user why; do not call again.'}]}
+        shown=plan['candidates'][:REVISION_CARD_LIMIT]
+        operation={'name':'revise_forecast','arguments':{'symbol':plan['symbol'],'version_id':plan['version_id']},
+                   'revision':{k:plan[k] for k in ('version_no','decision_at','window_start','window_end')},
+                   'candidates':[{k:c[k] for k in ('source_type','source_id','title','kind','published_at','category')} for c in shown]}
+        decided=plan['decision_at'][:10]
+        display={'title':f'修正 {plan["symbol"]} 的预测（v{plan["version_no"]}，{decided} 作出）',
+                 'targets':[{'symbol':plan['symbol'],'decision_date':decided}],
+                 'alternative':(f'可选材料：预测后 7 天内（至 {plan["window_end"][:10]}）发布的新材料，或预测前 30 天内'
+                                f'（{plan["window_start"][:10]} 起）发布、预测后才收录的材料。'
+                                +(f'共 {len(plan["candidates"])} 份，这里列出最新的 {len(shown)} 份。' if len(plan['candidates'])>len(shown) else '')
+                                +'勾选后点「用所选材料修订」：会用这些材料重新计算这份预测的概率，生成新版本，旧版本保留。'
+                                +''.join(f'\n你提到的{material_words(m)}不在列表里：{m["reason_text"]}。' for m in plan.get('mentioned') or [] if not m.get('category')))}
+        options=[{'value':str(index),'label':c['title'],'detail':f"{c['kind']} · {c['published_at'][:10]} 发布 · {c['badge']}"}
+                 for index,c in enumerate(shown,1)]
+        self.pending=await asyncio.to_thread(consent.propose,self.context.identity_credential,self.context.conversation_id,
+                                             [operation],display,question=self.request_words(),options=options)
+        self.audit['write_outcome']='proposed'
+        return {'ok':True,'data':[{'status':'awaiting_selection','candidates':len(shown)}]}
+
+    def revision_submitted(self,operation):
+        """The report of a submitted revision: which materials, which version, and how to get the result."""
+        meta=operation.get('revision') or {};symbol=operation['arguments'].get('symbol') or ''
+        chosen=[operation['candidates'][p-1] for p in self.revision_picks]
+        version=f'v{meta.get("version_no")}'
+        lines=[f'- {c["title"]}（{c["kind"]}，{c["published_at"][:10]} 发布）' for c in chosen]
+        return (f'已提交修订：用你选的 {len(chosen)} 份材料重新计算 {symbol} 预测（{version}，{str(meta.get("decision_at",""))[:10]} 作出）的概率：\n'
+                +'\n'.join(lines)+'\n\n'
+                f'修订在后台计算，通常一两分钟完成，结果会生成新版本，{version} 保留不变。'
+                f'稍后问我「修订好了吗」，我会读出新版本的概率，并和 {version} 对比。')
 
     async def request_action(self,args):
         if not self.owner:return tools.error('owner_login_required')
@@ -1182,6 +1279,12 @@ class Turn:
         return {'ok':outcome.get('ok',False),'confirmation':self.pending,'outcome':outcome}
 
     def execute_approved_operation(self,operation,key):
+        if operation['name']=='revise_forecast' and operation.get('candidates') is not None:
+            # The card listed the candidates; the press says which of them the user ticked.
+            chosen=[operation['candidates'][p-1] for p in self.revision_picks]
+            if not chosen:raise ValueError('confirmation_parameter_mismatch')
+            operation={**operation,'arguments':{'version_id':operation['arguments']['version_id'],
+                       'source_refs':[{'source_type':c['source_type'],'source_id':c['source_id']} for c in chosen]}}
         if operation.get('grant_only'):
             return asyncio.run(self.prepare_approved_sec(operation) if operation['name'] in {'fetch_sec','refresh_sec'} else self.prepare_approved_web(operation))
         if definitions()[operation['name']].level=='reversible':return asyncio.run(tools.execute_reversible(operation,key,self.context,emit=self.emit))
@@ -1369,15 +1472,18 @@ class Turn:
     async def consent_reply(self):
         pending=self.state.get('pending_request');request_id=self.state.get('requested_pending_id')
         if not request_id:
-            if pending and pending.get('reason')=='write_confirmation' and TYPED_CONSENT.fullmatch(self.original.strip()):
+            if pending and pending.get('reason') in WRITE_CARD_REASONS and TYPED_CONSENT.fullmatch(self.original.strip()):
                 # Only the card's button carries the server-minted capability, so typed words never run
                 # a write (page text could be typed the same way).  Saying so beats proposing the card again.
                 self.pending=pending;self.audit['write_outcome']='typed_consent'
+                if pending.get('reason')=='choose_revision_sources':
+                    return self.finish('要修订，请在卡片上勾选要用的材料，再点「用所选材料修订」。打字回复不会执行：只有卡片按钮能确认，'
+                                       '这样网页内容或误输入都不能替你确认。',status='waiting_for_input',generated=True)
                 return self.finish('要执行这项操作，请点确认卡上的「同意」按钮。打字回复不会执行写操作：只有卡片按钮能确认，'
                                    '这样网页内容或误输入都不能替你确认。',status='waiting_for_input',generated=True)
             return None
         if not pending or pending.get('id')!=request_id:return await self.pressed_another_card(request_id,pending)
-        if pending.get('reason')!='write_confirmation':
+        if pending.get('reason') not in WRITE_CARD_REASONS:
             from .web_sources import timestamp
             expires=timestamp(pending.get('expires_at'))
             if not expires or expires<=datetime.now(UTC):raise ValueError('pending_request_expired')
@@ -1399,7 +1505,10 @@ class Turn:
             chosen=next((c['value'] for c in pending.get('choices',[]) if c.get('value','').startswith('confirm:')),None)
             if not chosen:raise ValueError('confirmation_required')
             token=chosen.split(':',1)[1]
-        elif self.original.startswith('confirm:'):token=self.original.split(':',1)[1]
+        elif self.original.startswith('confirm:'):
+            token,_,ticked=self.original.split(':',1)[1].partition(':')
+            if pending.get('reason')=='choose_revision_sources':self.revision_picks=ticked_positions(ticked,pending)
+            elif ticked:raise ValueError('confirmation_parameter_mismatch')
         else:raise ValueError('confirmation_required')
         try:
             value=await asyncio.to_thread(consent.execute,self.context.identity_credential,self.context.conversation_id,token,saved['operations'],self.execute_approved_operation)
@@ -1422,6 +1531,10 @@ class Turn:
         if not value.get('ok'):
             return self.confirmed_failure(value,saved)
         self.audit['write_outcome']='executed'
+        operations=[op for op in saved.get('operations') or [] if isinstance(op,dict)]
+        if len(operations)==1 and operations[0].get('name')=='revise_forecast' and operations[0].get('candidates') is not None:
+            self.audit['revision_sources']=len(self.revision_picks)
+            return self.finish(self.revision_submitted(operations[0]),generated=True)
         executed_names={op.get('name') for op in saved.get('operations') or [] if isinstance(op,dict)}
         executed_rows = []
         for it in execution_rows(value):
@@ -1621,7 +1734,8 @@ class Turn:
             next_step=hints.get(code,'如需执行，请在确认卡上点击确认；没有出现卡片时，请直接说明要执行的操作和目标。') if self.owner else '请由所有者登录后通过系统确认卡执行。'
             noted=any(op in answer for op in ('操作未执行','未执行','没有执行','请确认','确认卡','卡片','可在卡片上','需要确认','无法执行','仅所有者','只有所有者'))
             # The code stays in audit.write_outcome; the user gets words, never internal vocabulary.
-            if not noted:answer+='\n操作未执行：'+REFUSAL_WORDS.get(code,'这项操作没有执行')+'。下一步：'+next_step
+            # A revision with nothing to offer already said why and what to do next.
+            if not noted and not self.revision_notice:answer+='\n操作未执行：'+REFUSAL_WORDS.get(code,'这项操作没有执行')+'。下一步：'+next_step
         self.audit.update(stop_reason=reason,elapsed_ms=round((time.monotonic()-self.started)*1000))
         return {'answer':answer[:30000],'citations':self.citations,'status':status,'reason':reason,'route':self.route,
             'audit':self.audit,'final_protocol':self.final_protocol,'pending_request':self.pending,'result_sets':self.sets,'previous_category':self.route,'previous_scope':self.scope}
@@ -1849,6 +1963,8 @@ class Turn:
                     if safe_result is None:safe_result=tools.error(self.feedback[-1].get('error_code','zero_evidence') if self.feedback else 'zero_evidence')
                     from ..agent_chat_stream import bounded_tool_result
                     self.protocol.append({'role':'tool','tool_call_id':call['id'],'content':json.dumps(bounded_tool_result(safe_result),ensure_ascii=False,default=str)})
+                if self.revision_notice and not self.pending:
+                    return self.finish(self.revision_notice,status='succeeded',generated=True)
                 if self.pending:
                     description='请核对确认卡中的操作、来源和日期，确认后执行。' if self.pending['reason']=='write_confirmation' else self.pending['question']
                     display=self.pending.get('display',{})
