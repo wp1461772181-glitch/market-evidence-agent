@@ -41,6 +41,7 @@ class DeepSeekEventProvider:
         model: str | None = None,
         api_key: str | None = None,
         client: Any | None = None,
+        max_tokens: int = 4096,
     ) -> None:
         if client is None:
             if api_key is None:
@@ -53,6 +54,7 @@ class DeepSeekEventProvider:
         if not self.model.strip():
             raise EventProviderError("DEEPSEEK_MODEL must not be empty")
         self._client = client
+        self._max_tokens = max_tokens
 
     @staticmethod
     def _load_project_env() -> None:
@@ -69,7 +71,7 @@ class DeepSeekEventProvider:
         return OpenAI(
             api_key=api_key,
             base_url=DEEPSEEK_BASE_URL,
-            timeout=60.0,
+            timeout=120.0,
             max_retries=0,
         )
 
@@ -85,7 +87,7 @@ class DeepSeekEventProvider:
                 response_format={"type": "json_object"},
                 extra_body={"thinking": {"type": "disabled"}},
                 temperature=0,
-                max_tokens=4096,
+                max_tokens=self._max_tokens,
             )
         except Exception as exc:  # The SDK exception may contain request details; do not expose it.
             status_code = getattr(exc, "status_code", None)
@@ -112,9 +114,9 @@ class DeepSeekEventProvider:
         )
 
 
-def create_deepseek_provider_from_env(*, model: str | None = None) -> DeepSeekEventProvider:
+def create_deepseek_provider_from_env(*, model: str | None = None, max_tokens: int = 4096) -> DeepSeekEventProvider:
     """Build a live provider only after the caller has exhausted cache lookup."""
-    return DeepSeekEventProvider(model=model)
+    return DeepSeekEventProvider(model=model, max_tokens=max_tokens)
 
 
 def configured_deepseek_model(model: str | None = None) -> str:

@@ -270,17 +270,58 @@ export async function getMaterialLibrary(
   return requestJson<MaterialLibraryResponse>(`/api/v3/materials?${params}`, { signal: options.signal });
 }
 
+export type MaterialAnalysisModelOverride = {
+  provider: AgentChatProvider;
+  base_url?: string;
+  model: string;
+  api_key: string;
+};
+export type MaterialAnalysisSettings = {
+  source: "environment" | "settings";
+  provider: AgentChatProvider;
+  base_url: string | null;
+  model: string;
+  has_api_key: boolean;
+  api_key_last4: string | null;
+};
+
 export async function createMaterialAnalysisJob(
   sourceType: MaterialSourceType,
   sourceId: string,
   force = false,
+  model?: MaterialAnalysisModelOverride,
 ): Promise<MaterialAnalysisJob> {
   const idempotencyKey = newIdempotencyKey();
+  const body = {
+    idempotency_key: idempotencyKey,
+    force,
+    ...(model ? { provider: model.provider, base_url: model.base_url, model: model.model, api_key: model.api_key } : {}),
+  };
   return requestJson<MaterialAnalysisJob>(`/api/v3/materials/${sourceType}/${encodeURIComponent(sourceId)}/analysis-jobs`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
-    body: JSON.stringify({ idempotency_key: idempotencyKey, force }),
+    body: JSON.stringify(body),
   });
+}
+
+export async function getMaterialAnalysisSettings(signal?: AbortSignal): Promise<MaterialAnalysisSettings> {
+  return requestJson<MaterialAnalysisSettings>("/api/v3/materials/analysis-settings", { signal });
+}
+
+export async function saveMaterialAnalysisSettings(
+  settings: { provider: AgentChatProvider; base_url?: string; model: string; api_key?: string },
+  signal?: AbortSignal,
+): Promise<MaterialAnalysisSettings> {
+  return requestJson<MaterialAnalysisSettings>("/api/v3/materials/analysis-settings", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(settings),
+    signal,
+  });
+}
+
+export async function resetMaterialAnalysisSettings(signal?: AbortSignal): Promise<MaterialAnalysisSettings> {
+  return requestJson<MaterialAnalysisSettings>("/api/v3/materials/analysis-settings", { method: "DELETE", signal });
 }
 
 export async function getMaterialAnalysisJob(jobId: string, signal?: AbortSignal): Promise<MaterialAnalysisJob> {
@@ -350,7 +391,7 @@ export type V2RevisionCandidate = {
   kind: string;
   published_at: string;
   observed_at: string;
-  category: "new" | "backfilled" | "updated" | "reanalyzed";
+  category: "new" | "backfilled" | "preexisting" | "updated" | "reanalyzed";
   badge: string | null;
 };
 

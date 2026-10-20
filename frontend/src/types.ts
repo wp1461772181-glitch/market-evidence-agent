@@ -123,6 +123,24 @@ export type MaterialAnalysisJob = {
   created_at?: string;
   completed_at?: string | null;
 };
+export type MaterialCitationMatchKind = "exact" | "normalized" | "fuzzy" | "unverified";
+export type MaterialCitation = {
+  quote: string;
+  start_char: number | null;
+  end_char: number | null;
+  match_kind?: MaterialCitationMatchKind;
+  similarity?: number | null;
+  original_quote?: string | null;
+};
+export type MaterialCitationVerification = {
+  total: number;
+  verified: number;
+  unverified: number;
+  exact: number;
+  normalized: number;
+  fuzzy: number;
+  verified_ratio: number;
+};
 export type MaterialAnalysisVersion = {
   analysis_id: string;
   source_type: MaterialSourceType;
@@ -130,16 +148,18 @@ export type MaterialAnalysisVersion = {
   evidence_version_id: string;
   version_no: number;
   previous_version_id: string | null;
+  requested_model?: string;
   actual_model: string;
   payload: {
     summary: string;
-    facts: Array<{ id: string; statement: string; citations: Array<{ quote: string; start_char: number; end_char: number }> }>;
-    supporting: Array<{ id: string; statement: string; rationale: string; fact_ids: string[]; citations: Array<{ quote: string; start_char: number; end_char: number }> }>;
-    counter: Array<{ id: string; statement: string; rationale: string; fact_ids: string[]; citations: Array<{ quote: string; start_char: number; end_char: number }> }>;
-    uncertainties: Array<{ id: string; statement: string; reason: string; citations: Array<{ quote: string; start_char: number; end_char: number }> }>;
-    key_numbers: Array<{ name: string; value_text: string; period: string | null; citations: Array<{ quote: string; start_char: number; end_char: number }> }>;
+    facts: Array<{ id: string; statement: string; citations: MaterialCitation[] }>;
+    supporting: Array<{ id: string; statement: string; rationale: string; fact_ids: string[]; citations: MaterialCitation[] }>;
+    counter: Array<{ id: string; statement: string; rationale: string; fact_ids: string[]; citations: MaterialCitation[] }>;
+    uncertainties: Array<{ id: string; statement: string; reason: string; citations: MaterialCitation[] }>;
+    key_numbers: Array<{ name: string; value_text: string; period: string | null; citations: MaterialCitation[] }>;
   };
   source_manifest: Record<string, unknown>;
+  citation_verification?: MaterialCitationVerification | null;
   created_at: string;
   frozen_text?: string | null;
   source_snapshot?: Record<string, unknown>;

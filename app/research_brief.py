@@ -307,6 +307,34 @@ def validate_research_brief(value: dict[str, Any] | ResearchBrief) -> ResearchBr
     return brief
 
 
+def _material_key_number(item) -> MaterialKeyNumber | None:
+    """Keep only citations that still point at a concrete span of the source.
+
+    An unverified citation has no character coordinates, so it cannot be
+    represented as a MaterialQuoteReference; dropping it is safer than
+    fabricating a span.  A key number with no verifiable quote is omitted.
+    """
+    citations = [
+        MaterialQuoteReference(
+            quote=citation.quote,
+            start_char=citation.start_char,
+            end_char=citation.end_char,
+        )
+        for citation in item.citations
+        if citation.match_kind != "unverified"
+        and citation.start_char is not None
+        and citation.end_char is not None
+    ]
+    if not citations:
+        return None
+    return MaterialKeyNumber(
+        name=item.name,
+        value_text=item.value_text,
+        period=item.period,
+        citations=citations,
+    )
+
+
 def _select_analyses(analyses, *, symbol, cutoff, parent, explicit_keys, time_mode="observed"):
     if not isinstance(analyses, list):
         raise ResearchBriefError("analyses must be a list", code="invalid_analyses")
@@ -400,13 +428,8 @@ def _select_analyses(analyses, *, symbol, cutoff, parent, explicit_keys, time_mo
             coverage=_limit_text(manifest.get("coverage"), 160), selection_reason=reason,
             explicitly_selected=explicit,
             analysis_summary=payload.summary,
-            key_numbers=[MaterialKeyNumber(
-                name=item.name,
-                value_text=item.value_text,
-                period=item.period,
-                citations=[MaterialQuoteReference.model_validate(citation.model_dump())
-                           for citation in item.citations],
-            ) for item in payload.key_numbers],
+            key_numbers=[converted for item in payload.key_numbers
+                         if (converted := _material_key_number(item)) is not None],
         )
         valid.append({"analysis_id": analysis_id, "source_type": source_type, "source_id": source_id,
                       "published_at": published_at, "observed_at": observed_at, "new": reason != "background",

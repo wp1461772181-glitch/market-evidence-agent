@@ -81,7 +81,12 @@ def test_standalone_migration_command_registers_v2_fk_and_applies_twice_in_dispo
         check_before = subprocess.run([str(python), str(script), "--check"], env=environment,
                                       capture_output=True, text=True, check=False)
         assert check_before.returncode == 0, check_before.stderr
-        assert json.loads(check_before.stdout)["missing"] == ["material_analysis_jobs", "material_analysis_versions"]
+        assert json.loads(check_before.stdout)["missing"] == [
+            "material_analysis_jobs",
+            "material_analysis_versions",
+            "material_analysis_job_model_configs",
+            "material_analysis_settings",
+        ]
         for _ in range(2):
             applied = subprocess.run([str(python), str(script), "--apply"], env=environment,
                                      capture_output=True, text=True, check=False)

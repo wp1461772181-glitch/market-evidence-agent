@@ -9,7 +9,7 @@ import re
 import unicodedata
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 from sqlalchemy import inspect
 from sqlalchemy.orm import Session
 
@@ -17,13 +17,17 @@ from .database import SessionLocal
 from .material_analysis import (
     MaterialAnalysisError,
     analysis_history,
+    analysis_settings_summary,
+    clear_analysis_settings,
     get_job,
     get_material_download,
     get_material_analysis,
     get_material_original,
     list_materials,
     request_material_analysis,
+    save_analysis_settings,
 )
+from .model_providers import PROVIDER_CATALOG
 
 
 router = APIRouter()
@@ -33,6 +37,33 @@ class AnalysisJobRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     idempotency_key: str = Field(min_length=1, max_length=128)
     force: bool = False
+    provider: str | None = Field(default=None, max_length=32)
+    base_url: str | None = Field(default=None, max_length=2048)
+    model: str | None = Field(default=None, max_length=160)
+    api_key: SecretStr | None = Field(default=None, max_length=2048)
+
+    @model_validator(mode="after")
+    def _check_model_override(self):
+        supplied = (self.provider, self.base_url, self.model, self.api_key)
+        if any(value is not None for value in supplied):
+            if not self.provider or not self.model or self.api_key is None:
+                raise ValueError("provider, model, and api_key are required together")
+            if self.provider not in PROVIDER_CATALOG:
+                raise ValueError("unsupported model provider")
+            if self.provider == "custom" and not self.base_url:
+                raise ValueError("custom provider requires a base_url")
+            key = self.api_key.get_secret_value()
+            if not 8 <= len(key) <= 2048 or key.strip() != key:
+                raise ValueError("api_key must be a trimmed string of 8 to 2048 characters")
+        return self
+
+
+class AnalysisSettingsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    provider: str = Field(min_length=1, max_length=32)
+    base_url: str | None = Field(default=None, max_length=2048)
+    model: str = Field(min_length=1, max_length=160)
+    api_key: SecretStr | None = Field(default=None, max_length=2048)
 
 
 def _db():
@@ -45,7 +76,11 @@ def _db():
 
 def _require_schema(db: Session) -> None:
     inspector = inspect(db.get_bind())
-    if not inspector.has_table("material_analysis_jobs") or not inspector.has_table("material_analysis_versions"):
+    required = (
+        "material_analysis_jobs", "material_analysis_versions",
+        "material_analysis_job_model_configs", "material_analysis_settings",
+    )
+    if not all(inspector.has_table(name) for name in required):
         raise HTTPException(status_code=503, detail={"code": "migration_required", "message": "Material analysis schema is not applied; run scripts/migrate_material_analysis.py --apply."})
 
 
@@ -66,10 +101,38 @@ def materials(
 def create_analysis_job(source_type: str, source_id: UUID, payload: AnalysisJobRequest, db: Session = Depends(_db)):
     _require_schema(db)
     try:
-        return request_material_analysis(db=db, source_type=source_type, source_id=source_id,
-                                         idempotency_key=payload.idempotency_key, force=payload.force)
+        return request_material_analysis(
+            db=db, source_type=source_type, source_id=source_id,
+            idempotency_key=payload.idempotency_key, force=payload.force,
+            provider=payload.provider, base_url=payload.base_url, model=payload.model,
+            api_key=payload.api_key.get_secret_value() if payload.api_key else None,
+        )
     except MaterialAnalysisError as exc:
         raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc
+
+
+@router.get("/v3/materials/analysis-settings")
+def material_analysis_settings(db: Session = Depends(_db)):
+    _require_schema(db)
+    return analysis_settings_summary(db)
+
+
+@router.put("/v3/materials/analysis-settings")
+def save_material_analysis_settings(payload: AnalysisSettingsRequest, db: Session = Depends(_db)):
+    _require_schema(db)
+    try:
+        return save_analysis_settings(
+            db=db, provider=payload.provider, base_url=payload.base_url, model=payload.model,
+            api_key=payload.api_key.get_secret_value() if payload.api_key else None,
+        )
+    except MaterialAnalysisError as exc:
+        raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc
+
+
+@router.delete("/v3/materials/analysis-settings")
+def reset_material_analysis_settings(db: Session = Depends(_db)):
+    _require_schema(db)
+    return clear_analysis_settings(db)
 
 
 @router.get("/v3/material-analysis-jobs/{job_id}")

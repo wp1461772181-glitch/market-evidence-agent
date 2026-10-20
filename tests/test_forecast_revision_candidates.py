@@ -1,8 +1,9 @@
 """Which saved materials may revise a forecast: one rule for the workspace, the agent and the API.
 
 A revision uses material published within seven days after the forecast it revises, or material
-published within the thirty days before it that only reached the library after it.  Material the
-forecast already used is offered again only when its state changed since.
+published within the thirty days before it that only reached the library after it, or that was
+already in the library at decision time but not used by that forecast.  Material the forecast already
+used is offered again only when its state changed since.
 
 Saved sources outlive each test here, so every test keeps to a symbol of its own.
 """
@@ -39,7 +40,7 @@ def forget_symbols(symbols):
 @pytest.fixture(autouse=True)
 def _own_symbols_only():
     yield
-    forget_symbols([f'RV{letter}' for letter in 'ABCDEFGH'])
+    forget_symbols([f'RV{letter}' for letter in 'ABCDEFGHIJKL'])
 
 
 @pytest.fixture()
@@ -90,18 +91,21 @@ def test_material_published_within_seven_days_after_the_forecast_is_new():
     assert rows[0]['title'] == 'Reported product issue'
 
 
-def test_older_material_counts_only_when_it_reached_the_library_after_the_forecast():
+def test_older_material_is_categorised_by_when_it_reached_the_library():
     decided = datetime.now(UTC) - timedelta(days=2)
     version = _create_version(symbol='RVB', decision_at=decided)
     added_later = _official_source(symbol='RVB', accepted_at=decided - timedelta(days=20),
                                    observed_at=decided + timedelta(hours=1))
+    stored_before = _official_source(symbol='RVB', accepted_at=decided - timedelta(days=5),
+                                     observed_at=decided - timedelta(hours=1))
     _official_source(symbol='RVB', accepted_at=decided - timedelta(days=31), observed_at=decided + timedelta(hours=1))
-    _official_source(symbol='RVB', accepted_at=decided - timedelta(days=5), observed_at=decided - timedelta(hours=1))
 
     rows = _candidates(version)
 
-    assert _ids(rows) == {str(added_later)}
-    assert rows[0]['category'] == 'backfilled'
+    by_id = {row['source_id']: row for row in rows}
+    assert set(by_id) == {str(added_later), str(stored_before)}
+    assert by_id[str(added_later)]['category'] == 'backfilled'
+    assert by_id[str(stored_before)]['category'] == 'preexisting'
 
 
 def test_material_the_forecast_used_is_offered_again_only_after_its_state_changed():
@@ -196,17 +200,90 @@ def test_the_api_refuses_older_material_beyond_the_thirty_days(client):
     assert accepted.status_code == 202
 
 
+def test_the_api_accepts_material_stored_before_the_forecast_but_not_used(client):
+    decided = datetime.now(UTC) - timedelta(days=2)
+    version = _create_version(symbol='RVL', decision_at=decided)
+    preexisting = _official_source(symbol='RVL', accepted_at=decided - timedelta(days=20),
+                                   observed_at=decided - timedelta(hours=1))
+
+    response = client.post(
+        f'/v2/forecast-versions/{version}/revision-jobs',
+        json={'source_refs': [{'source_type': 'official_filing', 'source_id': str(preexisting)}]},
+        headers={'Idempotency-Key': 'preexisting'},
+    )
+
+    assert response.status_code == 202
+    assert response.json()['source_refs'] == [
+        {'source_type': 'official_filing', 'source_id': str(preexisting)}
+    ]
+
+
 def test_materials_outside_the_window_say_why():
     from app.forecast_revision_candidates import assess_revision_sources
     decided = datetime.now(UTC) - timedelta(days=10)
     version = _create_version(symbol='RVA', decision_at=decided)
     too_old = _official_source(symbol='RVA', accepted_at=decided - timedelta(days=40), observed_at=decided + timedelta(hours=1))
     late = _media_source(symbol='RVA', published_at=decided + timedelta(days=9), observed_at=decided + timedelta(days=9))
-    known = _media_source(symbol='RVA', published_at=decided - timedelta(days=5), observed_at=decided - timedelta(hours=1))
     with SessionLocal() as db:
         rows = {row['source_id']: row for row in assess_revision_sources(db, db.get(ForecastVersionV2, version))}
 
     assert rows[str(late)]['reason'] == 'published_after_window' and rows[str(late)]['category'] is None
     assert rows[str(too_old)]['reason'] == 'published_before_window'
-    assert rows[str(known)]['reason'] == 'stored_before_forecast'
     assert '7 天' in rows[str(late)]['reason_text'] and '30 天' in rows[str(too_old)]['reason_text']
+
+
+def test_the_category_boundaries_are_inclusive_and_keep_new_apart_from_preexisting():
+    from app.forecast_revision_candidates import window_category
+    decided = datetime(2026, 9, 20, 12, 0, tzinfo=UTC)
+
+    assert window_category(decided, decided - REVISION_LOOKBACK, decided - timedelta(days=20)) == 'preexisting'
+    assert window_category(decided, decided - REVISION_LOOKBACK - timedelta(seconds=1), decided - timedelta(days=20)) is None
+    assert window_category(decided, decided - timedelta(days=1), decided) == 'preexisting'
+    assert window_category(decided, decided - timedelta(days=1), decided + timedelta(seconds=1)) == 'backfilled'
+    assert window_category(decided, decided, decided) == 'new'
+    assert window_category(decided, decided + REVISION_LOOKAHEAD, decided) == 'new'
+    assert window_category(decided, decided + REVISION_LOOKAHEAD + timedelta(seconds=1), decided) is None
+
+
+def test_material_stored_before_the_forecast_but_unused_is_a_preexisting_candidate():
+    decided = datetime.now(UTC) - timedelta(days=10)
+    version = _create_version(symbol='RVI', decision_at=decided)
+    at_lookback_edge = _media_source(symbol='RVI', published_at=decided - REVISION_LOOKBACK,
+                                     observed_at=decided - timedelta(days=20))
+    observed_at_decision = _official_source(symbol='RVI', accepted_at=decided - timedelta(days=3),
+                                            observed_at=decided)
+    _media_source(symbol='RVI', published_at=decided - REVISION_LOOKBACK - timedelta(seconds=1),
+                  observed_at=decided - timedelta(days=20))
+
+    rows = _candidates(version)
+
+    by_id = {row['source_id']: row for row in rows}
+    assert set(by_id) == {str(at_lookback_edge), str(observed_at_decision)}
+    assert {row['category'] for row in rows} == {'preexisting'}
+    assert {row['badge'] for row in rows} == {'预测前已入库、本版未采用'}
+
+
+def test_material_published_at_the_decision_instant_is_new_and_not_preexisting():
+    decided = datetime.now(UTC) - timedelta(days=10)
+    version = _create_version(symbol='RVJ', decision_at=decided)
+    at_decision = _media_source(symbol='RVJ', published_at=decided, observed_at=decided + timedelta(hours=1))
+
+    rows = _candidates(version)
+
+    assert _ids(rows) == {str(at_decision)}
+    assert rows[0]['category'] == 'new'
+
+
+def test_material_stored_before_the_forecast_but_used_unchanged_is_still_refused():
+    from app.forecast_revision_candidates import assess_revision_sources
+    decided = datetime.now(UTC) - timedelta(days=10)
+    version = _create_version(symbol='RVK', decision_at=decided)
+    used = _official_source(symbol='RVK', accepted_at=decided - timedelta(days=4),
+                            observed_at=decided - timedelta(days=3))
+    _freeze_into(version, 'RVK', decided, {'source_type': 'official_filing', 'source_id': str(used)})
+
+    assert _candidates(version) == []
+    with SessionLocal() as db:
+        rows = {row['source_id']: row for row in assess_revision_sources(db, db.get(ForecastVersionV2, version))}
+    assert rows[str(used)]['category'] is None
+    assert rows[str(used)]['reason'] == 'used_unchanged'

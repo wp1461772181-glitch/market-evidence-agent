@@ -2,14 +2,19 @@ from __future__ import annotations
 
 import hashlib
 from datetime import UTC, datetime
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import delete, func, select, update
 
 from app.database import Base, SessionLocal, engine
 from app.forecast_v2_models import EvidenceEventVersionV2
-from app.material_analysis_models import MaterialAnalysisJob, MaterialAnalysisVersion
+from app.material_analysis_models import (
+    MaterialAnalysisJob,
+    MaterialAnalysisJobModelConfig,
+    MaterialAnalysisSettings,
+    MaterialAnalysisVersion,
+)
 from app.models import SecFilingInventory, UploadedEvidence
 
 
@@ -33,6 +38,7 @@ def material_tables(disposable_database):
                 db.execute(delete(UploadedEvidence).where(UploadedEvidence.id == source_id))
             else:
                 db.execute(delete(SecFilingInventory).where(SecFilingInventory.id == source_id))
+        db.execute(delete(MaterialAnalysisSettings))
         db.commit()
 
 
@@ -192,3 +198,86 @@ def test_material_routes_report_required_migration_without_mutating_startup(clie
         assert response.json()["detail"]["code"] == "migration_required"
     finally:
         MATERIAL_ANALYSIS_TABLES[0].metadata.create_all(bind=engine, tables=list(MATERIAL_ANALYSIS_TABLES), checkfirst=True)
+
+def test_analysis_settings_roundtrip_encrypts_the_key_and_reset_restores_environment(client):
+    initial = client.get("/v3/materials/analysis-settings")
+    assert initial.status_code == 200
+    assert initial.json()["source"] in {"environment", "settings"}
+
+    saved = client.put(
+        "/v3/materials/analysis-settings",
+        json={"provider": "deepseek", "model": "deepseek-chat", "api_key": "sk-test-secret-1234"},
+    )
+    assert saved.status_code == 200, saved.text
+    body = saved.json()
+    assert body["source"] == "settings"
+    assert body["provider"] == "deepseek"
+    assert body["model"] == "deepseek-chat"
+    assert body["has_api_key"] is True
+    assert body["api_key_last4"] == "1234"
+    assert "sk-test-secret" not in saved.text
+    assert "ciphertext" not in saved.text
+
+    with SessionLocal() as db:
+        row = db.get(MaterialAnalysisSettings, 1)
+        assert row is not None
+        assert row.ciphertext and "sk-test-secret" not in row.ciphertext
+    reread = client.get("/v3/materials/analysis-settings")
+    assert reread.status_code == 200
+    assert reread.json()["has_api_key"] is True
+    assert "sk-test-secret" not in reread.text
+
+    missing_key = client.put(
+        "/v3/materials/analysis-settings",
+        json={"provider": "openrouter", "model": "openai/gpt-4o-mini"},
+    )
+    assert missing_key.status_code == 422
+    assert missing_key.json()["detail"]["code"] == "analysis_model_unconfigured"
+
+    reset = client.delete("/v3/materials/analysis-settings")
+    assert reset.status_code == 200
+    assert reset.json()["source"] == "environment"
+    with SessionLocal() as db:
+        assert db.get(MaterialAnalysisSettings, 1) is None
+
+
+def test_job_model_override_is_frozen_into_an_encrypted_job_config_row(client):
+    source_id = _upload(title="Override model")
+    response = client.post(
+        f"/v3/materials/uploaded_media/{source_id}/analysis-jobs",
+        json={
+            "idempotency_key": "api-model-override",
+            "provider": "deepseek",
+            "model": "deepseek-chat",
+            "api_key": "sk-override-secret-5678",
+        },
+    )
+    assert response.status_code == 202, response.text
+    job = response.json()
+    assert job["status"] == "queued"
+    job_id = UUID(job["job_id"])
+    with SessionLocal() as db:
+        config = db.get(MaterialAnalysisJobModelConfig, job_id)
+        assert config is not None
+        assert config.provider == "deepseek"
+        assert config.model == "deepseek-chat"
+        assert config.ciphertext and "sk-override-secret" not in config.ciphertext
+        stored_job = db.get(MaterialAnalysisJob, job_id)
+        assert stored_job.requested_model == "deepseek-chat"
+        from app.secret_box import decrypt_secret
+        assert decrypt_secret(config.ciphertext) == "sk-override-secret-5678"
+
+
+def test_analysis_job_rejects_partial_model_override(client):
+    source_id = _upload(title="Partial override")
+    response = client.post(
+        f"/v3/materials/uploaded_media/{source_id}/analysis-jobs",
+        json={"idempotency_key": "partial-override", "provider": "deepseek", "model": "deepseek-chat"},
+    )
+    assert response.status_code == 422
+    response = client.post(
+        f"/v3/materials/uploaded_media/{source_id}/analysis-jobs",
+        json={"idempotency_key": "custom-override", "provider": "custom", "model": "local-model",
+              "api_key": "sk-custom-secret"},
+    )
+    assert response.status_code == 422

@@ -173,7 +173,7 @@ def create_tables() -> None:
         tables=[table for table in Base.metadata.tables.values()
                 if not table.name.endswith("_v2")
                 and not table.name.startswith("knowledge_")
-                and table.name not in {"material_analysis_jobs", "material_analysis_versions", "ai_content_translations"}],
+                and table.name not in {"material_analysis_jobs", "material_analysis_versions", "material_analysis_job_model_configs", "material_analysis_settings", "ai_content_translations"}],
     )
     create_sec_filing_inventory_table()
     create_uploaded_evidence_table()

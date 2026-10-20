@@ -1,12 +1,14 @@
 import { Tx, formatDate as formatLocalizedDate, translatePhrase, useLocale } from "./i18n";
 import { useEffect, useRef, useState } from "react";
-import { ApiError, createMaterialAnalysisJob, fetchFilingContent, getMaterialAnalysis, getMaterialAnalysisHistory, getMaterialAnalysisJob } from "./api";
-import type { MaterialAnalysisJob, MaterialAnalysisVersion, MaterialItem } from "./types";
+import { ApiError, configuredApiBaseUrl, createMaterialAnalysisJob, fetchFilingContent, getChatMode, getMaterialAnalysis, getMaterialAnalysisHistory, getMaterialAnalysisJob } from "./api";
+import type { AgentChatProvider } from "./api";
+import type { MaterialAnalysisJob, MaterialAnalysisVersion, MaterialItem, MaterialCitation, MaterialCitationVerification } from "./types";
+import { loadProfiles } from "./model-profiles.mjs";
 import { useAiContentLocalization, withLocalizedFields } from "./useAiContentLocalization";
 
 type DetailTab = "analysis" | "original" | "history";
 type Load<T> = { kind: "idle" } | { kind: "loading" } | { kind: "ready"; value: T } | { kind: "error"; message: string };
-type Citation = { quote: string; start_char?: number; end_char?: number };
+type SavedProfile = { id: string; display_name: string; provider: AgentChatProvider; base_url: string; model: string; api_key: string };
 type CitationSelection = { quote: string; analysisVersion: number } | null;
 
 export function MaterialAnalysisDetail({ material, initialAnalysisId = null, onUpdated }: { material: MaterialItem; initialAnalysisId?: string | null; onUpdated: () => void }) {
@@ -21,10 +23,29 @@ export function MaterialAnalysisDetail({ material, initialAnalysisId = null, onU
   const [actionError, setActionError] = useState<string | null>(null);
   const analysisRequestSequence = useRef(0);
   const [citationSelection, setCitationSelection] = useState<CitationSelection>(null);
+  const [profiles, setProfiles] = useState<SavedProfile[]>([]);
+  const [profileId, setProfileId] = useState("");
+  const [profileError, setProfileError] = useState<string | null>(null);
 
   useEffect(() => {
     setFocusedAnalysisId(initialAnalysisId);
   }, [initialAnalysisId, material.source_type, material.source_id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    loadProfiles(globalThis, configuredApiBaseUrl, getChatMode())
+      .then((result) => {
+        if (cancelled) return;
+        const usable = (result.data.profiles as SavedProfile[]).filter((profile) => Boolean(profile.api_key?.trim()));
+        setProfiles(usable);
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) setProfileError(error instanceof Error ? error.message : "无法读取已保存的模型配置。");
+      });
+    return () => { cancelled = true; };
+    // Profiles are intentionally loaded once per material screen.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -95,8 +116,15 @@ export function MaterialAnalysisDetail({ material, initialAnalysisId = null, onU
     setFocusedAnalysisId(null);
     setActionError(null);
     setJob({ job_id: "", status: "queued", analysis_id: null, cache_hit: false });
+    const selectedProfile = profiles.find((profile) => profile.id === profileId);
+    const modelOverride = selectedProfile ? {
+      provider: selectedProfile.provider,
+      base_url: selectedProfile.base_url,
+      model: selectedProfile.model,
+      api_key: selectedProfile.api_key,
+    } : undefined;
     try {
-      const created = await createMaterialAnalysisJob(material.source_type, material.source_id, force);
+      const created = await createMaterialAnalysisJob(material.source_type, material.source_id, force, modelOverride);
       setJob(created);
       if (created.status === "succeeded" && created.analysis_id) {
         setAnalysisId(created.analysis_id);
@@ -139,7 +167,7 @@ export function MaterialAnalysisDetail({ material, initialAnalysisId = null, onU
     }
   }
 
-  function locateCitation(citation: Citation) {
+  function locateCitation(citation: MaterialCitation) {
     if (!citation.quote.trim() || analysis.kind !== "ready") return;
     setCitationSelection({ quote: citation.quote, analysisVersion: analysis.value.version_no });
     setTab("original");
@@ -163,6 +191,15 @@ export function MaterialAnalysisDetail({ material, initialAnalysisId = null, onU
     <div className="material-tab-panel" id="material-panel" role="tabpanel" aria-labelledby={`material-tab-${tab}`}>
       {actionError && <p className="material-error" role="alert">{actionError}</p>}
       {tab === "analysis" && <>
+        {canAnalyze && <div className="analysis-model-choice" style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", margin: "0 0 12px" }}>
+          <span className="section-label">{t("分析模型")}</span>
+          <select value={profileId} onChange={(event) => setProfileId(event.target.value)} disabled={hasActiveJob} aria-label={t("分析模型")} style={{ maxWidth: "100%" }}>
+            <option value="">{t("系统默认（后台配置）")}</option>
+            {profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.display_name} · {profile.model}</option>)}
+          </select>
+          {profileId && <small className="analysis-quiet">{t("仅本次分析使用；默认模型在 Agent 管理页配置。")}</small>}
+          {profileError && <small className="analysis-quiet">{profileError}</small>}
+        </div>}
         {hasActiveJob && <div className="material-job-status" role="status"><span className="loading-mark" aria-hidden="true" />{job?.status === "queued" ? t("分析任务排队中…") : t("正在分析这份材料…")}</div>}
         {job && (job.status === "failed" || job.status === "blocked_data") && <p className="material-error" role="status">{t("最近一次分析尝试")}{job.status === "failed" ? t("失败") : t("暂不可执行")}（{jobError(job.safe_error_code)}）。{t("如有既有成功版本，仍可在此查看。")}</p>}
         {analysis.kind === "loading" && <p className="material-empty">{<Tx text={"正在读取保存的分析版本…"} />}</p>}
@@ -181,13 +218,15 @@ export function MaterialAnalysisDetail({ material, initialAnalysisId = null, onU
   </section>;
 }
 
-function AnalysisView({ analysis, onLocateCitation }: { analysis: MaterialAnalysisVersion; onLocateCitation: (citation: Citation) => void }) {
+function AnalysisView({ analysis, onLocateCitation }: { analysis: MaterialAnalysisVersion; onLocateCitation: (citation: MaterialCitation) => void }) {
   const { locale, t } = useLocale();
   const payload = analysis.payload;
   const truncated = Boolean(analysis.source_manifest.truncated || analysis.source_manifest.coverage_incomplete);
+  const verification = analysis.citation_verification ?? verificationFromPayload(payload);
   return <article className="analysis-version">
-    <div className="analysis-version-meta"><span>{t("分析")} v{analysis.version_no}</span><span>{formatDate(analysis.created_at, locale)}</span>{truncated && <strong>{<Tx text={"仅分析可用摘录"} />}</strong>}</div>
+    <div className="analysis-version-meta"><span>{t("分析")} v{analysis.version_no}</span><span>{formatDate(analysis.created_at, locale)}</span>{truncated && <strong>{<Tx text={"仅分析可用摘录"} />}</strong>}{verification.total > 0 && <span>{t("引用已核对")} {verification.verified}/{verification.total}</span>}</div>
     <p className="analysis-summary">{payload.summary}</p>
+    {verification.unverified > 0 && <p className="analysis-quiet" role="status">{t("有")} {verification.unverified} {t("条引文未能在原文中逐字定位，已保留结论并标记为“引用待核对”。")}</p>}
     <AnalysisSection title={t("原文事实")} rows={payload.facts} empty={t("未提取到有引用支持的事实。")} onLocateCitation={onLocateCitation} />
     <AnalysisSection title={t("潜在利好")} rows={payload.supporting} empty={t("当前材料没有足够依据支持利好判断。")} onLocateCitation={onLocateCitation} />
     <AnalysisSection title={t("潜在利空 / 反证")} rows={payload.counter} empty={t("当前材料没有足够依据支持利空判断。")} onLocateCitation={onLocateCitation} />
@@ -196,10 +235,24 @@ function AnalysisView({ analysis, onLocateCitation }: { analysis: MaterialAnalys
   </article>;
 }
 
-function AnalysisSection({ title, rows, empty, onLocateCitation }: { title: string; rows: Array<{ id: string; statement: string; rationale?: string; reason?: string; citations: Citation[] }>; empty: string; onLocateCitation: (citation: Citation) => void }) {
+function AnalysisSection({ title, rows, empty, onLocateCitation }: { title: string; rows: Array<{ id: string; statement: string; rationale?: string; reason?: string; citations: MaterialCitation[] }>; empty: string; onLocateCitation: (citation: MaterialCitation) => void }) {
   return <section className="analysis-section"><h3>{title}<span>{rows.length}</span></h3>{rows.length ? rows.map((row) => <article key={row.id}><p>{row.statement}</p>{(row.rationale || row.reason) && <small>{row.rationale || row.reason}</small>}<CitationList citations={row.citations} onLocateCitation={onLocateCitation} /></article>) : <p className="analysis-quiet">{empty}</p>}</section>;
 }
-function CitationList({ citations, onLocateCitation }: { citations: Citation[]; onLocateCitation: (citation: Citation) => void }) { const { t } = useLocale(); return citations?.length ? <blockquote className="material-citation">{citations.map((citation, index) => <p key={`${citation.quote}:${index}`}><button type="button" onClick={() => onLocateCitation(citation)} aria-label={t("查看这条引文的原始来源")}>“{citation.quote}” ↗</button></p>)}</blockquote> : null; }
+function CitationList({ citations, onLocateCitation }: { citations: MaterialCitation[]; onLocateCitation: (citation: MaterialCitation) => void }) {
+  const { t } = useLocale();
+  if (!citations?.length) return null;
+  return <blockquote className="material-citation">{citations.map((citation, index) => {
+    const kind = citation.match_kind ?? "exact";
+    const badge = kind === "fuzzy"
+      ? `${t("近似引用")} ${Math.round((citation.similarity ?? 0) * 100)}%`
+      : kind === "normalized" ? t("规范化匹配") : kind === "unverified" ? t("引用待核对") : null;
+    return <p key={`${citation.quote}:${index}`}>
+      <button type="button" onClick={() => onLocateCitation(citation)} aria-label={t("查看这条引文的原始来源")}>“{citation.quote}” ↗</button>
+      {badge && <small className="analysis-quiet" style={{ marginLeft: "6px" }}>{badge}</small>}
+      {kind === "unverified" && citation.original_quote && citation.original_quote !== citation.quote && <small className="analysis-quiet"> {t("模型原文：")}{citation.original_quote}</small>}
+    </p>;
+  })}</blockquote>;
+}
 
 function OriginalView({ material, citation }: { material: MaterialItem; citation: CitationSelection }) {
   const { t } = useLocale();
@@ -223,8 +276,25 @@ function HistoryView({ state, selectedAnalysisId, onSelect, locale }: { state: L
 
 function isActive(status: string) { return status === "queued" || status === "running"; }
 function jobError(code?: string | null) {
-  const message = code === "no_content" ? "没有可分析正文，请先读取 SEC 原文" : code === "invalid_model_output" ? "分析输出未通过原文引用或格式校验" : code === "provider_error" ? "分析服务暂时不可用" : code === "config_version_changed" ? "分析配置已更新，请新建任务" : code || "请检查正文后重试";
+  const message = code === "no_content" ? "没有可分析正文，请先读取 SEC 原文" : code === "invalid_model_output" ? "分析输出未通过原文引用或格式校验" : code === "provider_error" ? "分析服务暂时不可用" : code === "analysis_model_unconfigured" ? "所选分析模型尚未配置 API key，请先在 Agent 管理页设置默认模型" : code === "credential_storage_unavailable" ? "服务端凭据加密密钥未配置，暂时无法保存分析模型" : code === "config_version_changed" ? "分析配置已更新，请新建任务" : code || "请检查正文后重试";
   return translatePhrase(message);
+}
+
+function verificationFromPayload(payload: MaterialAnalysisVersion["payload"]): MaterialCitationVerification {
+  const counts = { total: 0, verified: 0, unverified: 0, exact: 0, normalized: 0, fuzzy: 0 };
+  const groups = [payload.facts, payload.supporting, payload.counter, payload.uncertainties, payload.key_numbers];
+  for (const group of groups) for (const item of group) for (const citation of item.citations) {
+    const kind = citation.match_kind ?? "exact";
+    counts.total += 1;
+    if (kind === "unverified") counts.unverified += 1;
+    else {
+      counts.verified += 1;
+      if (kind === "fuzzy") counts.fuzzy += 1;
+      else if (kind === "normalized") counts.normalized += 1;
+      else counts.exact += 1;
+    }
+  }
+  return { ...counts, verified_ratio: counts.total ? counts.verified / counts.total : 1 };
 }
 function actionMessage(error: unknown, fallback: string) {
   if (error instanceof ApiError) return translatePhrase(error.status === 402 ? "模型服务余额或账单状态需要处理后再试。" : error.status === 429 ? "模型服务暂时限流，请稍后重试。" : error.message);

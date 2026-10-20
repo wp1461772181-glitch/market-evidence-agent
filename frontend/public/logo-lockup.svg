@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 304 64" role="img" aria-labelledby="mea-lockup-title">
+  <title id="mea-lockup-title">Market Evidence Agent</title>
+  <rect x="0.75" y="0.75" width="62.5" height="62.5" rx="14" fill="#174C3D" stroke="#80CFC2" stroke-width="1.5"/>
+  <path d="M19 9.5H38.5L50 21V50.5A3.5 3.5 0 0 1 46.5 54H19A3.5 3.5 0 0 1 15.5 50.5V13A3.5 3.5 0 0 1 19 9.5Z" fill="none" stroke="#F5F2E9" stroke-width="2" stroke-linejoin="round"/>
+  <path d="M38.5 9.5V18A3 3 0 0 0 41.5 21H50Z" fill="#80CFC2"/>
+  <path d="M21 41L27.5 34L33 38L43.5 26.5" fill="none" stroke="#80CFC2" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M35.5 46.5L39.5 50.5L47.5 40.5" fill="none" stroke="#F5F2E9" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="82" y="37" fill="#174C3D" font-family="'Avenir Next','Helvetica Neue',Arial,sans-serif" font-size="17" font-weight="600" letter-spacing="2.6">MARKET EVIDENCE</text>
+  <rect x="83" y="45" width="86" height="3" rx="1.5" fill="#80CFC2"/>
+</svg>

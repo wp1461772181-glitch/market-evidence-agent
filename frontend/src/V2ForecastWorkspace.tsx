@@ -417,7 +417,7 @@ export function V2ForecastWorkspace({ symbol, priceHistory, mode, onOpenForecast
             <p className="v2-hint-text">{t(revisionCandidatesData.target_end_date === null ? "该预测的目标合同无效，只能查看历史版本。" : "该预测的目标已到期，只能查看历史版本。")}</p>
           ) : revisionSourceOptions.length === 0 ? (
             <>
-              <p className="v2-hint-text">{<Tx text={"当前没有可用于修订的材料。可选的是：预测后 7 天内发布的新材料，或预测前 30 天内发布、预测之后才收录的材料。"} />}</p>
+              <p className="v2-hint-text">{<Tx text={"当前没有可用于修订的材料。可选的是：预测后 7 天内发布的新材料，预测前 30 天内发布、预测之后才收录的材料，或预测前已入库但本版未采用的材料。"} />}</p>
               {revisionCandidatesData.excluded.length > 0 && (
                 <ul className="v2-revision-excluded">
                   {revisionCandidatesData.excluded.map((item) => (
@@ -434,14 +434,20 @@ export function V2ForecastWorkspace({ symbol, priceHistory, mode, onOpenForecast
               {revisionSourceOptions.map((source) => {
                 const key = source.key;
                 const isChecked = selectedSourceKeys.includes(key);
-                const tagColor = source.revisionType === "new" ? "badge-new" : source.revisionType === "backfilled" ? "badge-backfilled" : "badge-updated";
+                const tagColor = source.revisionType === "new"
+                  ? "badge-new"
+                  : source.revisionType === "backfilled" || source.revisionType === "preexisting"
+                    ? "badge-backfilled"
+                    : "badge-updated";
                 const typeLabel = source.revisionType === "new"
                   ? t("新发布材料")
                   : source.revisionType === "backfilled"
                     ? t("过往补充材料")
-                    : source.revisionType === "reanalyzed"
-                      ? t("新完成分析")
-                      : t("来源状态更新");
+                    : source.revisionType === "preexisting"
+                      ? t("预测前已入库、本版未采用")
+                      : source.revisionType === "reanalyzed"
+                        ? t("新完成分析")
+                        : t("来源状态更新");
                 return (
                   <label key={key} className={`v2-revision-source-item ${isChecked ? "is-selected" : ""}`}>
                     <input

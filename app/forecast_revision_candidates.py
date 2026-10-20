@@ -5,6 +5,8 @@ offered is one the API accepts and the agent can never pick a source the rule do
 
 * new: published within seven days after the forecast being revised;
 * backfilled: published within the thirty days before it, but only stored after it was made;
+* preexisting: published within the thirty days before it and already stored at decision time, but
+  not used by that forecast;
 * updated / reanalyzed: already used by that forecast, and its content or review state changed since,
   or it was analysed again after the forecast.
 
@@ -25,6 +27,7 @@ REVISION_LOOKAHEAD = timedelta(days=7)
 CATEGORY_LABELS = {
     'new': '预测后发布的新材料',
     'backfilled': '预测前发布、预测后才收录的材料',
+    'preexisting': '预测前已入库、本版未采用',
     'updated': '已用材料有更新',
     'reanalyzed': '已用材料有新的分析',
 }
@@ -34,7 +37,6 @@ CATEGORY_LABELS = {
 EXCLUSION_REASONS = {
     'published_after_window': '发布时间晚于预测后 7 天',
     'published_before_window': '发布时间早于预测前 30 天',
-    'stored_before_forecast': '这次预测作出前就已经在资料库里，不算预测之后的新信息',
     'used_unchanged': '已经用在这次预测里，内容和核验状态都没有变化',
     'same_content_as_used': '与这次预测已用的材料内容相同',
     'not_published_yet': '发布时间晚于现在',
@@ -57,12 +59,16 @@ def revision_window(decision_at: datetime) -> tuple[datetime, datetime]:
 
 
 def window_category(decision_at: datetime, published_at: datetime, observed_at: datetime) -> str | None:
-    """'new' or 'backfilled' for a material the forecast did not use, or None outside the window."""
+    """'new', 'backfilled' or 'preexisting' for a material the forecast did not use, or None outside
+    the publication window."""
     decided, published, observed = _utc(decision_at), _utc(published_at), _utc(observed_at)
     if decided <= published <= decided + REVISION_LOOKAHEAD:
         return 'new'
-    if observed > decided and decided - REVISION_LOOKBACK <= published < decided:
-        return 'backfilled'
+    if decided - REVISION_LOOKBACK <= published < decided:
+        # Stored only after the forecast: information that appeared later. Stored already at decision
+        # time but not used by this version: information the forecast left unconsidered, which a
+        # revision may still draw on.
+        return 'backfilled' if observed > decided else 'preexisting'
     return None
 
 
@@ -157,9 +163,8 @@ def assess_revision_sources(db: Session, parent) -> list[dict]:
             else:
                 category = window_category(decided, published, observed)
                 if category is None:
-                    reason = ('published_after_window' if published > decided + REVISION_LOOKAHEAD else
-                              'published_before_window' if published < decided - REVISION_LOOKBACK else
-                              'stored_before_forecast')
+                    reason = ('published_after_window' if published > decided + REVISION_LOOKAHEAD
+                              else 'published_before_window')
         elif _changed_since(db, item, row, source_type):
             category = 'updated'
         elif _analysed_since(db, item, source_type, source_id, decided):

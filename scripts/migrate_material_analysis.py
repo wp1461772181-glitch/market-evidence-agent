@@ -1,10 +1,16 @@
-"""Inspect or apply the additive two-table material-analysis schema."""
+"""Inspect or apply the additive material-analysis schema."""
 
 from __future__ import annotations
 
 import argparse
 import json
+import sys
 from collections.abc import Sequence
+from pathlib import Path
+
+# Running a file under scripts/ puts that directory (not the project root) on
+# sys.path, which can resolve an older installed copy of the app package.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
@@ -45,7 +51,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Inspect or apply the additive material analysis schema")
     action = parser.add_mutually_exclusive_group()
     action.add_argument("--check", action="store_true", help="read-only schema check (default)")
-    action.add_argument("--apply", action="store_true", help="create the two additive tables under a transaction lock")
+    action.add_argument("--apply", action="store_true", help="create the additive tables under a transaction lock")
     args = parser.parse_args(argv)
     result = apply_schema(engine) if args.apply else schema_state(engine)
     print(json.dumps({"action": "apply" if args.apply else "check", **result}, sort_keys=True))

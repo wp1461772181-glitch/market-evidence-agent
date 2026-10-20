@@ -193,16 +193,27 @@ def test_manual_revision_validates_parent_source_symbol_and_source_time(client):
     )
     assert cross_stock.status_code == 422
 
-    old_source = _official_source(
+    stored_before = _official_source(
         accepted_at=root_time - timedelta(days=2),
         observed_at=root_time - timedelta(minutes=1),
     )
-    old = client.post(
+    preexisting = client.post(
         f"/v2/forecast-versions/{root_id}/revision-jobs",
-        json={"source_refs": [{"source_type": "official_filing", "source_id": str(old_source)}]},
-        headers={"Idempotency-Key": "old-source"},
+        json={"source_refs": [{"source_type": "official_filing", "source_id": str(stored_before)}]},
+        headers={"Idempotency-Key": "stored-before-parent"},
     )
-    assert old.status_code == 422
+    assert preexisting.status_code == 202
+
+    too_old_source = _official_source(
+        accepted_at=root_time - timedelta(days=31),
+        observed_at=root_time - timedelta(days=30),
+    )
+    too_old = client.post(
+        f"/v2/forecast-versions/{root_id}/revision-jobs",
+        json={"source_refs": [{"source_type": "official_filing", "source_id": str(too_old_source)}]},
+        headers={"Idempotency-Key": "too-old-source"},
+    )
+    assert too_old.status_code == 422
 
 
 def test_manual_revision_accepts_old_filing_newly_observed_after_parent_and_rejects_repeat(client):

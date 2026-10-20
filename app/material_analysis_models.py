@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String, UniqueConstraint, Uuid, func
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, Uuid, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -83,4 +83,46 @@ class MaterialAnalysisVersion(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
-MATERIAL_ANALYSIS_TABLES = (MaterialAnalysisJob.__table__, MaterialAnalysisVersion.__table__)
+class MaterialAnalysisJobModelConfig(Base):
+    """The provider/model/key a queued material analysis was requested with.
+
+    The key is encrypted at rest and cleared as soon as the job reaches a
+    terminal state. The provider and model stay for auditability.
+    """
+
+    __tablename__ = "material_analysis_job_model_configs"
+
+    job_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("material_analysis_jobs.id", ondelete="CASCADE"), primary_key=True
+    )
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    base_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    model: Mapped[str] = mapped_column(String(160), nullable=False)
+    ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class MaterialAnalysisSettings(Base):
+    """The deployment-wide default model for AI material analysis."""
+
+    __tablename__ = "material_analysis_settings"
+    __table_args__ = (
+        CheckConstraint("id = 1", name="ck_material_analysis_settings_singleton"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    base_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    model: Mapped[str] = mapped_column(String(160), nullable=False)
+    ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+MATERIAL_ANALYSIS_TABLES = (
+    MaterialAnalysisJob.__table__,
+    MaterialAnalysisVersion.__table__,
+    MaterialAnalysisJobModelConfig.__table__,
+    MaterialAnalysisSettings.__table__,
+)

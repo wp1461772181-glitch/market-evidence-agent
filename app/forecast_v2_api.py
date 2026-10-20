@@ -276,6 +276,8 @@ def get_v2_revision_candidates(version_id: UUID, db: Session = Depends(get_v2_db
             "version_no": version.version_no,
             "symbol": version.symbol,
             "decision_at": decided.isoformat(),
+            # One publication span for every category: new material up to seven days after the
+            # forecast, backfilled and preexisting material up to thirty days before it.
             "window_start": (decided - REVISION_LOOKBACK).isoformat(),
             "window_end": (decided + REVISION_LOOKAHEAD).isoformat(),
             "target_end_date": target_end_date,
@@ -577,7 +579,9 @@ def _validate_manual_revision_sources(
         if not event.is_new and not newly_analyzed_after_parent:
             raise V2RequestError("manual revision source is unchanged from the selected forecast and has no new successful analysis")
         # A material the forecast did not use must be published within seven days after it, or within
-        # the thirty days before it and stored only after it: the same window the workspace offers.
+        # the thirty days before it: stored after it (backfilled) or already stored at decision time
+        # but unused by this version (preexisting). window_category applies the same rule the workspace
+        # offers.
         if key not in previous_sources and window_category(parent_cutoff, event.published_at, event.observed_at) is None:
             raise V2RequestError("manual revision source is outside the revision window of the selected forecast")
 

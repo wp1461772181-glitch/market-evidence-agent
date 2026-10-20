@@ -12,8 +12,16 @@ from app.database import Base, SessionLocal, engine
 from app.event_provider import ProviderResult
 from app.material_analysis import PROMPT_VERSION, MaterialAnalysisError, list_materials, request_material_analysis, run_material_analysis_once
 from app.forecast_v2_models import EvidenceEventVersionV2
-from app.material_analysis_models import MaterialAnalysisJob, MaterialAnalysisVersion
-from app.material_analysis_schema import locate_material_analysis_citations, validate_material_analysis
+from app.material_analysis_models import (
+    MaterialAnalysisJob,
+    MaterialAnalysisJobModelConfig,
+    MaterialAnalysisVersion,
+)
+from app.material_analysis_schema import (
+    citation_verification,
+    locate_material_analysis_citations,
+    validate_material_analysis,
+)
 from app.models import SecFilingInventory, UploadedEvidence
 
 
@@ -414,3 +422,132 @@ def test_a_payload_from_another_prompt_version_is_never_saved():
     assert output["status"] == "failed"
     with SessionLocal() as db:
         assert db.scalar(select(MaterialAnalysisVersion).where(MaterialAnalysisVersion.source_id == source_id)) is None
+
+def _payload_with_quotes(quotes: list[str]) -> dict:
+    payload = _payload()
+    payload["facts"] = [
+        {"id": f"f{index}", "statement": "陈述。", "citations": [{"quote": quote}]}
+        for index, quote in enumerate(quotes, start=1)
+    ]
+    return payload
+
+
+def test_citation_resolution_labels_exact_normalized_fuzzy_and_unverified():
+    text = (
+        "The company’s revenue grew by 8% this quarter. "
+        "Below are material changes to our risk factors since our Annual Report on Form 10-K "
+        "for the year ended December 31, 2025."
+    )
+    quotes = [
+        "revenue grew by 8%",
+        "The company's revenue grew by 8%",
+        "Below are material changes to our risk factors since our Annual Report on Form 10-K "
+        "for the fiscal year ended December 31, 2025.",
+        "Margins contracted sharply despite record demand",
+    ]
+    located = locate_material_analysis_citations(_payload_with_quotes(quotes), text)
+    citations = [fact["citations"][0] for fact in located["facts"]]
+
+    assert [citation["match_kind"] for citation in citations] == [
+        "exact", "normalized", "fuzzy", "unverified",
+    ]
+    for citation in citations[:3]:
+        assert citation["similarity"] >= 0.95
+        assert text[citation["start_char"]:citation["end_char"]] == citation["quote"]
+    assert citations[2]["original_quote"].endswith("the fiscal year ended December 31, 2025.")
+    assert citations[3]["start_char"] is None and citations[3]["end_char"] is None
+    assert citations[3]["similarity"] < 0.95
+    assert citation_verification(located) == {
+        "total": 4, "verified": 3, "unverified": 1,
+        "exact": 1, "normalized": 1, "fuzzy": 1, "verified_ratio": 0.75,
+    }
+    validate_material_analysis(located, text)
+
+
+class SequenceProvider:
+    def __init__(self, payloads):
+        self.payloads = list(payloads)
+        self.calls = 0
+
+    def extract(self, **kwargs):
+        payload = self.payloads[min(self.calls, len(self.payloads) - 1)]
+        self.calls += 1
+        return ProviderResult(content=json.dumps(payload, ensure_ascii=False),
+                              response_model="deepseek-test", usage={"total_tokens": 17})
+
+
+def test_worker_retries_once_when_most_citations_cannot_be_located():
+    source_id = _upload(text_value=f"Revenue grew by 8% this quarter. {uuid4()}")
+    bad = _payload_with_quotes(["Margins contracted sharply despite record demand"])
+    good = _payload_with_quotes(["Revenue grew by 8%"])
+    provider = SequenceProvider([bad, good])
+    job = _request(source_id, key=f"retry-{uuid4()}", force=True)
+    outcome = run_material_analysis_once(
+        session_factory=SessionLocal, provider=provider, job_id=UUID(job["job_id"]),
+    )
+    assert outcome["status"] == "succeeded"
+    assert provider.calls == 2
+    with SessionLocal() as db:
+        row = db.scalar(select(MaterialAnalysisVersion).where(
+            MaterialAnalysisVersion.job_id == UUID(job["job_id"])
+        ))
+        assert row is not None
+        assert row.source_manifest["analysis_attempts"] == 2
+        assert row.source_manifest["citation_verification"]["unverified"] == 0
+        assert row.source_manifest["citation_verification"]["verified_ratio"] == 1.0
+
+
+def test_worker_does_not_retry_for_a_small_share_of_unlocated_citations():
+    source_id = _upload(text_value=f"Revenue grew by 8% this quarter. {uuid4()}")
+    quotes = ["Revenue grew by 8%"] * 9 + ["Margins contracted sharply despite record demand"]
+    provider = SequenceProvider([_payload_with_quotes(quotes)])
+    job = _request(source_id, key=f"no-retry-{uuid4()}", force=True)
+    outcome = run_material_analysis_once(
+        session_factory=SessionLocal, provider=provider, job_id=UUID(job["job_id"]),
+    )
+    assert outcome["status"] == "succeeded"
+    assert provider.calls == 1
+    with SessionLocal() as db:
+        row = db.scalar(select(MaterialAnalysisVersion).where(
+            MaterialAnalysisVersion.job_id == UUID(job["job_id"])
+        ))
+        assert row is not None
+        assert row.source_manifest["analysis_attempts"] == 1
+        assert row.source_manifest["citation_verification"] == {
+            "total": 10, "verified": 9, "unverified": 1,
+            "exact": 9, "normalized": 0, "fuzzy": 0, "verified_ratio": 0.9,
+        }
+
+def test_worker_builds_the_frozen_provider_config_and_clears_its_key(monkeypatch):
+    source_id = _upload(text_value=f"Revenue grew by 8% this quarter. {uuid4()}")
+    key = "sk-frozen-secret-9999"
+    with SessionLocal() as db:
+        job = request_material_analysis(
+            db=db, source_type="uploaded_media", source_id=source_id,
+            idempotency_key=f"frozen-{uuid4()}", force=True,
+            provider="openrouter", base_url=None, model="openai/gpt-4o-mini", api_key=key,
+        )
+    captured = {}
+
+    class CapturingProvider:
+        def extract(self, **kwargs):
+            return ProviderResult(content=json.dumps(_payload(), ensure_ascii=False),
+                                  response_model="openai/gpt-4o-mini", usage={"total_tokens": 17})
+
+    def fake_create_model_provider(**kwargs):
+        captured.update(kwargs)
+        return CapturingProvider()
+
+    monkeypatch.setattr("app.material_analysis.create_model_provider", fake_create_model_provider)
+    outcome = run_material_analysis_once(
+        session_factory=SessionLocal, job_id=UUID(job["job_id"]),
+    )
+    assert outcome["status"] == "succeeded"
+    assert captured == {
+        "provider": "openrouter", "base_url": "https://openrouter.ai/api/v1",
+        "model": "openai/gpt-4o-mini", "api_key": key,
+    }
+    with SessionLocal() as db:
+        config = db.get(MaterialAnalysisJobModelConfig, UUID(job["job_id"]))
+        assert config is not None
+        assert config.ciphertext is None

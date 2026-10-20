@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Market Evidence Agent">
+  <rect width="64" height="64" rx="13" fill="#174C3D"/>
+  <path d="M17.5 7.5H38L51 20.5V51.5A4 4 0 0 1 47 55.5H17.5A4 4 0 0 1 13.5 51.5V11.5A4 4 0 0 1 17.5 7.5Z" fill="none" stroke="#F5F2E9" stroke-width="2.4" stroke-linejoin="round"/>
+  <path d="M38 7.5V17A3.5 3.5 0 0 0 41.5 20.5H51Z" fill="#80CFC2"/>
+  <path d="M19.5 42.5L27 34.5L32.5 38.5L44 25.5" fill="none" stroke="#80CFC2" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M34.5 47L39 51.5L48 40.5" fill="none" stroke="#F5F2E9" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
