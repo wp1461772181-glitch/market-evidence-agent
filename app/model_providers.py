@@ -40,6 +40,21 @@ def provider_label(provider: str) -> str:
     return PROVIDER_CATALOG.get(provider, {}).get("label", provider)
 
 
+def thinking_disabled_options(provider: str) -> dict[str, Any]:
+    """The provider-native switch that turns reasoning off for analysis calls.
+
+    Structured extraction needs a bounded, deterministic answer: reasoning tokens
+    are charged against the same completion budget and can leave no room for the
+    JSON object.  Each family uses its own spelling; the default DeepSeek/proxy
+    shape is accepted by the custom endpoint used by this workspace.
+    """
+    if provider in {"qwen", "siliconflow"}:
+        return {"enable_thinking": False}
+    if provider == "openrouter":
+        return {"reasoning": {"enabled": False}}
+    return {"thinking": {"type": "disabled"}}
+
+
 def normalize_provider_config(
     *, provider: str, base_url: str | None = None, model: str
 ) -> dict[str, str]:
@@ -110,8 +125,7 @@ class OpenAICompatibleProvider:
             "temperature": 0,
             "max_tokens": 8192,
         }
-        if self.provider == "deepseek":
-            request["extra_body"] = {"thinking": {"type": "disabled"}}
+        request["extra_body"] = thinking_disabled_options(self.provider)
         try:
             response = self._client.chat.completions.create(**request)
         except Exception as exc:
