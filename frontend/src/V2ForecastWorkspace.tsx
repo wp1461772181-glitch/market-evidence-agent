@@ -1,7 +1,8 @@
 import { Tx, formatDateTime, getLocalePreference, translatePhrase, useLocale } from "./i18n";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ApiError, createV2ForecastJob, createV2ManualRevisionJob, getMaterialLibrary, getUploadedEvidence, getV2Evaluations, getV2ForecastRoots, getV2ForecastVersion, getV2Job, getV2MonitorStatus, getV2Timeline, getV2Workspace } from "./api";
-import type { FilingInventory, MaterialItem, ResearchMaterialReference, UploadedEvidence, V2EvaluationCohort, V2EvaluationResponse, V2EvaluationRoot, V2EvaluationVersion, V2ForecastJob, V2ForecastRoot, V2ForecastRoots, V2ModelEvaluationCohort, V2MonitorStatus, V2Probabilities, V2SourceRef, V2Timeline, V2TimelineEntry, V2VersionDetail, V2Workspace } from "./types";
+import { ApiError, createV2ForecastJob, createV2ManualRevisionJob, getV2Evaluations, getV2ForecastRoots, getV2ForecastVersion, getV2Job, getV2MonitorStatus, getV2RevisionCandidates, getV2Timeline, getV2Workspace } from "./api";
+import type { V2RevisionCandidates } from "./api";
+import type { FilingInventory, ResearchMaterialReference, V2EvaluationCohort, V2EvaluationResponse, V2EvaluationRoot, V2EvaluationVersion, V2ForecastJob, V2ForecastRoot, V2ForecastRoots, V2ModelEvaluationCohort, V2MonitorStatus, V2Probabilities, V2Timeline, V2TimelineEntry, V2VersionDetail, V2Workspace } from "./types";
 import { ResearchBriefView } from "./ResearchBriefView";
 import { evidenceTitle, processingStatus, sourceKey } from "./EvidenceProcessing";
 import { CandlestickChart } from "./CandlestickChart";
@@ -11,21 +12,6 @@ type ResourceState<T> =
   | { kind: "loading" }
   | { kind: "ready"; data: T }
   | { kind: "error"; message: string };
-
-type SourceOption = V2SourceRef & {
-  label: string;
-  publishedAt: string | null;
-  observedAt: string | null;
-  contentHash: string | null;
-  reviewStatus: string | null;
-  reviewedAt: string | null;
-  userRatingStars: number | null;
-};
-
-function isTimezoneAwareTimestamp(value: string | null): boolean {
-  if (!value || !/(?:Z|[+-]\d{2}:\d{2})$/i.test(value)) return false;
-  return Number.isFinite(Date.parse(value));
-}
 
 function errorMessage(error: unknown, fallback: string) {
   return translatePhrase(error instanceof ApiError ? error.message : fallback);
@@ -49,17 +35,6 @@ function savedJob(symbol: string) {
 
 function clearSavedJob(symbol: string) {
   try { window.localStorage.removeItem(savedJobKey(symbol)); } catch { /* No storage access does not affect server state. */ }
-}
-
-async function getAllMaterialItems(symbol: string, signal: AbortSignal): Promise<MaterialItem[]> {
-  const limit = 50;
-  const first = await getMaterialLibrary(symbol, { limit, offset: 0, signal });
-  const pageCount = Math.ceil(Math.max(0, first.total - first.items.length) / limit);
-  if (pageCount === 0) return first.items;
-  const rest = await Promise.all(Array.from({ length: pageCount }, (_, index) =>
-    getMaterialLibrary(symbol, { limit, offset: (index + 1) * limit, signal }),
-  ));
-  return [...first.items, ...rest.flatMap((page) => page.items)];
 }
 
 function formatTime(value: string | null) {
@@ -108,7 +83,7 @@ function jobFailureText(code?: string | null) {
   return `${translatePhrase("任务未完成（")}${code}${translatePhrase("），没有发布预测版本。")}`;
 }
 
-export function V2ForecastWorkspace({ symbol, filings, priceHistory, mode, onOpenForecast }: { symbol: string; filings: FilingInventory | null; priceHistory?: PriceHistory | null; mode: "forecast" | "revisions"; onOpenForecast: () => void }) {
+export function V2ForecastWorkspace({ symbol, priceHistory, mode, onOpenForecast }: { symbol: string; filings: FilingInventory | null; priceHistory?: PriceHistory | null; mode: "forecast" | "revisions"; onOpenForecast: () => void }) {
   const { t } = useLocale();
   const [workspace, setWorkspace] = useState<ResourceState<V2Workspace>>({ kind: "loading" });
   const [roots, setRoots] = useState<ResourceState<V2ForecastRoots>>({ kind: "loading" });
@@ -118,16 +93,12 @@ export function V2ForecastWorkspace({ symbol, filings, priceHistory, mode, onOpe
   const [timeline, setTimeline] = useState<ResourceState<V2Timeline> | null>(null);
   const [activeJob, setActiveJob] = useState<V2ForecastJob | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [uploaded, setUploaded] = useState<ResourceState<UploadedEvidence[]>>({ kind: "loading" });
   const [revisionOpen, setRevisionOpen] = useState(false);
   const [parentVersionId, setParentVersionId] = useState("");
   const [selectedSourceKeys, setSelectedSourceKeys] = useState<string[]>([]);
   const [selectedVersionId, setSelectedVersionId] = useState("");
   const [versionDetails, setVersionDetails] = useState<ResourceState<{ current: V2VersionDetail; parent: V2VersionDetail | null }> | null>(null);
-  const [revisionParentDetail, setRevisionParentDetail] = useState<ResourceState<V2VersionDetail> | null>(null);
-  const [revisionMaterialMetadata, setRevisionMaterialMetadata] = useState<{ parentVersionId: string; items: MaterialItem[] } | null>(null);
-  const [revisionMaterialMetadataError, setRevisionMaterialMetadataError] = useState<string | null>(null);
-  const [revisionMaterialMetadataLoading, setRevisionMaterialMetadataLoading] = useState(false);
+  const [revisionCandidates, setRevisionCandidates] = useState<ResourceState<V2RevisionCandidates> | null>(null);
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -173,7 +144,6 @@ export function V2ForecastWorkspace({ symbol, filings, priceHistory, mode, onOpe
     setRoots({ kind: "loading" });
     setMonitor({ kind: "loading" });
     setEvaluations({ kind: "loading" });
-    setUploaded({ kind: "loading" });
     void refresh(controller.signal);
     void refreshMonitor(controller.signal);
     void refreshEvaluations(controller.signal);
@@ -187,9 +157,6 @@ export function V2ForecastWorkspace({ symbol, filings, priceHistory, mode, onOpe
         })
         .catch(() => clearSavedJob(symbol));
     }
-    getUploadedEvidence(symbol, controller.signal)
-      .then((result) => { if (!controller.signal.aborted) setUploaded({ kind: "ready", data: result.items ?? [] }); })
-      .catch((error: unknown) => { if (!controller.signal.aborted) setUploaded({ kind: "error", message: errorMessage(error, "暂时无法读取已上传材料。") }); });
     return () => controller.abort();
   }, [symbol, refresh, refreshMonitor, refreshEvaluations]);
 
@@ -220,43 +187,12 @@ export function V2ForecastWorkspace({ symbol, filings, priceHistory, mode, onOpe
     setParentVersionId("");
     setRevisionOpen(false);
     setSelectedSourceKeys([]);
-    setRevisionMaterialMetadata(null);
     setTimeline({ kind: "loading" });
     getV2Timeline(selectedRootId, controller.signal)
       .then((next) => { if (!controller.signal.aborted) setTimeline({ kind: "ready", data: next }); })
       .catch((error: unknown) => { if (!controller.signal.aborted) setTimeline({ kind: "error", message: errorMessage(error, "无法读取所选预测的版本链。") }); });
     return () => controller.abort();
   }, [selectedRootId]);
-
-  const sourceOptions = useMemo<SourceOption[]>(() => {
-    const official = (filings?.filings ?? [])
-      .filter((filing) => Boolean(filing.id) && filing.content_status === "fetched" && Boolean(filing.accepted_at))
-      .map((filing) => ({
-        source_type: "official_filing" as const,
-        source_id: filing.id!,
-        publishedAt: filing.accepted_at ?? null,
-        observedAt: filing.content_observed_at ?? filing.observed_at ?? null,
-        label: `SEC ${filing.form} · ${filing.accession_number}`,
-        contentHash: filing.content_excerpt_sha256 ?? null,
-        reviewStatus: filing.review_status ?? null,
-        reviewedAt: filing.reviewed_at ?? null,
-        userRatingStars: null,
-      }));
-    const media = uploaded.kind === "ready"
-      ? uploaded.data.map((item) => ({
-        source_type: "uploaded_media" as const,
-        source_id: item.id,
-        publishedAt: item.published_at,
-        observedAt: item.observed_at ?? null,
-        label: `媒体 · ${item.title}`,
-        contentHash: item.content_sha256 ?? null,
-        reviewStatus: "pending_review",
-        reviewedAt: null,
-        userRatingStars: item.credibility_stars,
-      }))
-      : [];
-    return [...official, ...media];
-  }, [filings, uploaded]);
 
   const versions = timeline?.kind === "ready" ? timeline.data.versions : [];
   const selectedRoot = roots.kind === "ready" ? roots.data.roots.find((root) => root.id === selectedRootId) ?? null : null;
@@ -286,127 +222,48 @@ export function V2ForecastWorkspace({ symbol, filings, priceHistory, mode, onOpe
   const chosenVersionId = chosenVersion?.id ?? "";
   useEffect(() => {
     if (!revisionOpen || !chosenVersionId) {
-      setRevisionParentDetail(null);
-      return;
-    }
-    const controller = new AbortController();
-    setRevisionParentDetail({ kind: "loading" });
-    getV2ForecastVersion(chosenVersionId, controller.signal)
-      .then((detail) => { if (!controller.signal.aborted) setRevisionParentDetail({ kind: "ready", data: detail }); })
-      .catch((error: unknown) => { if (!controller.signal.aborted) setRevisionParentDetail({ kind: "error", message: errorMessage(error, "无法读取基准版本的已用材料。") }); });
-    return () => controller.abort();
-  }, [revisionOpen, chosenVersionId]);
-
-  const matchingRevisionParent = revisionParentDetail?.kind === "ready" && revisionParentDetail.data.id === chosenVersionId
-    ? revisionParentDetail.data
-    : null;
-  useEffect(() => {
-    if (!revisionOpen || !chosenVersionId) {
-      setRevisionMaterialMetadata(null);
-      setRevisionMaterialMetadataError(null);
-      setRevisionMaterialMetadataLoading(false);
+      setRevisionCandidates(null);
       return;
     }
     let cancelled = false;
     let timer: number | undefined;
     const controller = new AbortController();
-    setRevisionMaterialMetadataLoading(true);
-    setRevisionMaterialMetadataError(null);
+    setRevisionCandidates({ kind: "loading" });
 
-    async function refreshAnalysisMetadata() {
+    async function refreshCandidates() {
       try {
-        const items = await getAllMaterialItems(symbol, controller.signal);
-        if (!cancelled) {
-          setRevisionMaterialMetadata({ parentVersionId: chosenVersionId, items });
-          setRevisionMaterialMetadataError(null);
-        }
+        const next = await getV2RevisionCandidates(chosenVersionId, controller.signal);
+        if (!cancelled) setRevisionCandidates({ kind: "ready", data: next });
       } catch (error) {
-        if (!cancelled && !controller.signal.aborted) setRevisionMaterialMetadataError(errorMessage(error, "暂时无法读取材料分析状态。"));
-      } finally {
-        if (!cancelled) {
-          setRevisionMaterialMetadataLoading(false);
-          timer = window.setTimeout(() => { void refreshAnalysisMetadata(); }, 10_000);
+        if (!cancelled && !controller.signal.aborted) {
+          setRevisionCandidates({ kind: "error", message: errorMessage(error, "暂时无法读取可选修订材料。") });
         }
+      } finally {
+        if (!cancelled) timer = window.setTimeout(() => { void refreshCandidates(); }, 10_000);
       }
     }
 
-    void refreshAnalysisMetadata();
+    void refreshCandidates();
     return () => {
       cancelled = true;
       if (timer !== undefined) window.clearTimeout(timer);
       controller.abort();
     };
-  }, [revisionOpen, symbol, chosenVersionId]);
+  }, [revisionOpen, chosenVersionId]);
 
-  const revisionSourceOptions = useMemo<Array<SourceOption & { revisionType: "new" | "backfilled" | "updated" | "reanalyzed" }>>(() => {
-    if (!matchingRevisionParent) return [];
-    const parentSources = matchingRevisionParent.evidence_version_manifest;
-    const priorBySource = new Map<string, Record<string, unknown>>();
-    parentSources.forEach((item) => {
-      const sourceType = typeof item.source_type === "string" ? item.source_type : null;
-      const sourceId = typeof item.source_id === "string" ? item.source_id : null;
-      if (sourceType && sourceId) priorBySource.set(`${sourceType}:${sourceId}`, item);
-    });
-    const priorContentHashes = new Set(parentSources.flatMap((item) => typeof item.content_sha256 === "string" ? [item.content_sha256] : []));
-    const parentDecisionAt = Date.parse(matchingRevisionParent.decision_at);
-    // The revision window the server enforces: seven days after the forecast, thirty days before it.
-    const maxForwardTime = parentDecisionAt + 7 * 24 * 60 * 60 * 1000;
-    const minBackwardTime = parentDecisionAt - 30 * 24 * 60 * 60 * 1000;
-
-    const analysisItems = revisionMaterialMetadata?.parentVersionId === chosenVersionId ? revisionMaterialMetadata.items : [];
-    const analysesBySource = new Map(analysisItems.map((item) => [`${item.source_type}:${item.source_id}`, item]));
-    const eligible: Array<SourceOption & { revisionType: "new" | "backfilled" | "updated" | "reanalyzed" }> = [];
-    for (const source of sourceOptions) {
-      const publishedAt = source.publishedAt;
-      const observedAt = source.observedAt;
-      if (!source.contentHash || typeof publishedAt !== "string" || typeof observedAt !== "string"
-        || !isTimezoneAwareTimestamp(publishedAt) || !isTimezoneAwareTimestamp(observedAt)) continue;
-      const pubTime = Date.parse(publishedAt);
-      const obsTime = Date.parse(observedAt);
-      const key = `${source.source_type}:${source.source_id}`;
-      const previous = priorBySource.get(key);
-      if (!previous) {
-        if (priorContentHashes.has(source.contentHash)) continue;
-        if (pubTime >= parentDecisionAt && pubTime <= maxForwardTime) {
-          eligible.push({ ...source, revisionType: "new" });
-          continue;
-        }
-        if (obsTime > parentDecisionAt && pubTime >= minBackwardTime && pubTime < parentDecisionAt) {
-          eligible.push({ ...source, revisionType: "backfilled" });
-          continue;
-        }
-        continue;
-      }
-
-      const previousContentHash = typeof previous.content_sha256 === "string"
-        ? previous.content_sha256
-        : typeof previous.content_hash === "string" ? previous.content_hash : null;
-      const contentChanged = previousContentHash !== null && source.contentHash !== previousContentHash;
-      const reviewChanged = typeof previous.review_status === "string" && source.reviewStatus !== null && source.reviewStatus !== previous.review_status;
-      const reviewedAfterParent = source.reviewedAt !== null && Date.parse(source.reviewedAt) > parentDecisionAt;
-      const priorRating = typeof previous.user_rating_stars === "number" ? previous.user_rating_stars : null;
-      const ratingChanged = source.userRatingStars !== null && source.userRatingStars !== priorRating;
-      const analysis = analysesBySource.get(key);
-      const previousEventId = typeof previous.event_version_id === "string"
-        ? previous.event_version_id
-        : typeof previous.id === "string" ? previous.id : null;
-      const analysisCompletedAfterParent = Boolean(
-        analysis?.latest_analysis_id
-        && typeof analysis.latest_analysis_created_at === "string"
-        && Date.parse(analysis.latest_analysis_created_at) > parentDecisionAt
-        && analysis.latest_analysis_evidence_version_id === previousEventId,
-      );
-      if (contentChanged || reviewChanged || reviewedAfterParent || ratingChanged) eligible.push({ ...source, revisionType: "updated" });
-      else if (analysisCompletedAfterParent) eligible.push({ ...source, revisionType: "reanalyzed" });
-    }
-    eligible.sort((a, b) => {
-      const timeA = a.publishedAt ? Date.parse(a.publishedAt) : 0;
-      const timeB = b.publishedAt ? Date.parse(b.publishedAt) : 0;
-      return timeB - timeA;
-    });
-    return eligible;
-  }, [sourceOptions, matchingRevisionParent, revisionMaterialMetadata, chosenVersionId]);
-  const chosenSources = revisionSourceOptions.filter((source) => selectedSourceKeys.includes(`${source.source_type}:${source.source_id}`));
+  const revisionCandidatesData = revisionCandidates?.kind === "ready" && revisionCandidates.data.version_id === chosenVersionId
+    ? revisionCandidates.data
+    : null;
+  const revisionSourceOptions = useMemo(() => (revisionCandidatesData?.candidates ?? []).map((candidate) => ({
+    key: `${candidate.source_type}:${candidate.source_id}`,
+    source_type: candidate.source_type,
+    source_id: candidate.source_id,
+    label: candidate.title,
+    publishedAt: candidate.published_at,
+    observedAt: candidate.observed_at,
+    revisionType: candidate.category,
+  })), [revisionCandidatesData]);
+  const chosenSources = revisionSourceOptions.filter((source) => selectedSourceKeys.includes(source.key));
 
   async function createForecast() {
     setActionError(null);
@@ -421,7 +278,7 @@ export function V2ForecastWorkspace({ symbol, filings, priceHistory, mode, onOpe
   }
 
   async function createRevision() {
-    if (!chosenVersion || !matchingRevisionParent || chosenSources.length === 0) return;
+    if (!chosenVersion || !revisionCandidatesData || chosenSources.length === 0) return;
     setActionError(null);
     try {
       const job = await createV2ManualRevisionJob(chosenVersion.id, chosenSources.map((source) => ({
@@ -443,7 +300,7 @@ export function V2ForecastWorkspace({ symbol, filings, priceHistory, mode, onOpe
   const selectedCalibration = selectedCurrentVersion?.model_manifest.local_calibration as Record<string, unknown> | undefined;
   const rootIsRevisable = selectedRoot?.expired === false;
   const revisionDisabledReason = selectedRoot?.expired === true ? t("该预测的目标已到期，只能查看历史版本。") : selectedRoot?.expired === null ? t("该预测的目标合同无效，只能查看历史版本。") : null;
-  const canCreateRevision = Boolean(chosenVersion && matchingRevisionParent && chosenSources.length > 0 && chosenSources.length <= 10 && !isActiveJob(activeJob));
+  const canCreateRevision = Boolean(chosenVersion && revisionCandidatesData && !revisionCandidatesData.expired && chosenSources.length > 0 && chosenSources.length <= 10 && !isActiveJob(activeJob));
 
   const hasNoRevisionRoot = roots.kind === "ready" && roots.data.roots.length === 0;
 
@@ -536,7 +393,7 @@ export function V2ForecastWorkspace({ symbol, filings, priceHistory, mode, onOpe
                 <button
                   type="button"
                   className="text-button"
-                  onClick={() => setSelectedSourceKeys(revisionSourceOptions.slice(0, 10).map((s) => `${s.source_type}:${s.source_id}`))}
+                  onClick={() => setSelectedSourceKeys(revisionSourceOptions.slice(0, 10).map((s) => s.key))}
                 >
                   {t("全选前10项")}
                 </button>
@@ -552,14 +409,30 @@ export function V2ForecastWorkspace({ symbol, filings, priceHistory, mode, onOpe
               </div>
             )}
           </div>
-          {!matchingRevisionParent ? (
-            <p className="v2-hint-text">{revisionParentDetail?.kind === "error" ? t("基准版本材料读取失败") : t("正在核对基准版本材料…")}</p>
+          {revisionCandidates?.kind === "error" ? (
+            <p className="v2-hint-text" role="status">{t("无法读取可选修订材料，系统会继续重试：")}{revisionCandidates.message}</p>
+          ) : !revisionCandidatesData ? (
+            <p className="v2-hint-text">{<Tx text={"正在读取可选修订材料…"} />}</p>
+          ) : revisionCandidatesData.expired ? (
+            <p className="v2-hint-text">{t(revisionCandidatesData.target_end_date === null ? "该预测的目标合同无效，只能查看历史版本。" : "该预测的目标已到期，只能查看历史版本。")}</p>
           ) : revisionSourceOptions.length === 0 ? (
-            <p className="v2-hint-text">{<Tx text={"当前没有可用于修订的材料。符合条件的材料包括：基准版本发布后 3 天内的新材料，或基准版本前 30 天内发布但事后才录入的补充材料。"} />}</p>
+            <>
+              <p className="v2-hint-text">{<Tx text={"当前没有可用于修订的材料。可选的是：预测后 7 天内发布的新材料，或预测前 30 天内发布、预测之后才收录的材料。"} />}</p>
+              {revisionCandidatesData.excluded.length > 0 && (
+                <ul className="v2-revision-excluded">
+                  {revisionCandidatesData.excluded.map((item) => (
+                    <li key={`${item.source_type}:${item.source_id}`}>
+                      <span className="v2-source-title">{item.title}</span>
+                      <span className="v2-source-meta-row">{item.reason_text ?? item.reason}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </>
           ) : (
             <div className="v2-revision-sources-list">
               {revisionSourceOptions.map((source) => {
-                const key = `${source.source_type}:${source.source_id}`;
+                const key = source.key;
                 const isChecked = selectedSourceKeys.includes(key);
                 const tagColor = source.revisionType === "new" ? "badge-new" : source.revisionType === "backfilled" ? "badge-backfilled" : "badge-updated";
                 const typeLabel = source.revisionType === "new"
@@ -591,7 +464,6 @@ export function V2ForecastWorkspace({ symbol, filings, priceHistory, mode, onOpe
                       <div className="v2-source-meta-row">
                         <span>{t("发布时间")}：{formatTime(source.publishedAt)}</span>
                         {source.observedAt && <span> · {t("入库时间")}：{formatTime(source.observedAt)}</span>}
-                        {typeof source.userRatingStars === "number" && <span> · {source.userRatingStars}★</span>}
                       </div>
                     </div>
                   </label>
@@ -601,12 +473,6 @@ export function V2ForecastWorkspace({ symbol, filings, priceHistory, mode, onOpe
           )}
         </div>
         <div className="v2-form-footer">
-          {revisionParentDetail?.kind === "loading" && <p>{<Tx text={"正在核对所选版本已经使用的材料…"} />}</p>}
-          {revisionParentDetail?.kind === "error" && <p role="alert">{t("无法读取基准版本材料清单：")}{revisionParentDetail.message}</p>}
-          {revisionMaterialMetadataLoading && <p>{<Tx text={"正在同步材料分析状态；打开此表单期间会自动刷新。"} />}</p>}
-          {revisionMaterialMetadataError && <p role="status">{t("分析状态读取失败，系统会继续重试：")}{revisionMaterialMetadataError}</p>}
-          {matchingRevisionParent && uploaded.kind === "loading" && <p>{<Tx text={"正在读取已上传媒体材料…"} />}</p>}
-          {matchingRevisionParent && uploaded.kind === "error" && <p role="status">{t("媒体材料列表暂不可用：")}{uploaded.message} {t("SEC 材料仍可继续检查。")}</p>}
           <button className="primary-action" type="button" onClick={createRevision} disabled={!canCreateRevision || !rootIsRevisable}>
             {<Tx text={"创建人工修订任务"} />}{selectedSourceKeys.length > 0 ? ` (${selectedSourceKeys.length})` : ""}
           </button>

@@ -343,6 +343,42 @@ export async function getV2ForecastVersion(versionId: string, signal?: AbortSign
   return requestJson<V2VersionDetail>(`/api/v2/forecast-versions/${encodeURIComponent(versionId)}`, { signal });
 }
 
+export type V2RevisionCandidate = {
+  source_type: "official_filing" | "uploaded_media";
+  source_id: string;
+  title: string;
+  kind: string;
+  published_at: string;
+  observed_at: string;
+  category: "new" | "backfilled" | "updated" | "reanalyzed";
+  badge: string | null;
+};
+
+export type V2RevisionCandidates = {
+  version_id: string;
+  version_no: number;
+  symbol: string;
+  decision_at: string;
+  window_start: string;
+  window_end: string;
+  target_end_date: string | null;
+  expired: boolean;
+  candidates: V2RevisionCandidate[];
+  excluded: Array<{
+    source_type: "official_filing" | "uploaded_media";
+    source_id: string;
+    title: string;
+    kind: string;
+    published_at: string;
+    reason: string;
+    reason_text: string | null;
+  }>;
+};
+
+export async function getV2RevisionCandidates(versionId: string, signal?: AbortSignal): Promise<V2RevisionCandidates> {
+  return requestJson<V2RevisionCandidates>(`/api/v2/forecast-versions/${encodeURIComponent(versionId)}/revision-candidates`, { signal });
+}
+
 export async function createV2ForecastJob(symbol: string, sourceRefs: V2SourceRef[] = []): Promise<V2ForecastJob> {
   return requestJson<V2ForecastJob>("/api/v2/forecast-jobs", {
     method: "POST",

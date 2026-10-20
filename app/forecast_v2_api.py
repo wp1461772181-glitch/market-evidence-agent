@@ -24,7 +24,7 @@ from .evidence_context import EvidenceContextError, freeze_evidence_context
 from .forecast_evaluation_v2 import JEV_LOG_LOSS_EPSILON
 from .forecast_contract import future_xnys_sessions, latest_completed_xnys_session
 from .forecast_jobs import ForecastJobError, enqueue_job
-from .forecast_revision_candidates import window_category
+from .forecast_revision_candidates import REVISION_LOOKAHEAD, REVISION_LOOKBACK, assess_revision_sources, window_category
 from .jev_learning import jev_learning_status
 from .forecast_v2_models import ForecastEvaluationV2, ForecastJobV2, ForecastVersionV2, OfficialMonitorRunV2
 from .market_time import xnys_session_close_at
@@ -239,6 +239,50 @@ def get_v2_forecast_version(version_id: UUID, db: Session = Depends(get_v2_db)) 
         if version is None:
             raise HTTPException(status_code=404, detail="V2 forecast version was not found")
         return _version_payload(version)
+    except HTTPException:
+        raise
+    except SQLAlchemyError as exc:
+        raise HTTPException(status_code=503, detail="V2 job store is unavailable") from exc
+
+
+@router.get("/forecast-versions/{version_id}/revision-candidates")
+def get_v2_revision_candidates(version_id: UUID, db: Session = Depends(get_v2_db)) -> dict[str, Any]:
+    """The saved materials the server would accept for a manual revision of this version."""
+    try:
+        version = db.get(ForecastVersionV2, version_id)
+        if version is None:
+            raise HTTPException(status_code=404, detail="V2 forecast version was not found")
+        root = db.get(ForecastVersionV2, version.root_id) or version
+        target_end_date, target_expired = _root_target_end(root, now=datetime.now(UTC))
+        # An unreadable target cannot be revised either; report it as expired rather than fail this read.
+        expired = target_expired is not False
+        decided = _utc(version.decision_at)
+        candidates: list[dict[str, Any]] = []
+        excluded: list[dict[str, Any]] = []
+        if not expired:
+            assessed = assess_revision_sources(db, version)
+            candidates = [
+                {key: value for key, value in row.items() if key not in ("reason", "reason_text")}
+                for row in assessed if row["category"]
+            ]
+            excluded = [
+                {key: row[key] for key in (
+                    "source_type", "source_id", "title", "kind", "published_at", "reason", "reason_text"
+                )}
+                for row in assessed if row["reason"] and row["reason"] != "not_published_yet"
+            ][:3]
+        return {
+            "version_id": str(version.id),
+            "version_no": version.version_no,
+            "symbol": version.symbol,
+            "decision_at": decided.isoformat(),
+            "window_start": (decided - REVISION_LOOKBACK).isoformat(),
+            "window_end": (decided + REVISION_LOOKAHEAD).isoformat(),
+            "target_end_date": target_end_date,
+            "expired": expired,
+            "candidates": candidates,
+            "excluded": excluded,
+        }
     except HTTPException:
         raise
     except SQLAlchemyError as exc:

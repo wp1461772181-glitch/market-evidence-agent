@@ -844,6 +844,8 @@ body{background:var(--canvas);color:var(--ink)}
 .badge-backfilled{background:#fef7e0;color:#b06000;border:1px solid #feefc3}
 .badge-updated{background:#e8f0fe;color:#1a73e8;border:1px solid #d2e3fc}
 .v2-hint-text{font-size:12px;color:var(--muted);margin:6px 0;padding:10px;background:#f8f9fa;border-radius:6px;border:1px dashed #d1d5db}
+.v2-revision-excluded{list-style:none;display:flex;flex-direction:column;gap:6px;margin:0;padding:8px 10px;border:1px solid #e1e7e4;border-radius:6px;background:#fff}
+.v2-revision-excluded li{display:flex;flex-direction:column;gap:2px;font-size:11px}
 
 .v2-form-footer{grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;gap:16px}
 
