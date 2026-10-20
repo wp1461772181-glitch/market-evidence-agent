@@ -108,15 +108,15 @@ def python_executable() -> Path:
 
 def build_release(sha: str, *, dry_run: bool) -> Path:
     target = RELEASES / f"{sha}-verified"
-    if target.exists():
+    if target.exists() and any(target.rglob("*")):
         say("backend", f"release already exists: {target.name}")
         return target
     say("backend", f"exporting {sha[:8]} to {target.relative_to(ROOT)}")
     if dry_run:
         return target
     target.mkdir(parents=True, exist_ok=True)
-    archive = run(["git", "archive", sha])
-    subprocess.run(["tar", "-x", "-C", str(target)], input=archive.stdout.encode(), check=True)
+    archive = subprocess.run(["git", "archive", sha], cwd=ROOT, capture_output=True, check=True)
+    subprocess.run(["tar", "-x", "-C", str(target)], input=archive.stdout, check=True)
     say("backend", f"{sum(1 for _ in target.rglob('*') if _.is_file())} files exported")
     return target
 
