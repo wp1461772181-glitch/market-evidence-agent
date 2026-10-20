@@ -43,6 +43,10 @@ os.environ["DATABASE_URL"] = _DISPOSABLE_DATABASE_URL.render_as_string(hide_pass
 os.environ["PERSONAL_CHAT_LOGIN_PATH"] = os.path.join(
     os.path.abspath(os.getenv("TMPDIR", "/tmp")), f"pytest-missing-owner-{uuid4().hex}.json"
 )
+# Credential encryption is a deployment setting, not a developer-machine secret.
+# Keep the suite hermetic on CI where neither MODEL_CREDENTIAL_KEY nor
+# APP_API_ACCESS_KEY is present.
+os.environ.setdefault("MODEL_CREDENTIAL_KEY", "pytest-model-credential-key-0123456789abcdef")
 
 # These imports must remain after DATABASE_URL is set so every application
 # module and test shares the disposable database engine.
