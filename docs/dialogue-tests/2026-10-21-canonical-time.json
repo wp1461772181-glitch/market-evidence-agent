@@ -1,0 +1,154 @@
+{
+ "suite": "reference resolution writes one self-contained question per turn; relative time comes back explicit from the model, not from a regex",
+ "notes": "Shadow, read-only. Expected figures are Microsoft's reported values in the scratch database: FY2026 revenue 331,839 and net income 133,749; FY2025 revenue 281,724; FY2024 revenue 245,122 (USD millions). Run on 2026-10-21, so 去年 is 2025 and 上一财年 is FY2026 (ended 2026-06-30).",
+ "cases": [
+  {
+   "id": "T01",
+   "title": "第一句就带相对时间：去年微软的营收 → 那前年呢",
+   "identity": "guest",
+   "steps": [
+    {
+     "text": "去年微软的营收是多少？",
+     "check": {
+      "resolver_ran": true,
+      "canonical_any": [
+       [
+        "2025"
+       ]
+      ],
+      "tools_include": [
+       "query_financials"
+      ],
+      "answer_any": [
+       [
+        "281,724",
+        "2,817",
+        "2817"
+       ]
+      ],
+      "answer_no_codes": true,
+      "no_dropped": false
+     }
+    },
+    {
+     "text": "那前年呢？",
+     "check": {
+      "resolver_ran": true,
+      "canonical_any": [
+       [
+        "2024"
+       ]
+      ],
+      "answer_no_codes": true,
+      "no_dropped": false,
+      "answer_any": [
+       [
+        "245,122",
+        "2,451",
+        "2451"
+       ]
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "T02",
+   "title": "上一财年：按当前日期和微软 6 月结束的财年换算",
+   "identity": "guest",
+   "steps": [
+    {
+     "text": "微软上一财年的净利润是多少？",
+     "check": {
+      "resolver_ran": true,
+      "canonical_any": [
+       [
+        "2026"
+       ]
+      ],
+      "answer_any": [
+       [
+        "133,749",
+        "1,337",
+        "1337"
+       ]
+      ],
+      "answer_no_codes": true,
+      "no_dropped": false
+     }
+    }
+   ]
+  },
+  {
+   "id": "T03",
+   "title": "没有相对时间的问题：改写不凭空加年份",
+   "identity": "guest",
+   "steps": [
+    {
+     "text": "查微软最近一期年报披露的全年营业收入。",
+     "check": {
+      "resolver_ran": true,
+      "canonical_any": [
+       [
+        "最近一期",
+        "最新一期",
+        "最新"
+       ]
+      ],
+      "answer_any": [
+       [
+        "331,839",
+        "3,318",
+        "3318"
+       ]
+      ],
+      "answer_no_codes": true,
+      "no_dropped": false
+     }
+    }
+   ]
+  },
+  {
+   "id": "T04",
+   "title": "格式要求留在改写里：用表格列出去年和前年",
+   "identity": "guest",
+   "steps": [
+    {
+     "text": "用表格列出微软去年和前年的营收。",
+     "check": {
+      "resolver_ran": true,
+      "canonical_any": [
+       [
+        "表格",
+        "表"
+       ],
+       [
+        "2025"
+       ],
+       [
+        "2024"
+       ]
+      ],
+      "answer_any": [
+       [
+        "|"
+       ],
+       [
+        "281,724",
+        "2,817",
+        "2817"
+       ],
+       [
+        "245,122",
+        "2,451",
+        "2451"
+       ]
+      ],
+      "answer_no_codes": true,
+      "no_dropped": false
+     }
+    }
+   ]
+  }
+ ]
+}

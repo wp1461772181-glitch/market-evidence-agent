@@ -295,7 +295,8 @@ def test_current_message_is_sent_and_no_tool_path_streams(monkeypatch):
     with TestClient(main.app) as client:
         events=frames(send(client,message='parent-current-message'))
     assert events[-1][0]=='done'
-    assert len(requests)==2  # Classification and independent tool-free B generation.
+    assert len(requests)==3  # Reference, classification and independent tool-free B generation.
+    assert [r['tools'][0]['function']['name'] for r in requests[:2]]==['resolve_reference','classify_request']
     assert requests[0]['messages'][-1]['role']=='user'
     assert json.loads(requests[0]['messages'][-1]['content'])['question']=='parent-current-message'
     assert not any(e[0]=='tool_start' for e in events)

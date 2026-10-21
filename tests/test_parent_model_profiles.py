@@ -139,14 +139,17 @@ def test_custom_endpoint_and_model_reach_standalone_classifier(monkeypatch):
  real_client=httpx.AsyncClient;seen=[]
  def capture(req):
   b=json.loads(req.content);seen.append((str(req.url),b,req.headers['authorization']))
-  content=json.dumps({'category':'B','days_back':None}) if b.get('tools') else 'DEMO CUSTOM ANSWER'
-  if b.get('tools'):assert b['tools'][0]['function']['name']=='classify_request'
+  name=(b.get('tools') or [{}])[0].get('function',{}).get('name')
+  if name=='resolve_reference':content=json.dumps({'relationship':'new','canonical_question':json.loads(b['messages'][-1]['content'])['question']})
+  elif name=='classify_request':content=json.dumps({'category':'B','days_back':None})
+  else:content='DEMO CUSTOM ANSWER'
   return httpx.Response(200,json={'choices':[{'message':{'role':'assistant','content':content},'finish_reason':'stop'}]})
  monkeypatch.setattr('app.agent_chat_provider.httpx.AsyncClient',lambda **kwargs:real_client(transport=httpx.MockTransport(capture)))
  with TestClient(app) as client:
   r=client.post('/agent-chat/stream',json=body('https://provider.example/custom/v1/chat/completions',True),headers={'X-Chat-Session':'parent-config-'+'c'*48})
  assert r.status_code==200 and 'DEMO CUSTOM ANSWER' in r.text and 'event: done' in r.text
- assert len(seen)==2
+ assert len(seen)==3
+ assert [b['tools'][0]['function']['name'] for _,b,_ in seen[:2]]==['resolve_reference','classify_request']
  assert all(url=='https://provider.example/custom/v1/chat/completions' for url,_,_ in seen)
  assert all(b['model']=='user-model' and auth=='Bearer '+FAKE for _,b,auth in seen)
  assert FAKE not in r.text

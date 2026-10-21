@@ -280,6 +280,15 @@ def grade(check, row):
     if 'relationship' in check:
         rel = (stages.get('resolver') or {}).get('relationship')
         add('relationship', rel in check['relationship'], rel)
+    # The resolver's rewrite: every turn is resolved, and relative time comes back explicit.
+    resolver = stages.get('resolver') or {}
+    canonical = str(resolver.get('canonical_question') or '')
+    if check.get('resolver_ran'):
+        add('resolver ran', resolver.get('skipped') is False, resolver.get('skipped'))
+    for group in check.get('canonical_any', []):
+        add('canonical has ' + '|'.join(group), any(str(x) in canonical for x in group), canonical[:120])
+    for text in check.get('canonical_excludes', []):
+        add('canonical lacks ' + str(text), str(text) not in canonical, canonical[:120])
     names = [t['name'] for t in row.get('tools') or []]
     for name in check.get('tools_include', []):
         add('tool:' + name, name in names, names)
