@@ -1204,5 +1204,8 @@
   "系统默认（DeepSeek 环境配置）": "System default (DeepSeek environment configuration)",
   "设为默认": "Set as default",
   "恢复系统默认": "Restore system default",
-  "还没有带 API key 的模型配置；请先在上方添加并测试一个模型。": "No model profile with an API key yet; add and test one above first."
+  "还没有带 API key 的模型配置；请先在上方添加并测试一个模型。": "No model profile with an API key yet; add and test one above first.",
+  "加载更早消息": "Load earlier messages",
+  "正在加载更早消息…": "Loading earlier messages…",
+  "更早的聊天记录暂时无法加载。": "Earlier messages could not be loaded. Please try again."
 }

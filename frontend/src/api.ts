@@ -88,16 +88,19 @@ export async function listAgentConversations(offset=0,signal?:AbortSignal): Prom
   const data=await response.json() as {conversations?:unknown;has_more?:unknown};
   return {conversations:Array.isArray(data.conversations)?data.conversations as unknown as ConversationSummary[]:[],hasMore:data.has_more===true};
 }
-export async function restoreAgentChat(selectedId?: string | null, signal?: AbortSignal, requireExisting=false): Promise<{ conversationId: string | null; createdAt:string|null; messages: AgentChatMessage[] }> {
+export async function restoreAgentChat(selectedId?: string | null, signal?: AbortSignal, requireExisting=false, before?: number | null, limit=20): Promise<{ conversationId: string | null; createdAt:string|null; messages: AgentChatMessage[]; hasMore:boolean; nextBefore:number|null }> {
   const conversationId = selectedId ?? conversationForMode(window.localStorage) ?? window.sessionStorage.getItem(chatConversationKey);
-  if (!conversationId) return { conversationId: null, createdAt:null, messages: [] };
-  const response = await fetch(agentChatUrl("messages", configuredApiBaseUrl).replace(/messages$/, `conversations/${encodeURIComponent(conversationId)}/messages`), {
+  if (!conversationId) return { conversationId: null, createdAt:null, messages: [], hasMore:false, nextBefore:null };
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (before !== undefined && before !== null) params.set("before", String(before));
+  const response = await fetch(agentChatUrl("messages", configuredApiBaseUrl).replace(/messages$/, `conversations/${encodeURIComponent(conversationId)}/messages`) + `?${params.toString()}`, {
     signal, headers: { Accept: "application/json", "X-Chat-Session": chatCredential() }, cache: "no-store",
   });
-  if (response.status === 404) { if(requireExisting)throw new ApiError("无法恢复服务端聊天记录。",404); return { conversationId: null, createdAt:null, messages: [] }; }
+  if (response.status === 404) { if(requireExisting)throw new ApiError("无法恢复服务端聊天记录。",404); return { conversationId: null, createdAt:null, messages: [], hasMore:false, nextBefore:null }; }
   if (!response.ok) throw new ApiError("无法恢复服务端聊天记录。", response.status);
-  const data = await response.json() as { messages?: AgentChatMessage[] };
-  return { conversationId, createdAt:conversationCreatedAtForMode(window.localStorage), messages: Array.isArray(data.messages) ? data.messages : [] };
+  const data = await response.json() as { messages?: AgentChatMessage[]; has_more?:unknown; next_before?:unknown };
+  return { conversationId, createdAt:conversationCreatedAtForMode(window.localStorage), messages: Array.isArray(data.messages) ? data.messages : [],
+    hasMore: data.has_more === true, nextBefore: typeof data.next_before === "number" ? data.next_before : null };
 }
 export function clearAgentConversation(): void { selectConversationForMode(window.localStorage,window.sessionStorage,null); }
 export function selectAgentConversation(id:string|null,createdAt?:string|null):void { selectConversationForMode(window.localStorage,window.sessionStorage,id,undefined,createdAt); }

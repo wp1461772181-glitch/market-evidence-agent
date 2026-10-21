@@ -75,8 +75,8 @@ def test_ask_user_card_survives_sse_and_history(stream_fixture,monkeypatch):
     events=frames(asyncio.run(send('它的营收？')));card=next(d for e,d in events if e=='clarification')
     assert card['choices'][0]['value']=='reply:Apple'
     protocol=next(k['tool_calls'] for _,k in stored if k.get('tool_calls',{}).get('clarification'))
-    async def rows(*_):return [{'role':'assistant','content':'哪家公司？','status':'complete','turn_id':'turn','tool_calls':protocol}]
-    monkeypatch.setattr(stream,'owned_messages',rows)
+    async def rows(*_args,**_kwargs):return {'messages':[{'role':'assistant','content':'哪家公司？','status':'complete','turn_id':'turn','tool_calls':protocol}],'has_more':False,'next_before':None}
+    monkeypatch.setattr(stream,'owned_message_page',rows)
     restored=asyncio.run(stream.get_messages('conversation','owner'))['messages'][0]
     assert restored['clarification']['choices']==card['choices']
 

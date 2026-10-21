@@ -124,6 +124,8 @@
 /* --- transcript ---------------------------------------------------------------------------- */
 .agent-transcript { position: relative; flex: 1 1 auto; min-height: 0; min-width: 0; overflow-y: auto; overflow-x: hidden; padding: 6px clamp(4px, 2vw, 20px) 18px; scroll-padding-bottom: 24px; scrollbar-width: thin; }
 .agent-transcript > p[role="status"], .copy-status { margin: 0 0 8px; color: var(--c-muted); font-size: 12px; }
+.agent-earlier { display: flex; justify-content: center; padding: 2px 0 12px; }
+.agent-earlier button { font-size: 12px; }
 .agent-welcome { display: grid; align-content: center; justify-items: center; gap: 6px; min-height: 100%; padding: 28px 8px; text-align: center; }
 .agent-welcome h2 { margin: 0; font: 600 26px/1.25 var(--sans); }
 .agent-welcome > p:not(.eyebrow) { margin: 0; color: var(--c-muted); font-size: 13px; }

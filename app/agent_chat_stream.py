@@ -1,7 +1,7 @@
 from __future__ import annotations
 import asyncio, hashlib, json, uuid, time
 from urllib.parse import urlsplit
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from starlette.background import BackgroundTask
 from pydantic import model_validator, BaseModel, Field, SecretStr, field_validator
@@ -9,7 +9,7 @@ from .agent_chat_provider import ProviderFailure
 from .agent_chat_api import REQUEST_SLOTS
 from .agent_tools import tool_schemas
 from .agent_workflow.graph import stream_workflow, mark_terminal_status
-from .agent_chat_store import create_conversation,verify_conversation,append_message,owned_messages,history,finish_conversation,owner_hash
+from .agent_chat_store import create_conversation,verify_conversation,append_message,owned_message_page,history,finish_conversation,owner_hash
 from .agent_chat_store import conversation_context
 from . import agent_context as layers
 router=APIRouter(prefix="/agent-chat",tags=["agent-chat-stream"])
@@ -481,10 +481,14 @@ async def get_conversation_context(conversation_id:str,x_chat_session:str|None=H
  return _context_report(context)
 
 @router.get("/conversations/{conversation_id}/messages")
-async def get_messages(conversation_id:str,x_chat_session:str|None=Header(default=None)):
+async def get_messages(conversation_id:str,before:int|None=Query(default=None,ge=1),
+                       limit:int=Query(default=20,ge=1,le=100),
+                       x_chat_session:str|None=Header(default=None)):
+ """One page of saved turns for the browser. before is an exclusive turn cursor; limit counts turns."""
  if not x_chat_session:raise HTTPException(404,"conversation_not_found")
- rows=await owned_messages(conversation_id,x_chat_session)
- if rows is None:raise HTTPException(404,"conversation_not_found")
+ page=await owned_message_page(conversation_id,x_chat_session,before_sequence=before,limit_turns=limit)
+ if page is None:raise HTTPException(404,"conversation_not_found")
+ rows=page["messages"]
 
  traces_by_turn={}
  for row in rows:
@@ -547,7 +551,7 @@ async def get_messages(conversation_id:str,x_chat_session:str|None=Header(defaul
     # An ask/clarify card is answered by the next message in the conversation.
     status="complete" if position<len(messages)-1 else "running"
    for trace in pending: trace["status"]=status;trace["card"]=True
- return {"messages":messages}
+ return {"messages":messages,"has_more":page["has_more"],"next_before":page["next_before"]}
 
 
 class ResearchQueueBody(BaseModel):

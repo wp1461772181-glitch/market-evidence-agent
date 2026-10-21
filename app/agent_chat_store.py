@@ -88,21 +88,51 @@ async def append_summary(conversation_id: str, from_sequence: int, upto_sequence
         return True
 
 
-async def owned_messages(conversation_id: str,credential: str):
+def _eligible_turn_groups(rows):
+    groups=[]
+    for row in rows:
+        if not groups or groups[-1][-1].turn_id!=row.turn_id: groups.append([])
+        groups[-1].append(row)
+    return [group for group in groups
+            if group and group[0].role=="user" and group[-1].role=="assistant"
+            and group[-1].status in {"complete","failed","cancelled"}]
+
+
+def _select_message_page(groups, before_sequence=None, limit_turns=20):
+    """Choose complete turns for the browser, newest first.
+
+    The browser history is not the model context: it has no total byte budget.  A page
+    is bounded by whole turns so a restored answer always carries its own tool rows;
+    before_sequence is the exclusive cursor returned as next_before.
+    """
+    if before_sequence is not None:
+        groups=[group for group in groups if group[-1].sequence < before_sequence]
+    if limit_turns is None:
+        selected=groups
+    else:
+        selected=groups[-max(1,min(100,int(limit_turns))):]
+    has_more=len(groups)>len(selected)
+    next_before=selected[0][0].sequence if has_more and selected else None
+    return selected,has_more,next_before
+
+
+async def owned_message_page(conversation_id: str, credential: str, *, before_sequence=None, limit_turns=20):
+    """One page of complete turns for the browser, independent of the model context budget."""
     if not await verify_conversation(conversation_id,credential): return None
     async with Session() as s:
-        rows=(await s.scalars(select(AgentMessage).where(AgentMessage.conversation_id==uuid.UUID(conversation_id)).order_by(AgentMessage.sequence.desc()).limit(500))).all()
-        rows=list(reversed(rows)); groups=[]
-        for row in rows:
-            if not groups or groups[-1][0]!=row.turn_id: groups.append((row.turn_id,[]))
-            groups[-1][1].append(row)
-        selected=[]; used=0
-        for _,group in reversed(groups):
-            if not group or group[0].role!="user" or group[-1].role!="assistant" or group[-1].status not in {"complete","failed","cancelled"}: continue
-            size=sum(_message_bytes(m) for m in group)
-            if used+size>100000: break
-            selected[0:0]=group; used+=size
-        return [{"role":m.role,"content":m.content,"tool_calls":m.tool_calls,"tool_call_id":m.tool_call_id,"status":m.status,"turn_id":str(m.turn_id)} for m in selected]
+        rows=(await s.scalars(select(AgentMessage)
+              .where(AgentMessage.conversation_id==uuid.UUID(conversation_id))
+              .order_by(AgentMessage.sequence.asc()))).all()
+    selected,has_more,next_before=_select_message_page(_eligible_turn_groups(rows),before_sequence,limit_turns)
+    return {"messages":[{"role":m.role,"content":m.content,"tool_calls":m.tool_calls,"tool_call_id":m.tool_call_id,
+                         "status":m.status,"turn_id":str(m.turn_id)} for group in selected for m in group],
+            "has_more":has_more,"next_before":next_before}
+
+
+async def owned_messages(conversation_id: str,credential: str):
+    """All complete turns for legacy callers; the browser uses owned_message_page."""
+    page=await owned_message_page(conversation_id,credential,limit_turns=None)
+    return None if page is None else page["messages"]
 
 def ensure_conversation_archive_column() -> None:
     """Add the archive column to an existing table.  A fresh database gets it from the model.

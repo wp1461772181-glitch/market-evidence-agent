@@ -63,8 +63,8 @@ def test_message_restore_rejects_missing_and_cross_owner(monkeypatch):
     from app.agent_chat_middleware import create_agent_chat_access_middleware
     app=FastAPI();app.include_router(agent_chat_stream.router)
     app.middleware("http")(create_agent_chat_access_middleware(False,""))
-    async def not_owned(conversation_id,credential): return None
-    monkeypatch.setattr(agent_chat_stream,"owned_messages",not_owned)
+    async def not_owned(conversation_id,credential,**kwargs): return None
+    monkeypatch.setattr(agent_chat_stream,"owned_message_page",not_owned)
     with TestClient(app) as c:
         missing=c.get("/agent-chat/conversations/00000000-0000-0000-0000-000000000001/messages")
         foreign=c.get("/agent-chat/conversations/00000000-0000-0000-0000-000000000001/messages",headers={"X-Chat-Session":"guest-identity-"+"x"*32})
