@@ -56,6 +56,31 @@ def test_a_reference_with_nothing_to_point_at_still_asks():
     result=asyncio.run(direct.run_direct_turn('解释第二个',ctx,emit=emit,messages=[{'role':'user','content':'解释第二个'}]))
     assert result['status']=='waiting_for_input'
 
+
+def test_tool_loop_receives_catalogue_as_system_locator_but_not_as_conversation():
+    from app import agent_context as layers
+    catalogue=layers.render_citation_catalogue([{"turn_id":"turn-a","opening":"answer","sources":[{"ordinal":1,"title":"Filing","source_type":"official_filing","available":True}],"answers_back":1}])
+    messages=[*HISTORY[:2], HISTORY[-1], catalogue]
+    ctx=AgentRuntimeContext('custom','test','dummy',classifier=lambda _:'D',decider=lambda *_:{'content':'ok'})
+    turn=direct.Turn('它同比怎么样？',ctx,emit,messages,{})
+    tool_messages=turn.tool_messages()
+    assert any(m['role']=='system' and m['content'].startswith(layers.CATALOGUE_MARKER) for m in tool_messages)
+    assert catalogue not in layers.conversation_messages(messages)
+    assert layers.conversation_messages(messages)[-1]['content']=='它同比怎么样？'
+
+def test_tool_loop_receives_complete_catalogue_longer_than_6000_characters():
+    from app import agent_context as layers
+    entries=[{"turn_id":f"turn-{i}","opening":"答"*40,"sources":[
+        {"ordinal":1,"title":"来源"*80,"source_type":"filing","available":True}],"answers_back":i+1}
+        for i in range(90)]
+    catalogue=layers.render_citation_catalogue(entries)
+    assert len(catalogue['content'])>6000
+    messages=[*HISTORY[:2],HISTORY[-1],catalogue]
+    ctx=AgentRuntimeContext('custom','test','dummy',classifier=lambda _:'D',decider=lambda *_:{'content':'ok'})
+    turn=direct.Turn('它同比怎么样？',ctx,emit,messages,{})
+    delivered=next(m['content'] for m in turn.tool_messages() if m['role']=='system' and m['content'].startswith(layers.CATALOGUE_MARKER))
+    assert delivered==catalogue['content'] and 'turn-89' in delivered
+
 def test_a_clarify_without_choices_continues_with_the_rewrite_as_a_hint():
     seen,decide=_capture()
     history=[{'role':'user','content':'先同时看一下微软（MSFT）和谷歌（GOOGL）最近一期年报的营收。'},

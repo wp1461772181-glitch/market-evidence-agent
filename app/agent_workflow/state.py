@@ -40,6 +40,7 @@ class AgentRuntimeContext:
     query_expander: object | None = field(default=None, repr=False, compare=False)
     # The research queue the client sent (None: this client sends none, so nothing asks about it).
     watchlist: tuple[str, ...] | None = field(default=None, repr=False, compare=False)
+    history_citation_catalogue: tuple[dict, ...] = ()
 
 
 def checkpoint_thread_id(owner_hash: str, conversation_id: str) -> str:

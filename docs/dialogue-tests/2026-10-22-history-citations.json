@@ -1,0 +1,242 @@
+{
+  "suite_id": "history-citation-on-demand-2026-10-22",
+  "notes": "真实模型验收用例。HC04 仅能在隔离影子库预先创建同名 disposable 文档并在该测试后撤回该文档时运行；绝不撤回原有用户文档。预算 8 KiB 受服务端 16 KiB 下限夹紧，必须确认早期轮实际进入第二层后才可计为第二层验收。",
+  "cases": [
+    {
+      "id": "HC01-OWNER",
+      "title": "近期引用回查",
+      "identity": "owner",
+      "steps": [
+        {
+          "text": "苹果最近一期财报营收是多少？",
+          "check": {
+            "tools_include": [
+              "query_financials"
+            ]
+          }
+        },
+        {
+          "text": "你刚才回答里第 2 个来源原文怎么说的？",
+          "check": {
+            "tools_include": [
+              "read_history_citation"
+            ],
+            "tool_args": [
+              {
+                "name": "read_history_citation",
+                "args": {
+                  "ordinal": 2
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "HC02-OWNER",
+      "title": "预算降低后的早期引用回查",
+      "identity": "owner",
+      "steps": [
+        {
+          "text": "苹果最近一期财报营收是多少？",
+          "check": {
+            "tools_include": [
+              "query_financials"
+            ]
+          }
+        },
+        {
+          "text": "解释一下毛利率是什么。",
+          "check": {}
+        },
+        {
+          "text": "再解释一下自由现金流。",
+          "check": {}
+        },
+        {
+          "text": "解释一下经营现金流和自由现金流的区别。",
+          "check": {}
+        },
+        {
+          "text": "最早那条财报回答中的第 1 个来源原文是什么？",
+          "check": {
+            "tools_include": [
+              "read_history_citation"
+            ],
+            "tool_args": [
+              {
+                "name": "read_history_citation",
+                "args": {
+                  "ordinal": 1
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "HC03-OWNER",
+      "title": "裸编号跨回答歧义澄清",
+      "identity": "owner",
+      "steps": [
+        {
+          "text": "苹果最近一期财报营收和毛利率是多少？",
+          "check": {}
+        },
+        {
+          "text": "一般来说毛利率反映什么？",
+          "check": {}
+        },
+        {
+          "text": "引用 [3] 说了什么？",
+          "check": {
+            "card": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "HC04-OWNER",
+      "title": "仅对隔离测试文档验证来源失效",
+      "identity": "owner",
+      "steps": [
+        {
+          "text": "读取本次测试创建的 HIST-CITATION-20261022 隔离文档。",
+          "check": {
+            "tools_include": [
+              "search_knowledge"
+            ]
+          }
+        },
+        {
+          "text": "刚才引用的来源还有效吗？",
+          "check": {
+            "tools_include": [
+              "read_history_citation"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "HC01-GUEST",
+      "title": "近期引用回查",
+      "identity": "guest",
+      "steps": [
+        {
+          "text": "苹果最近一期财报营收是多少？",
+          "check": {
+            "tools_include": [
+              "query_financials"
+            ]
+          }
+        },
+        {
+          "text": "你刚才回答里第 2 个来源原文怎么说的？",
+          "check": {
+            "tools_include": [
+              "read_history_citation"
+            ],
+            "tool_args": [
+              {
+                "name": "read_history_citation",
+                "args": {
+                  "ordinal": 2
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "HC02-GUEST",
+      "title": "预算降低后的早期引用回查",
+      "identity": "guest",
+      "steps": [
+        {
+          "text": "苹果最近一期财报营收是多少？",
+          "check": {
+            "tools_include": [
+              "query_financials"
+            ]
+          }
+        },
+        {
+          "text": "解释一下毛利率是什么。",
+          "check": {}
+        },
+        {
+          "text": "再解释一下自由现金流。",
+          "check": {}
+        },
+        {
+          "text": "解释一下经营现金流和自由现金流的区别。",
+          "check": {}
+        },
+        {
+          "text": "最早那条财报回答中的第 1 个来源原文是什么？",
+          "check": {
+            "tools_include": [
+              "read_history_citation"
+            ],
+            "tool_args": [
+              {
+                "name": "read_history_citation",
+                "args": {
+                  "ordinal": 1
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "HC03-GUEST",
+      "title": "裸编号跨回答歧义澄清",
+      "identity": "guest",
+      "steps": [
+        {
+          "text": "苹果最近一期财报营收和毛利率是多少？",
+          "check": {}
+        },
+        {
+          "text": "一般来说毛利率反映什么？",
+          "check": {}
+        },
+        {
+          "text": "引用 [3] 说了什么？",
+          "check": {
+            "card": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "HC04-GUEST",
+      "title": "仅对隔离测试文档验证来源失效",
+      "identity": "guest",
+      "steps": [
+        {
+          "text": "读取本次测试创建的 HIST-CITATION-20261022 隔离文档。",
+          "check": {
+            "tools_include": [
+              "search_knowledge"
+            ]
+          }
+        },
+        {
+          "text": "刚才引用的来源还有效吗？",
+          "check": {
+            "tools_include": [
+              "read_history_citation"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

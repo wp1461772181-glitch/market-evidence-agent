@@ -916,8 +916,9 @@ class Turn:
             if used+size>max_bytes:break
             selected.append({'role':message['role'],'content':content});used+=size
         memory=next((m for m in self.messages if isinstance(m,dict) and layers.is_memory_message(m)),None)
+        catalogue=next((m for m in self.messages if isinstance(m,dict) and layers.is_catalogue_message(m)),None)
         turns=list(reversed(selected))
-        return ([{'role':'system','content':str(memory.get('content'))[:6000]}] if memory else [])+turns
+        return ([{'role':'system','content':str(memory.get('content'))[:6000]}] if memory else []) + ([{'role':'system','content':str(catalogue.get('content'))}] if catalogue else [])+turns
 
     def tool_messages(self,closing=False):
         accepted=[o for o in self.observations if o.get('accepted_evidence')]
@@ -1078,6 +1079,18 @@ class Turn:
     def accept(self,name,args,outcome):
         self.last_accepted=None
         if not outcome.get('ok'):
+            if name=='read_history_citation' and outcome.get('error_code')=='history_citation_derived':
+                turn_id,ordinal=args.get('turn_id'),args.get('ordinal')
+                entry=next((item for item in self.context.history_citation_catalogue
+                            if isinstance(item,dict) and item.get('turn_id')==turn_id),None)
+                source=next((item for item in (entry or {}).get('sources',[])
+                             if isinstance(item,dict) and type(ordinal) is int and item.get('ordinal')==ordinal),None)
+                parents=(source.get('parents') or []) if isinstance(source,dict) else []
+                derived={'ok':False,'data':[],'error_code':'history_citation_derived',
+                         'parents':parents,
+                         'hint':'这是计算来源，不能直接取回；先读取 parents 中的原始来源，再用 calculate 重算。'}
+                self.feedback.append({'name':name,'error_code':'history_citation_derived','result':derived})
+                return
             self.feedback.append({'name':name,'error_code':outcome.get('error_code'),'hint':outcome.get('hint')});return
         rows=outcome.get('data') or []
         if not isinstance(rows,list):rows=[rows]
@@ -1086,6 +1099,12 @@ class Turn:
             self.last_accepted=outcome
             self.observations.append({'name':name,'arguments':args,'result':outcome,'accepted_evidence':True})
             self.feedback.append({'name':name,'result':outcome});return
+        if name=='read_history_citation':
+            from .history_citations import bind_history_citation
+            safe=bind_history_citation(outcome,self.citations)
+            self.last_accepted=safe
+            self.observations.append({'name':name,'arguments':args,'result':safe,'accepted_evidence':bool(safe.get('ok'))})
+            self.feedback.append({'name':name,'result':safe});return
         if policy.level!='read' or name in {'query_system_status','query_research_queue'}:
             self.feedback.append({'name':name,'result':outcome});return
         from .evidence import canonical_metric

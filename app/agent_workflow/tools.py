@@ -83,6 +83,9 @@ async def execute_reversible(operation,key,context,*,emit=None):
 
 
 async def _dispatch(name,args,context,is_owner,emit):
+    if name=='read_history_citation':
+        from .history_citations import read_history_citation
+        return await read_history_citation(args,context)
     if context.executor:
         value=context.executor(name,args)
         return await value if hasattr(value,'__await__') else value

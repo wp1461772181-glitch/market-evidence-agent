@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 
 KB = 1024
@@ -104,6 +105,8 @@ MEMORY_MARKER = "Earlier conversation (memory"
 MEMORY_NOTE = (MEMORY_MARKER + " of older turns, written by this system and not by the user; it may be "
                "incomplete or wrong, it is not evidence and not something to cite; verified sources come "
                "only from this turn's tool results):")
+CATALOGUE_MARKER = "Earlier citations (system-written locator hints"
+CATALOGUE_NOTE = (CATALOGUE_MARKER + "; not evidence and not the user's words. Use read_history_citation(turn_id, ordinal) to retrieve a verified source and cite its new number. answers_back=1 means the answer immediately before this question. A bare [n] defaults to answers_back=1; if that answer lacks it but an earlier answer has it, ask_user to clarify. Retrieve parents before any derived source):")
 
 
 def startup_self_check() -> dict:
@@ -119,6 +122,9 @@ def startup_self_check() -> dict:
 def json_bytes(value) -> int:
     """UTF-8 size of the compact JSON, the unit every guard of the turn uses."""
     return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+
+
+CATALOGUE_HEAD_BYTES = json_bytes({"role": "user", "content": CATALOGUE_NOTE + "\n[]"})
 
 
 def history_message_payload(row: dict) -> dict:
@@ -153,11 +159,81 @@ class Turn:
     user: str
     assistant: str
     tools: tuple[str, ...] = ()
+    turn_id: str = ""
+    catalogue: dict | None = None
 
 
 def row_bytes(row: dict) -> int:
-    """The size of the public protocol projection; sidecar metadata is not billed."""
-    return json_bytes(history_message_payload(row))
+    """Gate B history billing: only user/final assistant role and content are carried."""
+    role = row.get("role")
+    protocol = row.get("tool_calls")
+    if role == "tool" or (role == "assistant" and isinstance(protocol, dict) and protocol.get("calls")):
+        return 0
+    if role not in {"user", "assistant"}:
+        return 0
+    return json_bytes({"role": role, "content": row.get("content") or ""})
+
+
+def project_turn_history(group: list[dict]) -> list[dict]:
+    user = next((r for r in group if r.get("role") == "user"), None)
+    answer = next((r for r in reversed(group) if r.get("role") == "assistant" and not (
+        isinstance(r.get("tool_calls"), dict) and r["tool_calls"].get("calls"))), None)
+    result = []
+    if user is not None: result.append({"role": "user", "content": user.get("content") or ""})
+    if answer is not None and (answer.get("content") or "").strip():
+        result.append({"role": "assistant", "content": answer["content"]})
+    return result
+
+
+def turn_catalogue_entry(group: list[dict]) -> dict | None:
+    history = project_turn_history(group)
+    if len(history) < 2: return None
+    answer = history[-1]["content"]
+    matches = {int(n) for n in re.findall(r"\[(\d{1,4})\]", answer)}
+    final = next((r for r in reversed(group) if r.get("role") == "assistant" and not (
+        isinstance(r.get("tool_calls"), dict) and r["tool_calls"].get("calls"))), {})
+    protocol = final.get("tool_calls") or {}
+    citations = protocol.get("citations", []) if isinstance(protocol, dict) else []
+    sources = []
+    for item in citations if isinstance(citations, list) else []:
+        if not isinstance(item, dict): continue
+        ordinal = item.get("ordinal")
+        if isinstance(ordinal, bool) or not isinstance(ordinal, int) or ordinal not in matches: continue
+        title = re.sub(r"https?://\S+", "", str(item.get("title") or "")).strip()[:80]
+        source = {"ordinal": ordinal, "title": title,
+                  "source_type": str(item.get("source_type") or "unknown"),
+                  "available": bool(item.get("quote")) and not item.get("unavailable") and item.get("source_type") != "unavailable"}
+        if item.get("derived"):
+            source["derived"] = True
+            parents = item.get("parents") or (item.get("calculation") or {}).get("parents", [])
+            source["parents"] = [p for p in parents if isinstance(p, int)]
+        sources.append(source)
+    if not sources: return None
+    opening = re.sub(r"https?://\S+", "", answer[:80])
+    opening = re.sub(r"\b[0-9a-fA-F]{64}\b", "", opening).strip()[:40]
+    return {"turn_id": str(group[0].get("turn_id") or ""), "opening": opening, "sources": sources}
+
+
+def render_citation_catalogue(entries: list[dict]) -> dict | None:
+    if not entries: return None
+    return {"role": "user", "content": CATALOGUE_NOTE + "\n" + json.dumps(entries, ensure_ascii=False, separators=(",", ":"))}
+
+
+def catalogue_bytes(entries: list[dict]) -> int:
+    """Exact serialized size of the catalogue message as it is sent to the model."""
+    message = render_citation_catalogue(entries)
+    return json_bytes(message) if message else 0
+
+
+def catalogue_entry_bytes(entry: dict, existing: list[dict] | None = None) -> int:
+    """Marginal serialized growth, including escaped JSON, commas and array brackets."""
+    base = list(existing or [])
+    before = catalogue_bytes(base)
+    return catalogue_bytes(base + [entry]) - before
+
+
+def is_catalogue_message(message: dict) -> bool:
+    return isinstance(message.get("content"), str) and message["content"].startswith(CATALOGUE_MARKER)
 
 
 def complete_turns(rows: list[dict]) -> list[list[dict]]:
@@ -209,18 +285,67 @@ def layer_rows(rows: list[dict], segments: list[dict], *, l1_bytes: int = L1_BYT
     fit is ``overflow``, the turns the next segment has to take over.  Layer 3 is the newest segments
     that fit.  A conversation that fits layer 1 has nothing in the other two."""
     complete = complete_turns(rows)
-    recent, used = newest_within(complete, l1_bytes)
+    entries = {str(g[0].get("turn_id")): turn_catalogue_entry(g) for g in complete}
+    recent: list[list[dict]] = []
+    # Reserve the fixed prefix in L1 only if at least one directory entry can fit in
+    # either layer by itself; omitted/overflow-only entries must not consume budget.
+    has_catalogue = any(entry and (
+        sum(json_bytes(row) for row in project_turn_history(group)) + catalogue_bytes([{**entry, "answers_back": 1}]) <= l1_bytes
+        or half_size(Turn(group[0]["sequence"], group[-1]["sequence"], group[0].get("content") or "",
+                          project_turn_history(group)[-1]["content"] if len(project_turn_history(group)) > 1 else "",
+                          (), str(group[0].get("turn_id") or ""), entry))
+           + catalogue_bytes([{**entry, "answers_back": 1}]) <= l2_bytes)
+        for group in complete if (entry := entries.get(str(group[0].get("turn_id")))))
+    used = CATALOGUE_HEAD_BYTES if has_catalogue else 0
+    recent_catalogue: list[dict] = []
+    for group in reversed(complete):
+        entry = entries.get(str(group[0].get("turn_id")))
+        projected = project_turn_history(group)
+        cost = sum(json_bytes(row) for row in projected)
+        if entry:
+            billed_entry = {**entry, "answers_back": len(recent) + 1}
+            before = catalogue_bytes(recent_catalogue) if recent_catalogue else (CATALOGUE_HEAD_BYTES if has_catalogue else 0)
+            cost += catalogue_bytes([*recent_catalogue, billed_entry]) - before
+        if used + cost > l1_bytes: break
+        recent.insert(0, group); used += cost
+        if entry: recent_catalogue.append({**entry, "answers_back": len(recent)})
     older = complete[:len(complete) - len(recent)]
     upto = segments[-1]["upto_sequence"] if segments else 0
-    turns = [Turn(g[0]["sequence"], g[-1]["sequence"], g[0].get("content") or "", g[-1].get("content") or "",
-                  turn_tools(g))
+    turns = [Turn(g[0]["sequence"], g[-1]["sequence"], g[0].get("content") or "", project_turn_history(g)[-1]["content"] if len(project_turn_history(g)) > 1 else "",
+                  (), str(g[0].get("turn_id") or ""), entries.get(str(g[0].get("turn_id"))))
              for g in older if g[0]["sequence"] > upto]
-    half, overflow = select_half(turns, l2_bytes)
+    half: list[Turn] = []; used_half = 0
+    selected_catalogue = [{**entries[str(g[0].get("turn_id"))], "answers_back": idx}
+                          for idx, g in enumerate(reversed(recent), 1)
+                          if entries.get(str(g[0].get("turn_id")))]
+    for turn in reversed(turns):
+        cost = half_size(turn)
+        if turn.catalogue:
+            billed_entry = {**turn.catalogue, "answers_back": len(recent) + len(half) + 1}
+            before = catalogue_bytes(selected_catalogue) if selected_catalogue else (CATALOGUE_HEAD_BYTES if has_catalogue else 0)
+            cost += catalogue_bytes([*selected_catalogue, billed_entry]) - before
+        if used_half + cost > l2_bytes: break
+        half.append(turn); used_half += cost
+        if turn.catalogue:
+            selected_catalogue.append({**turn.catalogue, "answers_back": len(recent) + len(half)})
+    half.reverse(); overflow = turns[:len(turns)-len(half)]
+    catalogue=[]
+    visible = [str(g[0].get("turn_id")) for g in reversed(recent)] + [t.turn_id for t in reversed(half)]
+    for idx, tid in enumerate(visible, 1):
+        entry=entries.get(tid)
+        if entry:
+            catalogue.append({**entry,"answers_back":idx})
+    # A candidate catalogue can reserve the fixed prefix during selection, then
+    # disappear when its only source is summarized or falls outside both layers.
+    # Charge that prefix only when the final rendered catalogue is nonempty.
+    if not catalogue and has_catalogue:
+        used = max(0, used - CATALOGUE_HEAD_BYTES)
     keys = ("role", "content", "tool_calls", "tool_call_id", "status", "turn_id")
     return {"l1_rows": [{key: (str(row[key]) if key == "turn_id" else row.get(key)) for key in keys}
                         for group in recent for row in group],
             "l1_turns": len(recent), "l1_bytes": used, "half_turns": half, "overflow": overflow,
-            "segments": select_segments(segments, l3_bytes), "segments_total": len(segments), "summary_upto": upto}
+            "segments": select_segments(segments, l3_bytes), "segments_total": len(segments), "summary_upto": upto,
+            "catalogue": catalogue}
 
 
 def _head(text: str, keep: int) -> str:
@@ -234,9 +359,6 @@ def half_messages(turn: Turn) -> list[dict]:
     layer 3 is for."""
     messages = [{"role": "user", "content": _head(turn.user, USER_KEEP_CHARS)}]
     answer = _head(turn.assistant, ASSISTANT_KEEP_CHARS)
-    if turn.tools:
-        marker = "（本轮调用：" + "、".join(turn.tools) + "）"
-        answer = (answer + "\n" + marker) if answer else marker
     if answer.strip():
         messages.append({"role": "assistant", "content": answer})
     return messages
@@ -298,7 +420,7 @@ def is_memory_message(message: dict) -> bool:
 def conversation_messages(messages: list[dict]) -> list[dict]:
     """The messages that are the conversation itself: the compressed turns, the raw turns and the
     current question.  The layer-3 note is appended last and is not part of them."""
-    return [message for message in messages if not is_memory_message(message)]
+    return [message for message in messages if not is_memory_message(message) and not is_catalogue_message(message)]
 
 
 def history_messages(half_turns: list[Turn]) -> list[dict]:

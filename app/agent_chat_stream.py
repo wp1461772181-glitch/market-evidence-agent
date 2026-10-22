@@ -335,38 +335,13 @@ async def stream_chat(payload:StreamRequest,request:Request,x_chat_session:str|N
    # after the user's own message, so that everything before it stays a byte-identical prefix from
    # one turn to the next and a provider can keep caching it.
    messages.extend(layers.history_messages(context.get("half_turns",[])))
-   legacy_calls=set()
-   for position,m in enumerate(history_rows):
-    if m["status"]!="complete" or m["role"] not in ("user","assistant","tool"):continue
-    item={"role":m["role"],"content":m["content"]}
-    protocol=m.get("tool_calls")
-    if protocol:
-     calls=protocol.get("calls",[]) if isinstance(protocol,dict) else protocol
-     if calls:
-      call_ids={call.get("id") for call in calls if isinstance(call,dict)}
-      following=[]
-      for later in history_rows[position+1:]:
-       if later.get("role") in ("assistant","user"):break
-       if later.get("role")=="tool" and later.get("status")=="complete":
-        following.append(later.get("tool_call_id"))
-      incomplete=not call_ids or not call_ids.issubset(set(following))
-      if incomplete or (payload.provider=="deepseek" and not (isinstance(protocol,dict) and isinstance(protocol.get("reasoning_content"),str))):
-       legacy_calls.update(call.get("id") for call in calls if isinstance(call,dict))
-       if m.get("content"):messages.append({"role":"assistant","content":m["content"]})
-       continue
-      item["tool_calls"]=calls
-     if isinstance(protocol,dict):
-      for key in ("reasoning_content","reasoning_details"):
-       if protocol.get(key) is not None:
-        item[key]="".join(protocol[key]) if key=="reasoning_content" and isinstance(protocol[key],list) else protocol[key]
-    if m.get("tool_call_id"):item["tool_call_id"]=m["tool_call_id"]
-    if item["role"]=="tool" and item.get("tool_call_id") in legacy_calls:
-     messages.append({"role":"system","content":"Untrusted saved evidence from an earlier turn: "+str(item["content"])[:8000]})
-     continue
-    messages.append(item)
+   for group in layers.complete_turns(history_rows):
+    messages.extend(layers.project_turn_history(group))
    messages.append({"role":"user","content":payload.message})
    memory_note=layers.summary_message(context.get("segments",[]))
    if memory_note:messages.append(memory_note)
+   catalogue=layers.render_citation_catalogue(context.get("catalogue",[]))
+   if catalogue:messages.append(catalogue)
    if _protocol_size({"messages":messages,"tools":tool_schemas()})>layers.CONTEXT_GUARD_BYTES:raise HTTPException(413,"chat_context_too_large")
    from .agent_workflow.semantic import hydrate_legacy_web_sets, legacy_web_source_choices
    legacy_result_sets=hydrate_legacy_web_sets(history_rows,owner=owner_hash(x_chat_session),conversation=cid)
@@ -374,7 +349,8 @@ async def stream_chat(payload:StreamRequest,request:Request,x_chat_session:str|N
    async for event in stream_workflow(question=payload.message,messages=messages,provider=payload.provider,model=payload.model,
      api_key=payload.api_key.get_secret_value(),base_url=payload.base_url,owner_hash=owner_hash(x_chat_session),
      conversation_id=cid,identity_credential=x_chat_session,turn_id=turn,pending_request_id=payload.pending_request_id,
-     legacy_result_sets=legacy_result_sets,legacy_source_choices=legacy_source_choices):
+     legacy_result_sets=legacy_result_sets,legacy_source_choices=legacy_source_choices,
+     history_citation_catalogue=context.get("catalogue", [])):
     kind=event.get("event")
     if kind=="assistant_tool_request":
      await append_message(cid,turn,"assistant","",tool_calls=event["protocol"])
@@ -414,7 +390,7 @@ async def stream_chat(payload:StreamRequest,request:Request,x_chat_session:str|N
                                  "choices":pending.get("choices") or _legacy_clarification_choices(pending.get("reason")),"display":pending.get("display"),"question":pending.get("question")}
       # A revision card lists the materials to tick; the restored history shows the same card.
       if pending.get("options"):protocol["clarification"].update(options=pending["options"],select=pending.get("select"))
-     if restored:protocol["citations"]=restored
+     if citation_sidecar:protocol["citations"]=citation_sidecar
      if event.get("reason") in {"retrieval_unavailable","zero_evidence","web_page_excerpt_unavailable","missing_source_coverage","publisher_date_unavailable"} or str(event.get("reason","")).startswith(("requested_","weak_")):
       await asyncio.to_thread(_record_low_confidence,payload.message,cid,turn,owner_hash(x_chat_session),event["reason"])
      await append_message(cid,turn,"assistant",text_out,tool_calls=protocol,status="failed" if event.get("status")=="failed" else "complete")
@@ -426,7 +402,8 @@ async def stream_chat(payload:StreamRequest,request:Request,x_chat_session:str|N
      yield frame("done",{"conversation_id":cid,"turn_id":turn,"status":event.get("status","complete"),"reason":event.get("reason")})
    if not terminal:raise HTTPException(502,"workflow_incomplete")
   except asyncio.CancelledError:
-   await asyncio.shield(append_message(cid,turn,"assistant",text_out,status="cancelled"))
+   await asyncio.shield(append_message(cid,turn,"assistant",text_out,status="cancelled",
+       tool_calls={"citations":citation_sidecar} if citation_sidecar else None))
    await asyncio.shield(finish_conversation(cid,"cancelled"))
    await asyncio.shield(mark_terminal_status(owner_hash(x_chat_session),cid,"cancelled",text_out))
    raise
@@ -436,7 +413,7 @@ async def stream_chat(payload:StreamRequest,request:Request,x_chat_session:str|N
     # Nothing was written for the user: say what happened (and keep it in the history), not a blank bubble.
     text_out=_failure_notice(exc)
     yield frame("delta",{"text":text_out})
-   await append_message(cid,turn,"assistant",text_out,status="failed",tool_calls={"citations":restored} if restored else None)
+   await append_message(cid,turn,"assistant",text_out,status="failed",tool_calls={"citations":citation_sidecar} if citation_sidecar else None)
    await finish_conversation(cid,"failed")
    await mark_terminal_status(owner_hash(x_chat_session),cid,"failed",text_out)
    code=exc.detail if isinstance(exc,HTTPException) else "chat_failed"
@@ -456,12 +433,23 @@ def _context_report(context: dict | None) -> dict:
     context = context or {}
     note = layers.summary_message(context.get("segments", []))
     half_turns = context.get("half_turns", [])
+    half_catalogue = [item for item in context.get("catalogue", []) if item.get("answers_back", 0) > int(context.get("l1_turns", 0))]
+    half_bytes = sum(layers.half_size(turn) for turn in half_turns)
+    existing_catalogue = [item for item in context.get("catalogue", [])
+                          if item.get("answers_back", 0) <= int(context.get("l1_turns", 0))]
+    header_already_billed = bool(existing_catalogue) or any(context.get("catalogue", []))
+    for item in half_catalogue:
+        if not existing_catalogue and header_already_billed:
+            half_bytes += layers.catalogue_bytes([item]) - layers.CATALOGUE_HEAD_BYTES
+        else:
+            half_bytes += layers.catalogue_entry_bytes(item, existing_catalogue)
+        existing_catalogue = [*existing_catalogue, item]
     return layers.usage_report(
         system_bytes=layers.json_bytes({"role": "system", "content": SYSTEM}),
         tools_bytes=layers.json_bytes(tool_schemas()),
         summary_bytes=layers.json_bytes(note) if note else 0,
         summary_segments=len(context.get("segments", [])),
-        half_bytes=sum(layers.half_size(turn) for turn in half_turns),
+        half_bytes=half_bytes,
         half_turns=len(half_turns),
         recent_bytes=int(context.get("l1_bytes", 0)),
         recent_turns=int(context.get("l1_turns", 0)),

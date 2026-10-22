@@ -68,6 +68,38 @@ async def conversation_context(conversation_id: str, credential: str, *, l1_byte
     return layers.layer_rows(stored, made, l1_bytes=l1_bytes, l2_bytes=l2_bytes, l3_bytes=l3_bytes)
 
 
+async def load_turn_citation(conversation_id: str, credential: str, turn_id: str, ordinal: int) -> dict:
+    """Read one immutable citation manifest entry from an owned final answer."""
+    try:
+        cid, tid = uuid.UUID(conversation_id), uuid.UUID(turn_id)
+        if isinstance(ordinal, bool) or not isinstance(ordinal, int) or ordinal < 1:
+            return {"ok": False, "error_code": "history_citation_invalid"}
+    except (ValueError, TypeError, AttributeError):
+        return {"ok": False, "error_code": "history_citation_not_found"}
+    async with Session() as s:
+        owner = await s.scalar(select(AgentConversation.id).where(
+            AgentConversation.id == cid, AgentConversation.owner_hash == owner_hash(credential)))
+        if owner is None: return {"ok": False, "error_code": "history_citation_not_found"}
+        rows = (await s.scalars(select(AgentMessage).where(AgentMessage.conversation_id == cid,
+            AgentMessage.turn_id == tid, AgentMessage.role == "assistant").order_by(AgentMessage.sequence))).all()
+    finals = [m for m in rows if m.status == "complete" and m.content and not (
+        isinstance(m.tool_calls, dict) and m.tool_calls.get("calls"))]
+    if not finals: return {"ok": False, "error_code": "history_citation_not_found"}
+    if len(finals) != 1: return {"ok": False, "error_code": "history_citation_invalid"}
+    manifest = finals[0].tool_calls.get("citations", []) if isinstance(finals[0].tool_calls, dict) else []
+    if not isinstance(manifest, list): return {"ok": False, "error_code": "history_citation_invalid"}
+    candidate_matches = [c for c in manifest if isinstance(c, dict) and c.get("ordinal") == ordinal]
+    if any(isinstance(c.get("ordinal"), bool) or not isinstance(c.get("ordinal"), int) for c in candidate_matches):
+        return {"ok": False, "error_code": "history_citation_invalid"}
+    matches = candidate_matches
+    if len(matches) > 1: return {"ok": False, "error_code": "history_citation_invalid"}
+    if not matches: return {"ok": False, "error_code": "history_citation_not_found"}
+    if (not isinstance(matches[0].get("source_type"), str) or not isinstance(matches[0].get("title"), str)
+            or not isinstance(matches[0].get("quote"), str)):
+        return {"ok": False, "error_code": "history_citation_invalid"}
+    return {"ok": True, "citation": dict(matches[0]), "origin": {"turn_id": str(tid), "ordinal": ordinal}}
+
+
 async def append_summary(conversation_id: str, from_sequence: int, upto_sequence: int, content: str) -> bool:
     """Append the next summary segment.  False when it would not move the covered range forward
     (another task got there first) or when the segment number was taken in the meantime."""

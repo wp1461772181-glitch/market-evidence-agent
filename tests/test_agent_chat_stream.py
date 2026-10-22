@@ -6,6 +6,7 @@ import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 from starlette.requests import Request
 from app.agent_chat_stream import StreamRequest
+from app.agent_workflow.tools import invoke as REAL_TOOLS_INVOKE
 
 @pytest.fixture
 def stream_fixture(monkeypatch):
@@ -114,3 +115,88 @@ def test_provider_protocol_metadata_is_not_browser_text(stream_fixture):
     decisions.extend([{'content':None,'reasoning_content':'PRIVATE_THOUGHT','tool_calls':[{'id':'x','function':{'name':'query_stock_prices','arguments':'{"symbol":"AAPL"}'}}]},{'content':'行情 [1]'}])
     wire=asyncio.run(send());assert 'PRIVATE_THOUGHT' not in wire
     assert any(k.get('tool_calls',{}).get('reasoning_content')=='PRIVATE_THOUGHT' for _,k in stored)
+
+
+def test_deepseek_history_sends_questions_answers_and_catalogue_only(stream_fixture,monkeypatch):
+    import app.agent_chat_stream as stream
+    from app import agent_context as layers
+    send,_,_,_,_,requests,_=stream_fixture
+    tid='11111111-1111-4111-8111-000000000001'
+    rows=[{"role":"user","content":"old question","turn_id":tid,"sequence":1,"status":"complete"},
+          {"role":"assistant","content":"","turn_id":tid,"sequence":2,"status":"complete","tool_calls":{"calls":[{"id":"call"}]}},
+          {"role":"tool","content":"TOOL_BODY_PRIVATE","turn_id":tid,"sequence":3,"status":"complete"},
+          {"role":"assistant","content":"old answer [1]","turn_id":tid,"sequence":4,"status":"complete",
+           "tool_calls":{"citations":[{"ordinal":1,"title":"Filing","source_type":"official_filing","quote":"SECRET QUOTE"}]}}]
+    context=layers.layer_rows(rows,[],l1_bytes=4096,l2_bytes=4096,l3_bytes=4096)
+    async def saved(*_args,**_kwargs):return context
+    monkeypatch.setattr(stream,'conversation_context',saved)
+    asyncio.run(send('follow up'))
+    payload=json.dumps(requests,ensure_ascii=False)
+    assert 'TOOL_BODY_PRIVATE' not in payload and 'SECRET QUOTE' not in payload
+    assert 'old answer [1]' in payload
+
+
+def test_route_d_followup_reads_previous_ordinal_and_binds_new_number(stream_fixture,monkeypatch):
+    import app.agent_chat_stream as stream
+    import app.agent_chat_store as store
+    from app import agent_context as layers
+    from app.agent_workflow import tools
+    send,classification,_,_,stored,requests,decisions=stream_fixture
+    monkeypatch.setattr(tools,'invoke',REAL_TOOLS_INVOKE)
+    classification.update(category='D',symbol=None)
+    latest='11111111-1111-4111-8111-000000000002'
+    earlier='11111111-1111-4111-8111-000000000001'
+    def group(tid,seq,answer,quote):
+        return [{"role":"user","content":"查毛利率","turn_id":tid,"sequence":seq,"status":"complete"},
+                {"role":"assistant","content":answer,"turn_id":tid,"sequence":seq+1,"status":"complete",
+                 "tool_calls":{"citations":[{"ordinal":2,"title":"Filing","source_type":"official_filing","quote":quote}]}}]
+    rows=[*group(earlier,1,"早期毛利率 40.0% [2]","毛利率为 40.0%"),
+          *group(latest,3,"最近毛利率 46.2% [2]","毛利率为 46.2%")]
+    context=layers.layer_rows(rows,[],l1_bytes=4096,l2_bytes=4096,l3_bytes=4096)
+    async def saved(*_args,**_kwargs):return context
+    monkeypatch.setattr(stream,'conversation_context',saved)
+    async def load(_cid,_credential,turn_id,ordinal):
+        return {"ok":True,"citation":{"ordinal":ordinal,"title":"Filing","source_type":"official_filing","quote":"毛利率为 46.2%"},
+                "origin":{"turn_id":turn_id,"ordinal":ordinal}}
+    monkeypatch.setattr(store,'load_turn_citation',load)
+    restore_calls=[]
+    def restore(items,_credential):
+        restore_calls.append(items)
+        return items if len(restore_calls)==1 else [{"ordinal":1,"source_type":"unavailable","title":"来源已失效"}]
+    monkeypatch.setattr(stream,'_restore_citations',restore)
+    decisions.append({'tool_calls':[{'id':'read','function':{'name':'read_history_citation','arguments':json.dumps({'turn_id':latest,'ordinal':2})}}]})
+    decisions.append({'content':'毛利率为 46.2% [1]。'})
+    events=frames(asyncio.run(send('上一条回答的第 2 个来源原文是什么？')))
+    assert next(d for e,d in events if e=='done')['status']=='succeeded'
+    answer=''.join(d['text'] for e,d in events if e=='delta')
+    assert '46.2%' in answer and '40.0%' not in answer
+    args=next(d['arguments'] for e,d in events if e=='tool_start' and d.get('name')=='read_history_citation')
+    assert args=={'turn_id':latest,'ordinal':2}
+    final=next(kwargs['tool_calls']['citations'] for _,kwargs in stored if kwargs.get('tool_calls',{}).get('audit'))
+    assert final[0]['ordinal']==1 and final[0]['origin']=={'turn_id':latest,'ordinal':2}
+    assert '46.2%' in final[0]['quote'] and '40.0%' not in final[0]['quote']
+    visible=next(d['items'] for e,d in events if e=='citations')
+    assert visible[0]['source_type']=='unavailable' and final[0]['source_type']=='official_filing'
+    assert final[0]['origin']=={'turn_id':latest,'ordinal':2}
+
+
+def test_exception_after_terminal_citation_keeps_raw_manifest_not_restore_placeholder(stream_fixture,monkeypatch):
+    import app.agent_chat_stream as stream
+    send,_,_,_,stored,_,_=stream_fixture
+    original=[{'ordinal':4,'title':'Fixture','source_type':'official_filing','quote':'frozen quote','source_hash':'a'*64}]
+    async def workflow(**_kwargs):
+        yield {'event':'done','status':'succeeded','citations':original,'audit':{},'final_protocol':{}}
+    monkeypatch.setattr(stream,'stream_workflow',workflow)
+    monkeypatch.setattr(stream,'_restore_citations',lambda *_:[{'ordinal':4,'title':'Fixture','source_type':'unavailable','quote':''}])
+    real_append=stream.append_message
+    async def fail_first_success(_cid,_turn,role,content,**kwargs):
+        if role=='assistant' and kwargs.get('status','complete')=='complete': raise RuntimeError('fixture_append_failure')
+        await real_append(_cid,_turn,role,content,**kwargs)
+    monkeypatch.setattr(stream,'append_message',fail_first_success)
+    async def no_mark(*_): pass
+    monkeypatch.setattr(stream,'mark_terminal_status',no_mark)
+    events=frames(asyncio.run(send('verify saved citation')))
+    assert any(event=='error' for event,_ in events)
+    saved=next(kwargs['tool_calls']['citations'] for _,kwargs in stored
+        if kwargs.get('status')=='failed' and kwargs.get('tool_calls',{}).get('citations'))
+    assert saved==original and saved[0]['source_type']=='official_filing'

@@ -16,6 +16,9 @@ class CalculateArgs(Args):
     expression:str=Field(min_length=1,max_length=200)
     inputs:list[CalculationInput]=Field(min_length=1,max_length=8)
     decimals:int=Field(default=2,ge=0,le=8)
+class HistoryCitationArgs(Args):
+    turn_id:str=Field(pattern=r'^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$')
+    ordinal:int=Field(ge=1,le=1000)
 class KnowledgeArgs(Args):
     query:str=Field(min_length=1,max_length=400)
     symbol:str|None=Field(default=None,pattern=r'^[A-Za-z]{1,5}(?:[.-][A-Za-z]{1,2})?$')
@@ -124,6 +127,7 @@ class ToolPolicy:
     actionable_error:str='Correct the typed arguments, choose a returned source, or explain the missing evidence.'
 
 EXTRA=(
+ ('read_history_citation',HistoryCitationArgs,'read','Read the saved source behind a citation in an earlier answer. Cite the new number returned for this turn, never the old number. Derived citations cannot be read directly; read their parents first.'),
  ('calculate',CalculateArgs,'read','Calculate derived figures from cited source values. Only a..z, + - * / parentheses, the constants 0, 1, 100 and powers of ten for unit conversion (1000, 10000, 1000000, 100000000, 1000000000, 1000000000000). Inputs must occur in the chosen evidence. Formula and parents are recorded; derived results are not official originals.'),
  ('read_workspace',WorkspaceArgs,'read','Read a saved forecast/version timeline, analysis history/original, learning status, knowledge chunks/candidates, importable catalogue or revision candidates. Private records remain owner-scoped.'),
  ('start_historical_replay',ReplayArgs,'costly','Propose a retrospective replay for a specific past decision date; this is not a forward prediction. Confirmation required.'),

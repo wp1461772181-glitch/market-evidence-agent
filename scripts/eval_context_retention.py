@@ -93,7 +93,7 @@ def _filler_turn(rng: random.Random) -> tuple[str, str, str]:
     company, topic = rng.choice(_COMPANIES), rng.choice(_TOPICS)
     user = f"{company}最近一期的{topic}是怎样的？请结合已保存的材料说明。"
     body = "\n\n".join(f"- {rng.choice(_SENTENCES)}{rng.choice(_SENTENCES)}" for _ in range(4))
-    assistant = f"{company}在{topic}方面整体变化不大，细节如下。\n\n{(body + chr(10) + chr(10)) * 2}以上依据本轮检索到的已保存摘录，仅供研究参考。"
+    assistant = f"{company}在{topic}方面整体变化不大，细节如下。\n\n{(body + chr(10) + chr(10)) * 20}以上依据本轮检索到的已保存摘录，仅供研究参考。"
     excerpt = "".join(f"{rng.choice(_SENTENCES)}" for _ in range(14))
     tool = json.dumps({"ok": True, "source": "saved filing excerpts", "data": [
         {"title": f"{company} 申报文件摘录 {i}", "excerpt": excerpt, "observed_at": "2026-10-14"} for i in range(1, 4)]},
@@ -153,7 +153,10 @@ def arm_layers(rows: list[dict], budget_kb: int, segments: list[dict]) -> tuple[
     context = layers.layer_rows(rows, segments, l1_bytes=parts["l1"], l2_bytes=parts["l2"], l3_bytes=parts["l3"])
     prefix = layers.history_messages(context["half_turns"])
     note = layers.summary_message(context["segments"])
-    return prefix + _as_messages(context["l1_rows"]) + ([note] if note else []), context
+    recent = [message for group in layers.complete_turns(context["l1_rows"])
+              for message in layers.project_turn_history(group)]
+    catalogue = layers.render_citation_catalogue(context.get("catalogue", []))
+    return prefix + recent + ([note] if note else []) + ([catalogue] if catalogue else []), context
 
 
 def budget_parts(budget_kb: int) -> dict:
@@ -375,6 +378,7 @@ def render_report(results: list[dict]) -> str:
     offline = all(result["model"] is None for result in results)
     first = results[0]
     lines = ["# 上下文保留率评测报告（构造对话）", "",
+             "> 自 2026-10-22 起，分层第 1、2 层只按问答投影和引用目录计量；旧工具批次与侧车不再重放。", "",
              f"- 每段对话埋 {first['facts']} 个早期事实（8 个来自用户原话，2 个来自助手答复的开头），之后是研究类问答与工具结果。",
              f"- 模型：{first['model'] or '未调用（只测“事实是否在上下文里”）'}"
              + (f"；每个事实一问，{first['runs']} 轮取平均。" if not offline else "。"),
@@ -384,8 +388,8 @@ def render_report(results: list[dict]) -> str:
     for result in results:
         lines += _section(result, offline)
     lines += ["## 怎么读这份数字", "",
-              "- 这是**构造的**对话，用来比较同一预算下几种携带方式；不是线上数据。线上现有对话最长约 36 KB（只统计过大小）；在默认 64 KB 档下没有任何一轮会被丢掉，最长的那一个也只有最旧的几轮以半压缩形式出现，摘要不会触发。",
-              "- 层 2 把每一轮压到约 1 KB（用户原话 + 答复开头），所以默认档下 40 轮左右的对话不需要摘要就能全部留住；层 3 的作用在更长的对话和更小的预算上。",
+              "- 这是**构造的**对话，用来比较同一预算下几种携带方式；不是线上数据。线上历史字节需在隔离影子库只读测量，不能从本评测推断。",
+              "- 层 2 把每一轮压到约 1 KB（用户原话 + 答复开头），且相关回答的目录项按预算计入；层 3 的作用在更长的对话和更小的预算上。",
               "- 层 3 只注入最近 5 段摘要，更早的段落会被丢弃，所以它有一个视野，不是无限记忆。",
               "- 助手答复的内容只保留开头约 160 字，更早的只剩摘要，而摘要按设计不写数字结论（记忆不是证据），所以助手更早的结论会丢，这是取舍，不是缺陷。",
               "- 召回由真实模型回答，同一问题多轮取平均；调用失败单独计数，不算答错。判定是“答案文本里出现了预埋事实的关键词”，不做语义判分。",

@@ -28,6 +28,7 @@ export const TOOL_LABELS = {
   test_retrieval_diagnostics: "检索诊断",
   review_filing: "申报相关性核验",
   fetch_sec: "拉取 SEC 原文",
+  read_history_citation: "取回历史引用",
   refresh_sec: "刷新 SEC 原文",
   analyze: "AI 材料分析",
   import: "导入知识库",

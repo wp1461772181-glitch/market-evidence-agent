@@ -10,6 +10,10 @@ import pytest
 from app import agent_context as layers
 from test_agent_chat_stream import stream_fixture  # noqa: F401  (the SSE fixture of the sibling module)
 
+TURN = "11111111-1111-4111-8111-{:012d}"
+MINE = "owner-credential-" + "a" * 40
+THEIRS = "other-credential-" + "b" * 40
+
 
 def test_sidecars_do_not_change_the_size_of_a_message():
     row = {"role": "assistant", "content": "done", "turn_id": "t", "status": "complete",
@@ -19,37 +23,93 @@ def test_sidecars_do_not_change_the_size_of_a_message():
     assert layers.row_bytes(row) == expected
 
 
-def test_content_and_real_tool_calls_still_count():
+def test_gate_b_counts_user_and_final_content_but_not_tool_protocol_rows():
     row = {"role": "assistant", "content": "done", "turn_id": "t", "status": "complete",
            "tool_calls": {"calls": []}}
     base = layers.row_bytes(row)
     assert layers.row_bytes({**row, "content": "done longer"}) > base
-    assert layers.row_bytes({**row, "tool_calls": {"calls": [{"id": "c", "function": {"name": "lookup"}}]}}) > base
+    assert layers.row_bytes({**row, "tool_calls": {"calls": [{"id": "c", "function": {"name": "lookup"}}]}}) == 0
+    assert layers.row_bytes({"role": "tool", "content": "x" * 40000}) == 0
 
 
-def test_l1_rows_keep_the_full_sidecars(disposable_database):
-    from app.database import SessionLocal
-    from app.agent_chat_models import AgentConversation, AgentMessage
-    from app.agent_chat_store import owner_hash
-    from app import agent_chat_store as store
-    import uuid
-    from app.database import Base, engine
-    Base.metadata.create_all(bind=engine)
-    conversation, turn = uuid.uuid4(), uuid.uuid4()
-    with SessionLocal() as db:
-        db.add(AgentConversation(id=conversation, owner_hash=owner_hash(MINE)))
-        db.add_all([
-            AgentMessage(conversation_id=conversation, turn_id=turn, sequence=1, role="user", content="q", status="complete"),
-            AgentMessage(conversation_id=conversation, turn_id=turn, sequence=2, role="assistant", content="answer", status="complete",
-                         tool_calls={"citations": [{"ordinal": 1, "quote": "snapshot"}], "audit": {"terminal_status": "succeeded"}})])
-        db.commit()
-    rows = asyncio.run(store.conversation_context(str(conversation), MINE, l1_bytes=4096, l2_bytes=4096, l3_bytes=4096))["l1_rows"]
-    assert rows[-1]["tool_calls"]["citations"][0]["quote"] == "snapshot"
-    assert rows[-1]["tool_calls"]["audit"]["terminal_status"] == "succeeded"
+def test_turn_projection_and_catalogue_only_use_answer_markers():
+    group = [{"role":"user","content":"q","turn_id":"tid","sequence":1,"status":"complete"},
+             {"role":"assistant","content":"","turn_id":"tid","sequence":2,"status":"complete",
+              "tool_calls":{"calls":[{"id":"c"}]}},
+             {"role":"tool","content":"TOOL_BODY_PRIVATE","turn_id":"tid","sequence":3,"status":"complete"},
+             {"role":"assistant","content":"answer [1] [3]","turn_id":"tid","sequence":4,"status":"complete",
+              "tool_calls":{"citations":[{"ordinal":1,"title":"A","source_type":"filing","quote":"SECRET"},
+                                          {"ordinal":2,"title":"B","source_type":"filing","quote":"SECRET"},
+                                          {"ordinal":3,"title":"C","source_type":"filing"}]}}]
+    assert layers.project_turn_history(group) == [{"role":"user","content":"q"},{"role":"assistant","content":"answer [1] [3]"}]
+    entry = layers.turn_catalogue_entry(group)
+    assert [x["ordinal"] for x in entry["sources"]] == [1,3]
+    rendered = layers.render_citation_catalogue([entry])["content"]
+    assert "SECRET" not in rendered and "http" not in rendered and "TOOL_BODY_PRIVATE" not in rendered
 
-TURN = "11111111-1111-4111-8111-{:012d}"
-MINE = "owner-credential-" + "a" * 40
-THEIRS = "other-credential-" + "b" * 40
+
+def test_catalogue_is_excluded_from_conversation_but_rendered_as_a_system_locator():
+    note = layers.render_citation_catalogue([{"turn_id":"t","opening":"answer","sources":[],"answers_back":1}])
+    assert layers.is_catalogue_message(note)
+    assert layers.conversation_messages([{"role":"user","content":"question"}, note]) == [{"role":"user","content":"question"}]
+
+
+def test_l1_rows_keep_complete_citation_and_audit_sidecars():
+    rows=[{"role":"user","content":"q","turn_id":"t","sequence":1,"status":"complete"},
+          {"role":"assistant","content":"answer","turn_id":"t","sequence":2,"status":"complete",
+           "tool_calls":{"citations":[{"ordinal":1,"quote":"snapshot"}],"audit":{"terminal_status":"succeeded"},"tool_trace":[{"name":"read"}]}}]
+    result=layers.layer_rows(rows,[],l1_bytes=4096,l2_bytes=4096,l3_bytes=4096)
+    stored=result["l1_rows"][-1]["tool_calls"]
+    assert stored["citations"][0]["quote"]=="snapshot" and stored["audit"]["terminal_status"]=="succeeded"
+
+
+def _citation_group(n, answer, citations, tool_body=""):
+    tid=f"turn-{n}"
+    group=[{"role":"user","content":f"question {n}","turn_id":tid,"sequence":3*n-2,"status":"complete"},
+           {"role":"tool","content":tool_body,"turn_id":tid,"sequence":3*n-1,"status":"complete"},
+           {"role":"assistant","content":answer,"turn_id":tid,"sequence":3*n,"status":"complete",
+            "tool_calls":{"citations":citations}}]
+    return group
+
+
+def test_heavy_tool_batch_does_not_push_turns_out_of_layer_one():
+    rows=[row for n in range(1,4) for row in _citation_group(n,"answer",[],"x"*40000)]
+    result=layers.layer_rows(rows,[],l1_bytes=4096,l2_bytes=4096,l3_bytes=4096)
+    assert result["l1_turns"]==3
+
+
+def test_visible_answers_set_answers_back_even_without_citations():
+    a={"ordinal":1,"title":"source","source_type":"filing","quote":"snapshot"}
+    rows=[*_citation_group(1,"old [1]",[a]), *_citation_group(2,"middle",[]), *_citation_group(3,"new [1]",[a])]
+    result=layers.layer_rows(rows,[],l1_bytes=4096,l2_bytes=4096,l3_bytes=4096)
+    assert [entry["answers_back"] for entry in result["catalogue"]]==[1,3]
+
+
+def test_window_account_matches_emitted_history_and_catalogue_within_item_margin():
+    group=_citation_group(1,"answer [1]",[{"ordinal":1,"title":"filing","source_type":"official_filing","quote":"private quote"}])
+    result=layers.layer_rows(group,[],l1_bytes=4096,l2_bytes=4096,l3_bytes=0)
+    sent=sum(layers.json_bytes(m) for m in layers.project_turn_history(group))
+    sent+=layers.json_bytes(layers.render_citation_catalogue(result["catalogue"]))
+    assert sent == result["l1_bytes"]
+
+
+def test_summary_covered_citation_does_not_bill_an_unrendered_catalogue_header():
+    cited = {"ordinal": 1, "title": "filing", "source_type": "official_filing", "quote": "snapshot"}
+    rows = [*_citation_group(1, "old [1]", [cited]), *_citation_group(2, "x" * 2000, [])]
+    segments = [{"seq": 1, "from_sequence": 1, "upto_sequence": 2, "content": "older summary"}]
+    result = layers.layer_rows(rows, segments, l1_bytes=1000, l2_bytes=4096)
+    assert not result["catalogue"] and result["half_turns"]
+    assert result["l1_bytes"] == sum(layers.json_bytes(row) for row in result["l1_rows"])
+
+
+def test_half_compressed_turn_keeps_late_marker_and_catalogue_costs_budget():
+    source={"ordinal":3,"title":"filing","source_type":"official_filing","quote":"snapshot"}
+    group=_citation_group(1,"x"*180+" [3]",[source])
+    half=layers.layer_rows(group,[],l1_bytes=0,l2_bytes=4096,l3_bytes=0)
+    assert len(half["half_turns"])==1 and half["catalogue"][0]["sources"][0]["ordinal"]==3
+    projected=sum(layers.json_bytes(m) for m in layers.project_turn_history(group))
+    l1=layers.layer_rows(group,[],l1_bytes=projected,l2_bytes=4096,l3_bytes=0)
+    assert l1["l1_turns"]==0 and len(l1["half_turns"])==1
 
 
 # --- the knob and what it sets ----------------------------------------------------------------------
@@ -292,7 +352,11 @@ def test_the_request_guard_is_the_budget_not_a_fixed_forty_kilobytes(stream_fixt
 
     async def big(*_a, **_k):
         # 90 KB of earlier conversation: over the old 40 KB guard, inside the 128 KB one
-        rows = [{"role": "user", "content": "问" * 3000, "status": "complete", "turn_id": f"t{n}"} for n in range(10)]
+        rows = []
+        for n in range(10):
+            tid = f"t{n}"
+            rows.extend([{"role": "user", "content": "问" * 1500, "status": "complete", "turn_id": tid},
+                         {"role": "assistant", "content": "答" * 1500, "status": "complete", "turn_id": tid}])
         return {"l1_rows": rows}
 
     monkeypatch.setattr(stream, "conversation_context", big)
