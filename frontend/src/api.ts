@@ -4,6 +4,7 @@ import { fetchAgentChatModels } from "./agent-chat-models.mjs";
 import { apiErrorMessage } from "./api-errors.mjs";
 import { normalizeContextUsage, type ContextUsage } from "./context-usage.mjs";
 import { activeChatCredential, applyChatIdentity, changeChatMode, currentChatMode, conversationCreatedAtForMode, conversationForMode, selectConversationForMode } from "./chat-identity.mjs";
+import type { FlowNode } from "./turn-flow.mjs";
 
 export const configuredApiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/+$/, "");
 
@@ -25,7 +26,7 @@ export type AgentCitation = { ordinal?:number; chunk_id?: string | null; documen
 export type KnowledgeDocumentSummary = { id:string; title:string; symbol:string|null; source_type:string; observed_at:string|null; available_at:string|null; status:string; active:boolean; owner_scope:string; chunks:number };
 export type KnowledgeChunkDetail = { id:string; ordinal:number; section:string; answer:string; status:string; needs_review:boolean };
 export type AgentClarification = {request_id:string;reason:string;question?:string;display?:{title?:string;agent_suggestion?:boolean;saved_date?:string;web_date?:string;url?:string;alternative?:string;targets?:Array<Record<string,string>>};choices:Array<{label:string;value:string}>;options?:Array<{value:string;label:string;detail?:string}>;select?:{min:number;max:number}};
-export type AgentChatMessage = { role: "user" | "assistant" | "tool"; content: string; status?: string; turn_id?: string; reused_sources?: boolean; citations?: AgentCitation[]; clarification?: AgentClarification; tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }>; tool_call_id?: string; tool_trace?: Array<{ call_id?: string; name: string; arguments?: unknown; result?: unknown; status: string; card?: boolean }> };
+export type AgentChatMessage = { role: "user" | "assistant" | "tool"; content: string; status?: string; turn_id?: string; reused_sources?: boolean; citations?: AgentCitation[]; clarification?: AgentClarification; tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }>; tool_call_id?: string; tool_trace?: Array<{ call_id?: string; name: string; arguments?: unknown; result?: unknown; status: string; card?: boolean }>; trace?: FlowNode[]; thinking_ms?: number; started_at?: number };
 export type AgentChatEvent = { event: string; data: Record<string, unknown> };
 const chatConversationKey = "market-evidence-agent:chat-conversation:v1";
 export type ChatMode = "guest" | "personal";
