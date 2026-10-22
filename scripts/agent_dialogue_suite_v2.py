@@ -2,9 +2,9 @@
 
 Each case runs in its own conversation (a ``new_session`` step starts another one), as the owner
 or as a fresh guest.  For every user turn the runner records the answer, every tool call with its
-arguments, every citation, the card the turn ended on, the elapsed time and the turn's audit (read
-from ``agent_messages``), then applies the case's checks.  Cards can be pressed the way the web
-panel does it (``cancel_card``, ``confirm_card``, ``choose_card``, ``select_card`` (tick a revision card's materials), ``reconfirm_card``,
+arguments, every citation, the card the turn ended on, the elapsed time, the turn graph's node kinds
+and the turn's audit (both read from ``agent_messages``), then applies the case's checks.  Cards can
+be pressed the way the web panel does it (``cancel_card``, ``confirm_card``, ``choose_card``, ``select_card`` (tick a revision card's materials), ``reconfirm_card``,
 ``stale_confirm``), and a case may assert on the temporary database with ``db_check``.
 
 Keys are read into memory only and never printed, logged or written to the result file.  Card
@@ -147,6 +147,19 @@ def audit_of(db, conversation, turn):
         return json.loads(psql(db, sql, audit=True) or 'null') or {}
     except Exception:
         return {}
+
+
+def trace_kinds_of(db, conversation, turn):
+    """The turn graph's node kinds, in order, read from the stored assistant message."""
+    if not conversation or not turn:
+        return []
+    sql = ("select coalesce(tool_calls->'trace','null') from agent_messages where conversation_id='%s' "
+           "and turn_id='%s' and role='assistant' order by sequence desc limit 1" % (conversation, turn))
+    try:
+        nodes = json.loads(psql(db, sql, audit=True) or 'null') or []
+    except Exception:
+        return []
+    return [node.get('kind') for node in nodes if isinstance(node, dict) and isinstance(node.get('kind'), str)]
 
 
 def consent_of(db, request_id):
@@ -351,6 +364,20 @@ def grade(check, row):
     if 'stop_reason' in check:
         actual = audit.get('stop_reason')
         add('stop_reason', actual in check['stop_reason'], actual)
+    kinds = row.get('trace_kinds') or []
+    wanted = [kind for kind in check.get('trace_kinds_include', []) if isinstance(kind, str)]
+    if wanted:
+        position = 0
+        for kind in wanted:
+            try:
+                position = kinds.index(kind, position) + 1
+            except ValueError:
+                position = -1
+                break
+        add('trace has ' + ','.join(wanted), position > 0, ','.join(kinds))
+    if 'trace_last_kind' in check:
+        add('trace ends with ' + str(check['trace_last_kind']),
+            bool(kinds) and kinds[-1] == check['trace_last_kind'], ','.join(kinds))
     if check.get('no_dropped', True):
         add('nothing dropped', '未能与来源核对' not in answer, '')
     add('no protocol or placeholder', not re.search(r'DSML|<\|tool|<｜|已取得可核验来源|请拆成单独的一条再发', answer), '')
@@ -601,6 +628,7 @@ def run_case(case, base, db, model, owner, identity=None, retries=1, emit=emit_l
             row['retries'] = retries_used
         conversation = row.get('conversation_id') or conversation
         row['audit'] = audit_of(db, row.get('conversation_id'), row.get('turn_id'))
+        row['trace_kinds'] = trace_kinds_of(db, row.get('conversation_id'), row.get('turn_id'))
         if row.get('card_full'):
             row['operations'] = summarise_operations((consent_of(db, row['card_full'].get('request_id')) or {}).get('operations'))
         row['request_id'] = full_card['request_id'] if pressed else (row.get('card_full') or {}).get('request_id')
@@ -629,7 +657,8 @@ def run_case(case, base, db, model, owner, identity=None, retries=1, emit=emit_l
         emit(f"{case['id']}.{index} {row.get('seconds')}s {row.get('status')}/{row.get('reason')} "
              f"tools={[t['name'] for t in row.get('tools') or []]} card={bool(row.get('card'))} "
              f"proposed={[op.get('name') for op in row.get('operations') or [] if isinstance(op, dict)]} "
-             f"write={write} {'PASS' if not failed else 'FAIL ' + '; '.join(failed)}")
+             f"write={write} trace={','.join(row.get('trace_kinds') or [])} "
+             f"{'PASS' if not failed else 'FAIL ' + '; '.join(failed)}")
     return rows
 
 

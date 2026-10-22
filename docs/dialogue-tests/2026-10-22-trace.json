@@ -1,0 +1,70 @@
+{
+ "suite": "每轮思考过程的图：节点种类序列（agent_messages.tool_calls->'trace'）在真实模型下依次出现，且执行类请求停在补充信息的提问上",
+ "notes": "Shadow API (worktree g9-thinking-flow) on the scratch copy of the product database, profile tokenplan. Cases T01–T03 run once as owner and once as a fresh guest; T04 only as owner, because it acts on the owner's research queue. Checks read the stored trace only; a failing case is reported with its reason, the expectation is not adjusted to fit the model.",
+ "cases": [
+  {
+   "id": "T01",
+   "title": "查公司财报：接收问题、消解、分类、工具、决策、核验、输出都在图里",
+   "identity": "owner",
+   "steps": [
+    {
+     "text": "苹果最近一期财报营收是多少？",
+     "check": {
+      "trace_kinds_include": [
+       "input",
+       "resolve",
+       "classify",
+       "tool",
+       "decide",
+       "verify",
+       "output"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "T02",
+   "title": "一般知识解释：图里出现 general 节点",
+   "identity": "owner",
+   "steps": [
+    {
+     "text": "什么是市盈率？",
+     "check": {
+      "trace_kinds_include": [
+       "general"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "T03",
+   "title": "超出产品范围：图里出现 out_of_scope 节点",
+   "identity": "owner",
+   "steps": [
+    {
+     "text": "帮我订一张机票。",
+     "check": {
+      "trace_kinds_include": [
+       "out_of_scope"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "T04",
+   "title": "需要确认的写操作：图的最后一个节点是等待补充的 ask",
+   "identity": "owner",
+   "steps": [
+    {
+     "text": "把 AAPL 加入研究队列。",
+     "check": {
+      "trace_last_kind": "ask"
+     }
+    }
+   ]
+  }
+ ]
+}
