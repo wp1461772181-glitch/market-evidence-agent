@@ -160,7 +160,7 @@ export function AgentChatProviderRoot({ children }: { children: ReactNode }) {
   function selectArchive(id:string){const item=archive?.conversations.find(x=>x.id===id);if(item)setArchiveView(item);}
   const markSendingTurnCancelled = () => setMessages(items => {
     const last = items.at(-1);
-    if (last?.role === "assistant") return [...items.slice(0, -1), { ...last, status: "cancelled", tool_trace: last.tool_trace?.map(x => x.status === "running" ? { ...x, status: "cancelled" } : x) }];
+    if (last?.role === "assistant") return [...items.slice(0, -1), { ...last, status: "cancelled", tool_trace: last.tool_trace?.map(x => x.status === "running" ? { ...x, status: "cancelled" } : x), trace: last.trace ? cancelRunning(last.trace, "cancelled") : last.trace }];
     if (last?.role === "user") return [...items, { role: "assistant", content: "", status: "cancelled" }];
     return items;
   });
