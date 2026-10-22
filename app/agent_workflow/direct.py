@@ -13,6 +13,7 @@ from .evidence import gate_row,number_rows,citation_errors,contains
 from . import tools,consent
 from .authorization import vetoed
 from .references import Referent,validate_referents,bounded_stage,normalized,assistant_message_sources,assistant_item_catalogue
+from .trace import TurnTrace,classifier_output,decision_output,resolver_output,verify_output
 
 MAX_RETRIES=2
 IDLE_SECONDS=120
@@ -466,6 +467,8 @@ class Turn:
         self.replays={};self.replayed=0
         self.last_issues=[];self.last_rejected=[]
         self.completed_writes=set();self.resume_note=None;self.resuming=False
+        # Every event of the turn, including the ones handed to tools.invoke, passes through here.
+        self.trace=TurnTrace(emit,secret=context.api_key);self.emit=self.trace.relay
 
     async def expander(self,query):
         """Model-written retrieval variants for one query.
@@ -1780,7 +1783,9 @@ class Turn:
             # Use the actual server outcome, never exempt arbitrary model prose.
             notice='资料库里已有这条，没有重复保存。' if 'already_exists' in completed_without_write else '已完成日期比较，网页没有更新，无需入库。'
             return self.finish(notice,generated=True)
-        result=self.finish(answer)
+        async with self.trace.step('verify') as node:
+            result=self.finish(answer)
+            status,output=verify_output(result,self.last_issues,len(self.citations));await self.trace.end(node,status=status,output=output)
         if result['reason'] not in REPAIRABLE or not self.observations or self.pending or self.budget(soft=False):
             return result
         best=result;best_issues=list(self.last_issues);draft=answer;retry_note=False
@@ -1789,71 +1794,88 @@ class Turn:
         for attempt in range(1,MAX_REPAIR_ROUNDS+1):
             self.audit['answer_repair_count']=attempt
             self.audit['decision_steps']+=1
-            # Naming the numbers the check rejected is the difference between a repair and a guess.
-            rejected=[]
-            try:
-                from .evidence import unsupported_number_values
-                rejected=unsupported_number_values(draft,self.citations)[:8]
-            except Exception:rejected=[]
-            # A rejected number is usually a citation slip, not a fabrication: the figure sits in the
-            # evidence the answer quoted elsewhere. Naming that ordinal turns 'drop it' into 're-source
-            # it', which is the difference between a repaired answer and an emptied one.
-            holders={}
-            if rejected:
-                from .semantic import figure_values
-                for number in rejected:
-                    ordinals=[str(c.get('ordinal')) for c in self.citations
-                              if number in figure_values(str(c.get('quote') or ''))]
-                    if ordinals:holders[str(number)]=ordinals
-            if attempt==1:self.audit['unsupported_numbers']=rejected[:8]
-            payload={'rejected_lines':[{'line':line[:400],'reason':code} for line,code in self.last_rejected[:8]],
-                     'unsupported_numbers':rejected}
-            if holders:payload['rejected_numbers_appear_in']=holders
-            messages=[*self.tool_messages(True),{'role':'assistant','content':draft},
-                {'role':'user','content':json.dumps(payload,ensure_ascii=False)},
-                {'role':'system','content':REPAIR_INSTRUCTION},
-                *([{'role':'system','content':REPAIR_RETRY_NOTE}] if retry_note else [])]
-            try:
-                if self.context.decider:
-                    callback=self.context.decider
-                    repaired=await injected(callback,self.question,[],self.observations) if len(inspect.signature(callback).parameters)>=3 else await injected(callback,messages,[])
-                    if isinstance(repaired,tuple):repaired=repaired[1]
-                else:repaired=await self.model(messages,[],protocol_retries=0)
-            except Exception as exc:
-                detail=getattr(exc,'detail',None)
-                self.audit['answer_repair_error']='repair_unavailable:'+type(exc).__name__+(':'+detail if isinstance(detail,str) and re.fullmatch(r'[a-z_]{3,80}',detail) else '');break
-            content=without_tool_markup(repaired.get('content')) if isinstance(repaired,dict) and isinstance(repaired.get('content'),str) else ''
-            if not isinstance(repaired,dict) or repaired.get('tool_calls') or not content:
-                # A repair that reaches for a tool (usually calculate, for a figure it computed in its
-                # head) gets one more try, told that tools are off and such a figure goes.
-                self.audit['answer_repair_error']='invalid_repair_response'
-                if retry_note:break
-                retry_note=True;continue
-            text=re.sub(r'^\s*```[A-Za-z]*\s*\n|\n?\s*```\s*$','',content)
-            candidate=self.finish(text)
-            if candidate['status']=='succeeded':return candidate
-            # A repair that fixed nothing is not a better answer; keep whichever states the most.  An
-            # answer that kept nothing at all is replaced by the attempt, whatever it now fails on.
-            progressed=len(self.last_issues)<len(best_issues)
-            if progressed or best['status']=='failed':
-                best,best_issues,draft=candidate,list(self.last_issues),text
-                best_rejected=list(self.audit.get('rejected_lines') or [])
-            if not progressed:break
+            async with self.trace.step('repair',step=attempt) as node:
+                # Naming the numbers the check rejected is the difference between a repair and a guess.
+                rejected=[]
+                try:
+                    from .evidence import unsupported_number_values
+                    rejected=unsupported_number_values(draft,self.citations)[:8]
+                except Exception:rejected=[]
+                # A rejected number is usually a citation slip, not a fabrication: the figure sits in the
+                # evidence the answer quoted elsewhere. Naming that ordinal turns 'drop it' into 're-source
+                # it', which is the difference between a repaired answer and an emptied one.
+                holders={}
+                if rejected:
+                    from .semantic import figure_values
+                    for number in rejected:
+                        ordinals=[str(c.get('ordinal')) for c in self.citations
+                                  if number in figure_values(str(c.get('quote') or ''))]
+                        if ordinals:holders[str(number)]=ordinals
+                if attempt==1:self.audit['unsupported_numbers']=rejected[:8]
+                payload={'rejected_lines':[{'line':line[:400],'reason':code} for line,code in self.last_rejected[:8]],
+                         'unsupported_numbers':rejected}
+                if holders:payload['rejected_numbers_appear_in']=holders
+                messages=[*self.tool_messages(True),{'role':'assistant','content':draft},
+                    {'role':'user','content':json.dumps(payload,ensure_ascii=False)},
+                    {'role':'system','content':REPAIR_INSTRUCTION},
+                    *([{'role':'system','content':REPAIR_RETRY_NOTE}] if retry_note else [])]
+                try:
+                    if self.context.decider:
+                        callback=self.context.decider
+                        repaired=await injected(callback,self.question,[],self.observations) if len(inspect.signature(callback).parameters)>=3 else await injected(callback,messages,[])
+                        if isinstance(repaired,tuple):repaired=repaired[1]
+                    else:repaired=await self.model(messages,[],protocol_retries=0)
+                except Exception as exc:
+                    detail=getattr(exc,'detail',None)
+                    self.audit['answer_repair_error']='repair_unavailable:'+type(exc).__name__+(':'+detail if isinstance(detail,str) and re.fullmatch(r'[a-z_]{3,80}',detail) else '');node.status='failed';node.output={'error':self.audit['answer_repair_error']};break
+                content=without_tool_markup(repaired.get('content')) if isinstance(repaired,dict) and isinstance(repaired.get('content'),str) else ''
+                if not isinstance(repaired,dict) or repaired.get('tool_calls') or not content:
+                    # A repair that reaches for a tool (usually calculate, for a figure it computed in its
+                    # head) gets one more try, told that tools are off and such a figure goes.
+                    self.audit['answer_repair_error']='invalid_repair_response'
+                    node.status='failed';node.output={'error':'invalid_repair_response'}
+                    if retry_note:break
+                    retry_note=True;continue
+                text=re.sub(r'^\s*```[A-Za-z]*\s*\n|\n?\s*```\s*$','',content)
+                candidate=self.finish(text)
+                status,output=verify_output(candidate,self.last_issues,len(self.citations));await self.trace.end(node,status=status,output=output)
+                if candidate['status']=='succeeded':return candidate
+                # A repair that fixed nothing is not a better answer; keep whichever states the most.  An
+                # answer that kept nothing at all is replaced by the attempt, whatever it now fails on.
+                progressed=len(self.last_issues)<len(best_issues)
+                if progressed or best['status']=='failed':
+                    best,best_issues,draft=candidate,list(self.last_issues),text
+                    best_rejected=list(self.audit.get('rejected_lines') or [])
+                if not progressed:break
         # The audit describes the answer returned, not the last attempt.
         self.audit['stop_reason']=best['reason'];self.audit['answer_issues']=best_issues
         if best_rejected:self.audit['rejected_lines']=best_rejected
         return best
 
     async def run(self):
-        reply=await self.consent_reply()
+        await self.trace.mark('input',output={'question':self.user_words()[:200]})
+        async with self.trace.step('consent',enabled=bool(self.state.get('requested_pending_id'))) as node:
+            reply=await self.consent_reply()
+            await self.trace.end(node,output={'outcome':self.audit.get('write_outcome') or ('handled' if reply else 'continue')})
         if reply:return reply
-        await self.reference()
+        async with self.trace.step('resolve') as node:
+            await self.reference()
+            status,output=resolver_output(self.audit['stages'].get('resolver'));await self.trace.end(node,status=status,output=output)
         if self.pending:return self.finish('需要补充信息：'+self.pending.get('question',''),status='waiting_for_input',generated=True)
-        await self.classify()
+        async with self.trace.step('classify') as node:
+            await self.classify()
+            status,output=classifier_output(self.audit['stages'].get('classifier'));await self.trace.end(node,status=status,output=output)
         if self.pending:return self.finish('需要补充信息：'+self.pending['question'],status='waiting_for_input',generated=True)
-        if self.route=='C':return await self.answer_c()
+        if self.route=='C':
+            async with self.trace.step('out_of_scope') as node:
+                result=await self.answer_c()
+                await self.trace.end(node,output={'source':self.audit.get('source')})
+            return result
         if self.route=='B':
-            return await self.answer_b()
+            async with self.trace.step('general') as node:
+                result=await self.answer_b()
+                await self.trace.end(node,output={'source':self.audit.get('source')})
+            return result
         return await self.agent_loop()
 
     async def agent_loop(self):
@@ -1879,7 +1901,10 @@ class Turn:
         stop=None
         while not(stop or self.budget()):
             self.audit['decision_steps']+=1
-            try:decision=await self.decision()
+            try:
+                async with self.trace.step('decide',step=self.audit['decision_steps']) as node:
+                    decision=await self.decision()
+                    await self.trace.end(node,output=decision_output(decision))
             except HTTPException as exc:
                 # A provider that keeps sending broken responses ends gathering, not the turn: the
                 # closing call is smaller and the evidence already gathered still answers.
@@ -2020,7 +2045,9 @@ class Turn:
                     return self.finish(description,status='waiting_for_input',generated=True)
         stop=stop or self.audit['stop_reason'] or self.budget() or 'no_progress'
         # Finalization never receives tools, capabilities or rejected bodies.
-        closing=await self.closing_answer()
+        async with self.trace.step('closing') as node:
+            closing=await self.closing_answer()
+            await self.trace.end(node,output={'stop_reason':stop})
         notes={'no_progress':'几次检索都没有得到新的结果，已停止。',
             'turn_budget':'为控制等待时间，本轮在已取得的资料上停止。',
             'provider_unstable':'模型这次的响应不完整，本轮在已取得的资料上停止。',
@@ -2051,8 +2078,14 @@ class Turn:
 
 async def run_direct_turn(question,context,*,emit,messages=None,state=None):
     turn=Turn(question,context,emit,messages,state)
+    result=await _guarded(turn)
+    # The graph closes here, once the turn has produced its last node.
+    await turn.trace.finish(result)
+    return {**result,'trace':turn.trace.nodes()}
+
+async def _guarded(turn):
     try:
-        async with progress_watchdog(IDLE_SECONDS),decision_session(context.base_url):return await turn.run()
+        async with progress_watchdog(IDLE_SECONDS),decision_session(turn.context.base_url):return await turn.run()
     except (ValueError,consent.ConsentError) as exc:
         code=str(exc) if re.fullmatch(r'[a-z_]{3,80}',str(exc)) else 'provider_protocol_invalid'
         if turn.observations:return turn.partial_failure(code)
