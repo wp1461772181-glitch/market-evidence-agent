@@ -181,3 +181,52 @@ def test_invalidated_or_empty_restored_quote_is_unavailable(monkeypatch):
         monkeypatch.setattr(stream, "_restore_citations", lambda *_args, value=restored: value)
         result=asyncio.run(read_history_citation({"turn_id":"turn-a","ordinal":1},context))
         assert result["error_code"]=="history_citation_unavailable"
+
+def _guard_turn(question, *, catalogue=None, resolver=None):
+    from app.agent_workflow.direct import Turn
+    if catalogue is None:
+        catalogue = (
+            {"turn_id": "latest", "answers_back": 1, "opening": "来源是说明一段信息从何而来的材料。", "sources": []},
+            {"turn_id": "older", "answers_back": 2, "opening": "较早的合成测试报告列有第三项来源 [3]。", "sources": [{"ordinal": 3, "available": True}]},
+            {"turn_id": "oldest", "answers_back": 3, "opening": "更早的汇总表列有第三项来源 [3]。", "sources": [{"ordinal": 3, "available": True}]},
+        )
+    context = AgentRuntimeContext("p", "m", "k", conversation_id="c", resolver=resolver,
+        history_citation_catalogue=catalogue)
+    async def emit(_):
+        pass
+    return Turn(question, context, emit, [], {})
+
+
+def test_bare_ordinal_absent_from_the_latest_answer_asks_before_reading_an_earlier_one():
+    async def must_not_resolve(*_):
+        raise AssertionError("an ambiguous bare [n] must not reach the resolver")
+    turn = _guard_turn("引用 [3] 说了什么？", resolver=must_not_resolve)
+    result = asyncio.run(turn.run())
+    assert result["status"] == "waiting_for_input"
+    card = result["pending_request"]
+    assert "上一条回答没有编号 3 的引用" in card["question"]
+    assert [choice["label"] for choice in card["choices"]] == [
+        "较早的合成测试报告列有第三项来源 [3]。",
+        "更早的汇总表列有第三项来源 [3]。",
+    ]
+    assert all(choice["value"].startswith("reply:") for choice in card["choices"])
+    assert turn.audit["history_citation_ambiguous"] == {
+        "ordinal": 3, "latest_turn": "latest", "answers": [2, 3]}
+
+
+def test_a_bare_ordinal_present_in_the_latest_answer_is_not_clarified():
+    turn = _guard_turn("引用 [3] 说了什么？", catalogue=(
+        {"turn_id": "latest", "answers_back": 1, "sources": [{"ordinal": 3}]},
+        {"turn_id": "older", "answers_back": 2, "sources": [{"ordinal": 3}]},
+    ))
+    assert turn.history_citation_clarification() is None
+
+
+def test_a_bare_ordinal_that_no_visible_answer_has_is_left_to_the_resolver():
+    turn = _guard_turn("引用 [9] 说了什么？")
+    assert turn.history_citation_clarification() is None
+
+
+def test_replying_to_the_clarification_card_does_not_ask_again():
+    turn = _guard_turn("reply:较早的合成测试报告列有第三项来源 [3]。")
+    assert turn.history_citation_clarification() is None

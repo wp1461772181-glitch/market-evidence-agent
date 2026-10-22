@@ -543,6 +543,11 @@ class Turn:
     async def reference(self):
         self.audit['nodes'].append('resolve_reference')
         await self.emit({'event':'status','status':'resolving_reference'})
+        clarification=self.history_citation_clarification()
+        if clarification:
+            self.audit['history_citation_ambiguous']=clarification['audit']
+            self.pending=self.card(clarification['question'],clarification['choices'])
+            return
         # The layer-3 note is appended after the user's message, so it is not part of the turn
         # history and must not be read as something the user said in an earlier turn.
         conversation=layers.conversation_messages(self.messages)
@@ -903,6 +908,40 @@ class Turn:
         if self.original.startswith('reply:'):return self.original.removeprefix('reply:')
         if self.original.startswith(CONTROL_PREFIXES):return self.request_words()
         return self.original
+
+    def history_citation_clarification(self):
+        """A bare [n] means the answer immediately before this question.
+
+        The catalogue exposes every visible answer, so both the resolver and the decider could read an
+        earlier [n] instead of asking; real runs did.  That preference is a product rule, not a hint,
+        so it is enforced here: when the latest answer lacks the number and an earlier answer has it,
+        the turn stops with a clarification card before any model sees the question.
+        """
+        if self.original.startswith(('reply:',*CONTROL_PREFIXES)):return None
+        ordinals=sorted({int(n) for n in re.findall(r'\[(\d+)\]',self.user_words())})
+        if not ordinals:return None
+        entries=[e for e in self.context.history_citation_catalogue if isinstance(e,dict)]
+        if not entries:return None
+        def numbers(entry):
+            return {s.get('ordinal') for s in entry.get('sources') or [] if isinstance(s,dict)}
+        latest=next((e for e in entries if e.get('answers_back')==1),None)
+        for ordinal in ordinals:
+            if latest and ordinal in numbers(latest):continue
+            earlier=[e for e in entries if isinstance(e.get('answers_back'),int) and e['answers_back']>1 and ordinal in numbers(e)]
+            if not earlier:continue
+            choices=[]
+            for entry in earlier:
+                label=str(entry.get('opening') or '').strip() or f"第 {entry['answers_back']} 条回答"
+                if label in choices:label=f"{label}（第 {entry['answers_back']} 条）"
+                choices.append(label)
+            chinese=bool(re.search(r'[\u3400-\u9fff]',self.original))
+            # The card text is part of the answer, so the citation marker itself would be read as a broken
+            # citation by the answer checker; name the number in words instead.
+            question=(f"上一条回答没有编号 {ordinal} 的引用，不能直接改读更早的回答。你是指哪一条回答？" if chinese
+                      else f"The latest answer has no citation {ordinal}, so an earlier answer is not read automatically. Which answer do you mean?")
+            return {'question':question,'choices':choices[:8],
+                    'audit':{'ordinal':ordinal,'latest_turn':(latest or {}).get('turn_id'),'answers':[e['answers_back'] for e in earlier]}}
+        return None
 
     def prior_turns(self,max_bytes=16000):
         """The conversation before this message as plain turns, newest kept first within the budget."""
