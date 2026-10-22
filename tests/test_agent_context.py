@@ -10,6 +10,43 @@ import pytest
 from app import agent_context as layers
 from test_agent_chat_stream import stream_fixture  # noqa: F401  (the SSE fixture of the sibling module)
 
+
+def test_sidecars_do_not_change_the_size_of_a_message():
+    row = {"role": "assistant", "content": "done", "turn_id": "t", "status": "complete",
+           "tool_calls": {"calls": [], "citations": [{"quote": "x" * 20_000}],
+                          "audit": {"data": "x" * 20_000}, "trace": "x" * 20_000}}
+    expected = layers.row_bytes({**row, "tool_calls": {"calls": []}})
+    assert layers.row_bytes(row) == expected
+
+
+def test_content_and_real_tool_calls_still_count():
+    row = {"role": "assistant", "content": "done", "turn_id": "t", "status": "complete",
+           "tool_calls": {"calls": []}}
+    base = layers.row_bytes(row)
+    assert layers.row_bytes({**row, "content": "done longer"}) > base
+    assert layers.row_bytes({**row, "tool_calls": {"calls": [{"id": "c", "function": {"name": "lookup"}}]}}) > base
+
+
+def test_l1_rows_keep_the_full_sidecars(disposable_database):
+    from app.database import SessionLocal
+    from app.agent_chat_models import AgentConversation, AgentMessage
+    from app.agent_chat_store import owner_hash
+    from app import agent_chat_store as store
+    import uuid
+    from app.database import Base, engine
+    Base.metadata.create_all(bind=engine)
+    conversation, turn = uuid.uuid4(), uuid.uuid4()
+    with SessionLocal() as db:
+        db.add(AgentConversation(id=conversation, owner_hash=owner_hash(MINE)))
+        db.add_all([
+            AgentMessage(conversation_id=conversation, turn_id=turn, sequence=1, role="user", content="q", status="complete"),
+            AgentMessage(conversation_id=conversation, turn_id=turn, sequence=2, role="assistant", content="answer", status="complete",
+                         tool_calls={"citations": [{"ordinal": 1, "quote": "snapshot"}], "audit": {"terminal_status": "succeeded"}})])
+        db.commit()
+    rows = asyncio.run(store.conversation_context(str(conversation), MINE, l1_bytes=4096, l2_bytes=4096, l3_bytes=4096))["l1_rows"]
+    assert rows[-1]["tool_calls"]["citations"][0]["quote"] == "snapshot"
+    assert rows[-1]["tool_calls"]["audit"]["terminal_status"] == "succeeded"
+
 TURN = "11111111-1111-4111-8111-{:012d}"
 MINE = "owner-credential-" + "a" * 40
 THEIRS = "other-credential-" + "b" * 40

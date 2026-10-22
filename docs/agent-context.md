@@ -1,3 +1,5 @@
+> Gate A transition ruling (2026-10-22): the protocol projection and its single byte counter preserve real tool-call payloads in A; Gate B changes historical retention to question/answer text plus a separately budgeted citation locator, so tool and assistant-call rows are zero-cost under the final B rule. The offline filler answer was lengthened to exercise L1-to-L2 movement after tool payloads leave the history budget; this changes only synthetic evaluation data.
+
 # 对话上下文管理
 
 一轮对话发给模型的"更早的对话"由三层组成，共用一个预算。短对话（≤ 14 KB）与分层之前逐字节相同。

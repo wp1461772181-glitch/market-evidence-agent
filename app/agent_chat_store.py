@@ -11,8 +11,8 @@ engine=create_async_engine(ASYNC_URL,pool_pre_ping=True,connect_args={"connect_t
 Session=async_sessionmaker(engine,expire_on_commit=False)
 def owner_hash(credential: str)->str: return hashlib.sha256(credential.encode()).hexdigest()
 def _message_bytes(m):
-    value={"role":m.role,"content":m.content,"tool_calls":m.tool_calls,"tool_call_id":m.tool_call_id,"status":m.status,"turn_id":str(m.turn_id)}
-    return len(json.dumps(value,ensure_ascii=False,separators=(",",":")).encode("utf-8"))
+    return layers.row_bytes({"role":m.role,"content":m.content,"tool_calls":m.tool_calls,
+                             "tool_call_id":m.tool_call_id,"status":m.status,"turn_id":str(m.turn_id)})
 async def create_conversation(credential: str)->str:
     async with Session() as s:
         obj=AgentConversation(owner_hash=owner_hash(credential)); s.add(obj); await s.commit(); return str(obj.id)

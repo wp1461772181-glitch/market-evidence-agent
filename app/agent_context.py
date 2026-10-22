@@ -121,6 +121,24 @@ def json_bytes(value) -> int:
     return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
 
 
+def history_message_payload(row: dict) -> dict:
+    """Project stored rows to the protocol fields that can be sent to a model."""
+    payload = {key: row[key] for key in ("role", "content") if key in row}
+    protocol = row.get("tool_calls")
+    if isinstance(protocol, dict):
+        if protocol.get("calls"):
+            payload["tool_calls"] = protocol["calls"]
+        for key in ("reasoning_content", "reasoning_details"):
+            if protocol.get(key) is not None:
+                value = protocol[key]
+                payload[key] = "".join(value) if key == "reasoning_content" and isinstance(value, list) else value
+    elif protocol:
+        payload["tool_calls"] = protocol
+    if row.get("tool_call_id") is not None:
+        payload["tool_call_id"] = row["tool_call_id"]
+    return payload
+
+
 def estimate_tokens(size_bytes: int) -> int:
     return size_bytes // BYTES_PER_TOKEN
 
@@ -138,10 +156,8 @@ class Turn:
 
 
 def row_bytes(row: dict) -> int:
-    """The size of one stored message as the history window has always counted it."""
-    return json_bytes({"role": row["role"], "content": row["content"], "tool_calls": row.get("tool_calls"),
-                       "tool_call_id": row.get("tool_call_id"), "status": row.get("status"),
-                       "turn_id": str(row["turn_id"])})
+    """The size of the public protocol projection; sidecar metadata is not billed."""
+    return json_bytes(history_message_payload(row))
 
 
 def complete_turns(rows: list[dict]) -> list[list[dict]]:

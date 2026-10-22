@@ -93,7 +93,7 @@ def _filler_turn(rng: random.Random) -> tuple[str, str, str]:
     company, topic = rng.choice(_COMPANIES), rng.choice(_TOPICS)
     user = f"{company}最近一期的{topic}是怎样的？请结合已保存的材料说明。"
     body = "\n\n".join(f"- {rng.choice(_SENTENCES)}{rng.choice(_SENTENCES)}" for _ in range(4))
-    assistant = f"{company}在{topic}方面整体变化不大，细节如下。\n\n{body}\n\n以上依据本轮检索到的已保存摘录，仅供研究参考。"
+    assistant = f"{company}在{topic}方面整体变化不大，细节如下。\n\n{(body + chr(10) + chr(10)) * 2}以上依据本轮检索到的已保存摘录，仅供研究参考。"
     excerpt = "".join(f"{rng.choice(_SENTENCES)}" for _ in range(14))
     tool = json.dumps({"ok": True, "source": "saved filing excerpts", "data": [
         {"title": f"{company} 申报文件摘录 {i}", "excerpt": excerpt, "observed_at": "2026-10-14"} for i in range(1, 4)]},
