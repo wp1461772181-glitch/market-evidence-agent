@@ -17,12 +17,20 @@ def contains(term: str, text: str) -> bool:
 
 _TITLE_PUNCTUATION=str.maketrans({'？':'','！':'','。':'','?':'','!':'','.':''})
 _TITLE_RESTORED=str.maketrans({v:k for k,v in {'？':'','！':'','。':'','?':'','!':'','.':''}.items()})
+# A quoted passage is one unit: a full stop inside the quotation (“……毛利率为 46.2%。” [1]) must not
+# split the [1] away from the sentence it supports.
+_QUOTED_PASSAGE=re.compile(r'“[^”\n]{0,500}”|「[^」\n]{0,500}」|『[^』\n]{0,500}』|‘[^’\n]{0,500}’')
+
+
+def _protect_passage_punctuation(match):
+    return match.group(0).translate(_TITLE_PUNCTUATION)
 
 
 def cited_passages(answer):
     # A title in 《》 is one name even when it asks a question ("……哪一只更值得买入？"): its punctuation
     # does not end the sentence that cites it.
-    protected=re.sub(r'《[^》\n]{0,300}》',lambda m:m.group(0).translate(_TITLE_PUNCTUATION),answer)
+    protected=_QUOTED_PASSAGE.sub(_protect_passage_punctuation,answer)
+    protected=re.sub(r'《[^》\n]{0,300}》',_protect_passage_punctuation,protected)
     # Both “fact[1]。” and “fact。[1]” bind the marker to the same sentence.
     normalized=re.sub(r'([。！？.!?])(\s*(?:\[\d+\]\s*)+)',lambda m:m[2].strip()+m[1],protected)
     return [part.translate(_TITLE_RESTORED) for part in re.split(r'[。！？\n]|(?<=[.!?])\s+',normalized)]

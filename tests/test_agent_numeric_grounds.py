@@ -69,3 +69,27 @@ def test_a_lead_in_without_an_amount_needs_no_citation_however_long():
     assert issues==[] and kept.startswith(lead)
     kept,issues=reviewed_answer('营业收入为 3,318 亿美元：\n- 详见 [1]',[FIGURE],require_citations=True)
     assert issues==['missing_citation']
+
+def test_a_quotation_ending_in_a_period_keeps_its_citation_with_it():
+    from app.agent_workflow.evidence import reviewed_answer
+    quotation = "测试夹具毛利率为 46.2%。"
+    answer = '原文为：“测试夹具毛利率为 46.2%。” [1]'
+    kept, issues = reviewed_answer(answer, [{"ordinal": 1, "source_type": "reported_figure",
+        "title": "测试夹具", "quote": quotation}], require_citations=True)
+    assert issues == [] and kept == answer
+
+
+def test_the_same_quotation_without_a_citation_is_still_rejected():
+    from app.agent_workflow.evidence import reviewed_answer
+    quotation = "测试夹具毛利率为 46.2%。"
+    kept, issues = reviewed_answer('原文为：“测试夹具毛利率为 46.2%。”', [{"ordinal": 1,
+        "source_type": "reported_figure", "title": "测试夹具", "quote": quotation}], require_citations=True)
+    assert "missing_citation" in issues
+
+
+def test_protecting_the_quotation_does_not_accept_a_different_figure():
+    from app.agent_workflow.evidence import reviewed_answer
+    quotation = "测试夹具毛利率为 46.2%。"
+    kept, issues = reviewed_answer('原文为：“测试夹具毛利率为 40.0%。” [1]', [{"ordinal": 1,
+        "source_type": "reported_figure", "title": "测试夹具", "quote": quotation}], require_citations=True)
+    assert "unsupported_numeric_claim" in issues
