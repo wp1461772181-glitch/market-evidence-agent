@@ -30,12 +30,13 @@
 - **模型可以替换 / Your model, your key** — 材料分析支持 11 种 OpenAI-compatible 模型服务配置（含自定义端点）；后台可设全局默认，单次任务可覆盖，API key 加密存储并在任务进入终态后清除。
 - **引用经得起核对 / Citations you can check** — 引用按 exact → normalized → fuzzy 分层定位；仍定位不到时保留结论并明确标注「引用待核对」，而不是让整份分析失败。
 - **一条研究闭环 / One research loop** — 材料采集 → 证据入库 → AI 分析（可配置模型）→ 引用核验 → ResearchBrief → 预测版本 → 修订候选 → 复盘。
+- **过程看得见 / Thinking you can inspect** — 每轮回答带“已思考 N 秒 · M 步”的步骤图，指代消解、意图识别、工具调用、证据核验与修复各有状态和耗时；刷新可回放，取消后不会留下转圈节点。
 
-> **2026-10-20 发布 / Latest release** — 本次更新聚焦 **可配置、可核验、可回放**：
+> **2026-10-22 发布 / Latest release** — 在 2026-10-20 的可配置分析与分层引用核验之上，本次加入 **可查看的思考过程**：
 >
-> AI 材料分析可选 11 种模型服务配置（含自定义端点，后台全局默认 + 单次覆盖）；引用校验分为 exact / normalized / fuzzy / unverified，并保留「引用待核对」；预测修订新增 `preexisting` 类别；同时修复 Agent 对话页左侧菜单闭合时的按钮遮挡，并上线新 logo、favicon 与品牌 lockup。
+> 每轮回答显示总耗时与步骤图，指代消解、意图识别、工具调用、证据核验和修复各有状态与耗时；刷新可回放，取消后会正确收尾。步骤图最多 60 个节点，不含 API key 或确认卡控制值，也不增加对话上下文计费。
 >
-> The 2026-10-20 release adds configurable analysis models across 11 provider configurations (including custom endpoints), layered citation verification with a visible “needs review” state, a new `preexisting` revision category, a navigation fix, and a new logo/favicon/lockup.
+> The 2026-10-22 release builds on the 2026-10-20 configurable-analysis and layered-citation work with an **inspectable thinking process**: every answer shows its elapsed time and a step graph covering reference resolution, routing, tool calls, evidence checks and repairs, with replay after refresh and clean cancellation. The graph is capped at 60 nodes, omits API keys and confirmation values, and does not increase the conversation-context bill.
 
 ## 🧭 工作流 / Shared workflow
 
@@ -94,6 +95,12 @@ Market Evidence Agent 是一个面向股票研究的**证据工作台**。它把
 
 Agent 可提出写操作：只有所有者确认冻结目标的卡片后才执行，令牌绑定当前对话、10 分钟有效并防止重复执行。游客的队列和页面动作仅作用于当前浏览器。网页可经确认保存为 `web_news`，检索时持续标注网页来源。对话上下文分三层：近期轮次保留原文，较早轮次部分压缩，更早内容以追加式摘要保留。默认历史预算为 **64 KB**，可通过 `AGENT_CONTEXT_BUDGET_KB` 配置（16–128 KB）。摘要是记忆而非证据，回答依据来自本轮工具结果。
 
+### 可查看的思考过程
+
+每轮回答旁有一个“已思考 N 秒 · M 步”面板。运行中它会实时展开：接收问题、指代消解、意图识别、模型决策、工具调用、证据核验、修复回答、输出回答等节点依次出现；并行工具从发起它们的决策节点分叉，并在下一个节点汇合。每个节点有运行、完成、需注意、失败、已取消五种状态和耗时，点击可查看简要输出与原始数据。回答结束后面板自动折叠；如果用户手动展开或收起，当前页面内会保留这个选择。刷新页面或重新打开对话时，面板恢复为折叠状态，步骤图和总耗时仍从服务端回放。
+
+这是执行轨迹，不是模型的完整思维链：它记录系统实际做了哪一步、用了什么工具、花了多久，不展示隐藏推理。轨迹最多 60 个节点，单段输出压缩到 400 字符；当前模型的 API key 会脱敏为 `[redacted]`，确认卡控制值不会进入轨迹。它不写入 LangGraph 检查点，也不计入对话上下文预算。取消一轮时，仍在运行的节点会标为已取消，不会留下转圈。
+
 ### 可配置 AI 材料分析
 
 材料分析任务可以选择 **DeepSeek、Kimi、MiniMax、通义千问、智谱 GLM、豆包、腾讯混元、百度千帆、SiliconFlow、OpenRouter**，或自定义 OpenAI-compatible 端点。后台可设置全局默认；单次任务可以覆盖。每个任务会冻结自己使用的 provider、base URL 和 model，API key 加密存储，任务进入终态后清除。管理员可在 Agent 管理页设置默认模型，普通用户也可以在单次分析时选择“系统默认”或已保存的模型配置。
@@ -133,6 +140,7 @@ Agent 可提出写操作：只有所有者确认冻结目标的卡片后才执�
 | 前端 | React 19、TypeScript、Vite；[应用入口](frontend/src/App.tsx)、[Agent 面板](frontend/src/AgentChatPanel.tsx)、[材料分析](frontend/src/MaterialAnalysisDetail.tsx) |
 | API 与工作流 | Python 3.12、FastAPI、LangGraph；[工作流](app/agent_workflow/graph.py)、[直接工具循环](app/agent_workflow/direct.py)、[写操作](app/agent_workflow/consent.py) |
 | 对话上下文 | 三层记忆与预算；[预算展示组件](frontend/src/ContextMeter.tsx) |
+| 思考过程 | 每轮步骤图与耗时；[轨迹记录](app/agent_workflow/trace.py)、[步骤面板](frontend/src/ThinkingPanel.tsx)、[图布局与文案](frontend/src/turn-flow.mjs) |
 | 研究数据 | [保存数据工具](app/agent_tools.py)、[网页研究](app/agent_web_research.py)、[材料分析](app/material_analysis.py)、[ResearchBrief](app/research_brief.py) |
 | 模型配置 | [provider catalog](app/model_providers.py)、[加密凭证盒](app/secret_box.py)；11 种 OpenAI-compatible provider 配置（含自定义端点） |
 | 引用核验 | [引用 schema 与匹配](app/material_analysis_schema.py) |
@@ -191,6 +199,7 @@ npm run build
 ## 📚 延伸阅读
 
 - [对话上下文与预算](docs/agent-context.md)
+- [对话系统设计与思考过程数据](docs/agent-dialogue-engineering.zh-CN.md)
 - [Jev 本地校准与成熟度边界](docs/jev-local-learning.md)
 - [自定义股票代码支持](docs/custom-stock-support.md)
 - [Agent 工作流设计说明](docs/agent-research-v3-spec.md)
@@ -245,6 +254,12 @@ A shared typed tool catalogue covers saved evidence, public research, workspace/
 
 Owner write proposals freeze their targets and require a conversation-bound confirmation token, expiring after ten minutes, with durable replay protection. Guest queue and navigation actions stay in the browser. Confirmed public-page ingestion retains `web_news` provenance through retrieval. The default conversation context budget is **64 KB**, configurable with `AGENT_CONTEXT_BUDGET_KB` (16–128 KB); prior turns are reference context and do not count as evidence.
 
+### Inspectable thinking process
+
+Every answer carries a “Thought for N s · M steps” panel. While the turn runs it expands as steps arrive — input, reference resolution, routing, model decisions, tool calls, evidence verification, repair and the final answer. Parallel tools fork from the decision that called them and join at the next step. Each node has a running, done, needs-attention, failed or cancelled state and a duration; expanding it shows a short output summary and its raw data. The panel folds when the turn ends; a manual toggle lasts for the current page. After a refresh or when the conversation is reopened, it starts folded again, but the graph and total time still replay from the server.
+
+This is an execution trace, not the model's full chain of thought: it records what the system actually did, which tools it used, and how long each step took, without exposing hidden reasoning. A trace is capped at 60 nodes and each output is compressed to 400 characters; the active model API key is redacted to `[redacted]`, and confirmation-card control values never enter the trace. It is not written to the LangGraph checkpoint and does not count against the conversation context budget. Cancelling a turn marks any still-running node as cancelled, so nothing is left spinning.
+
 ### Configurable AI material analysis
 
 Material analysis jobs can use **DeepSeek, Kimi, MiniMax, Qwen, Zhipu GLM, Doubao, Tencent Hunyuan, Baidu Qianfan, SiliconFlow, OpenRouter**, or a custom OpenAI-compatible endpoint. An administrator can set a global default; a single job can override it. Each job freezes the provider, base URL, and model it used, stores the API key encrypted, and clears it when the job reaches a terminal state. The admin console exposes the default; the analysis panel exposes the per-job choice of the system default or a saved profile.
@@ -284,6 +299,7 @@ The shared diagram above shows the read and write paths. Public-web research is 
 | Frontend | React 19, TypeScript, Vite; [app entry](frontend/src/App.tsx), [agent panel](frontend/src/AgentChatPanel.tsx), [material analysis](frontend/src/MaterialAnalysisDetail.tsx) |
 | API and workflow | Python 3.12, FastAPI, LangGraph; [workflow](app/agent_workflow/graph.py), [direct tool loop](app/agent_workflow/direct.py), [write actions](app/agent_workflow/consent.py) |
 | Conversation context | Three-layer memory and budget; [budget display component](frontend/src/ContextMeter.tsx) |
+| Thinking process | Per-turn step graph and timing; [trace recorder](app/agent_workflow/trace.py), [thinking panel](frontend/src/ThinkingPanel.tsx), [graph layout and labels](frontend/src/turn-flow.mjs) |
 | Research data | [saved-data tools](app/agent_tools.py), [web research](app/agent_web_research.py), [material analysis](app/material_analysis.py), [ResearchBrief](app/research_brief.py) |
 | Model configuration | [provider catalog](app/model_providers.py), [encrypted credential box](app/secret_box.py); 11 OpenAI-compatible provider configurations (including custom endpoints) |
 | Citation verification | [citation schema and matching](app/material_analysis_schema.py) |
@@ -342,6 +358,7 @@ npm run build
 ## 📚 Further reading
 
 - [Conversation context and budget](docs/agent-context.md)
+- [Dialogue system design and thinking-process measurements (Chinese)](docs/agent-dialogue-engineering.zh-CN.md)
 - [Jev local calibration and maturity boundaries](docs/jev-local-learning.md)
 - [Custom stock-symbol support](docs/custom-stock-support.md)
 - [Agent workflow design](docs/agent-research-v3-spec.md)
@@ -364,3 +381,4 @@ npm run build
 
 - **2026-10-16** — C1–C14 routing implementation, 50 DeepSeek-Flash behavior cases, permission checks, test migration and the verified release are recorded in the [routing verification report](docs/reports/agent-routing-verification.md).
 - **2026-10-20** — configurable analysis models, layered citation verification, the `preexisting` revision category, the navigation fix and the new logo passed CI and shipped in [66d986a](https://github.com/wp1461772181-glitch/market-evidence-agent/commit/66d986a).
+- **2026-10-22** — per-turn thinking graph, SSE streaming, replay after refresh and cancellation cleanup shipped in [bbcbf49](https://github.com/wp1461772181-glitch/market-evidence-agent/commit/bbcbf49); the full backend suite reported 1630 passed, 7 pre-existing failures and 7 skipped, and the frontend i18n/build checks passed.

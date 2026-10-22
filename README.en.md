@@ -18,6 +18,12 @@ The product focuses on an inspectable research process, traceable evidence, and 
 - Answers support Markdown, tables, source citations, and quoted excerpts. Users can copy answers, navigate to questions, and inspect cited sources.
 - Conversations and tool traces are stored server-side by identity, with guest and personal identities separated. Users can export a local JSON conversation archive as a backup.
 
+## Thinking process
+
+Every answer carries a “Thought for N s · M steps” panel. While a turn runs, the graph grows in place: input, reference resolution, routing, model decisions, tool calls, evidence verification, repair, and the final answer. Parallel tools fork from the decision that called them and join at the next step; each node shows its status and duration and can be expanded for a short output summary or its raw data. The panel folds after completion; a manual toggle lasts for the current page. After a refresh, it starts folded again but the graph and total time replay from the server, and a cancelled turn never leaves a running node behind.
+
+This is an execution trace, not the model's chain of thought: it records what the system actually did, which tools it used, and how long each step took, without exposing hidden reasoning. Traces are capped at 60 nodes, each output is compressed to 400 characters, and the active model API key is redacted to `[redacted]`; confirmation-card control values never enter the trace. A trace is not added to the model context. See the [dialogue design notes](docs/agent-dialogue-engineering.zh-CN.md) for the measurements.
+
 | Tool | Purpose |
 | --- | --- |
 | `query_stock_prices` | Read saved daily OHLCV and fetch time; these are not live quotes. |
@@ -101,6 +107,7 @@ Forecasts, material analyses, and retrieval results require researcher review ag
 - [Conversation archive files](docs/chat-local-files.md)
 - [Model profiles and storage](docs/model-profile-storage.md) · [Model discovery](docs/model-discovery.md)
 - [Conversation context and the retention evaluation](docs/agent-context.md) · [Evaluation report](docs/context-retention-report.md)
+- [Dialogue system design and thinking-process measurements (Chinese)](docs/agent-dialogue-engineering.zh-CN.md)
 - [Knowledge retrieval](docs/knowledge-rag.md) · [Four-strategy evaluation report](docs/knowledge-rag-ch34-reports/four-strategy-evaluation.md)
 - [Custom stock support](docs/custom-stock-support.md) · [Experimental forecast and learning limits](docs/jev-local-learning.md)
 
