@@ -40,7 +40,8 @@ async def _direct_agent_turn(state: AgentWorkflowState, runtime: Runtime[AgentRu
         get_stream_writer()({"event": "delta", "text": answer})
         get_stream_writer()({"event": "done", "status": result.get("status", "complete"), "reason": result.get("reason"),
                             "citations": result.get("citations", []), "answer": answer,
-                            "pending_request": result.get("pending_request"), "final_protocol": {"route": result.get("route"),**result.get("final_protocol",{})}, "audit": result.get("audit", {})})
+                            "pending_request": result.get("pending_request"), "trace": result.get("trace", []),
+                            "final_protocol": {"route": result.get("route"),**result.get("final_protocol",{})}, "audit": result.get("audit", {})})
     except RuntimeError: pass
     return {"answer": answer, "citations": result.get("citations", []),
             "audit": result.get("audit", {}), "terminal_status": result.get("status"),

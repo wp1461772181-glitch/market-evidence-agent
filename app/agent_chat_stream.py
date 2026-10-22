@@ -9,6 +9,7 @@ from .agent_chat_provider import ProviderFailure
 from .agent_chat_api import REQUEST_SLOTS
 from .agent_tools import tool_schemas
 from .agent_workflow.graph import stream_workflow, mark_terminal_status
+from .agent_workflow.trace import WIRE_KEYS
 from .agent_chat_store import create_conversation,verify_conversation,append_message,owned_message_page,history,finish_conversation,owner_hash
 from .agent_chat_store import conversation_context
 from . import agent_context as layers
@@ -321,7 +322,8 @@ async def stream_chat(payload:StreamRequest,request:Request,x_chat_session:str|N
   if lock.locked():lock.release()
   if LOCKS.get(cid) is lock:LOCKS.pop(cid,None)
  async def events():
-  text_out=""; citation_sidecar=[]; terminal=False; genuine_calls=set(); tool_traces=[]
+  # The thinking time is the wait from the request to the answer being ready.
+  started=time.monotonic();text_out=""; citation_sidecar=[]; terminal=False; genuine_calls=set(); tool_traces=[]
   try:
    yield frame("conversation",{"conversation_id":cid,"turn_id":turn})
    # A press on a card button sends the button's own value (the server's words for it); the history shows what
@@ -372,6 +374,8 @@ async def stream_chat(payload:StreamRequest,request:Request,x_chat_session:str|N
     elif kind=="delta":
      text_out+=event["text"]
      yield frame("delta",{"text":event["text"]})
+    elif kind=="trace":
+     yield frame("trace",{key:event.get(key) for key in WIRE_KEYS})
     elif kind=="status":
      yield frame("status",{"status":event["status"],**({"step":event["step"]} if "step" in event else {})})
     elif kind=="clarification":
@@ -384,6 +388,8 @@ async def stream_chat(payload:StreamRequest,request:Request,x_chat_session:str|N
      restored=_restore_citations(citation_sidecar,x_chat_session) if citation_sidecar else []
      protocol={**event.get("final_protocol",{}),"audit":event.get("audit",{})}
      if tool_traces: protocol["tool_trace"]=tool_traces
+     thinking_ms=round((time.monotonic()-started)*1000)
+     protocol["thinking_ms"]=thinking_ms;protocol["trace"]=event.get("trace") or []
      if event.get("pending_request"):
       pending=event["pending_request"]
       protocol["clarification"]={"request_id":pending["id"],"reason":pending.get("reason"),
@@ -399,7 +405,7 @@ async def stream_chat(payload:StreamRequest,request:Request,x_chat_session:str|N
      schedule_summary(cid,x_chat_session,provider=payload.provider,model=payload.model,
                       api_key=payload.api_key.get_secret_value(),base_url=payload.base_url)
      if restored:yield frame("citations",{"turn_id":turn,"items":restored})
-     yield frame("done",{"conversation_id":cid,"turn_id":turn,"status":event.get("status","complete"),"reason":event.get("reason")})
+     yield frame("done",{"conversation_id":cid,"turn_id":turn,"status":event.get("status","complete"),"reason":event.get("reason"),"thinking_ms":thinking_ms})
    if not terminal:raise HTTPException(502,"workflow_incomplete")
   except asyncio.CancelledError:
    await asyncio.shield(append_message(cid,turn,"assistant",text_out,status="cancelled",
@@ -508,6 +514,14 @@ async def get_messages(conversation_id:str,before:int|None=Query(default=None,ge
     item["status"]=row["tool_calls"]["audit"].get("terminal_status",item["status"])
     item["reused_sources"]=row["tool_calls"]["audit"].get("reused_sources") is True
    if isinstance(row.get("tool_calls"),dict) and isinstance(row["tool_calls"].get("citations"),list):item["citations"]=_restore_citations(row["tool_calls"]["citations"],x_chat_session)
+   if isinstance(row.get("tool_calls"),dict):
+    stored_protocol=row["tool_calls"]
+    if isinstance(stored_protocol.get("trace"),list):item["trace"]=stored_protocol["trace"]
+    # Older turns only know the audit's elapsed time; either one is what the reader counted.
+    stored_audit=stored_protocol.get("audit")
+    thinking=stored_protocol.get("thinking_ms")
+    if not isinstance(thinking,(int,float)) and isinstance(stored_audit,dict):thinking=stored_audit.get("elapsed_ms")
+    if isinstance(thinking,(int,float)) and not isinstance(thinking,bool):item["thinking_ms"]=int(thinking)
    if isinstance(row.get("tool_calls"),dict) and isinstance(row["tool_calls"].get("clarification"),dict):
     clarification=row["tool_calls"]["clarification"]
     item["clarification"]={**clarification,"choices":clarification.get("choices") or _legacy_clarification_choices(clarification.get("reason"))}
