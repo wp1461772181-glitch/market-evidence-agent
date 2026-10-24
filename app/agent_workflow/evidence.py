@@ -219,9 +219,26 @@ def deterministic_confidence_gate(question: str,result: dict,citations=None,veri
     return True,'heuristic_coverage_pass'
 
 
+def literal_titles(text,citations):
+    """The text with bracketed numbers inside exact, server-known source titles made literal."""
+    from .language import simplified
+    titles={str(c.get('title') or '') for c in citations}
+    for title in sorted(titles,key=len,reverse=True):
+        if not re.search(r'\[\d+\]',title):continue
+        for variant in {title,simplified(title)}:
+            literal=re.sub(r'\[(\d+)\]',lambda m:'［'+m[1]+'］',variant)
+            text=text.replace(variant,literal)
+    return text
+
+
+def citation_markers(answer,citations):
+    """Read handles while preserving bracketed text in exact, server-known source titles."""
+    return re.findall(r'\[(\d+)\]',literal_titles(answer,citations))
+
+
 def citation_errors(answer: str,citations: list[dict]) -> list[int]:
     valid={int(c['ordinal']) for c in citations if type(c.get('ordinal')) is int}
-    return [int(n) for n in re.findall(r'\[(\d+)\]',answer) if int(n) not in valid]
+    return [int(n) for n in citation_markers(answer,citations) if int(n) not in valid]
 
 
 def number_rows(name: str,rows: list[dict],citations: list[dict],scope: dict) -> list[dict]:
@@ -360,7 +377,7 @@ def unsupported_number_values(answer,citations,*,question=''):
     grounds=' '.join(_DASHES.sub('-',evidence).split()).casefold()
     rejected=[]
     for passage in cited_passages(answer):
-        refs=re.findall(r'\[(\d+)\]',passage)
+        refs=citation_markers(passage,citations)
         cited=[indexed[r] for r in refs if r in indexed]
         body=' '.join(str(c.get('quote',''))+' '+str(c.get('figures',''))+' '+str(c.get('published_at',''))+' '+str(c.get('source_url',''))+' '+str(c.get('title','')) for c in cited)
         allowed=figure_values(body)
@@ -451,7 +468,7 @@ def unsupported_claims(answer,citations):
     answer=simplified(answer)
     indexed={str(c['ordinal']):c for c in citations}
     for passage in cited_passages(answer):
-        refs=re.findall(r'\[(\d+)\]',passage)
+        refs=citation_markers(passage,citations)
         sources=[indexed[r] for r in refs if r in indexed]
         if re.search(r'没有(?:可核验)?(?:资料|证据)|无法(?:核实|确认)|no (?:verified )?evidence',passage,re.I):continue
         if not sources:
@@ -517,7 +534,7 @@ def reviewed_passages(answer,citations,*,require_citations=False,check_claims=Tr
         is_heading = bool(re.match(r'^#{1,6}\s',stripped) or re.fullmatch(r'\*\*[^*]+\*\*\s*[：:]?',stripped))
         has_factual_content = factual_claim(stripped)
         code=('invalid_citation' if citation_errors(stripped,citations) else
-              'missing_citation' if require_citations and has_factual_content and not re.search(r'\[\d+\]',stripped) and not uncertainty and not ((is_leadin or is_heading) and not _CLAIM_AMOUNT.search(stripped)) and not (stripped.endswith(('：',':')) and not _CLAIM_AMOUNT.search(stripped)) else
+              'missing_citation' if require_citations and has_factual_content and not citation_markers(stripped,citations) and not uncertainty and not ((is_leadin or is_heading) and not _CLAIM_AMOUNT.search(stripped)) and not (stripped.endswith(('：',':')) and not _CLAIM_AMOUNT.search(stripped)) else
               'unsupported_numeric_claim' if check_claims and unsupported_numbers(stripped,citations) else
               'unsupported_claim' if check_claims and unsupported_claims(stripped,citations) else None)
         if code:issues.append(code)
@@ -530,7 +547,7 @@ _TABLE_RULE = re.compile(r'^\|?[\s:|-]+\|?$')
 _BULLET = re.compile(r'^(?:[-*+]|\d+[.)])\s+')
 
 
-def _table_citations(lines):
+def _table_citations(lines,citations):
     """For each table row that carries no [n] of its own, the markers its table states elsewhere.
 
     A table is cited as a unit: the caption above it, a note below it, a source column or another
@@ -543,15 +560,15 @@ def _table_citations(lines):
         while index<len(lines) and lines[index].strip().startswith('|'):index+=1
         before=next((lines[i] for i in range(start-1,-1,-1) if lines[i].strip()),'')
         after=next((lines[i] for i in range(index,len(lines)) if lines[i].strip()),'')
-        markers=list(dict.fromkeys(re.findall(r'\[\d+\]',' '.join([before,*lines[start:index],after]))))
+        markers=list(dict.fromkeys('['+n+']' for n in citation_markers(' '.join([before,*lines[start:index],after]),citations)))
         for row in range(start,index):
-            if markers and not re.search(r'\[\d+\]',lines[row]):inherited[row]=' '+''.join(markers)
+            if markers and not citation_markers(lines[row],citations):inherited[row]=' '+''.join(markers)
     return inherited
 
 
-def _reviewable_lines(answer):
+def _reviewable_lines(answer,citations):
     """Each line to check, with the text it is checked as; table headers and rules are not claims."""
-    lines=answer.splitlines();inherited=_table_citations(lines);out=[]
+    lines=answer.splitlines();inherited=_table_citations(lines,citations);out=[]
     index=0
     while index<len(lines):
         if not lines[index].lstrip().startswith('>'):index+=1;continue
@@ -560,10 +577,10 @@ def _reviewable_lines(answer):
         if index==start:index+=1;continue
         # A citation at the end of one quoted paragraph covers that paragraph. An internal
         # marker, another paragraph, or a source outside the quote has no such scope.
-        trailing=re.search(r'((?:\[\d+\]\s*)+)[。.!！?？]*\s*$',lines[index-1])
+        trailing=re.search(r'((?:\[\d+\]\s*)+)[。.!！?？]*\s*$',literal_titles(lines[index-1],citations))
         if trailing:
             for row in range(start,index):
-                if not re.search(r'\[\d+\]',lines[row]):inherited[row]=' '+trailing[1]
+                if not citation_markers(lines[row],citations):inherited[row]=' '+trailing[1]
     for index,line in enumerate(lines):
         stripped=line.strip()
         if not stripped or _TABLE_RULE.match(stripped):out.append((line,stripped,None));continue
@@ -585,7 +602,7 @@ def reviewed_answer(answer,citations,*,require_citations=False,check_claims=True
     sentence), and a prose line keeps the sentences that passed.
     """
     kept=[];issues=[]
-    for line,stripped,checked in _reviewable_lines(answer):
+    for line,stripped,checked in _reviewable_lines(answer,citations):
         if checked is None:
             kept.append(line);continue
         # A list marker is not a sentence ("1." would otherwise split off as one).
@@ -606,7 +623,7 @@ def reviewed_answer(answer,citations,*,require_citations=False,check_claims=True
 def rejected_lines(answer,citations,*,require_citations=False,check_claims=True):
     """The lines ``reviewed_answer`` drops or trims, each with its first reason, for the repair."""
     out=[]
-    for _,stripped,checked in _reviewable_lines(answer):
+    for _,stripped,checked in _reviewable_lines(answer,citations):
         if checked is None:continue
         bullet=_BULLET.match(stripped)
         _,issues=reviewed_passages(checked[bullet.end():] if bullet else checked,citations,require_citations=require_citations,check_claims=check_claims)
