@@ -163,3 +163,29 @@ def test_a_failed_repair_call_is_recorded_with_its_cause():
     ctx=AgentRuntimeContext('custom','test','dummy',classifier=lambda _:'D',decider=lambda *_:next(it),executor=lambda *_:{'ok':True,'data':[{'id':'p','symbol':'AMD','close':100}]})
     result=asyncio.run(direct.run_direct_turn('AMD 收盘价',ctx,emit=emit))
     assert result['audit']['answer_repair_error']=='repair_unavailable:RuntimeError'
+
+@pytest.mark.parametrize('replacement,expected',[
+    ('已打开 SEC 页面。','succeeded'),
+    ('已打开 SEC 页面，事件时间为 2026-10-24 02:40 UTC。','failed'),
+])
+def test_a_verified_browser_receipt_can_be_repaired_without_inventing_a_timestamp(replacement,expected):
+    calls=[]
+    ctx=AgentRuntimeContext('custom','test','dummy',decider=lambda *_:calls.append(1) or {'content':replacement})
+    turn=direct.Turn('打开 SEC 页面。',ctx,emit,[],{})
+    turn.route='D'
+    turn.accept('open_page',{'page':'sec'},
+        {'ok':True,'data':[{'client_action':{'action':'open_page','page':'sec'}}]})
+    result=asyncio.run(turn.finish_answer('已打开 SEC 页面，事件时间为 2026-10-24 02:40 UTC。'))
+    assert calls
+    assert result['status']==expected
+    if expected=='succeeded':assert result['answer']=='已打开 SEC 页面。'
+    else:assert '02:40' not in result['answer']
+
+
+def test_a_failed_browser_action_does_not_supply_trusted_state_for_repair():
+    calls=[]
+    ctx=AgentRuntimeContext('custom','test','dummy',decider=lambda *_:calls.append(1) or {'content':'已打开 SEC 页面。'})
+    turn=direct.Turn('打开 SEC 页面。',ctx,emit,[],{})
+    turn.route='D';turn.accept('open_page',{'page':'sec'},{'ok':False,'error_code':'tool_failed'})
+    result=asyncio.run(turn.finish_answer('已打开 SEC 页面，事件时间为 2026-10-24 02:40 UTC。'))
+    assert not calls and result['status']=='failed'
