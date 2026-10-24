@@ -19,18 +19,39 @@ _TITLE_PUNCTUATION=str.maketrans({'？':'','！':'','。':'','?':'',
 _TITLE_RESTORED=str.maketrans({v:k for k,v in {'？':'','！':'','。':'','?':'','!':'','.':''}.items()})
 # A quoted passage is one unit: a full stop inside the quotation (“……毛利率为 46.2%。” [1]) must not
 # split the [1] away from the sentence it supports.
-_QUOTED_PASSAGE=re.compile(r'“[^”\n]{0,500}”|「[^」\n]{0,500}」|『[^』\n]{0,500}』|‘[^’\n]{0,500}’')
+_QUOTE_PAIRS={'“':'”','「':'」','『':'』','‘':'’','"':'"'}
 
 
 def _protect_passage_punctuation(match):
     return match.group(0).translate(_TITLE_PUNCTUATION)
 
 
+def _protect_quotations(text):
+    """Protect balanced quote punctuation in one pass, including long and nested quotes."""
+    pieces=[];stack=[];start=0;last=0
+    for index,char in enumerate(text):
+        if char=='\n':
+            stack.clear()
+        elif stack and char==stack[-1]:
+            stack.pop()
+            if not stack:
+                pieces.extend((text[last:start],text[start:index+1].translate(_TITLE_PUNCTUATION)))
+                last=index+1
+        elif char in _QUOTE_PAIRS:
+            if not stack:start=index
+            stack.append(_QUOTE_PAIRS[char])
+    pieces.append(text[last:])
+    return ''.join(pieces)
+
+
 def cited_passages(answer):
     # A title in 《》 is one name even when it asks a question ("……哪一只更值得买入？"): its punctuation
     # does not end the sentence that cites it.
-    protected=_QUOTED_PASSAGE.sub(_protect_passage_punctuation,answer)
+    protected=_protect_quotations(answer)
     protected=re.sub(r'《[^》\n]{0,300}》',_protect_passage_punctuation,protected)
+    # Markdown block quotes have the same citation scope as quoted strings. Protect only
+    # their own lines: a trailing source never authorizes surrounding ordinary prose.
+    protected=re.sub(r'(?m)^\s*>[^\n]*',_protect_passage_punctuation,protected)
     # Both “fact[1]。” and “fact。[1]” bind the marker to the same sentence.
     normalized=re.sub(r'([。！？.!?])(\s*(?:\[\d+\]\s*)+)',lambda m:m[2].strip()+m[1],protected)
     return [part.translate(_TITLE_RESTORED) for part in re.split(r'[。！？\n]|(?<=[.!?])\s+',normalized)]
@@ -531,6 +552,18 @@ def _table_citations(lines):
 def _reviewable_lines(answer):
     """Each line to check, with the text it is checked as; table headers and rules are not claims."""
     lines=answer.splitlines();inherited=_table_citations(lines);out=[]
+    index=0
+    while index<len(lines):
+        if not lines[index].lstrip().startswith('>'):index+=1;continue
+        start=index
+        while index<len(lines) and lines[index].lstrip().startswith('>') and lines[index].lstrip(' >').strip():index+=1
+        if index==start:index+=1;continue
+        # A citation at the end of one quoted paragraph covers that paragraph. An internal
+        # marker, another paragraph, or a source outside the quote has no such scope.
+        trailing=re.search(r'((?:\[\d+\]\s*)+)[。.!！?？]*\s*$',lines[index-1])
+        if trailing:
+            for row in range(start,index):
+                if not re.search(r'\[\d+\]',lines[row]):inherited[row]=' '+trailing[1]
     for index,line in enumerate(lines):
         stripped=line.strip()
         if not stripped or _TABLE_RULE.match(stripped):out.append((line,stripped,None));continue
