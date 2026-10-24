@@ -112,3 +112,14 @@ suite-v2 剩下的两个失败，都是核验器原有规则的拒绝，这一�
 - 真实模型（过程）：`natural-acceptance-claude-final/`（环境配错，无效）、`natural-acceptance-claude-final2/`、`canonical-claude/`、`suite-claude/`、`ab-main/`、`ab-final/`、`s11-fix/`、`logs/claude-*.log`
 - 全量测试：`/tmp/market-g10/logs/claude-full-*.log`
 - GPT 各轮：`/tmp/market-g10/ledger.md`、[完整证据索引](2026-10-24-g9-acceptance-fixes-assets/evidence-index.txt)
+
+## 附记：日期敏感测试修复（2026-10-24，main）
+
+验收后复核发现，A 节所称“8 个测试写死了日期”只对其中 6 个成立；另外 2 个用的是相对日期，但恰好落在非 XNYS 交易日。已在 main `f58cecc` 上直接修复测试，生产代码未改，提交 `4df085d`。
+
+- 5 个 `test_forecast_publication_v2.py` 和 1 个 `test_forecast_worker_v2.py` 把 anchor 固定为 `2026-09-23`，20 个交易日后 target 在 2026-10-24 已经过期；改为 `latest_completed_xnys_session(instant - 1 分钟)`。
+- `test_agent_forecast_price_writes.py` 的 `target_end = now.date() + 120 天` 不保证是交易日。`_require_open_target` 会先抛 invalid target contract，把期望的 `revision_source_symbol_mismatch` 覆盖成 `forecast_version_not_revisable`；改为 `future_xnys_sessions(latest_completed_xnys_session(now), 20)[-1]`。
+- `test_agent_revision_picker.py` 的过期用例用 `date.today() - 20 天`，同样可能不是交易日，实际得到 `version_not_revisable` 而不是 `target_expired`；改为 `latest_completed_xnys_session(now - 20 天)`。
+- 定向复跑 4 个文件：34 passed。全量：1 failed, 1671 passed, 7 skipped；唯一失败是 `test_api_server_launchagent.py::test_fresh_checkout_uses_rag_environment_only_when_enabled`，属于部署脚本允许的环境失败。
+- 仓库的 GitHub issue、PR 和文档里都没有找到“修复写死日期的测试”任务卡片；本次修复以本附记和提交 `4df085d` 为记录。
+
