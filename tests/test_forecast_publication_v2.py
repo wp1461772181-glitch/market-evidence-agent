@@ -1,11 +1,11 @@
 from dataclasses import replace
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
 
 from app.database import Base, SessionLocal, engine
-from app.forecast_contract import create_root_contract
+from app.forecast_contract import create_root_contract, latest_completed_xnys_session
 from app.forecast_jobs import claim_next_job, enqueue_job
 from app.forecast_v2 import ForecastDraft, ForecastPublicationError, publish_forecast_version
 from app.forecast_v2_models import ForecastJobV2, ForecastVersionV2
@@ -18,7 +18,7 @@ def v2_tables(disposable_database):
 
 def _draft(*, evidence=None, market=None, target=None, now=None):
     instant = now or datetime.now(UTC)
-    anchor = date(2026, 9, 23)
+    anchor = latest_completed_xnys_session(instant - timedelta(minutes=1))
     valid_target = create_root_contract(
         anchor_date=anchor,
         anchor_close=100.0,

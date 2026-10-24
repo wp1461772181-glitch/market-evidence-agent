@@ -1,11 +1,11 @@
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
 
 import app.forecast_worker as worker_module
 from app.database import Base, SessionLocal, engine
-from app.forecast_contract import create_root_contract
+from app.forecast_contract import create_root_contract, latest_completed_xnys_session
 from app.forecast_jobs import enqueue_job
 from app.forecast_v2 import ForecastDraft
 from app.forecast_v2_models import ForecastJobV2, ForecastVersionV2
@@ -45,7 +45,7 @@ def test_worker_injected_processor_publishes_one_research_only_version(disposabl
         job = enqueue_job(db=db, symbol="MSFT", kind="new", idempotency_key=f"worker-stub-{uuid4()}")
         job_id = job.id
     instant = datetime.now(UTC)
-    anchor = date(2026, 9, 23)
+    anchor = latest_completed_xnys_session(instant - timedelta(minutes=1))
     target = create_root_contract(
         anchor_date=anchor,
         anchor_close=100.0,

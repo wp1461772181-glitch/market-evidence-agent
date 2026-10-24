@@ -6,7 +6,7 @@ materials the revision rule allows on a card the user ticks, and says plainly wh
 """
 import asyncio
 import uuid
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from pydantic import ValidationError
@@ -16,6 +16,7 @@ from app.agent_workflow import consent, direct, tools, workspace_tools
 from app.agent_workflow.models import AgentConsent
 from app.agent_workflow.state import AgentRuntimeContext
 from app.database import Base, SessionLocal, engine
+from app.forecast_contract import future_xnys_sessions, latest_completed_xnys_session
 from app.forecast_jobs import enqueue_job
 from app.forecast_v2_models import ForecastVersionV2
 from app.models import UploadedEvidence
@@ -47,7 +48,7 @@ def _forecast(symbol, decided, *, target_end=None):
         job = enqueue_job(db=db, symbol=symbol, kind='new', idempotency_key=f'picker-{uuid.uuid4()}')
         version = ForecastVersionV2(
             id=uuid.uuid4(), root_id=uuid.uuid4(), job_id=job.id, version_no=1, symbol=symbol,
-            target_contract={'target_end_date': (target_end or date(2027, 1, 29)).isoformat()},
+            target_contract={'target_end_date': (target_end or future_xnys_sessions(latest_completed_xnys_session(datetime.now(UTC)), 20)[-1]).isoformat()},
             target_contract_hash='a' * 64, decision_at=decided, market_cutoff_at=decided - timedelta(minutes=5),
             price_input_manifest={}, evidence_version_manifest=[], feature_snapshot={},
             baseline_probabilities={'bearish': 0.2, 'neutral': 0.4, 'bullish': 0.4},
@@ -126,7 +127,7 @@ def test_no_material_in_the_window_is_explained_without_a_card(owner):
 
 def test_an_expired_forecast_is_explained(owner):
     decided = datetime.now(UTC) - timedelta(days=60)
-    _forecast('RPC', decided, target_end=date.today() - timedelta(days=20))
+    _forecast('RPC', decided, target_end=latest_completed_xnys_session(datetime.now(UTC) - timedelta(days=20)))
     turn = _turn('修正 RPC 的预测', 'picker-expired', 'RPC')
 
     outcome = asyncio.run(turn.propose('revise_forecast', {'symbol': 'RPC'}))

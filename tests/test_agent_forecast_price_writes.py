@@ -16,7 +16,7 @@ from sqlalchemy import func, select
 from app.agent_workflow import consent, tools, workspace_tools
 from app.agent_workflow.state import AgentRuntimeContext
 from app.database import Base, SessionLocal, engine
-from app.forecast_contract import latest_completed_xnys_session
+from app.forecast_contract import future_xnys_sessions, latest_completed_xnys_session
 from app.forecast_jobs import enqueue_job
 from app.forecast_v2_models import ForecastJobV2, ForecastVersionV2
 from app.market_data import DailyPrice, MarketDataError
@@ -38,11 +38,12 @@ def owner(monkeypatch, disposable_database):
 
 def _root_version(symbol='AAPL'):
     now = datetime.now(UTC)
+    target_end = future_xnys_sessions(latest_completed_xnys_session(now), 20)[-1]
     with SessionLocal() as db:
         job = enqueue_job(db=db, symbol=symbol, kind='new', idempotency_key=f'price-write-{uuid.uuid4()}')
         version = ForecastVersionV2(
             id=uuid.uuid4(), root_id=uuid.uuid4(), job_id=job.id, version_no=1, symbol=symbol,
-            target_contract={'target_end_date': (now.date() + timedelta(days=120)).isoformat()},
+            target_contract={'target_end_date': target_end.isoformat()},
             target_contract_hash='a' * 64, decision_at=now - timedelta(hours=1),
             market_cutoff_at=now - timedelta(hours=2), price_input_manifest={},
             evidence_version_manifest=[], feature_snapshot={},
