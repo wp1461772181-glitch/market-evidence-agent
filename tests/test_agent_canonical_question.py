@@ -45,6 +45,42 @@ def test_a_clarify_with_history_still_asks_with_buttons():
     assert result['status']=='waiting_for_input'
     assert [c['label'] for c in result['pending_request']['choices']]==['微软','谷歌']
 
+def test_valid_history_citation_clarification_survives_turn_finish():
+    history=[{'role':'user','content':'先看微软营收。'},
+             {'role':'assistant','content':'微软 FY2025 营收为 281,724 百万美元 [1]。'},
+             {'role':'user','content':'再查微软最近的新闻。'},
+             {'role':'assistant','content':'微软最近有一条新闻 [2]。'},
+             {'role':'user','content':'比较 [1]'}]
+    question='你指的是编号 1 出现在哪个回答？请选一个候选回答。'
+    result,_=run('比较 [1]',history=history,
+        resolver=lambda _:{'relationship':'clarify','question':question,
+            'choices':['微软 FY2025 营收为 281,724 百万美元','另一个回答，请补充说明'],
+            'history_citations':[]},classifier=lambda _:{'category':'D'})
+    assert result['status']=='waiting_for_input'
+    assert result['answer']=='需要补充信息：'+question
+    assert '[1]' not in result['answer'] and '[1]' not in question
+    assert result['pending_request']['question']==question
+    assert result['audit']['stages']['resolver']['validator']['passed'] is True
+
+def test_reference_prompt_defines_safe_history_citation_clarifications():
+    prompt=direct.REFERENCE_PROMPT
+    assert 'history_citations' in prompt
+    assert '编号 {n}' in prompt
+    assert 'at least two distinct choices' in prompt
+    assert 'citation-marker syntax' in prompt and 'no financial factual claims' in prompt
+    assert '另一个回答，请补充说明' in prompt
+
+def test_inadequate_history_citation_clarification_keeps_existing_deferred_policy():
+    history=[{'role':'user','content':'先看微软营收。'},
+             {'role':'assistant','content':'微软 FY2025 营收为 281,724 百万美元 [1]。'},
+             {'role':'user','content':'比较 [1]'}]
+    result,_=run('比较 [1]',history=history,
+        resolver=lambda _:{'relationship':'clarify','question':'比较 [1]','choices':['微软回答'],
+            'history_citations':[]},classifier=lambda _:{'category':'D'})
+    assert result['audit'].get('resolver_clarify_deferred') is True
+    assert result['status']!='waiting_for_input'
+    assert result['pending_request'] is None
+
 def test_the_tool_loop_uses_only_the_canonical_question():
     result,messages=run('去年微软的营收是多少？',resolver=lambda _:{'relationship':'new','canonical_question':CANONICAL},
         classifier=lambda _:{'category':'D'})

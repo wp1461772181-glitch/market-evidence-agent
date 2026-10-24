@@ -197,36 +197,131 @@ def _guard_turn(question, *, catalogue=None, resolver=None):
     return Turn(question, context, emit, [], {})
 
 
-def test_bare_ordinal_absent_from_the_latest_answer_asks_before_reading_an_earlier_one():
-    async def must_not_resolve(*_):
-        raise AssertionError("an ambiguous bare [n] must not reach the resolver")
-    turn = _guard_turn("引用 [3] 说了什么？", resolver=must_not_resolve)
-    result = asyncio.run(turn.run())
-    assert result["status"] == "waiting_for_input"
-    card = result["pending_request"]
-    assert "上一条回答没有编号 3 的引用" in card["question"]
-    assert [choice["label"] for choice in card["choices"]] == [
-        "较早的合成测试报告列有第三项来源 [3]。",
-        "更早的汇总表列有第三项来源 [3]。",
-    ]
-    assert all(choice["value"].startswith("reply:") for choice in card["choices"])
-    assert turn.audit["history_citation_ambiguous"] == {
-        "ordinal": 3, "latest_turn": "latest", "answers": [2, 3]}
+def _resolve_turn(question, resolver, catalogue=None):
+    from app.agent_workflow.direct import Turn
+    catalogue = catalogue or (
+        {"turn_id":"latest","answers_back":1,"opening":"最新回答","sources":[{"ordinal":2,"available":True}]},
+        {"turn_id":"older","answers_back":3,"opening":"第一个问题的回答","sources":[{"ordinal":11,"available":True}]},
+    )
+    context=AgentRuntimeContext("p","m","k",conversation_id="c",resolver=resolver,history_citation_catalogue=catalogue)
+    async def emit(_): pass
+    return Turn(question,context,emit,[{"role":"user","content":"之前的问题"},{"role":"assistant","content":"之前的回答"}],{})
 
 
-def test_a_bare_ordinal_present_in_the_latest_answer_is_not_clarified():
-    turn = _guard_turn("引用 [3] 说了什么？", catalogue=(
-        {"turn_id": "latest", "answers_back": 1, "sources": [{"ordinal": 3}]},
-        {"turn_id": "older", "answers_back": 2, "sources": [{"ordinal": 3}]},
-    ))
-    assert turn.history_citation_clarification() is None
+def test_an_explicit_earlier_answer_is_bound_without_a_card():
+    async def resolver(payload):
+        assert "turn_id" not in str(payload["citation_catalogue"])
+        return {"relationship":"followup","canonical_question":"引用原文","history_citations":[{"answers_back":3,"ordinal":11}]}
+    turn=_resolve_turn("第一个问题的回答里，[11] 怎么算的？",resolver)
+    asyncio.run(turn.reference())
+    assert turn.pending is None
+    assert turn.bound_history_citations == [{"turn_id":"older","ordinal":11,"answers_back":3,"derived":False,"parents":[]}]
 
 
-def test_a_bare_ordinal_that_no_visible_answer_has_is_left_to_the_resolver():
-    turn = _guard_turn("引用 [9] 说了什么？")
-    assert turn.history_citation_clarification() is None
+def test_a_bare_marker_clarifies_only_when_the_resolver_says_so():
+    catalogue=({"turn_id":"latest","answers_back":1,"opening":"最近回答","sources":[]},
+               {"turn_id":"older","answers_back":3,"opening":"第一条回答开头","sources":[{"ordinal":11,"available":True}]},
+               {"turn_id":"oldest","answers_back":4,"opening":"另一条回答开头","sources":[{"ordinal":11,"available":True}]})
+    async def clarify(_): return {"relationship":"clarify","canonical_question":"引用原文","question":"你指哪条？","choices":["第一条回答开头","另一条回答开头"]}
+    turn=_resolve_turn("引用 [11]",clarify,catalogue)
+    asyncio.run(turn.reference())
+    assert turn.pending is not None and len(turn.pending["choices"]) >= 2
+    async def bind(_): return {"relationship":"followup","canonical_question":"引用原文","history_citations":[{"answers_back":3,"ordinal":11}]}
+    turn=_resolve_turn("引用 [11]",bind,catalogue)
+    asyncio.run(turn.reference())
+    assert turn.pending is None and turn.bound_history_citations[0]["turn_id"]=="older"
 
 
-def test_replying_to_the_clarification_card_does_not_ask_again():
-    turn = _guard_turn("reply:较早的合成测试报告列有第三项来源 [3]。")
-    assert turn.history_citation_clarification() is None
+def test_a_binding_outside_the_catalogue_is_rejected():
+    async def resolver(_): return {"relationship":"followup","canonical_question":"引用原文","history_citations":[{"answers_back":2,"ordinal":99}]}
+    turn=_resolve_turn("读引用",resolver)
+    asyncio.run(turn.reference())
+    assert turn.bound_history_citations == []
+    assert turn.audit["history_citation_binding_rejected"] == [{"answers_back":2,"ordinal":99}]
+    assert turn.pending is None
+
+
+def test_no_regex_guard_remains():
+    import inspect
+    from app.agent_workflow.direct import Turn
+    assert not hasattr(Turn,"history_citation_clarification")
+    assert r"\[(\d+)\]" not in inspect.getsource(Turn.reference)
+
+
+def test_bound_citation_is_recalled_before_any_search(monkeypatch):
+    from app.agent_workflow.direct import Turn
+    events=[]
+    async def emit(event): events.append(event)
+    catalogue=({"turn_id":"older","answers_back":1,"sources":[{"ordinal":2,"available":True}]},)
+    context=AgentRuntimeContext("p","m","k",conversation_id="c",history_citation_catalogue=catalogue)
+    turn=Turn("原文是什么",context,emit,[],{})
+    turn.route="A";turn.bound_history_citations=[{"turn_id":"older","ordinal":2,"answers_back":1,"derived":False,"parents":[]}]
+    turn.bound_history_citations.append(dict(turn.bound_history_citations[0]))
+    called=[]
+    async def execute(name,args):
+        called.append(name);await turn.emit({"event":"tool_start","call_id":"history","name":name,"arguments":args})
+        return {"ok":True,"data":[{"ordinal":2,"quote":"原文"}]}
+    def accept(name,args,outcome):
+        turn.citations.append({"ordinal":1,"quote":"原文","source_type":"history_citation"})
+        turn.last_accepted={"ok":True,"data":[{"ordinal":1,"quote":"原文"}]}
+    async def publish(name,outcome): await turn.emit({"event":"tool_result","call_id":"history","name":name,"result":outcome})
+    async def decision(): return {"content":"原文是‘原文’[1]。"}
+    async def finish(answer): return turn.finish(answer,generated=True)
+    monkeypatch.setattr(turn,"execute_read",execute);monkeypatch.setattr(turn,"accept",accept)
+    monkeypatch.setattr(turn,"publish_result",publish);monkeypatch.setattr(turn,"decision",decision)
+    monkeypatch.setattr(turn,"finish_answer",finish)
+    async def run():
+        await turn.trace.mark("classify")
+        return await turn.agent_loop()
+    result=asyncio.run(run())
+    assert called==["read_history_citation"] and result["status"]=="succeeded"
+    nodes=turn.trace.nodes(); classify=next(i for i,n in enumerate(nodes) if n["kind"]=="classify")
+    assert nodes[classify+1]["kind"]=="tool" and nodes[classify+1]["name"]=="read_history_citation"
+    assert result["audit"]["history_citation_recall"]["read_ok"]==1
+    assert result["audit"]["history_citation_recall"]["reads"]==[
+        {"turn_id":"older","ordinal":2,"ok":True}]
+
+
+def test_a_failed_recall_falls_back_to_the_usual_prelude(monkeypatch):
+    from app.agent_workflow.direct import Turn
+    context=AgentRuntimeContext("p","m","k",conversation_id="c",history_citation_catalogue=({"turn_id":"old","answers_back":1,"sources":[{"ordinal":2}]},))
+    async def emit(_): pass
+    turn=Turn("原文",context,emit,[],{});turn.route="A"
+    turn.bound_history_citations=[{"turn_id":"old","ordinal":2,"answers_back":1,"derived":False,"parents":[]}]
+    calls=[]
+    async def execute(name,args):
+        calls.append(name)
+        return {"ok":False,"error_code":"history_citation_unavailable"} if name=="read_history_citation" else {"ok":True,"data":[]}
+    async def decision(): return {"content":"未找到。"}
+    async def finish(answer): return {"status":"succeeded"}
+    async def publish(*_): pass
+    monkeypatch.setattr(turn,"execute_read",execute);monkeypatch.setattr(turn,"publish_result",publish)
+    monkeypatch.setattr(turn,"decision",decision);monkeypatch.setattr(turn,"finish_answer",finish)
+    asyncio.run(turn.agent_loop())
+    assert calls[0]=="read_history_citation" and "search_knowledge" in calls
+
+
+def test_approval_resume_turn_starts_with_no_stale_history_bindings():
+    turn=_guard_turn("批准后继续")
+    assert turn.bound_history_citations==[]
+
+
+def test_a_derived_binding_recalls_only_allowlisted_parents(monkeypatch):
+    from app.agent_workflow.direct import Turn
+    context=AgentRuntimeContext("p","m","k",conversation_id="c",history_citation_catalogue=({"turn_id":"old","answers_back":1,"sources":[{"ordinal":1,"available":True},{"ordinal":3,"available":True},{"ordinal":11,"available":True,"derived":True,"parents":[1,3,99]}]},))
+    async def emit(_): pass
+    turn=Turn("怎么算",context,emit,[],{})
+    turn.bound_history_citations=[{"turn_id":"old","ordinal":11,"answers_back":1,"derived":True,"parents":[1,3,99]}]
+    calls=[]
+    async def execute(name,args): calls.append(args["ordinal"]);return {"ok":True,"data":[{"quote":"source"}]}
+    turn.execute_read=execute
+    turn.accept=lambda *args: setattr(turn,"last_accepted",{"ok":True,"data":[{"quote":"source"}]})
+    async def publish(*_): pass
+    turn.publish_result=publish
+    assert asyncio.run(turn.recall_bound_citations()) is True
+    assert calls==[1,3]
+    result=turn.finish("已取回来源",generated=True)
+    assert result["audit"]["history_citation_recall"]["skipped_parents"]==[{"turn_id":"old","ordinal":99}]
+    assert result["audit"]["history_citation_recall"]["reads"]==[
+        {"turn_id":"old","ordinal":1,"ok":True},
+        {"turn_id":"old","ordinal":3,"ok":True}]
