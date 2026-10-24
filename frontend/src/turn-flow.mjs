@@ -18,6 +18,15 @@ export const FLOW_LABELS = {
   output: "输出回答",
 };
 
+export const CODE_LABELS = {
+  missing_citation: "缺少引用标记", invalid_citation: "引用编号无效",
+  unsupported_numeric_claim: "数字与来源对不上", unsupported_claim: "表述与来源对不上",
+  history_citation_not_found: "找不到这条历史引用", history_citation_unavailable: "历史来源已失效",
+  history_citation_derived: "计算结果需先取回其来源", tool_timeout: "工具超时",
+  tool_failed: "工具执行失败", no_progress: "多次检索没有进展", turn_budget: "达到本轮时间上限",
+  provider_protocol_invalid: "模型返回格式无效",
+};
+
 const STATUSES = ["running", "done", "warn", "failed", "cancelled"];
 const NOT_STEPS = ["input", "output", "ask"];
 const NUMBERED_KINDS = ["decide", "repair"];
@@ -128,7 +137,7 @@ export function describeOutput(value) {
   const output = value && value.output && typeof value.output === "object" && !Array.isArray(value.output) ? value.output : null;
   if (!output) return [];
   const error = text(output.error);
-  if (error) return [{ label: "失败原因", value: error }];
+  if (error) return CODE_LABELS[error] ? [{ label: "失败原因", value: CODE_LABELS[error], translate: true }] : [{ label: "失败原因", value: error }];
   const lines = [];
   const add = (label, shown, translate = false) => {
     const phrase = text(shown);
@@ -175,19 +184,20 @@ export function describeOutput(value) {
         else if (count > 0) add("命中条数", count);
         else add("结果", "没有匹配记录", true);
       } else {
-        add("失败原因", output.error_code);
+        const code = text(output.error_code);
+        add("失败原因", CODE_LABELS[code] || code, Boolean(CODE_LABELS[code]));
       }
       break;
     }
     case "closing":
-      add("停止原因", output.stop_reason);
+      { const code = text(output.stop_reason); add("停止原因", CODE_LABELS[code] || code, Boolean(CODE_LABELS[code])); }
       break;
     case "verify":
     case "repair": {
       add("引用数", output.citations);
       const issues = textList(output.issues);
       if (issues.length === 0) add("结果", "核对通过", true);
-      else add("未核对上", issues.join("、"));
+      else issues.forEach(issue => add("未核对上", CODE_LABELS[issue] || issue, Boolean(CODE_LABELS[issue])));
       break;
     }
     case "general":

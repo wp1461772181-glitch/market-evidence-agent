@@ -1255,5 +1255,17 @@
   "范围说明（模型补充）": "Scope note (model)",
   "范围说明（固定文案）": "Scope note (fixed wording)",
   "部分完成": "Partially completed",
-  "等待输入": "Waiting for input"
+  "等待输入": "Waiting for input",
+  "缺少引用标记": "Missing citation marker",
+  "引用编号无效": "Invalid citation number",
+  "数字与来源对不上": "Number does not match the source",
+  "表述与来源对不上": "Claim does not match the source",
+  "找不到这条历史引用": "History citation not found",
+  "历史来源已失效": "Historical source is no longer available",
+  "计算结果需先取回其来源": "Retrieve the source for this calculation first",
+  "工具超时": "Tool timed out",
+  "工具执行失败": "Tool failed",
+  "多次检索没有进展": "Search made no progress",
+  "达到本轮时间上限": "Turn time limit reached",
+  "模型返回格式无效": "Model returned an invalid format"
 }

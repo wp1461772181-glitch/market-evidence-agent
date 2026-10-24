@@ -338,7 +338,7 @@
    node starts at its dot, so nothing is drawn above the first step. */
 .turn-flow { list-style: none; margin: 8px 0 2px; padding: 0; min-width: 0; max-width: 100%; }
 .flow-node { position: relative; box-sizing: border-box; margin: 0; padding: 0 0 14px 22px; animation: flow-in .22s ease-out both; }
-.flow-node::before { content: ""; position: absolute; z-index: 0; left: 9px; top: 6px; bottom: -6px; width: 1.5px; background: var(--c-line); transform-origin: top; animation: flow-grow .26s ease-out both; }
+.flow-node::before { content: ""; position: absolute; z-index: 0; left: 9px; top: 6px; bottom: -6px; width: 2px; background: var(--c-muted); transform-origin: top; animation: flow-grow .26s ease-out both; }
 .flow-node:last-child::before { display: none; }
 .flow-dot { position: absolute; z-index: 1; left: 4px; top: 1px; box-sizing: border-box; width: 11px; height: 11px; border: 2px solid var(--c-line-strong); border-radius: 50%; background: var(--c-surface); }
 .flow-card { position: relative; z-index: 1; min-width: 0; max-width: 100%; padding: 6px 9px 7px; border: 1px solid var(--c-line); border-radius: 8px; background: var(--c-surface); }
@@ -357,7 +357,7 @@
 /* A tool runs for its step, so it sits one level in: the trunk stays put and a short branch reaches
    the tool dot. */
 .flow-node.depth-1 { padding-left: 56px; }
-.flow-node.depth-1::after { content: ""; position: absolute; z-index: 0; left: 9px; top: 6px; width: 37px; height: 1.5px; background: var(--c-line); }
+.flow-node.depth-1::after { content: ""; position: absolute; z-index: 0; left: 9px; top: 6px; width: 37px; height: 2px; background: var(--c-muted); }
 .flow-node.depth-1 .flow-dot { left: 40px; }
 
 .flow-node.status-running .flow-dot { border-color: #35597c; background: #e7eff7; animation: flow-pulse 1.4s ease-in-out infinite; }

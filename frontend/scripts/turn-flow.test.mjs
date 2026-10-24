@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
-import { FLOW_LABELS, cancelRunning, describeOutput, flowRows, formatSeconds, nodeTitle, normalizeTrace, stepCount, upsertNode } from "../src/turn-flow.mjs";
+import { FLOW_LABELS, CODE_LABELS, cancelRunning, describeOutput, flowRows, formatSeconds, nodeTitle, normalizeTrace, stepCount, upsertNode } from "../src/turn-flow.mjs";
 
 /** A finished node with the fields every rule reads, so each test only states what it is about. */
 function flowNode(id, kind, patch = {}) {
@@ -115,6 +117,32 @@ test("describeOutput shows a failed step's error", () => {
     { label: "失败原因", value: "not_finished" },
   ]);
   assert.deepEqual(describeOutput(flowNode("n8", "verify", { status: "running", output: null })), []);
+});
+
+test("describeOutput translates known codes and keeps unknown ones", () => {
+  assert.deepEqual(describeOutput(flowNode("v1", "verify", { output: { issues: ["missing_citation"] } }))[0],
+    { label: "未核对上", value: "缺少引用标记", translate: true });
+  assert.deepEqual(describeOutput(flowNode("t1", "tool", { output: { ok: false, error_code: "weird_code" } }))[0],
+    { label: "失败原因", value: "weird_code" });
+  assert.equal(CODE_LABELS.missing_citation, "缺少引用标记");
+});
+
+test("multiple verify issues remain individually translatable beside unknown codes", () => {
+  const rows = describeOutput(flowNode("v2", "verify", { output: { issues: ["missing_citation", "unsupported_claim", "future_issue"] } }));
+  assert.deepEqual(rows, [
+    { label: "未核对上", value: "缺少引用标记", translate: true },
+    { label: "未核对上", value: "表述与来源对不上", translate: true },
+    { label: "未核对上", value: "future_issue" },
+  ]);
+  const en = JSON.parse(readFileSync(fileURLToPath(new URL("../src/locales/en-US.json", import.meta.url)), "utf8"));
+  assert.equal(en[rows[0].value], "Missing citation marker");
+  assert.equal(en[rows[1].value], "Claim does not match the source");
+  assert.equal(en[rows[2].value], undefined);
+  const tool = describeOutput(flowNode("t2", "tool", { output: { ok: false, error_code: "tool_failed" } }))[0];
+  const closing = describeOutput(flowNode("c1", "closing", { output: { stop_reason: "turn_budget" } }))[0];
+  const general = describeOutput(flowNode("g1", "general", { output: { source: "model_knowledge" } }))[0];
+  assert.deepEqual([tool.translate, closing.translate, general.translate], [true, true, true]);
+  assert.deepEqual([en[tool.value], en[closing.value], en[general.value]], ["Tool failed", "Turn time limit reached", "Model general knowledge"]);
 });
 
 test("describeOutput translates the category", () => {
