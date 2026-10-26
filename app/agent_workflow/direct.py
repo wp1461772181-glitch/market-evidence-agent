@@ -1844,12 +1844,24 @@ class Turn:
                 cited='\n'.join(re.sub(r'([。！？])',r' [1]\1',line)+' [1]' if line.strip() else line for line in answer.splitlines())
                 if not unsupported_number_values(cited,[{'ordinal':1,'quote':state,'source_type':'system_state'}]):
                     check_claims=require_citations=False
-            from .claim_gate_flags import claim_quote_gate_mode, claim_quote_min_chars, legacy_prose_guards_enabled
+            from .claim_gate_flags import (
+                claim_jev_max_per_turn, claim_jev_support_mode, claim_jev_support_threshold,
+                claim_quote_gate_mode, claim_quote_min_chars, legacy_prose_guards_enabled,
+            )
             gate_mode=claim_quote_gate_mode()
             application=None
             if gate_mode!='off':
                 from .claim_review import apply_claim_gate
-                application=apply_claim_gate(answer,self.citations,self.observations,mode=gate_mode,min_chars=claim_quote_min_chars())
+                support_mode=claim_jev_support_mode()
+                support_fn=None
+                if support_mode!='off':
+                    from ..jev_claim_support import evaluate_claim_supports
+                    support_fn=evaluate_claim_supports
+                application=apply_claim_gate(
+                    answer,self.citations,self.observations,mode=gate_mode,min_chars=claim_quote_min_chars(),
+                    support_mode=support_mode,support_fn=support_fn,
+                    support_threshold=claim_jev_support_threshold(),max_per_turn=claim_jev_max_per_turn(),
+                )
                 self.last_claim_issues=list(application.issues)
                 answer=application.prose
                 self.audit['claim_gate' if gate_mode=='enforce' else 'claim_gate_shadow']=application.audit

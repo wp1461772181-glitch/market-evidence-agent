@@ -58,7 +58,18 @@ def collect_source_bodies(citations, observations=None) -> tuple[dict[int, str],
     return bodies, fallbacks
 
 
-def apply_claim_gate(answer: str, citations, observations=None, *, mode: str, min_chars: int = 24) -> ClaimGateApplication:
+def apply_claim_gate(
+    answer: str,
+    citations,
+    observations=None,
+    *,
+    mode: str,
+    min_chars: int = 24,
+    support_mode: str = "off",
+    support_fn=None,
+    support_threshold: float = 0.7,
+    max_per_turn: int = 4,
+) -> ClaimGateApplication:
     """Parse claims, bind them, and (in enforce) decide which prose lines remain.
 
     Shadow keeps the stripped prose for the legacy guard. Enforce drops lines
@@ -82,6 +93,15 @@ def apply_claim_gate(answer: str, citations, observations=None, *, mode: str, mi
     review = reviewed_claims(units, citations, bodies, min_chars=min_chars) if units else None
     issues = list(review.issues) if review else []
     accepted = list(review.accepted) if review else []
+    accepted, issues, support_audit = _apply_support(
+        accepted,
+        issues,
+        citations,
+        support_mode=support_mode,
+        support_fn=support_fn,
+        threshold=support_threshold,
+        max_per_turn=max_per_turn,
+    )
     review_audit = dict(review.audit) if review else {
         "claim_count": 0,
         "accepted_count": 0,
@@ -102,8 +122,10 @@ def apply_claim_gate(answer: str, citations, observations=None, *, mode: str, mi
         "claims_missing": claims_missing,
         "parse_error": parse_error,
         "source_body_fallback": fallbacks,
-        "jev_support_calls": 0,
-        "jev_skipped_reasons": [],
+        "jev_support_calls": support_audit["jev_support_calls"],
+        "jev_skipped_reasons": support_audit["jev_skipped_reasons"],
+        "semantic_unchecked": support_audit["semantic_unchecked"],
+        "jev_choices": support_audit["jev_choices"],
         "answer_quality_notes": {
             "prose_chars": len(prose),
             "claims_chars": max(0, len(answer or "") - len(prose)),
@@ -113,6 +135,72 @@ def apply_claim_gate(answer: str, citations, observations=None, *, mode: str, mi
         },
     }
     return ClaimGateApplication(prose, kept, issues, display, dropped, audit)
+
+
+def _apply_support(accepted, issues, citations, *, support_mode, support_fn, threshold, max_per_turn):
+    """Optional Jev pass. Only explicit ``does_not_support`` in enforce drops a claim."""
+    audit = {"jev_support_calls": 0, "jev_skipped_reasons": [], "semantic_unchecked": [], "jev_choices": []}
+    if support_mode == "off" or support_fn is None or not accepted:
+        return accepted, issues, audit
+    limit = max(0, int(max_per_turn))
+    eligible = list(accepted[:limit])
+    for claim in accepted[limit:]:
+        audit["jev_skipped_reasons"].append({"id": claim.id, "reason": "per_turn_cap"})
+    if not eligible:
+        return accepted, issues, audit
+    indexed = {}
+    for citation in citations or []:
+        if isinstance(citation, dict) and citation.get("ordinal") is not None:
+            try:
+                indexed[int(citation["ordinal"])] = citation
+            except (TypeError, ValueError):
+                continue
+    payload = []
+    for claim in eligible:
+        if isinstance(claim.evidence, QuoteEvidence):
+            quote = claim.evidence.evidence_quote
+        else:
+            quote = _citation_material(indexed.get(claim.citation_ordinal, {}))
+        payload.append((claim.id, quote, claim.statement))
+    try:
+        results = list(support_fn(payload))
+    except Exception:
+        audit["semantic_unchecked"] = [{"id": claim.id, "status": "error"} for claim in eligible]
+        return accepted, issues, audit
+    audit["jev_support_calls"] = 1
+    by_id = {claim.id: result for claim, result in zip(eligible, results)} if len(results) == len(eligible) else {}
+    if len(results) != len(eligible):
+        audit["semantic_unchecked"] = [{"id": claim.id, "status": "validation_error"} for claim in eligible]
+        return accepted, issues, audit
+    kept = []
+    eligible_ids = {claim.id for claim in eligible}
+    for claim in accepted:
+        if claim.id not in eligible_ids:
+            kept.append(claim)
+            continue
+        result = by_id.get(claim.id)
+        status = getattr(result, "status", None)
+        choice = getattr(result, "choice", None)
+        probabilities = getattr(result, "probabilities", None) or {}
+        if status != "ok":
+            audit["semantic_unchecked"].append({"id": claim.id, "status": status or "error"})
+            kept.append(claim)
+            continue
+        audit["jev_choices"].append({"id": claim.id, "choice": choice})
+        supports = float(probabilities.get("supports") or 0)
+        if choice == "does_not_support" and support_mode == "enforce":
+            issues.append({
+                "id": claim.id,
+                "reason": "does_not_support",
+                "citation_ordinal": claim.citation_ordinal,
+                "statement": claim.statement,
+            })
+            continue
+        if choice != "supports" or supports < threshold:
+            reason = choice if choice in {"unrelated", "does_not_support"} else "below_threshold"
+            audit["semantic_unchecked"].append({"id": claim.id, "status": reason})
+        kept.append(claim)
+    return kept, issues, audit
 
 
 def _enforce_lines(prose, accepted, issues, citations, bodies, *, claims_missing: bool):
