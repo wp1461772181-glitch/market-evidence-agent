@@ -186,7 +186,9 @@ HISTORY_NOTE=('以下是本对话之前的轮次，只用来理解用户在指�
 UNDERSTANDING_NOTE='对当前问题的理解（来自前置步骤，以改写后的问题为准；时间窗口 days_back 与结果条数 max_results 按这里执行）：'
 CONTROL_PREFIXES=('confirm:','authorize:','cancel:','change:')
 SYNC_DONE={'complete','completed','created','succeeded','succeeded_no_change','already_exists'}
-REPAIRABLE={'unsupported_numeric_claim','unsupported_claim','invalid_citation','missing_citation'}
+REPAIRABLE={'unsupported_numeric_claim','unsupported_claim','invalid_citation','missing_citation',
+            'quote_not_found','quote_too_short','unsupported_numeric','field_mismatch',
+            'derived_requires_calculate','bad_ordinal','claims_missing'}
 MAX_REPAIR_ROUNDS=2
 REPAIR_INSTRUCTION=('上面草稿里的这些行没有通过来源核对。请输出修订后的完整回答（Markdown，可以保留表格和标题）：'
     '被拒的数字要么改用正确的来源编号 [n]（rejected_numbers_appear_in 指出了它所在的来源），要么删掉；'
@@ -484,7 +486,7 @@ class Turn:
         # An identical call is replayed from here instead of ending the turn: the model that
         # repeats itself has not run out of progress, it has lost the result it already holds.
         self.replays={};self.replayed=0
-        self.last_issues=[];self.last_rejected=[]
+        self.last_issues=[];self.last_rejected=[];self.last_claim_issues=[]
         self.completed_writes=set();self.resume_note=None;self.resuming=False
         # Every event of the turn, including the ones handed to tools.invoke, passes through here.
         self.trace=TurnTrace(emit,secret=context.api_key);self.emit=self.trace.relay
@@ -1817,7 +1819,7 @@ class Turn:
                     return "操作已完成。"
                 answer='\n\n'.join(_fmt_op(f) for f in operational)
         if self.route in {'A','D'}:
-            from .evidence import reviewed_answer
+            from .evidence import rejected_lines, reviewed_answer
             is_web = any(getattr(obs,'tool_name',None) in {'web_research','ingest_web_source'} or (isinstance(obs,dict) and (obs.get('name') in {'web_research','ingest_web_source'} or obs.get('route')=='public_web_research')) for obs in self.observations) or any(c.get('source_type')=='web' for c in self.citations)
             check_claims = not generated and (self.route=='A' or not is_web)
             require_citations = not generated and (self.route=='A' or (bool(self.observations) and not is_web and not self.pending))
@@ -1830,12 +1832,37 @@ class Turn:
                 cited='\n'.join(re.sub(r'([。！？])',r' [1]\1',line)+' [1]' if line.strip() else line for line in answer.splitlines())
                 if not unsupported_number_values(cited,[{'ordinal':1,'quote':state,'source_type':'system_state'}]):
                     check_claims=require_citations=False
-            kept,issues=reviewed_answer(answer,self.citations,require_citations=require_citations,check_claims=check_claims)
+            from .claim_gate_flags import claim_quote_gate_mode, claim_quote_min_chars, legacy_prose_guards_enabled
+            gate_mode=claim_quote_gate_mode()
+            application=None
+            if gate_mode!='off':
+                from .claim_review import apply_claim_gate
+                application=apply_claim_gate(answer,self.citations,self.observations,mode=gate_mode,min_chars=claim_quote_min_chars())
+                self.last_claim_issues=list(application.issues)
+                answer=application.prose
+                self.audit['claim_gate' if gate_mode=='enforce' else 'claim_gate_shadow']=application.audit
+            if gate_mode=='enforce' and application is not None:
+                kept,issues=application.kept_prose,list(application.display_issues)
+                rejected=list(application.dropped_lines)
+                if legacy_prose_guards_enabled():
+                    _,legacy_issues=reviewed_answer(answer,self.citations,require_citations=require_citations,check_claims=check_claims)
+                    self.audit['legacy_guard_warnings']=list(legacy_issues)
+                    notes=application.audit['answer_quality_notes']
+                    notes['legacy_issue_count']=len(legacy_issues)
+                    notes['claim_drop_count']=len(application.issues)
+                    notes['legacy_disagreement']=bool(legacy_issues)!=bool(application.issues)
+            else:
+                kept,issues=reviewed_answer(answer,self.citations,require_citations=require_citations,check_claims=check_claims)
+                rejected=rejected_lines(answer,self.citations,require_citations=require_citations,check_claims=check_claims) if issues else []
+                if application is not None:
+                    notes=application.audit['answer_quality_notes']
+                    notes['legacy_issue_count']=len(issues)
+                    notes['claim_drop_count']=len(application.issues)
+                    notes['legacy_disagreement']=bool(issues)!=bool(application.issues)
             self.last_issues=list(issues)
             if issues:
-                from .evidence import rejected_lines
                 from .answer_tidy import tidy_answer
-                self.last_rejected=rejected_lines(answer,self.citations,require_citations=require_citations,check_claims=check_claims)
+                self.last_rejected=rejected
                 kept=tidy_answer(kept)
                 self.audit['answer_issues']=issues
                 # What was removed and why, so a withheld line can be diagnosed instead of guessed at.
@@ -1848,6 +1875,8 @@ class Turn:
                 else:
                     answer='本次表述暂无法与来源核实，请缩小问题或补充资料。'
                     status='failed'
+            elif gate_mode=='enforce' and application is not None:
+                answer=application.kept_prose
         for marker in MARKERS:
             if marker in answer:answer=answer.replace(marker,'').strip()
         if not answer:answer='模型返回了无效工具协议，请重试。';reason='provider_protocol_invalid';status='failed'
