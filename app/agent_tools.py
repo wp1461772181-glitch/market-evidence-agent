@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import json
 import os
 import re
 import hashlib
@@ -482,7 +483,8 @@ class AnalysisArgs(SymbolArgs):
 @tool(args_schema=AnalysisArgs)
 async def query_material_analysis(symbol: str, accession_number: str | None = None, source_id: str | None = None,
                                   form: str | None = None, financial_only: bool = False) -> dict:
-    """Read the latest saved AI analysis of a material; this is an AI summary, not original filing text or an official fact record."""
+    """Read the latest saved AI analysis of a material; this is an AI summary, not original filing text or an official fact record.
+    A material analysed more than once comes with the version before it (role previous_version), so the two can be compared."""
     from .knowledge.runtime import current_research_context
     context=current_research_context()
     if source_id:
@@ -571,7 +573,14 @@ async def query_material_analysis(symbol: str, accession_number: str | None = No
         if key not in seen:latest.append(row);seen.add(key)
     for row in latest[:1]: row["index_status"] = await _index_state(row["source_id"])
     # One requested analysis keeps the complete tool response safely below the 8KB tool budget.
-    return {"ok":True,"data":latest[:1],"source":"material_analysis_versions joined to frozen evidence and current source","as_of":latest[0]['created_at'] if latest else None,
+    data=latest[:1]
+    # A material analysed again is read with the version before it, so the two can be compared.  That one
+    # comes without quotes, and the latest gives up its own if both would not fit the budget together.
+    previous=next((row for row in verified if data and row['source_id']==data[0]['source_id'] and row['version_no']<data[0]['version_no']),None)
+    if previous:
+        data.append({**previous,"evidence_quotes":[],"role":"previous_version"})
+        if len(json.dumps(data,ensure_ascii=False,default=str).encode())>7500:data[0]={**data[0],"evidence_quotes":[]}
+    return {"ok":True,"data":data,"source":"material_analysis_versions joined to frozen evidence and current source","as_of":latest[0]['created_at'] if latest else None,
             "error_code":"no_analysis" if not latest else None}
 
 from .agent_web_research import web_research

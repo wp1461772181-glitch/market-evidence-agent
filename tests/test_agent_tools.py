@@ -134,6 +134,43 @@ def test_saved_analysis_rejects_tampering_and_accepts_owner_scoped_parsed_upload
         assert asyncio.run(tools.query_material_analysis.ainvoke({'symbol':'AMD','source_id':source_id}))['data']==[]
 
 
+def test_an_analysis_done_twice_is_read_with_the_version_before_it(monkeypatch):
+    """Regression from 2026-10-26: Intel's 10-Q had two AI analyses, but the tool returned only the
+    latest, so asked to look at both the agent said the other version could not be found."""
+    import asyncio, hashlib
+    from datetime import UTC, datetime, timedelta
+    import app.agent_tools as tools
+    from app.agent_chat_stream import bounded_tool_result
+    from app.knowledge.runtime import research_context
+    now=datetime.now(UTC)
+    source_id='00000000-0000-4000-8000-000000000001'
+    parsed='报'*2000
+    digest=hashlib.sha256(parsed.encode()).hexdigest()
+    frozen={'source_id':source_id,'source_type':'uploaded_media','content_sha256':digest,'analysis_text':parsed}
+    manifest={'source_id':source_id,'source_type':'uploaded_media','content_sha256':digest,
+        'evidence_version_id':'event-1','analysis_text_sha256':hashlib.sha256(parsed.encode()).hexdigest()}
+    # Long summaries and quotes: the budget, not the sample, has to keep both versions in the result.
+    def version(number):
+        return {'id':f'analysis-{number}','evidence_version_id':'event-1','source_type':'uploaded_media','source_id':source_id,
+            'version_no':number,'created_at':now-timedelta(days=2-number),'actual_model':f'model-{number}',
+            'payload':{'summary':f'第{number}版'+'析'*900,'facts':[{'citations':[{'quote':'报'*(400+n)}]} for n in range(3)]},
+            'source_manifest':manifest,'content_sha256':digest,'source_snapshot':frozen,'citations':[],
+            'symbol':'AMD','published_at':now,'observed_at':now,'upload_published_at':now,'upload_observed_at':now,
+            'upload_title':'Parsed report','upload_url':'https://example.test/report','upload_text':parsed,'upload_body_hash':digest}
+    async def query(sql,params):
+        if 'SELECT owner_hash FROM knowledge_upload_owners' in sql:return [{'owner_hash':'a'*64}]
+        return [version(2),version(1)]
+    monkeypatch.setattr(tools,'_query',query)
+    async def index_state(_source_id): return 'not_imported'
+    monkeypatch.setattr(tools,'_index_state',index_state)
+    with research_context('a'*64):
+        rows=bounded_tool_result(asyncio.run(tools.query_material_analysis.ainvoke({'symbol':'AMD'})))['data']
+
+    assert [(row['version_no'],row.get('role')) for row in rows]==[(2,None),(1,'previous_version')]
+    assert rows[0]['summary'].startswith('第2版') and rows[1]['summary'].startswith('第1版')
+    assert rows[1]['evidence_quotes']==[]
+
+
 def test_saved_sec_analysis_rejects_changed_current_body_without_changing_saved_digests(monkeypatch):
     import asyncio, hashlib
     from datetime import UTC, datetime
