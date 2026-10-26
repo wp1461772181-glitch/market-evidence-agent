@@ -13,7 +13,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from app import agent_tools
-from app.agent_chat_stream import _restore_citations
+from app.agent_chat_stream import _restore_citations, bounded_tool_result
 from app.agent_tools import forecast_snapshot
 from app.database import Base, SessionLocal, engine
 from app.forecast_jobs import enqueue_job
@@ -78,34 +78,41 @@ def test_a_revised_forecast_is_read_with_the_version_it_revised(tables):
 
 
 def _brief(tag):
-    return {'supporting': [{'statement': f'{tag} 营收增长', 'citations': [{'source_id': 'x'}]}],
-            'counter': [{'statement': f'{tag} 债务增加'}], 'new_facts': [{'statement': '长' * 400}] * 9,
-            'background': [{'statement': '背景不进理由'}]}
+    # Long statements on both sides: the bound, not the sample, has to keep the pair inside the result.
+    return {'supporting': [{'statement': f'{tag} 营收增长', 'citations': [{'source_id': 'x'}]}] + [{'statement': '支' * 300}] * 5,
+            'counter': [{'statement': f'{tag} 债务增加'}] + [{'statement': '反' * 300}] * 5,
+            'new_facts': [{'statement': '新事实不进理由'}]}
 
 
-def test_both_versions_come_with_their_reasons(tables):
+def test_both_versions_reach_the_model_with_their_reasons(tables):
     """Regression from 2026-10-26: asked to compare Google's two forecast versions, the agent saw each
     brief only as its first 1,200 characters of Python repr, so the reasons were cut off and it went
-    hunting through other reads (80 s, 16 tool calls) before a partial answer."""
+    hunting through other reads (80 s, 16 tool calls) before a partial answer.  Adding the reasons beside
+    that text then pushed the pair past the 8,000-byte tool result and the older version was dropped."""
     root = _version('SNA', brief=_brief('v1'))
     _version('SNA', parent=root, version_no=2, brief=_brief('v2'))
 
-    rows = asyncio.run(agent_tools.query_latest_forecast.coroutine(symbol='SNA'))['data']
+    rows = bounded_tool_result(asyncio.run(agent_tools.query_latest_forecast.coroutine(symbol='SNA')))['data']
 
-    assert rows[0]['reasons']['supporting'] == ['v2 营收增长'] and rows[1]['reasons']['counter'] == ['v1 债务增加']
-    assert len(rows[0]['reasons']['new_facts']) == 5 and all(len(fact) == 160 for fact in rows[0]['reasons']['new_facts'])
-    # The cited quote is the row's JSON cut at 5,000 characters; a cut row would expire on restore.
-    assert all(len(json.dumps(row, ensure_ascii=False, default=str)) < 5000 for row in rows)
+    assert [row['version_no'] for row in rows] == [2, 1]
+    assert rows[0]['reasons']['supporting'][0] == 'v2 营收增长' and rows[1]['reasons']['counter'][0] == 'v1 债务增加'
+    assert all(len(row['reasons'][side]) == 4 for row in rows for side in ('supporting', 'counter'))
+    assert 'research_brief_summary' not in rows[0] and 'new_facts' not in rows[0]['reasons']
 
 
 def test_a_cited_version_keeps_its_reasons_through_the_restore(tables):
     version = _version('SNB', brief=_brief('v1'))
     row = asyncio.run(agent_tools.query_latest_forecast.coroutine(symbol='SNB'))['data'][0]
+    with SessionLocal() as db:
+        brief = db.get(ForecastVersionV2, version).research_brief
     cite = lambda quoted: {'ordinal': 1, 'source_type': 'saved_forecast', 'source_id': str(version), 'symbol': 'SNB',
                            'title': 'SNB forecast', 'quote': json.dumps(quoted, ensure_ascii=False, default=str)}
+    # Rows cited before the reasons existed carried the brief's first 1,200 characters instead.
+    legacy = {**{key: value for key, value in row.items() if key != 'reasons'}, 'research_brief_summary': str(brief)[:1200]}
+    forged = {**row, 'reasons': {**row['reasons'], 'supporting': ['营收翻倍']}}
 
     assert _restore_citations([cite(row)], 'guest-session')[0]['source_type'] == 'saved_forecast'
-    forged = {**row, 'reasons': {**row['reasons'], 'supporting': ['营收翻倍']}}
+    assert _restore_citations([cite(legacy)], 'guest-session')[0]['source_type'] == 'saved_forecast'
     assert _restore_citations([cite(forged)], 'guest-session')[0]['source_type'] == 'unavailable'
 
 

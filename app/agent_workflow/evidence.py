@@ -137,7 +137,7 @@ def gate_row(question: str, row: dict, *, symbol: str | None=None, company: str 
     web=kind in {'web','web_news'} or 'url' in row
     if row.get('fetch_error') or row.get('body_hash_valid') is False:return False,'invalid_source_body'
     if official_only and kind not in {'official_filing','saved_filing'}:return False,'official_source_required'
-    body=' '.join(str(row.get(k) or '') for k in ('excerpt','content','summary','text','answer','research_brief_summary'))
+    body=' '.join(str(row.get(k) or '') for k in ('excerpt','content','summary','text','answer','reasons'))
     title=str(row.get('title') or '')
     if not body.strip() and not any(k in row for k in ('close','probabilities','status','form')):
         metric=next((key for key,terms in METRIC_GROUPS.items() if any(contains(t,question) for t in terms)),None)

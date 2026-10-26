@@ -235,22 +235,21 @@ def forecast_target(contract):
             'meaning':(f'预测 {end} 的收盘价相对 {start} 收盘价 {round(anchor,2)} 的涨跌：bullish（看多）= 收盘高于 {above}（涨超 {pct:g}%），'
                        f'bearish（看空）= 低于 {below}（跌超 {pct:g}%），neutral（中性）= 在两者之间。')}
 
+def forecast_reasons(brief):
+    """A version's reasons as plain statements, for and against, so a revision and the version it revised
+    compare from one read.  Bounded so both versions fit the 8,000-byte tool result the model is shown."""
+    if not isinstance(brief,dict):return None
+    return {key:[str(item['statement'])[:100] for item in brief.get(key) or [] if isinstance(item,dict) and item.get('statement')][:4]
+            for key in ('supporting','counter')}
+
 def forecast_snapshot(row):
     """The exact saved forecast projection shared by read tools and citation restore."""
-    brief=row.get('research_brief')
     probabilities=next((row.get(k) for k in ('decision_probabilities','joint_probabilities','baseline_probabilities') if row.get(k) not in (None,'null')),None)
     data={k:_json(v) for k,v in row.items() if k not in ('research_brief','decision_probabilities','joint_probabilities','baseline_probabilities','target_contract','parent_version_id')}
     data['probabilities']=probabilities
     data['target']=forecast_target(row.get('target_contract'))
-    data['research_brief_summary']=str(brief)[:1200] if brief is not None else None
+    data['reasons']=forecast_reasons(row.get('research_brief'))
     return data
-
-def forecast_reasons(brief):
-    """A version's reasons as plain statements (for, against, newly seen), so a revision and the version it
-    revised compare from one read.  Bounded: the row must still fit the 5000-character cited quote."""
-    if not isinstance(brief,dict):return None
-    return {key:[str(item['statement'])[:160] for item in brief.get(key) or [] if isinstance(item,dict) and item.get('statement')][:5]
-            for key in ('supporting','counter','new_facts')}
 
 @tool(args_schema=SymbolArgs)
 async def query_latest_forecast(symbol: str) -> dict:
@@ -261,11 +260,11 @@ async def query_latest_forecast(symbol: str) -> dict:
         rows = await _query("SELECT "+columns+" FROM forecast_versions_v2 WHERE symbol=:symbol AND root_id IN (SELECT id FROM forecast_versions_v2 WHERE symbol=:symbol AND root_id=id ORDER BY created_at DESC, id DESC LIMIT 1) ORDER BY version_no DESC, created_at DESC, id DESC LIMIT 1", {"symbol":symbol})
         if rows:
             row=rows[0]
-            data=[{**forecast_snapshot(row),"reasons":forecast_reasons(row.get("research_brief"))}]
+            data=[forecast_snapshot(row)]
             if row.get("parent_version_id"):
                 # A revision is read with the version it revised, so "what changed" has both sides.
                 parent=await _query("SELECT "+columns+" FROM forecast_versions_v2 WHERE id=:id AND symbol=:symbol", {"id":row["parent_version_id"],"symbol":symbol})
-                if parent:data.append({**forecast_snapshot(parent[0]),"reasons":forecast_reasons(parent[0].get("research_brief")),"role":"previous_version"})
+                if parent:data.append({**forecast_snapshot(parent[0]),"role":"previous_version"})
             return {"ok":True,"data":data,"source":"forecast_versions_v2 workspace current root","as_of":_json(row["created_at"])}
         return {"ok":True,"data":[],"source":"forecast_versions_v2 workspace current root","as_of":None}
     except Exception:
