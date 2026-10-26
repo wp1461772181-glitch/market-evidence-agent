@@ -770,6 +770,13 @@ class Turn:
             self.audit['explicit_task_switch']=True
         if self.refinement:
             fields=('metrics','financial_only','form','period')
+            # The classifier's period was already checked against the years of the rewritten question, so a
+            # period it names is what was asked ("那前年呢" is a time change: FY2024 must not revert to last
+            # turn's FY2025).  The previous period only fills in when this turn names none.
+            if self.scope.get('period'):
+                fields=tuple(f for f in fields if f!='period')
+                if previous.get('period') and self.scope['period']!=previous['period']:
+                    self.audit['refinement_period_changed']=[previous['period'],self.scope['period']]
             conflicts=[]
             for field in fields:
                 if field not in previous:continue
