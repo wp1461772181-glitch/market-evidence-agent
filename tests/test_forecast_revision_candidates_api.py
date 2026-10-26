@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 import app.forecast_v2_api as api
 from app.database import Base, SessionLocal, engine
 from app.evidence_context import freeze_evidence_context
+from app.forecast_contract import latest_completed_xnys_session
 from app.forecast_revision_candidates import REVISION_LOOKAHEAD, REVISION_LOOKBACK
 from app.forecast_v2_models import ForecastVersionV2
 from app.models import UploadedEvidence
@@ -172,9 +173,9 @@ def test_an_unknown_version_is_404(client):
 
 def test_an_expired_target_offers_no_candidates(client):
     decided = datetime.now(UTC) - timedelta(days=5)
-    version = _create_version(
-        symbol="RWD", target_end=date.today() - timedelta(days=1), decision_at=decided,
-    )
+    # The last closed session, not "yesterday": on a Monday that is a Sunday, which no target can end on.
+    target_end = latest_completed_xnys_session(datetime.now(UTC))
+    version = _create_version(symbol="RWD", target_end=target_end, decision_at=decided)
     _official_source(
         symbol="RWD", accepted_at=decided + timedelta(days=1),
         observed_at=decided + timedelta(days=1, hours=1),
@@ -184,7 +185,7 @@ def test_an_expired_target_offers_no_candidates(client):
 
     assert response.status_code == 200
     body = response.json()
-    assert body["target_end_date"] == (date.today() - timedelta(days=1)).isoformat()
+    assert body["target_end_date"] == target_end.isoformat()
     assert body["expired"] is True
     assert body["candidates"] == []
     assert body["excluded"] == []
