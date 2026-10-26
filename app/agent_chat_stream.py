@@ -82,14 +82,15 @@ def _restore_citations(items,credential):
       valid=bool(source and source.answer==item.get('quote'))
      else:
       from .forecast_v2_models import ForecastVersionV2
-      from .agent_tools import forecast_snapshot
+      from .agent_tools import forecast_reasons,forecast_snapshot
       source=session.get(ForecastVersionV2,UUID(item.get('source_id','')))
       payload={key:getattr(source,key) for key in ('id','root_id','version_no','decision_at','model_status','decision_probabilities','joint_probabilities','baseline_probabilities','research_brief','created_at','target_contract')} if source else {}
       # The cited row also carries the gate's notes and the reader's labels; what must still hold is
-      # every value of the saved projection.
+      # every value of the saved projection, and the reasons when the row had them (older rows did not).
       quoted=json.loads(item.get('quote','{}'))
       valid=bool(source and source.symbol==item.get('symbol') and isinstance(quoted,dict)
-                 and all(quoted.get(key)==value for key,value in json.loads(json.dumps(forecast_snapshot(payload),default=str)).items()))
+                 and all(quoted.get(key)==value for key,value in json.loads(json.dumps(forecast_snapshot(payload),default=str)).items())
+                 and quoted.get('reasons') in (None,forecast_reasons(source.research_brief)))
      verified.append(item if valid else {'ordinal':ordinal,'source_type':'unavailable','title':'来源已失效','section':'','truncated':False})
     except (ValueError,TypeError):verified.append({'ordinal':ordinal,'source_type':'unavailable','title':'来源已失效','section':'','truncated':False})
     continue
