@@ -629,3 +629,141 @@ def rejected_lines(answer,citations,*,require_citations=False,check_claims=True)
         _,issues=reviewed_passages(checked[bullet.end():] if bullet else checked,citations,require_citations=require_citations,check_claims=check_claims)
         if issues:out.append((stripped,issues[0]))
     return out
+
+
+# Derived rates are not free rewrites of a raw cell. Keyword list stays small and fixture-driven.
+_DERIVED_CLAIM = re.compile(
+    r"growth|margin|yoy|year-over-year|同比|增长率|毛利率|净利率|差额|增速",
+    re.I,
+)
+
+
+class ClaimGateResult:
+    """Accepted claims plus drop issues. Iterates as ``(accepted, issues)``."""
+
+    def __init__(self, accepted, issues, audit):
+        self.accepted = accepted
+        self.issues = issues
+        self.audit = audit
+
+    def __iter__(self):
+        yield self.accepted
+        yield self.issues
+
+
+def reviewed_claims(claims, citations, source_bodies=None, *, min_chars=24):
+    """Drop claims whose quote or field evidence does not bind to the cited source.
+
+    Numbers are checked on the resolved source span (and header walk-up), never on
+    the model-copied quote. Quote miss and unverified binds are drops, not pending.
+    ``reviewed_answer`` is intentionally not called from here.
+    """
+    from dataclasses import replace
+
+    from .claim_numeric import field_evidence_matches, header_context, numbers_supported
+    from .claim_units import ClaimParseError, ClaimUnit, FieldEvidence, QuoteEvidence, parse_claims
+    from .quote_bind import bind_quote
+
+    units = _claim_units(claims, parse_claims, ClaimUnit, ClaimParseError)
+    indexed = {}
+    for citation in citations or []:
+        if isinstance(citation, dict) and citation.get("ordinal") is not None:
+            try:
+                indexed[int(citation["ordinal"])] = citation
+            except (TypeError, ValueError):
+                continue
+    bodies = source_bodies or {}
+    accepted = []
+    issues = []
+    audit = {
+        "claim_count": len(units),
+        "accepted_count": 0,
+        "quote_match_kinds": [],
+        "resolved_span_hashes": [],
+        "drop_reasons": [],
+        "source_body_fallback": [],
+    }
+    for claim in units:
+        citation = indexed.get(claim.citation_ordinal)
+        if citation is None:
+            _drop(issues, audit, claim, "bad_ordinal")
+            continue
+        if _DERIVED_CLAIM.search(claim.statement) and not _calculation_citation(citation):
+            _drop(issues, audit, claim, "derived_requires_calculate")
+            continue
+        if isinstance(claim.evidence, FieldEvidence):
+            if not field_evidence_matches(claim.evidence, citation):
+                _drop(issues, audit, claim, "field_mismatch")
+                continue
+            material = _citation_material(citation)
+            unsupported = numbers_supported(claim.statement, material)
+            if unsupported:
+                _drop(issues, audit, claim, "unsupported_numeric", values=unsupported)
+                continue
+            accepted.append(claim)
+            continue
+        if not isinstance(claim.evidence, QuoteEvidence):
+            _drop(issues, audit, claim, "field_mismatch")
+            continue
+        source, fallback = _source_body(bodies, claim.citation_ordinal, citation)
+        if fallback:
+            audit["source_body_fallback"].append(claim.citation_ordinal)
+        bound = bind_quote(claim.evidence.evidence_quote, source, min_chars=min_chars)
+        if not bound.ok:
+            _drop(issues, audit, claim, bound.reason or "quote_not_found")
+            continue
+        context = header_context(source, bound.start_char)
+        unsupported = numbers_supported(claim.statement, bound.resolved_quote, header_context=context)
+        if unsupported:
+            _drop(issues, audit, claim, "unsupported_numeric", values=unsupported)
+            continue
+        audit["quote_match_kinds"].append(bound.match_kind)
+        audit["resolved_span_hashes"].append(hashlib.sha256(bound.resolved_quote.encode()).hexdigest())
+        accepted.append(replace(claim, evidence=replace(claim.evidence, evidence_quote=bound.resolved_quote)))
+    audit["accepted_count"] = len(accepted)
+    audit["drop_reasons"] = [item["reason"] for item in issues]
+    return ClaimGateResult(accepted, issues, audit)
+
+
+def _claim_units(claims, parse_claims, claim_type, error_type):
+    if not claims:
+        return []
+    if isinstance(claims, dict):
+        return parse_claims(claims)
+    first = claims[0]
+    if isinstance(first, claim_type):
+        return list(claims)
+    try:
+        return parse_claims(claims)
+    except error_type:
+        raise
+
+
+def _drop(issues, audit, claim, reason, **extra):
+    issues.append({
+        "id": claim.id,
+        "reason": reason,
+        "citation_ordinal": claim.citation_ordinal,
+        "statement": claim.statement,
+        **extra,
+    })
+    audit["drop_reasons"].append(reason)
+
+
+def _calculation_citation(citation):
+    return citation.get("source_type") in {"calculation", "calculate"} or isinstance(citation.get("calculation"), dict)
+
+
+def _source_body(bodies, ordinal, citation):
+    text = bodies.get(ordinal) if isinstance(bodies, dict) else None
+    if isinstance(text, str) and text.strip():
+        return text, False
+    return str(citation.get("quote") or ""), True
+
+
+def _citation_material(citation):
+    parts = [str(citation.get(key) or "") for key in ("quote", "figures", "title")]
+    calculation = citation.get("calculation")
+    if isinstance(calculation, dict):
+        parts.append(json.dumps(calculation, ensure_ascii=False, default=str))
+    return " ".join(parts)

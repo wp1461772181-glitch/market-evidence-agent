@@ -33,3 +33,21 @@ Jev's confidence describes probability concentration; it is not a measure of cor
 One authorized probe ran at approximately 09:02:10 UTC (17:02:10 MYT). It made **1 application call and 1 HTTP attempt**, succeeded with requested model `typesafe/jev-1.13` and actual model `typesafe/jev-1.13-20260917`, and returned request ID `gen-dec-1790413330-1xY9EGs3gpoTCUWinFtA`. Usage was 612 input tokens, 41 output tokens, cost `$0.000025704`; elapsed time was 734 ms. The returned distribution was bullish 0.0, neutral 1.0, bearish 0.0 (choice `neutral`, confidence 1.0).
 
 This was a connectivity-only call using the script's synthetic `DEMO` brief with no market data, materials, or database access. It does not validate any stock forecast, model calibration, or production workflow.
+
+## Claim support (`jev-claim-support-v1`)
+
+Chat-answer claim support is a second Decisions question. It lives in `app/jev_claim_support.py` and does not call `app/jev_provider.py`. Direction forecasts stay on `jev-direction-v1` (up to 3 attempts, 30 seconds each). Claim support is `choice` among `supports`, `does_not_support`, and `unrelated`. Its `state` is only the resolved source span and the claim (`{"quote", "claim"}`, or a `claims` list of those fields when several claims share one request). It never sends a ResearchBrief.
+
+Budget, on purpose tighter than the direction adapter:
+
+- **1 HTTP attempt.** `CLAIM_JEV_MAX_ATTEMPTS` is hard-capped at 1. There is no 3×30s retry.
+- **Timeout at most 5 seconds** (`CLAIM_JEV_TIMEOUT_SECONDS`, default 5).
+- **Per-turn cap** `CLAIM_JEV_MAX_PER_TURN` (default 4). Extra claims are skipped and audited as `per_turn_cap`.
+- **Daily cap** `CLAIM_JEV_DAILY_CAP`. Unset means no cap. The counter is one process plus `artifacts/claim-jev-daily.json` (override with `CLAIM_JEV_DAILY_PATH`). Separate worker processes do not share that file.
+- The call uses the server's `OPENROUTER_API_KEY`. Guest turns are billed to the operator. The alpha endpoint is `https://openrouter.ai/api/alpha/decisions`.
+
+Failure isolation: HTTP errors, timeouts, validation failures, `unrelated`, and `supports` below `CLAIM_JEV_SUPPORT_THRESHOLD` (default 0.7) are audit-only `semantic_unchecked`. They do not downgrade the answer. In `CLAIM_JEV_SUPPORT=enforce`, only an explicit `does_not_support` drops that claim. Do not turn those failures into a whole-answer “待核对”.
+
+Do not write claim-support choices into forecast learning or calibration (`app/jev_learning.py` is not imported). Do not set `CLAIM_JEV_SUPPORT=enforce` until a labelled set has been scored and the metrics are recorded under `docs/reports/`. The labelling rules are in [claim-support-label-protocol.md](claim-support-label-protocol.md). `scripts/probe_jev.py` remains the direction probe and is unchanged.
+
+`CLAIM_QUOTE_GATE` and `CLAIM_JEV_SUPPORT` both default to `off`. Shadow runs the check and records latency, bind results, and quality notes while the legacy prose guards still decide the visible answer. See `.env.example`.

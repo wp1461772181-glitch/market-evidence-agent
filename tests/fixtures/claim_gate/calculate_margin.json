@@ -1,0 +1,23 @@
+{
+  "source_ordinal": 3,
+  "citations": [
+    {
+      "ordinal": 3,
+      "source_type": "calculation",
+      "quote": "{\"value\": \"46.20\"}",
+      "calculation": {"value": "46.20", "expression": "a/b*100"}
+    }
+  ],
+  "claims": {
+    "claims": [
+      {
+        "id": "margin",
+        "statement": "Gross margin was 46.2%.",
+        "citation_ordinal": 3,
+        "evidence": {"type": "field", "value": 46.2}
+      }
+    ]
+  },
+  "expect_accepted": ["margin"],
+  "expect_reasons": []
+}

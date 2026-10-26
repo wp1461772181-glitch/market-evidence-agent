@@ -1,0 +1,25 @@
+{
+  "source_ordinal": 1,
+  "citations": [
+    {
+      "ordinal": 1,
+      "source_type": "web",
+      "quote": "The call started at 15:00 and the review covered the last 15 days of trading."
+    }
+  ],
+  "claims": {
+    "claims": [
+      {
+        "id": "clock",
+        "statement": "电话开始于 15:00，覆盖最近15天。",
+        "citation_ordinal": 1,
+        "evidence": {
+          "type": "quote",
+          "evidence_quote": "The call started at 15:00 and the review covered the last 15 days of trading."
+        }
+      }
+    ]
+  },
+  "expect_accepted": ["clock"],
+  "expect_reasons": []
+}

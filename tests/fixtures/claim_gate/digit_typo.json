@@ -1,0 +1,25 @@
+{
+  "source_ordinal": 1,
+  "citations": [
+    {
+      "ordinal": 1,
+      "source_type": "official_filing",
+      "quote": "Apple Inc. Total net sales were 16,128 for fiscal 2024. Operating income follows."
+    }
+  ],
+  "claims": {
+    "claims": [
+      {
+        "id": "typo",
+        "statement": "Revenue was 16,182.",
+        "citation_ordinal": 1,
+        "evidence": {
+          "type": "quote",
+          "evidence_quote": "Total net sales were 16,182 for fiscal 2024."
+        }
+      }
+    ]
+  },
+  "expect_accepted": [],
+  "expect_reasons": ["unsupported_numeric"]
+}
