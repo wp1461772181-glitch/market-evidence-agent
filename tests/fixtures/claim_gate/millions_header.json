@@ -1,0 +1,25 @@
+{
+  "source_ordinal": 1,
+  "citations": [
+    {
+      "ordinal": 1,
+      "source_type": "official_filing",
+      "quote": "In millions\nItem A\nTotal net sales were 16,128 for fiscal 2024.\n"
+    }
+  ],
+  "claims": {
+    "claims": [
+      {
+        "id": "scaled",
+        "statement": "营收为 161.28 亿美元。",
+        "citation_ordinal": 1,
+        "evidence": {
+          "type": "quote",
+          "evidence_quote": "Total net sales were 16,128 for fiscal 2024."
+        }
+      }
+    ]
+  },
+  "expect_accepted": ["scaled"],
+  "expect_reasons": []
+}

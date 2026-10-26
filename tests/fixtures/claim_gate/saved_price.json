@@ -1,0 +1,26 @@
+{
+  "source_ordinal": 2,
+  "citations": [
+    {
+      "ordinal": 2,
+      "source_type": "saved_price",
+      "figures": "trading_date 2024-01-02 close 192.5",
+      "quote": "192.5"
+    }
+  ],
+  "claims": {
+    "claims": [
+      {
+        "id": "price",
+        "statement": "Close was 192.5 on 2024-01-02.",
+        "citation_ordinal": 2,
+        "evidence": {
+          "type": "field",
+          "fields": {"trading_date": "2024-01-02", "close": 192.5}
+        }
+      }
+    ]
+  },
+  "expect_accepted": ["price"],
+  "expect_reasons": []
+}
