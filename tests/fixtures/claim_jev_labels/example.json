@@ -1,0 +1,7 @@
+{
+  "id": "example-revenue-span",
+  "quote": "Total net sales were 16,128 for fiscal 2024.",
+  "claim": "Revenue was 16,128.",
+  "label": "supports",
+  "notes": "Resolved span states the figure. Example only; not a scored row."
+}

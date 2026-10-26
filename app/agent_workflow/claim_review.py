@@ -119,6 +119,7 @@ def apply_claim_gate(
         **review_audit,
         "mode": mode,
         "latency_ms": elapsed,
+        "drop_reasons": [item["reason"] for item in issues],
         "claims_missing": claims_missing,
         "parse_error": parse_error,
         "source_body_fallback": fallbacks,
