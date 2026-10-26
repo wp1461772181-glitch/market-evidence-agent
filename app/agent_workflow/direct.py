@@ -201,6 +201,11 @@ CLAIM_REPAIR_NOTE=('claim_issues 里 quote_not_found 或 quote_too_short 的句�
     '至少 24 个字符，不要只抄一个数字；对不上来源的说法直接删掉，不要写成待核对。'
     'derived_requires_calculate 的增长率、毛利率、差额只能引用本轮已有的 calculate 结果，否则删掉该句。'
     '价格、XBRL、已保存预测和 calculate 用 evidence.type=field 绑定字段和数值，不要编造一段引文。')
+CLAIM_EVIDENCE_NOTE=('【依据】回答正文之后另起一段，只输出一个 JSON 对象 {"claims":[...]}，不要用它代替正文。'
+    '每条包含 id、statement、citation_ordinal 和 evidence。'
+    '网页、申报原文和 FAQ 用 {"type":"quote","evidence_quote":"来源中连续出现的原文，至少24个字符"}。'
+    '已保存价格、XBRL、已保存预测和 calculate 用 {"type":"field","fields":{字段:值}}，字段和数值必须来自该编号的结构化结果。'
+    '增长率、毛利率等推算只能引用 calculate 的编号。')
 
 
 def write_tool_catalogue():
@@ -1011,6 +1016,9 @@ class Turn:
             if len(starts)<2:break
             self.protocol=self.protocol[starts[1]:]
         instruction='\n'.join(INSTRUCTION)
+        from .claim_gate_flags import claim_quote_gate_mode
+        if claim_quote_gate_mode() in {'shadow','enforce'}:
+            instruction+='\n'+CLAIM_EVIDENCE_NOTE
         if self.owner:
             unavailable=[p.name for p in definitions().values() if p.level in {'reversible','costly'} and p.name not in self.granted_actions]
             instruction+=('\n当前身份：所有者。本轮可直接提出确认卡的写操作：'+('、'.join(sorted(self.granted_actions)) or '无')+

@@ -1,6 +1,6 @@
 import pytest
 
-from app.agent_workflow.claim_units import ClaimParseError, parse_claims
+from app.agent_workflow.claim_units import ClaimParseError, extract_claims_payload, parse_claims
 
 
 def test_parse_quote_evidence():
@@ -45,6 +45,17 @@ def test_parse_flat_field_evidence_for_structured_sources():
 def test_reject_missing_evidence():
     with pytest.raises(ClaimParseError):
         parse_claims({"claims": [{"id": "c3", "statement": "x", "citation_ordinal": 1}]})
+
+
+def test_extract_trailing_and_fenced_claims_json():
+    payload, prose = extract_claims_payload('Revenue was 16,128 [1].\n{"claims":[{"id":"c1"}]}')
+    assert prose == "Revenue was 16,128 [1]."
+    assert payload["claims"][0]["id"] == "c1"
+    fenced, prose = extract_claims_payload('Revenue was 16,128 [1].\n```json\n{"claims":[{"id":"c2"}]}\n```')
+    assert prose == "Revenue was 16,128 [1]."
+    assert fenced["claims"][0]["id"] == "c2"
+    missing, same = extract_claims_payload("Revenue was 16,128 [1].")
+    assert missing is None and same == "Revenue was 16,128 [1]."
 
 
 def test_reject_empty_statement_and_short_quote():

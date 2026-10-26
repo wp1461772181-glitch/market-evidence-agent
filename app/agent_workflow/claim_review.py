@@ -156,16 +156,16 @@ def _enforce_lines(prose, accepted, issues, citations, bodies, *, claims_missing
 
 
 def _line_reason(stripped, allowed, header, reasons_for, *, claims_missing: bool, accepted):
+    if claims_missing and factual_claim(stripped):
+        return "claims_missing"
     for statement, reason in reasons_for.items():
         if _statement_in_line(statement, stripped):
             return reason or "quote_not_found"
     body = _CITATION_MARKER.sub(" ", stripped)
     if numbers_supported(body, allowed, header_context=header):
         return "unsupported_numeric"
-    if claims_missing and factual_claim(stripped):
-        return "claims_missing"
-    if not accepted and factual_claim(stripped):
-        return "claims_missing"
+    if not accepted and reasons_for and factual_claim(stripped):
+        return next(iter(reasons_for.values())) or "quote_not_found"
     return None
 
 
