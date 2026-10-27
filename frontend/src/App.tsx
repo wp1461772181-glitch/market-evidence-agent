@@ -12,14 +12,33 @@ import { getChatMode, setChatMode, personalChatLogin, getResearchQueue, putResea
 import { registerWatchlistAdder, setWatchlistSnapshot } from "./watchlist-bridge.mjs";
 import { chatSessionKey } from "./chat-session.mjs";
 import { completePersonalLogin } from "./chat-mode-switch.mjs";
+import { BriefsPage, MemoryPage, MePage, SkillsPage } from "./PersonalPages";
+import { formatDelta } from "./delta.mjs";
+import { applyTheme, saveTheme, storedTheme, type ThemeChoice } from "./theme.mjs";
 
 const DEFAULT_SYMBOL = "AAPL";
 const DEFAULT_SYMBOLS = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"];
 const WATCHLIST_KEY = "market-evidence-agent:watchlist:v1";
 type SupportedSymbol = string;
 type FilingState = { kind: "idle" } | { kind: "loading" } | { kind: "ready"; data: FilingInventory } | { kind: "error"; message: string };
-type WorkspaceSection = "overview" | "forecast" | "evidence" | "materials" | "revisions" | "evaluation" | "replay" | "agent" | "admin";
-type ResearchSection = Exclude<WorkspaceSection, "agent" | "admin">;
+type WorkspaceSection = "overview" | "forecast" | "evidence" | "materials" | "revisions" | "evaluation" | "replay" | "agent" | "admin" | "briefs" | "skills" | "memory" | "me";
+type ResearchSection = Exclude<WorkspaceSection, "agent" | "admin" | "briefs" | "skills" | "memory" | "me">;
+// The personal-agent navigation groups the older sections: 公司 holds 总览 and the 预测 tab (预测, 修订,
+// 到期评估, 历史回放); 资料库 holds 材料库 and 证据.  The older hashes stay the addresses, so links inside
+// the older pages (#materials, #evidence/<id>/…) and the agent's open_page keep working unchanged.
+type NavGroup = "chat" | "briefs" | "company" | "library" | "skills" | "memory" | "settings";
+const FORECAST_TABS = ["forecast", "revisions", "evaluation", "replay"] as const;
+const LIBRARY_TABS = ["materials", "evidence"] as const;
+const HASH_ALIASES: Record<string, WorkspaceSection> = { chat: "agent", company: "overview", library: "materials", settings: "admin" };
+function navGroup(section: WorkspaceSection): NavGroup {
+  if (section === "agent") return "chat";
+  if (section === "admin") return "settings";
+  if (section === "briefs" || section === "skills" || section === "memory") return section;
+  if (section === "me") return "memory";
+  if ((LIBRARY_TABS as readonly string[]).includes(section)) return "library";
+  return "company";
+}
+function isResearchSection(section: WorkspaceSection): section is ResearchSection { const group = navGroup(section); return group === "company" || group === "library"; }
 const WORKSPACE_SECTION_TITLE: Record<ResearchSection, string> = {
   overview: "研究总览", forecast: "预测工作台", evidence: "证据中心", materials: "材料库", revisions: "预测修订", evaluation: "到期评估", replay: "历史回放",
 };
@@ -148,6 +167,10 @@ function WorkspaceApp({onModeChange}:{onModeChange:(mode:"guest"|"personal")=>vo
   const shellProps = { activeSection, navigate, symbol: requestedSymbol, symbols, onSelectStock: openStock, watchInput, setWatchInput, addWatchSymbol, watchError, setWatchError, onModeChange };
   if (activeSection === "agent") return <Shell {...shellProps}><AgentChatPanel onSettings={() => navigate("admin")} onModeChange={onModeChange} /></Shell>;
   if (activeSection === "admin") return <Shell {...shellProps}><AgentAdminPage onBack={() => navigate("agent")} /></Shell>;
+  if (activeSection === "briefs") return <Shell {...shellProps}><BriefsPage onNavigate={navigate} /></Shell>;
+  if (activeSection === "skills") return <Shell {...shellProps}><SkillsPage /></Shell>;
+  if (activeSection === "memory") return <Shell {...shellProps}><MemoryPage onNavigate={navigate} /></Shell>;
+  if (activeSection === "me") return <Shell {...shellProps}><MePage onNavigate={navigate} /></Shell>;
 
   async function startFilingScan() {
     const scanSymbol = requestedSymbol;
@@ -159,14 +182,15 @@ function WorkspaceApp({onModeChange}:{onModeChange:(mode:"guest"|"personal")=>vo
     return result;
   }
 
-  if (activeSection === "materials") return <Shell {...shellProps}><MaterialLibrary key={requestedSymbol} symbol={requestedSymbol} onScan={async () => { const result = await startFilingScan(); setRetryKey((value) => value + 1); return result; }} /></Shell>;
+  if (activeSection === "materials") return <Shell {...shellProps}><SectionTabs section={activeSection} navigate={navigate} /><MaterialLibrary key={requestedSymbol} symbol={requestedSymbol} onScan={async () => { const result = await startFilingScan(); setRetryKey((value) => value + 1); return result; }} /></Shell>;
   if (!symbols.length) return <Shell {...shellProps}><main className="workspace"><section className="empty-watchlist"><h1>{translatePhrase("关注列表为空")}</h1><p>{translatePhrase("添加一只股票，或恢复默认关注股票，继续查看研究总览。")}</p><button className="primary-action" onClick={() => { setSymbols(DEFAULT_SYMBOLS); setRequestedSymbol(DEFAULT_SYMBOL); }}>{translatePhrase("恢复默认股票")}</button></section></main></Shell>;
   if (activeData.kind === "loading" || activeData.symbol !== requestedSymbol) return <Shell {...shellProps}><Loading symbol={requestedSymbol} /></Shell>;
   const supported = isSupportedSymbol(requestedSymbol);
   const revisionsNavigate = activeSection === "revisions" ? "revisions" : "forecast";
   return <Shell {...shellProps}>
     <main className="workspace" aria-labelledby="workspace-title">
-      <WorkspacePageHeader symbol={requestedSymbol} section={activeSection} recordCount={null} supported={supported} />
+      <WorkspacePageHeader symbol={requestedSymbol} section={activeSection as ResearchSection} recordCount={null} supported={supported} />
+      <SectionTabs section={activeSection} navigate={navigate} />
       {activeSection === "overview" && <CurrentOverviewWorkspace symbols={symbols} onRemove={removeWatchSymbol} symbol={requestedSymbol} currentFilings={activeData.filings} priceHistory={activeData.priceHistory} priceError={activeData.priceError} onNavigate={navigate} onOpenStock={openStock} onPricesInitialized={() => setRetryKey(value => value + 1)} />}
       {(activeSection === "forecast" || activeSection === "revisions") && <section className="workspace-stack">
         <V2ForecastWorkspace key={`${requestedSymbol}-${revisionsNavigate}`} mode={revisionsNavigate} symbol={requestedSymbol} filings={activeData.filings.kind === "ready" ? activeData.filings.data : null} priceHistory={activeData.priceHistory} onOpenForecast={() => navigate("forecast")} />
@@ -347,44 +371,59 @@ function Shell({ activeSection, navigate, symbol, symbols, onSelectStock, watchI
     if (itemRect.left < navRect.left) navElement.scrollLeft -= navRect.left - itemRect.left;
     else if (itemRect.right > navRect.right) navElement.scrollLeft += itemRect.right - navRect.right;
   }, [activeSection]);
-  const nav: Array<{ id: WorkspaceSection; label: string; hint: string; icon: string }> = [
-    { id: "overview", label: t("总览"), hint: t("研究队列"), icon: "◌" },
-    { id: "forecast", label: t("预测"), hint: t("版本与价格"), icon: "⌁" },
-    { id: "evidence", label: t("证据"), hint: t("预测引用与事件"), icon: "◇" },
-    { id: "materials", label: t("材料库"), hint: t("AI 分析与原文"), icon: "▤" },
-    { id: "revisions", label: t("预测修订"), hint: t("材料关联"), icon: "↗" },
-    { id: "evaluation", label: t("到期评估"), hint: t("同组样本"), icon: "≋" },
-    { id: "replay", label: t("历史回放"), hint: t("生成已到期样本"), icon: "↺" },
-    { id: "agent", label: t("Agent 对话"), hint: t("研究工具对话"), icon: "✳" },
+  const nav: Array<{ id: WorkspaceSection; group: NavGroup; label: string; hint: string; icon: string }> = [
+    { id: "agent", group: "chat", label: t("对话"), hint: t("首页"), icon: "✳" },
+    { id: "briefs", group: "briefs", label: t("简报"), hint: t("收件箱"), icon: "✉" },
+    { id: "overview", group: "company", label: t("公司"), hint: t("总览与预测"), icon: "◌" },
+    { id: "materials", group: "library", label: t("资料库"), hint: t("证据与材料"), icon: "▤" },
+    { id: "skills", group: "skills", label: t("技能"), hint: t("做事的步骤"), icon: "⌁" },
+    { id: "memory", group: "memory", label: t("记忆"), hint: t("画像和往事"), icon: "◇" },
+    { id: "admin", group: "settings", label: t("设置"), hint: t("模型与账户"), icon: "⚙" },
   ];
+  const mobileTabs: Array<{ id: WorkspaceSection; label: string; icon: string; active: boolean }> = [
+    { id: "agent", label: t("对话"), icon: "✳", active: activeSection === "agent" },
+    { id: "briefs", label: t("简报"), icon: "✉", active: activeSection === "briefs" },
+    { id: "overview", label: t("公司"), icon: "◌", active: navGroup(activeSection) === "company" },
+    { id: "me", label: t("我"), icon: "☺", active: ["me", "memory", "skills", "admin", "materials", "evidence"].includes(activeSection) },
+  ];
+  const research = isResearchSection(activeSection);
+  const [theme, setTheme] = useState<ThemeChoice>(() => storedTheme());
   return <div className={`app-frame${effectivePinned?" is-nav-pinned":""}`}>
     <div className="nav-drawer-region" ref={menuRegion}>
       {isNarrow&&menuOpen&&<div className="nav-scrim" aria-hidden="true" onClick={()=>setMenuOpen(false)}/>}
       <aside id="workspace-navigation" className={`app-rail ${menuOpen||effectivePinned?"is-open":""}`} aria-label={t("主要导航")}>
         <button className="rail-nav-close" type="button" aria-label={t("收起导航")} aria-controls="workspace-navigation" onClick={closeNavDrawer}><span aria-hidden="true">×</span></button>
-      <a className="workspace-brand" href="#overview" onClick={() => navigate("overview")} aria-label={`Market Evidence Agent · ${t("总览")}`}><img className="brand-logo" src={`${import.meta.env.BASE_URL}logo.svg`} width="32" height="32" alt="" /><span>market<br /><em>evidence</em></span></a>
-      <div className="rail-context"><span>{activeSection === "agent" || activeSection === "admin" ? t("工作区") : <Tx text={"当前股票"} />}</span><strong>{activeSection === "agent" || activeSection === "admin" ? t("Agent") : symbol}</strong><small>{<Tx text={"Agent 研究工作台"} />}</small></div>
+      <a className="workspace-brand" href="#agent" onClick={() => navigate("agent")} aria-label={`Market Evidence Agent · ${t("对话")}`}><img className="brand-logo" src={`${import.meta.env.BASE_URL}logo.svg`} width="32" height="32" alt="" /><span>market<br /><em>evidence</em></span></a>
+      <div className="rail-context"><span>{!research ? t("工作区") : <Tx text={"当前股票"} />}</span><strong>{!research ? t("Agent") : symbol}</strong><small>{<Tx text={"Agent 研究工作台"} />}</small></div>
       <nav ref={navRef} className="workspace-nav">
-        {nav.map((item) => <button key={item.id} type="button" className={activeSection === item.id ? "active" : ""} aria-current={activeSection === item.id ? "page" : undefined} onClick={() => drawerNavigate(item.id)}><span aria-hidden="true">{item.icon}</span><span><strong>{item.label}</strong><small>{item.hint}</small></span></button>)}
+        {nav.map((item) => <button key={item.id} type="button" className={navGroup(activeSection) === item.group ? "active" : ""} aria-current={navGroup(activeSection) === item.group ? "page" : undefined} onClick={() => drawerNavigate(item.id)}><span aria-hidden="true">{item.icon}</span><span><strong>{item.label}</strong><small>{item.hint}</small></span></button>)}
       </nav>
-      <div className="rail-bottom"><button className="rail-admin-link" type="button" aria-current={activeSection === "admin" ? "page" : undefined} onClick={() => drawerNavigate(activeSection === "admin" ? "agent" : "admin")}>{activeSection === "admin" ? t("返回 Agent 对话") : t("后台设置")}</button>{activeSection !== "agent" && activeSection !== "admin" && <span><span className="rail-review-dot" aria-hidden="true" />{<Tx text={"判断可回到原始来源查看"} />}</span>}</div>
+      <div className="rail-bottom">{research && <span><span className="rail-review-dot" aria-hidden="true" />{<Tx text={"判断可回到原始来源查看"} />}</span>}</div>
       </aside>
     </div>
     <div className="app-content">
       <header className="topbar">
         <div className="topbar-lead">
           <button ref={triggerRef} className="nav-menu-trigger" type="button" aria-label={t(isNarrow?(menuOpen?"收起导航":"打开导航菜单"):(pinned?"收起导航":"打开导航菜单"))} aria-expanded={isNarrow?menuOpen:menuOpen||effectivePinned} aria-controls="workspace-navigation" onClick={toggleNavDrawer}>☰</button>
-          {activeSection !== "agent" && activeSection !== "admin" && <div className="topbar-path"><span>{<Tx text={"研究工作台"} />}</span><b>/</b><strong>{symbol}</strong></div>}
+          {research && <div className="topbar-path"><span>{<Tx text={"研究工作台"} />}</span><b>/</b><strong>{symbol}</strong></div>}
         </div>
         <div className="toolbar-controls">
-        {activeSection !== "agent" && activeSection !== "admin" && <div className="symbol-form">
+        {research && <div className="symbol-form">
           <label htmlFor="symbol">{<Tx text={"切换股票"} />}</label>
           <select id="symbol" value={symbol} onChange={(event) => onSelectStock(event.target.value as SupportedSymbol)} aria-label={t("切换股票")}>
             {!symbols.includes(symbol) && <option value={symbol}>{symbol} · {t("当前")}</option>}
             {symbols.map((ticker) => <option key={ticker} value={ticker}>{ticker}</option>)}
           </select>
         </div>}
-        {activeSection !== "agent" && activeSection !== "admin" && <form className="watchlist-add" onSubmit={event => { event.preventDefault(); addWatchSymbol(); }}><label className="visually-hidden" htmlFor="watch-add">{t("添加股票")}</label><input id="watch-add" value={watchInput} onChange={event => { setWatchInput(event.target.value); setWatchError(""); }} placeholder={t("添加代码，如 AMD")} maxLength={10} /><button type="submit" aria-label={t("添加股票")}>+</button>{watchError && <span role="alert">{t(watchError)}</span>}</form>}
+        {research && <form className="watchlist-add" onSubmit={event => { event.preventDefault(); addWatchSymbol(); }}><label className="visually-hidden" htmlFor="watch-add">{t("添加股票")}</label><input id="watch-add" value={watchInput} onChange={event => { setWatchInput(event.target.value); setWatchError(""); }} placeholder={t("添加代码，如 AMD")} maxLength={10} /><button type="submit" aria-label={t("添加股票")}>+</button>{watchError && <span role="alert">{t(watchError)}</span>}</form>}
+        <div className="language-form theme-form">
+          <label htmlFor="theme">{t("外观")}</label>
+          <select id="theme" value={theme} onChange={(event) => { const choice = saveTheme(event.target.value as ThemeChoice); setTheme(choice); applyTheme(choice); }} aria-label={t("外观")}>
+            <option value="light">{t("浅色")}</option>
+            <option value="dark">{t("深色")}</option>
+            <option value="system">{t("跟随系统")}</option>
+          </select>
+        </div>
         <div className="language-form">
           <label htmlFor="locale">{t("语言")}</label>
           <select id="locale" value={locale} onChange={(event) => setLocale(event.target.value as "zh-CN" | "en-US")} aria-label={t("语言")}>
@@ -397,6 +436,9 @@ function Shell({ activeSection, navigate, symbol, symbols, onSelectStock, watchI
       {children}
       {ownerDialog&&<div className="owner-auth-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)setOwnerDialog(false)}}><section ref={ownerDialogRef} className="owner-auth-dialog" role="dialog" aria-modal="true" aria-labelledby="owner-auth-title"><button className="owner-auth-close" type="button" aria-label={t("关闭")} onClick={()=>setOwnerDialog(false)}>×</button><p className="eyebrow">{t("站点写入操作")}</p><h2 id="owner-auth-title">{t("请登录个人账户")}</h2><p>{t("登录后可继续进行站点操作。登录完成后，请手动重试刚才未完成的操作。")}</p><label>{t("个人登录密码或口令")}<input ref={ownerInputRef} type="password" value={ownerInput} autoComplete="current-password" onChange={e=>setOwnerInput(e.target.value)}/></label>{ownerError&&<p role="alert">{ownerError}</p>}<div><button className="primary-action" disabled={!ownerInput||ownerBusy} onClick={()=>{setOwnerBusy(true);void personalChatLogin(ownerInput).then(credential=>{completePersonalLogin(credential,setChatMode,onModeChange);setOwnerDialog(false);setOwnerInput("")}).catch(error=>setOwnerError(error instanceof Error?error.message:t("登录暂不可用。"))).finally(()=>setOwnerBusy(false))}}>{ownerBusy?t("正在登录…"):t("登录并授权")}</button><button className="secondary-action" onClick={()=>setOwnerDialog(false)}>{t("稍后")}</button></div></section></div>}
       <footer>{<Tx text={"Market Evidence Agent · 本地研究记录 · 研究判断可追溯到原始来源"} />}</footer>
+      <nav className="mobile-tabbar" aria-label={t("主要导航")}>
+        {mobileTabs.map(tab => <button key={tab.id} type="button" aria-current={tab.active ? "page" : undefined} onClick={() => navigate(tab.id)}><span aria-hidden="true">{tab.icon}</span>{tab.label}</button>)}
+      </nav>
     </div>
   </div>;
 }
@@ -406,13 +448,27 @@ function Loading({ symbol }: { symbol: string }) {
   return <main className="state-card" aria-live="polite" aria-busy="true"><span className="loading-mark" aria-hidden="true" /><p className="kicker">{<Tx text={"研究工作台"} />}</p><h1>{t("正在读取")} {symbol} {t("的研究资料")}</h1><p>{<Tx text={"正在读取本地预测、SEC 目录和行情。"} />}</p></main>;
 }
 
+function SectionTabs({ section, navigate }: { section: WorkspaceSection; navigate: (section: WorkspaceSection) => void }) {
+  const { t } = useLocale();
+  const group = navGroup(section);
+  const forecastTab = (FORECAST_TABS as readonly string[]).includes(section);
+  const labels: Record<string, string> = { overview: "总览", forecast: "预测", revisions: "预测修订", evaluation: "到期评估", replay: "历史回放", materials: "材料库", evidence: "证据" };
+  const tab = (id: WorkspaceSection, active: boolean, label = labels[id]) => <button key={id} type="button" aria-current={active ? "page" : undefined} onClick={() => navigate(id)}>{t(label)}</button>;
+  if (group === "library") return <nav className="section-tabs" aria-label={t("资料库")}>{LIBRARY_TABS.map(id => tab(id, section === id))}</nav>;
+  if (group !== "company") return null;
+  return <>
+    <nav className="section-tabs" aria-label={t("公司")}>{tab("overview", section === "overview")}{tab("forecast", forecastTab)}</nav>
+    {forecastTab && <nav className="section-tabs is-secondary" aria-label={t("预测")}>{FORECAST_TABS.map(id => tab(id, section === id, id === "forecast" ? "预测工作台" : labels[id]))}</nav>}
+  </>;
+}
+
 function isSupportedSymbol(symbol: string): symbol is SupportedSymbol { return isValidSymbol(symbol); }
 function isValidSymbol(symbol: string): boolean { return /^[A-Z]{1,5}(?:[.-][A-Z]{1,2})?$/i.test(symbol.trim()); }
 function sectionFromHash(): WorkspaceSection {
   const value = window.location.hash.replace(/^#/, "").split("/", 1)[0];
-  return (["overview", "forecast", "evidence", "materials", "revisions", "evaluation", "replay", "agent", "admin"] as const).includes(value as WorkspaceSection)
-    ? value as WorkspaceSection
-    : "overview";
+  if ((["overview", "forecast", "evidence", "materials", "revisions", "evaluation", "replay", "agent", "admin", "briefs", "skills", "memory", "me"] as const).includes(value as WorkspaceSection)) return value as WorkspaceSection;
+  // The conversation is the home page.
+  return HASH_ALIASES[value] ?? "agent";
 }
 function actionMessage(error: unknown, fallback: string) {
   if (!(error instanceof ApiError)) return translatePhrase(fallback);
@@ -420,7 +476,7 @@ function actionMessage(error: unknown, fallback: string) {
   return translatePhrase(error.message);
 }
 function formatPrice(value: number) { return new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value); }
-function formatReturn(value: number) { return `${value >= 0 ? "+" : ""}${(value * 100).toFixed(1)}%`; }
+function formatReturn(value: number) { return formatDelta(value, { scale: 100, suffix: "%" }); }
 function formatPercent(value: number) { return `${(value * 100).toFixed(1)}%`; }
 function modelStatusLabel(status: string) {
   if (status === "research_only") return translatePhrase("研究结果（未输出概率）");
@@ -435,7 +491,7 @@ function monitorHealthLabel(status: string) {
   if (status === "degraded") return translatePhrase("监控异常");
   return translatePhrase("尚无记录");
 }
-function signedPoints(value: number) { return `${value >= 0 ? "+" : ""}${(value * 100).toFixed(1)}pp`; }
+function signedPoints(value: number) { return formatDelta(value, { scale: 100, suffix: "pp" }); }
 function probabilityLabel(key: "bearish" | "neutral" | "bullish") { return translatePhrase(({ bearish: "看跌", neutral: "中性", bullish: "看涨" })[key]); }
 function formatDateTime(value: string, locale: "zh-CN" | "en-US" = getLocalePreference()) { return formatLocalizedDateTime(value, locale); }
 function formatUtc(value: string) { return formatDateTime(value); }

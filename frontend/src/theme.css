@@ -1,0 +1,304 @@
+/* Personal-agent visual layer: cool gray with one signal blue.  Loaded after styles.css and chat.css.
+   The older sheets already read their colours from variables; this sheet points those variables at one
+   token set, and dark mode swaps the token set only, so both themes share every variable name.
+   Fonts are named, not downloaded: Noto Sans SC and IBM Plex Mono apply when installed, otherwise the
+   system fonts below take over (no runtime CDN). */
+
+:root {
+  --me-bg: #f4f6f8;
+  --me-surface: #ffffff;
+  --me-surface-2: #eef1f4;
+  --me-ink: #16202a;
+  --me-muted: #5d6977;
+  --me-faint: #8a95a3;
+  --me-line: #dde2e8;
+  --me-line-strong: #c6cdd6;
+  --me-accent: #1f6feb;
+  --me-accent-hover: #1858c4;
+  --me-accent-soft: #e3edfd;
+  --me-up: #17804a;
+  --me-down: #c7372f;
+  --me-warn: #b2611c;
+  --me-rail: #121a23;
+  --me-rail-2: #1b2531;
+  --me-rail-ink: #e6ebf1;
+  --me-font: "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Source Han Sans SC", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --me-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, monospace;
+  color-scheme: light;
+
+  /* The older sheets' names, pointed at the tokens. */
+  --paper: var(--me-bg);
+  --canvas: var(--me-bg);
+  --surface: var(--me-surface);
+  --ink: var(--me-ink);
+  --muted: var(--me-muted);
+  --line: var(--me-line);
+  --edge: var(--me-line);
+  --teal: var(--me-accent);
+  --pale-teal: var(--me-accent-soft);
+  --accent: var(--me-accent);
+  --accent-soft: var(--me-accent-soft);
+  --rust: var(--me-down);
+  --warning: var(--me-warn);
+  --navy: var(--me-rail);
+  --navy-2: var(--me-rail-2);
+  --sans: var(--me-font);
+  --serif: var(--me-font);
+  --mono: var(--me-mono);
+}
+
+:root[data-theme="dark"] {
+  --me-bg: #0e1319;
+  --me-surface: #161d26;
+  --me-surface-2: #1c2530;
+  --me-ink: #e4e9ef;
+  --me-muted: #9ba7b4;
+  --me-faint: #6e7a88;
+  --me-line: #27313d;
+  --me-line-strong: #344150;
+  --me-accent: #4f8fff;
+  --me-accent-hover: #74a7ff;
+  --me-accent-soft: #182a45;
+  --me-up: #3fbf7f;
+  --me-down: #f26a61;
+  --me-warn: #e09550;
+  --me-rail: #0a0e13;
+  --me-rail-2: #121922;
+  color-scheme: dark;
+}
+
+.agent-page {
+  --c-ink: var(--me-ink);
+  --c-muted: var(--me-muted);
+  --c-faint: var(--me-faint);
+  --c-line: var(--me-line);
+  --c-line-strong: var(--me-line-strong);
+  --c-surface: var(--me-surface);
+  --c-tint: var(--me-surface-2);
+  --c-user: var(--me-accent-soft);
+  --c-accent: var(--me-accent);
+  --c-accent-hover: var(--me-accent-hover);
+  --c-warn: var(--me-warn);
+}
+
+body { background: var(--me-bg); color: var(--me-ink); font-family: var(--me-font); }
+.topbar { background: color-mix(in srgb, var(--me-surface) 92%, transparent); }
+.app-rail { background: linear-gradient(165deg, var(--me-rail), var(--me-rail-2) 76%); color: var(--me-rail-ink); }
+
+/* Figures read in a monospaced face with aligned digits. */
+.num, code, kbd, pre, samp,
+.overview-metrics strong, .universe-card dd, .candle-detail strong, .delta {
+  font-family: var(--me-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Up/down: colour plus the arrow and sign written by formatDelta. */
+.delta-up { color: var(--me-up); }
+.delta-down { color: var(--me-down); }
+.delta-flat { color: var(--me-muted); }
+.candle.is-up line { stroke: var(--me-up); }
+.candle.is-up rect, .legend-up { fill: var(--me-up); background: var(--me-up); }
+.candle.is-down line { stroke: var(--me-down); }
+.candle.is-down rect, .legend-down { fill: var(--me-down); background: var(--me-down); }
+
+/* Personal-agent pages: tabs inside 公司 and 资料库, placeholders, the mobile tab bar. */
+.section-tabs { display: flex; gap: 4px; flex-wrap: wrap; margin: 0 clamp(20px,4vw,56px); padding: 12px 0 0; border-bottom: 1px solid var(--me-line); }
+.section-tabs.is-secondary { border-bottom: 0; padding-top: 8px; }
+.section-tabs button { border: 0; background: transparent; color: var(--me-muted); padding: 8px 12px; border-bottom: 2px solid transparent; font-size: 13px; }
+.section-tabs.is-secondary button { border: 1px solid var(--me-line); border-radius: 999px; padding: 4px 12px; font-size: 12px; }
+.section-tabs button[aria-current="page"] { color: var(--me-accent); border-bottom-color: var(--me-accent); font-weight: 600; }
+.section-tabs.is-secondary button[aria-current="page"] { background: var(--me-accent-soft); border-color: var(--me-accent); }
+.personal-page { padding: 28px clamp(20px,4vw,56px) 40px; display: grid; gap: 18px; max-width: 980px; }
+.personal-page h1 { font-size: 26px; font-weight: 600; margin: 0; }
+.personal-card { background: var(--me-surface); border: 1px solid var(--me-line); border-radius: 12px; padding: 18px 20px; }
+.personal-card h2 { font-size: 16px; font-weight: 600; margin: 0 0 6px; }
+.personal-card p { color: var(--me-muted); margin: 0; line-height: 1.6; }
+.personal-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+.personal-badge { display: inline-block; font-size: 11px; color: var(--me-accent); background: var(--me-accent-soft); border-radius: 999px; padding: 2px 8px; margin-bottom: 8px; }
+.personal-links { display: grid; gap: 8px; }
+.personal-links button { text-align: left; background: var(--me-surface); border: 1px solid var(--me-line); border-radius: 10px; padding: 14px 16px; color: var(--me-ink); }
+.personal-links button small { display: block; color: var(--me-muted); margin-top: 2px; }
+.theme-form select { font: inherit; }
+.mobile-tabbar { display: none; }
+@media (max-width: 760px) {
+  .mobile-tabbar { display: grid; grid-template-columns: repeat(4, 1fr); position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
+    background: var(--me-surface); border-top: 1px solid var(--me-line); padding: 6px 4px calc(6px + env(safe-area-inset-bottom)); }
+  .mobile-tabbar button { border: 0; background: transparent; color: var(--me-muted); display: grid; justify-items: center; gap: 2px; font-size: 11px; padding: 4px 0; }
+  .mobile-tabbar button span { font-size: 17px; line-height: 1; }
+  .mobile-tabbar button[aria-current="page"] { color: var(--me-accent); font-weight: 600; }
+  .app-content { padding-bottom: calc(62px + env(safe-area-inset-bottom)); }
+  .nav-menu-trigger { display: none; }
+  .theme-form { display: none; }
+}
+
+/* Dark mode: the older sheets paint some surfaces light directly (generated from every rule whose
+   background is a light colour), so those surfaces are pointed at the dark tokens here. */
+:root[data-theme="dark"] .action-notice.error,
+:root[data-theme="dark"] .action-notice.success,
+:root[data-theme="dark"] .agent-action-button[aria-pressed="true"],
+:root[data-theme="dark"] .agent-clarification-card.is-write,
+:root[data-theme="dark"] .agent-clarification-reply input,
+:root[data-theme="dark"] .agent-connection.is-ready,
+:root[data-theme="dark"] .agent-history-edit input,
+:root[data-theme="dark"] .agent-settings-card,
+:root[data-theme="dark"] .agent-settings-card input,
+:root[data-theme="dark"] .agent-settings-card select,
+:root[data-theme="dark"] .analysis-history button,
+:root[data-theme="dark"] .analysis-history button.is-selected,
+:root[data-theme="dark"] .analysis-history button:hover,
+:root[data-theme="dark"] .analysis-section h3 span,
+:root[data-theme="dark"] .analysis-summary,
+:root[data-theme="dark"] .analysis-version-meta>span,
+:root[data-theme="dark"] .analysis-version-meta>strong,
+:root[data-theme="dark"] .badge-backfilled,
+:root[data-theme="dark"] .badge-new,
+:root[data-theme="dark"] .badge-updated,
+:root[data-theme="dark"] .brief-citation-links button,
+:root[data-theme="dark"] .brief-citation-links button:focus-visible,
+:root[data-theme="dark"] .brief-citation-links button:hover,
+:root[data-theme="dark"] .brief-jev,
+:root[data-theme="dark"] .brief-jev-heading>strong,
+:root[data-theme="dark"] .brief-market>div,
+:root[data-theme="dark"] .brief-material-list article,
+:root[data-theme="dark"] .brief-material-list button,
+:root[data-theme="dark"] .brief-material-list button:focus-visible,
+:root[data-theme="dark"] .brief-material-list button:hover,
+:root[data-theme="dark"] .brief-no-probability,
+:root[data-theme="dark"] .brief-probability,
+:root[data-theme="dark"] .brief-quality,
+:root[data-theme="dark"] .brief-quality-reasons,
+:root[data-theme="dark"] .brief-section,
+:root[data-theme="dark"] .brief-section h3 span,
+:root[data-theme="dark"] .chat-archive-banner,
+:root[data-theme="dark"] .chat-archive-banner select,
+:root[data-theme="dark"] .chat-archive-settings,
+:root[data-theme="dark"] .chat-archive-tools,
+:root[data-theme="dark"] .empty-watchlist,
+:root[data-theme="dark"] .entry-choice,
+:root[data-theme="dark"] .entry-choice input,
+:root[data-theme="dark"] .evidence-card-top>span,
+:root[data-theme="dark"] .evidence-empty-state,
+:root[data-theme="dark"] .evidence-event-group,
+:root[data-theme="dark"] .evidence-event-group-heading span,
+:root[data-theme="dark"] .evidence-event-tag.is-background,
+:root[data-theme="dark"] .evidence-event-tag.is-fact,
+:root[data-theme="dark"] .evidence-event-tag.is-negative,
+:root[data-theme="dark"] .evidence-event-tag.is-positive,
+:root[data-theme="dark"] .evidence-event-tag.is-uncertain,
+:root[data-theme="dark"] .evidence-limitation,
+:root[data-theme="dark"] .evidence-processing,
+:root[data-theme="dark"] .evidence-processing-badge,
+:root[data-theme="dark"] .evidence-processing-badge.is-candidate,
+:root[data-theme="dark"] .evidence-processing-badge.is-included,
+:root[data-theme="dark"] .evidence-processing-badge.is-omitted,
+:root[data-theme="dark"] .evidence-processing-badge.is-unknown,
+:root[data-theme="dark"] .evidence-processing-counts>div,
+:root[data-theme="dark"] .evidence-processing-list article,
+:root[data-theme="dark"] .evidence-version-controls select,
+:root[data-theme="dark"] .flow-node.status-cancelled .flow-dot,
+:root[data-theme="dark"] .flow-node.status-done .flow-dot,
+:root[data-theme="dark"] .flow-node.status-failed .flow-dot,
+:root[data-theme="dark"] .flow-node.status-running .flow-card,
+:root[data-theme="dark"] .flow-node.status-running .flow-dot,
+:root[data-theme="dark"] .flow-node.status-warn .flow-dot,
+:root[data-theme="dark"] .jev-learning-card,
+:root[data-theme="dark"] .jev-learning-card .section-heading>span,
+:root[data-theme="dark"] .jev-learning-metrics article,
+:root[data-theme="dark"] .jev-learning-validation,
+:root[data-theme="dark"] .knowledge-chunk,
+:root[data-theme="dark"] .knowledge-drawer,
+:root[data-theme="dark"] .knowledge-error,
+:root[data-theme="dark"] .knowledge-import-card,
+:root[data-theme="dark"] .knowledge-list,
+:root[data-theme="dark"] .knowledge-retrieval-result,
+:root[data-theme="dark"] .knowledge-status,
+:root[data-theme="dark"] .language-form select,
+:root[data-theme="dark"] .legacy-empty-archive,
+:root[data-theme="dark"] .legacy-forecast-records,
+:root[data-theme="dark"] .markdown-body a.citation-ref,
+:root[data-theme="dark"] .material-citation,
+:root[data-theme="dark"] .material-error,
+:root[data-theme="dark"] .material-filterbar,
+:root[data-theme="dark"] .material-filterbar select,
+:root[data-theme="dark"] .material-job-status,
+:root[data-theme="dark"] .material-list,
+:root[data-theme="dark"] .material-row.is-selected,
+:root[data-theme="dark"] .material-row:hover,
+:root[data-theme="dark"] .material-source-card,
+:root[data-theme="dark"] .material-source-quote,
+:root[data-theme="dark"] .material-source-url,
+:root[data-theme="dark"] .material-start-card,
+:root[data-theme="dark"] .material-status,
+:root[data-theme="dark"] .media-dialog-close,
+:root[data-theme="dark"] .meter,
+:root[data-theme="dark"] .nav-menu-trigger,
+:root[data-theme="dark"] .nav-menu-trigger:hover,
+:root[data-theme="dark"] .owner-auth-dialog,
+:root[data-theme="dark"] .owner-auth-dialog input,
+:root[data-theme="dark"] .personal-login-panel,
+:root[data-theme="dark"] .personal-login-panel input,
+:root[data-theme="dark"] .profile-card,
+:root[data-theme="dark"] .profile-card.is-active,
+:root[data-theme="dark"] .profile-modal,
+:root[data-theme="dark"] .quality-insufficient,
+:root[data-theme="dark"] .quality-limited,
+:root[data-theme="dark"] .rail-nav-close,
+:root[data-theme="dark"] .rail-nav-close:hover,
+:root[data-theme="dark"] .replay-meter,
+:root[data-theme="dark"] .research-brief,
+:root[data-theme="dark"] .review-decisions button.selected.reject,
+:root[data-theme="dark"] .revision-automation-note,
+:root[data-theme="dark"] .secondary-action,
+:root[data-theme="dark"] .status-blocked_data,
+:root[data-theme="dark"] .status-failed,
+:root[data-theme="dark"] .status-queued,
+:root[data-theme="dark"] .status-running,
+:root[data-theme="dark"] .status-succeeded,
+:root[data-theme="dark"] .symbol-form select,
+:root[data-theme="dark"] .tool-badge.status-cancelled,
+:root[data-theme="dark"] .tool-badge.status-complete,
+:root[data-theme="dark"] .tool-badge.status-failed,
+:root[data-theme="dark"] .tool-badge.status-not_found,
+:root[data-theme="dark"] .tool-badge.status-running,
+:root[data-theme="dark"] .topbar,
+:root[data-theme="dark"] .universe-card,
+:root[data-theme="dark"] .universe-card.is-current,
+:root[data-theme="dark"] .v2-card,
+:root[data-theme="dark"] .v2-desk,
+:root[data-theme="dark"] .v2-detail,
+:root[data-theme="dark"] .v2-detail-material-counts,
+:root[data-theme="dark"] .v2-evaluation,
+:root[data-theme="dark"] .v2-hint-text,
+:root[data-theme="dark"] .v2-job-status,
+:root[data-theme="dark"] .v2-job-status.is-blocked_data,
+:root[data-theme="dark"] .v2-job-status.is-failed,
+:root[data-theme="dark"] .v2-monitor-detail,
+:root[data-theme="dark"] .v2-monitor-detail.is-degraded,
+:root[data-theme="dark"] .v2-monitor-detail.is-delayed,
+:root[data-theme="dark"] .v2-monitor-symbols article,
+:root[data-theme="dark"] .v2-monitor-symbols article.is-failed,
+:root[data-theme="dark"] .v2-monitor-symbols article.is-incomplete,
+:root[data-theme="dark"] .v2-notice.error,
+:root[data-theme="dark"] .v2-probabilities span,
+:root[data-theme="dark"] .v2-revision-empty,
+:root[data-theme="dark"] .v2-revision-excluded,
+:root[data-theme="dark"] .v2-revision-form,
+:root[data-theme="dark"] .v2-revision-form select,
+:root[data-theme="dark"] .v2-revision-source-item,
+:root[data-theme="dark"] .v2-revision-source-item.is-selected,
+:root[data-theme="dark"] .v2-revision-sources-list,
+:root[data-theme="dark"] .v2-root-picker select,
+:root[data-theme="dark"] .v2-source-list article,
+:root[data-theme="dark"] .v2-status-grid article,
+:root[data-theme="dark"] .v2-workflow-note,
+:root[data-theme="dark"] .watchlist-add [role=alert],
+:root[data-theme="dark"] .watchlist-add button,
+:root[data-theme="dark"] .watchlist-add input,
+:root[data-theme="dark"] .workspace .filing-row,
+:root[data-theme="dark"] .workspace .revision-note,
+:root[data-theme="dark"] .workspace-intro,
+:root[data-theme="dark"] .workspace-restriction {
+  background: var(--me-surface);
+  color: var(--me-ink);
+}
+:root[data-theme="dark"] input, :root[data-theme="dark"] select, :root[data-theme="dark"] textarea { background: var(--me-surface-2); color: var(--me-ink); border-color: var(--me-line-strong); }

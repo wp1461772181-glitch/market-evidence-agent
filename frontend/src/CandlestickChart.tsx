@@ -1,5 +1,6 @@
 import { Tx, useLocale } from "./i18n";
 import type { PriceCandle, RefreshReport, Snapshot } from "./types";
+import { formatDelta } from "./delta.mjs";
 
 export type TargetWindow = { start: string; end: string };
 
@@ -68,11 +69,11 @@ export function CandlestickChart({ candles, selected, report, target, activeDate
       {futureV3Target && <g className="snapshot-marker revised"><line x1={width - margin.right} x2={width - margin.right} y1={19} y2={287} /><text x={width - margin.right - 6} y={18} textAnchor="end">{t("固定目标")} {targetEndDate}</text></g>}
       {dateTicks.map((index) => <text key={index} x={x(index)} y={height - 10} textAnchor="middle" className="chart-date-label">{shortDate(candles[index]!.trading_date)}</text>)}
     </svg>
-    <figcaption><span><i className="legend-up" />{<Tx text={"收高于开"} />}</span><span><i className="legend-down" />{<Tx text={"收低于开"} />}</span>{target && <span><i className="legend-window" />{<Tx text={"保存的目标窗口"} />}</span>}{targetEndDate && <span>{t("V3 固定目标日")}: {targetEndDate}</span>}</figcaption>
+    <figcaption><span><i className="legend-up" />↑ {<Tx text={"收高于开"} />}</span><span><i className="legend-down" />↓ {<Tx text={"收低于开"} />}</span>{target && <span><i className="legend-window" />{<Tx text={"保存的目标窗口"} />}</span>}{targetEndDate && <span>{t("V3 固定目标日")}: {targetEndDate}</span>}</figcaption>
   </figure>;
 }
 
 function Marker({ x, label, tone }: { x: number; label: string; tone?: "revised" }) { return <g className={`snapshot-marker ${tone ?? ""}`}><line x1={x} x2={x} y1={19} y2={287} /><text x={x + 5} y={18}>{label}</text></g>; }
 function formatPrice(value: number) { return `$${value.toFixed(2)}`; }
-function candleLabel(candle: PriceCandle, t: (text: string) => string) { return `${candle.trading_date}, ${t("开盘")} ${formatPrice(candle.open)}, ${t("最高")} ${formatPrice(candle.high)}, ${t("最低")} ${formatPrice(candle.low)}, ${t("收盘")} ${formatPrice(candle.close)}`; }
+function candleLabel(candle: PriceCandle, t: (text: string) => string) { return `${candle.trading_date}, ${t("开盘")} ${formatPrice(candle.open)}, ${t("最高")} ${formatPrice(candle.high)}, ${t("最低")} ${formatPrice(candle.low)}, ${t("收盘")} ${formatPrice(candle.close)}, ${formatDelta(candle.close - candle.open, { digits: 2 })} (${formatDelta(candle.open ? (candle.close - candle.open) / candle.open : Number.NaN, { scale: 100, suffix: "%" })})`; }
 function shortDate(value: string) { return `${value.slice(5, 7)}/${value.slice(8, 10)}`; }
