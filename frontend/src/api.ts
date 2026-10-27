@@ -82,6 +82,34 @@ export async function putResearchQueue(symbols:string[],signal?:AbortSignal): Pr
   const response = await fetch(url,{method:"PUT",signal,cache:"no-store",headers:{Accept:"application/json","Content-Type":"application/json","X-Chat-Session":chatCredential()},body:JSON.stringify({symbols})});
   if(!response.ok) throw new ApiError("研究队列保存失败。",response.status);
 }
+export type ProfileItem = { id:string; handle:string; kind:"preference"|"about_me"|"instruction"; topic:string|null; text:string; origin:"explicit"|"inferred"; quote:string; status:"active"|"archived"; created_at:string|null; updated_at:string|null; last_used_at:string|null };
+export type RecallItem = { conversation_id:string; title:string; date:string|null; summary:string; kind:"summary"|"questions"; link:string };
+function agentPath(path:string):string { return agentChatUrl("stream", configuredApiBaseUrl).replace(/stream$/, path); }
+function ownerHeaders(json=false):Record<string,string> { return {Accept:"application/json",...(json?{"Content-Type":"application/json"}:{}),"X-Chat-Session":chatCredential()}; }
+/** The owner's profile items, active and archived (memory page).  Owner only: a guest gets 403. */
+export async function listProfileItems(signal?:AbortSignal): Promise<ProfileItem[]> {
+  const response = await fetch(agentPath("profile"),{signal,cache:"no-store",headers:ownerHeaders()});
+  if(!response.ok) throw new ApiError(response.status===403?"登录个人聊天后才能查看记忆。":"画像暂时无法读取。",response.status);
+  const data=await response.json().catch(()=>null) as {items?:unknown}|null;
+  return Array.isArray(data?.items)?data.items as ProfileItem[]:[];
+}
+export async function confirmProfileItem(id:string,signal?:AbortSignal): Promise<ProfileItem> {
+  const response = await fetch(agentPath(`profile/${encodeURIComponent(id)}/confirm`),{method:"POST",signal,cache:"no-store",headers:ownerHeaders()});
+  if(!response.ok) throw new ApiError(response.status===404?"这条已不存在。":"确认失败，请重试。",response.status);
+  return (await response.json() as {item:ProfileItem}).item;
+}
+export async function deleteProfileItem(id:string,signal?:AbortSignal): Promise<void> {
+  const response = await fetch(agentPath(`profile/${encodeURIComponent(id)}`),{method:"DELETE",signal,cache:"no-store",headers:ownerHeaders()});
+  if(!response.ok&&response.status!==404) throw new ApiError("删除失败，请重试。",response.status);
+}
+/** The owner's past conversations: newest first, or the best matches for a query.  Memory, not evidence. */
+export async function listRecall(query="",signal?:AbortSignal): Promise<RecallItem[]> {
+  const params=new URLSearchParams(query.trim()?{q:query.trim()}:{limit:"20"});
+  const response = await fetch(agentPath(`recall?${params.toString()}`),{signal,cache:"no-store",headers:ownerHeaders()});
+  if(!response.ok) throw new ApiError(response.status===403?"登录个人聊天后才能查看记忆。":"往事暂时无法读取。",response.status);
+  const data=await response.json().catch(()=>null) as {items?:unknown}|null;
+  return Array.isArray(data?.items)?data.items as RecallItem[]:[];
+}
 export async function listAgentConversations(offset=0,signal?:AbortSignal): Promise<{conversations:ConversationSummary[];hasMore:boolean}> {
   const url = agentChatUrl("stream", configuredApiBaseUrl).replace(/stream$/, `conversations?limit=30&offset=${offset}`);
   const response = await fetch(url,{signal,cache:"no-store",headers:{Accept:"application/json","X-Chat-Session":chatCredential()}});

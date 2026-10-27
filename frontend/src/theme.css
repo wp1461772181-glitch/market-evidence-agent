@@ -119,6 +119,18 @@ body { background: var(--me-bg); color: var(--me-ink); font-family: var(--me-fon
 .personal-links button { text-align: left; background: var(--me-surface); border: 1px solid var(--me-line); border-radius: 10px; padding: 14px 16px; color: var(--me-ink); }
 .personal-links button small { display: block; color: var(--me-muted); margin-top: 2px; }
 .theme-form select { font: inherit; }
+.memory-tabs { margin: 0; }
+.memory-panel { display: grid; gap: 12px; }
+.memory-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.memory-list li { border-top: 1px solid var(--me-line); padding-top: 10px; display: grid; gap: 6px; }
+.memory-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
+.memory-line .personal-badge { margin-bottom: 0; }
+.personal-badge.origin-inferred { color: var(--me-muted); background: transparent; border: 1px dashed var(--me-line); }
+.memory-quote { margin: 0; padding-left: 10px; border-left: 2px solid var(--me-line); color: var(--me-muted); font-size: 13px; }
+.memory-actions { display: flex; gap: 8px; }
+.memory-search { display: flex; gap: 8px; }
+.memory-search input { flex: 1; font: inherit; padding: 6px 10px; border: 1px solid var(--me-line); border-radius: 8px; background: var(--me-surface); color: var(--me-ink); }
+.memory-archived summary { cursor: pointer; color: var(--me-muted); font-size: 13px; }
 .mobile-tabbar { display: none; }
 @media (max-width: 760px) {
   .mobile-tabbar { display: grid; grid-template-columns: repeat(4, 1fr); position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;

@@ -1,7 +1,11 @@
+import { useCallback, useEffect, useState } from "react";
+import { useOpenConversation } from "./AgentChatPanel";
+import { confirmProfileItem, deleteProfileItem, getChatMode, listProfileItems, listRecall, type ProfileItem, type RecallItem } from "./api";
 import { useLocale } from "./i18n";
+import { originLabel, profileGroups, recallKindLabel } from "./memory-items.mjs";
 
-// Pages of the personal agent that later phases fill in.  Phase 1 gives them a place in the navigation
-// and says plainly what will appear there; nothing here calls an API yet.
+// Pages of the personal agent.  Briefs and skills are placeholders until their phases; the memory page
+// lists the owner's profile items and past conversations through the owner-only /agent-chat API.
 
 type Go = (section: "agent" | "briefs" | "skills" | "memory" | "admin" | "materials") => void;
 
@@ -43,21 +47,82 @@ export function SkillsPage() {
   </main>;
 }
 
+const KIND_LABELS: Record<ProfileItem["kind"], string> = { preference: "偏好", about_me: "关于我", instruction: "长期指令" };
+
 export function MemoryPage({ onNavigate }: { onNavigate: Go }) {
   const { t } = useLocale();
+  const [tab, setTab] = useState<"profile" | "recall">("profile");
+  const personal = getChatMode() === "personal";
   return <main className="personal-page" aria-labelledby="memory-title">
     <h1 id="memory-title">{t("记忆")}</h1>
-    <section className="personal-card">
-      <h2>{t("画像")}</h2>
-      <p>{t("对 Agent 说「记住……」「以后都……」，确认后它会在之后的每次对话里按你的偏好回答；说「忘掉……」即可撤回。Agent 也会从你自己说的话里推断偏好，标为“推断”，你可以在这里确认或删除。画像只是偏好，不是证据，也不授权任何操作。")}</p>
-    </section>
-    <section className="personal-card">
-      <span className="personal-badge">{t("即将推出")}</span>
-      <h2>{t("往事")}</h2>
-      <p>{t("以后你说「上次我们聊过……」时，Agent 能找到是哪一次对话、聊了什么。往事只是线索，回答里的数字仍要重新取证。")}</p>
-    </section>
+    <nav className="section-tabs memory-tabs" aria-label={t("记忆")}>
+      <button type="button" aria-current={tab === "profile" ? "page" : undefined} onClick={() => setTab("profile")}>{t("画像")}</button>
+      <button type="button" aria-current={tab === "recall" ? "page" : undefined} onClick={() => setTab("recall")}>{t("往事")}</button>
+    </nav>
+    {!personal ? <section className="personal-card"><p>{t("登录个人聊天后才能查看记忆。")}</p></section>
+      : tab === "profile" ? <ProfilePanel /> : <RecallPanel onNavigate={onNavigate} />}
     <div><button className="secondary-action" type="button" onClick={() => onNavigate("agent")}>{t("去对话")}</button></div>
   </main>;
+}
+
+function ProfilePanel() {
+  const { t } = useLocale();
+  const [items, setItems] = useState<ProfileItem[] | null>(null), [error, setError] = useState(""), [busy, setBusy] = useState<string | null>(null);
+  const load = useCallback((signal?: AbortSignal) => listProfileItems(signal).then(setItems).catch(e => { if (!signal?.aborted) setError(e instanceof Error ? e.message : "画像暂时无法读取。"); }), []);
+  useEffect(() => { const controller = new AbortController(); void load(controller.signal); return () => controller.abort(); }, [load]);
+  async function act(id: string, action: "confirm" | "delete") {
+    if (action === "delete" && !window.confirm(t("删除这条后，之后的对话不再按它回答。确定删除？"))) return;
+    setBusy(id); setError("");
+    try { if (action === "confirm") await confirmProfileItem(id); else await deleteProfileItem(id); await load(); }
+    catch (e) { setError(e instanceof Error ? e.message : "操作失败，请重试。"); }
+    finally { setBusy(null); }
+  }
+  const groups = profileGroups(items ?? []);
+  return <section className="personal-card memory-panel">
+    <p>{t("对 Agent 说「记住……」「以后都……」，确认后它会在之后的每次对话里按你的偏好回答；说「忘掉……」即可撤回。Agent 也会从你自己说的话里推断偏好，标为“推断”，你可以在这里确认或删除。画像只是偏好，不是证据，也不授权任何操作。")}</p>
+    {error && <p role="alert">{t(error)}</p>}
+    {items === null && !error ? <p>{t("正在加载…")}</p> : groups.active.length === 0 ? <p>{t("还没有画像条目。")}</p> :
+      <ul className="memory-list">{groups.active.map(item => <li key={item.id}>
+        <div className="memory-line"><span className="personal-badge">{t(KIND_LABELS[item.kind] ?? item.kind)}</span>
+          <span className={`personal-badge origin-${item.origin}`}>{t(originLabel(item.origin))}</span>
+          <strong>{item.text}</strong></div>
+        <blockquote className="memory-quote">“{item.quote}”</blockquote>
+        <div className="memory-actions">
+          {item.origin === "inferred" && <button type="button" className="secondary-action" disabled={busy === item.id} onClick={() => void act(item.id, "confirm")}>{t("确认")}</button>}
+          <button type="button" className="secondary-action" disabled={busy === item.id} onClick={() => void act(item.id, "delete")}>{t("删除")}</button>
+        </div>
+      </li>)}</ul>}
+    {groups.archived.length > 0 && <details className="memory-archived"><summary>{t("已归档")} · {groups.archived.length}</summary>
+      <ul className="memory-list">{groups.archived.map(item => <li key={item.id}><div className="memory-line"><span className="personal-badge">{t(KIND_LABELS[item.kind] ?? item.kind)}</span><span>{item.text}</span></div>
+        <div className="memory-actions"><button type="button" className="secondary-action" disabled={busy === item.id} onClick={() => void act(item.id, "delete")}>{t("删除")}</button></div></li>)}</ul>
+    </details>}
+  </section>;
+}
+
+function RecallPanel({ onNavigate }: { onNavigate: Go }) {
+  const { t } = useLocale();
+  const openConversation = useOpenConversation();
+  const [query, setQuery] = useState(""), [submitted, setSubmitted] = useState(""), [items, setItems] = useState<RecallItem[] | null>(null), [error, setError] = useState("");
+  useEffect(() => {
+    const controller = new AbortController(); setItems(null); setError("");
+    listRecall(submitted, controller.signal).then(setItems).catch(e => { if (!controller.signal.aborted) setError(e instanceof Error ? e.message : "往事暂时无法读取。"); });
+    return () => controller.abort();
+  }, [submitted]);
+  async function open(item: RecallItem) { await openConversation(item.conversation_id); onNavigate("agent"); }
+  return <section className="personal-card memory-panel">
+    <p>{t("说「上次我们聊过……」时，Agent 会在这里找是哪一次对话、聊了什么。往事只是线索，不是证据：回答里的数字仍要重新取证。")}</p>
+    <form className="memory-search" onSubmit={e => { e.preventDefault(); setSubmitted(query); }}>
+      <input type="search" value={query} maxLength={200} placeholder={t("搜索往事，例如 英伟达")} aria-label={t("搜索往事")} onChange={e => setQuery(e.target.value)} />
+      <button type="submit" className="secondary-action">{t("搜索")}</button>
+    </form>
+    {error && <p role="alert">{t(error)}</p>}
+    {items === null && !error ? <p>{t("正在加载…")}</p> : items && items.length === 0 ? <p>{t(submitted ? "没有找到相关的往事。" : "还没有往事。聊过几次之后，这里会列出最近的对话摘要。")}</p> :
+      <ul className="memory-list">{(items ?? []).map(item => <li key={item.conversation_id}>
+        <div className="memory-line"><span className="personal-badge">{t(recallKindLabel(item.kind))}</span><strong>{item.title}</strong>{item.date && <span className="num fine-print">{item.date}</span>}</div>
+        <p>{item.summary}</p>
+        <div className="memory-actions"><button type="button" className="secondary-action" onClick={() => void open(item)}>{t("打开对话")}</button></div>
+      </li>)}</ul>}
+  </section>;
 }
 
 export function MePage({ onNavigate }: { onNavigate: Go }) {

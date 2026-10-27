@@ -1,4 +1,4 @@
-import { AgentAdminPage, AgentChatPanel, AgentChatProviderRoot } from "./AgentChatPanel";
+import { AgentAdminPage, AgentChatPanel, AgentChatProviderRoot, useOpenConversation } from "./AgentChatPanel";
 import { Tx, formatDateTime as formatLocalizedDateTime, getLocalePreference, translatePhrase, useLocale } from "./i18n";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ApiError, getFilingInventory, getJevLearningStatus, getMaterialLibrary, getV2Evaluations, getV2ForecastRoots, getV2MonitorStatus, getV2Prices, getV2Workspace, initializeMarketData, scanOfficialFilings } from "./api";
@@ -14,6 +14,7 @@ import { chatSessionKey } from "./chat-session.mjs";
 import { completePersonalLogin } from "./chat-mode-switch.mjs";
 import { BriefsPage, MemoryPage, MePage, SkillsPage } from "./PersonalPages";
 import { formatDelta } from "./delta.mjs";
+import { conversationFromHash } from "./memory-items.mjs";
 import { applyTheme, saveTheme, storedTheme, type ThemeChoice } from "./theme.mjs";
 
 const DEFAULT_SYMBOL = "AAPL";
@@ -126,6 +127,19 @@ function WorkspaceApp({onModeChange}:{onModeChange:(mode:"guest"|"personal")=>vo
     const onHashChange = () => setActiveSection(sectionFromHash());
     window.addEventListener("hashchange", onHashChange);
     return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
+  // A past-conversation link (#agent/<id>, from recall_conversations) opens that conversation.
+  const openConversation = useOpenConversation(), openRef = useRef(openConversation); openRef.current = openConversation;
+  useEffect(() => {
+    const follow = () => {
+      const id = conversationFromHash(window.location.hash);
+      if (!id) return;
+      window.history.replaceState(null, "", "#agent"); setActiveSection("agent");
+      void openRef.current(id).catch(() => { /* the panel reports a conversation it cannot restore */ });
+    };
+    follow();
+    window.addEventListener("hashchange", follow);
+    return () => window.removeEventListener("hashchange", follow);
   }, []);
 
   function navigate(section: WorkspaceSection) {

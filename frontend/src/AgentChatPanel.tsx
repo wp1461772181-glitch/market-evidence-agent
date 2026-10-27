@@ -270,6 +270,8 @@ export function AgentChatProviderRoot({ children }: { children: ReactNode }) {
 function readLocalConversationId(){try{const key=`market-evidence-agent:local-chat-id:${getChatMode()}:v1`,existing=window.localStorage.getItem(key);if(existing&&/^[\w-]{1,80}$/.test(existing))return existing;const id=crypto.randomUUID();window.localStorage.setItem(key,id);return id;}catch{return crypto.randomUUID();}}
 function archiveMessages(messages:AgentChatMessage[]){return messages.filter(m=>m.role==="user"||m.role==="assistant").map(m=>({role:m.role as "user"|"assistant",content:m.content,...(m.status?{status:m.status as "failed"|"cancelled"}:{}),...(m.role==="assistant"&&m.citations?{citations:m.citations}:{}),...(m.role==="assistant"&&m.tool_trace?{tool_trace:m.tool_trace.map(x=>({call_id:x.call_id,name:x.name,arguments:x.arguments,result:x.result,status:x.status as "running"|"complete"|"not_found"|"failed"|"cancelled"}))}:{})}));}
 function useChat() { const value = useContext(Context); if (!value) throw new Error("Agent chat provider is missing"); return value; }
+/** Open one of the caller's stored conversations (memory page, #agent/<id> links). */
+export function useOpenConversation() { return useChat().openConversation; }
 
 export function AgentChatPanel({ onSettings,onModeChange }: { onSettings: () => void; onModeChange:(mode:"guest"|"personal")=>void }) {
   const { t } = useLocale(), c = useChat(), transcriptRef = useRef<HTMLElement>(null);
