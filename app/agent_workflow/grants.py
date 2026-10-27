@@ -15,3 +15,10 @@ def suggestion_operation(name,arguments):
         operation['arguments']['url']=canonical_url(args['url'])
         operation['grant_only']=True
     return operation
+
+
+def label_suggestion_card(card,operation):
+    """The approve button of a suggestion card says what approving does (the same words in chat and inbox)."""
+    name=operation.get('name')
+    card['choices'][0]['label']='授权发现目标，查看确认卡' if name in {'fetch_sec','refresh_sec'} else ('批准建议，查看正文确认卡' if operation.get('grant_only') else '批准并执行')
+    return card

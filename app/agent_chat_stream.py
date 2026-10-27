@@ -3,6 +3,7 @@ import asyncio, hashlib, json, uuid, time
 from urllib.parse import urlsplit
 from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
+from typing import Literal
 from starlette.background import BackgroundTask
 from pydantic import model_validator, BaseModel, Field, SecretStr, field_validator
 from .agent_chat_provider import ProviderFailure
@@ -649,3 +650,134 @@ async def get_recall_endpoint(q: str | None = None, limit: int = 20, x_chat_sess
     else:
         items = await asyncio.to_thread(recall.recent, owner_hash(credential), max(1, min(50, limit)))
     return {"items": items, "label": recall.LABEL}
+
+
+# --- scheduled tasks, inbox, background model (personal agent plan §2.3); owner only ----------------
+
+class TaskBody(BaseModel):
+    name: str | None = Field(default=None, max_length=80)
+    kind: Literal["brief", "alerts"] | None = None
+    schedule_kind: Literal["daily", "weekdays", "hourly"] | None = None
+    schedule_time: str | None = Field(default=None, max_length=5)
+    timezone: str | None = Field(default=None, max_length=64)
+    instruction: str | None = Field(default=None, max_length=2000)
+    scope: Literal["research_queue", "symbols"] | None = None
+    symbols: list[str] | None = Field(default=None, max_length=30)
+    channel: Literal["inbox", "telegram"] | None = None
+    config: dict | None = None
+    enabled: bool | None = None
+    run_token_cap: int | None = None
+    daily_token_cap: int | None = None
+
+
+class InboxStatusBody(BaseModel):
+    status: Literal["unread", "read", "done", "dismissed"]
+
+
+class BackgroundModelBody(BaseModel):
+    provider: str = Field(pattern="^(deepseek|kimi|minimax|qwen|zhipu|doubao|hunyuan|baidu|siliconflow|openrouter|custom)$")
+    model: str = Field(min_length=1, max_length=160, pattern=r"^[A-Za-z0-9._:/-]+$")
+    base_url: str | None = Field(default=None, max_length=2048)
+    # Optional on update: leaving it out keeps the saved key when provider, model and endpoint stay the same.
+    api_key: SecretStr | None = None
+
+
+def _task_error(exc) -> HTTPException:
+    return HTTPException(422, str(exc))
+
+
+@router.get("/tasks")
+async def list_tasks_endpoint(x_chat_session: str | None = Header(default=None)):
+    from .agent_tasks import STATUS_LABELS, list_tasks
+    credential = _owner_only(x_chat_session)
+    return {"tasks": await asyncio.to_thread(list_tasks, owner_hash(credential)), "status_labels": STATUS_LABELS}
+
+
+@router.post("/tasks")
+async def create_task_endpoint(body: TaskBody, x_chat_session: str | None = Header(default=None)):
+    from .agent_tasks import TaskError, create_task
+    credential = _owner_only(x_chat_session)
+    try:
+        return {"task": await asyncio.to_thread(create_task, owner_hash(credential), body.model_dump(exclude_none=True))}
+    except TaskError as exc:
+        raise _task_error(exc)
+
+
+@router.patch("/tasks/{task_id}")
+async def update_task_endpoint(task_id: str, body: TaskBody, x_chat_session: str | None = Header(default=None)):
+    from .agent_tasks import TaskError, update_task
+    credential = _owner_only(x_chat_session)
+    try:
+        task = await asyncio.to_thread(update_task, owner_hash(credential), task_id, body.model_dump(exclude_none=True))
+    except TaskError as exc:
+        raise _task_error(exc)
+    if task is None:
+        raise HTTPException(404, "task_not_found")
+    return {"task": task}
+
+
+@router.delete("/tasks/{task_id}")
+async def delete_task_endpoint(task_id: str, x_chat_session: str | None = Header(default=None)):
+    from .agent_tasks import delete_task
+    credential = _owner_only(x_chat_session)
+    if not await asyncio.to_thread(delete_task, owner_hash(credential), task_id):
+        raise HTTPException(404, "task_not_found")
+    return {"deleted": True}
+
+
+@router.get("/inbox")
+async def list_inbox_endpoint(section: Literal["brief", "confirm"] | None = None, limit: int = 50,
+                              x_chat_session: str | None = Header(default=None)):
+    """简报 (briefs and alerts, each with numbered sources) and 待你确认 (writes an unattended run suggested)."""
+    from .agent_tasks import list_inbox
+    credential = _owner_only(x_chat_session)
+    return {"items": await asyncio.to_thread(list_inbox, owner_hash(credential), section=section, limit=limit)}
+
+
+@router.post("/inbox/{item_id}/status")
+async def inbox_status_endpoint(item_id: str, body: InboxStatusBody, x_chat_session: str | None = Header(default=None)):
+    from .agent_tasks import set_item_status
+    credential = _owner_only(x_chat_session)
+    item = await asyncio.to_thread(set_item_status, owner_hash(credential), item_id, body.status)
+    if item is None:
+        raise HTTPException(404, "inbox_item_not_found")
+    return {"item": item}
+
+
+@router.post("/inbox/{item_id}/card")
+async def inbox_card_endpoint(item_id: str, x_chat_session: str | None = Header(default=None)):
+    """Mint the confirmation card of a 待你确认 suggestion in its conversation; the owner presses it there."""
+    from .agent_tasks import TaskError, mint_card
+    credential = _owner_only(x_chat_session)
+    try:
+        return await mint_card(credential, item_id)
+    except TaskError as exc:
+        raise HTTPException(404 if str(exc) == "inbox_item_not_found" else 422, str(exc))
+
+
+@router.get("/background-model")
+async def get_background_model_endpoint(x_chat_session: str | None = Header(default=None)):
+    """Provider, model and whether a key is saved.  The key itself is never returned."""
+    from .agent_tasks import background_summary
+    credential = _owner_only(x_chat_session)
+    return await asyncio.to_thread(background_summary, owner_hash(credential))
+
+
+@router.put("/background-model")
+async def put_background_model_endpoint(body: BackgroundModelBody, x_chat_session: str | None = Header(default=None)):
+    from .agent_tasks import TaskError, save_background_model
+    credential = _owner_only(x_chat_session)
+    try:
+        return await asyncio.to_thread(save_background_model, owner_hash(credential), provider=body.provider,
+                                       model=body.model, base_url=body.base_url,
+                                       api_key=body.api_key.get_secret_value() if body.api_key else None)
+    except TaskError as exc:
+        raise _task_error(exc)
+
+
+@router.delete("/background-model/key")
+async def revoke_background_key_endpoint(x_chat_session: str | None = Header(default=None)):
+    """Erase the saved key; tasks then show 未运行：缺少模型 until a new one is saved."""
+    from .agent_tasks import revoke_background_key
+    credential = _owner_only(x_chat_session)
+    return await asyncio.to_thread(revoke_background_key, owner_hash(credential))

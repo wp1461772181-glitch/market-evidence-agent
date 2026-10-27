@@ -43,6 +43,11 @@ class AgentRuntimeContext:
     history_citation_catalogue: tuple[dict, ...] = ()
     # The owner's profile message (agent_profile.render_block): a hint, never evidence or write authority.
     profile_block: str | None = field(default=None, repr=False, compare=False)
+    # A scheduled task (agent_task_runner) with nobody watching: no write is ever granted, and a write the
+    # model asks for with request_action goes to ``action_sink`` (the inbox's 待你确认), never to a card here.
+    unattended: bool = False
+    token_budget: int | None = None
+    action_sink: list | None = field(default=None, repr=False, compare=False)
 
 
 def checkpoint_thread_id(owner_hash: str, conversation_id: str) -> str:

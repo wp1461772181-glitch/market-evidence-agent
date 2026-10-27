@@ -64,7 +64,8 @@ async def stream_workflow(*, question: str, messages: list[dict], provider: str,
                           legacy_source_choices: list[dict] | None = None,
                           classifier: object | None = None, watchlist: list[str] | None = None,
                           history_citation_catalogue: list[dict] | None = None,
-                          profile_block: str | None = None):
+                          profile_block: str | None = None, unattended: bool = False,
+                          token_budget: int | None = None, action_sink: list | None = None):
     # These former routing hints/results stay accepted so older callers do not fail;
     # none may influence the direct route or tool scope.
     from .checkpoints import open_postgres_checkpointer
@@ -72,7 +73,7 @@ async def stream_workflow(*, question: str, messages: list[dict], provider: str,
     context = AgentRuntimeContext(provider=provider, model=model, api_key=api_key, base_url=base_url,
         owner_hash=owner_hash, conversation_id=conversation_id, identity_credential=identity_credential,
         classifier=classifier, history_citation_catalogue=tuple(history_citation_catalogue or ()),
-        profile_block=profile_block)
+        profile_block=profile_block, unattended=unattended, token_budget=token_budget, action_sink=action_sink)
     thread = checkpoint_thread_id(owner_hash, conversation_id)
     async with open_postgres_checkpointer(checkpoint_database_url()) as saver:
         graph = build_workflow(saver)
@@ -92,6 +93,17 @@ async def mark_terminal_status(owner_hash: str, conversation_id: str, status: st
         config = {"configurable": {"thread_id": checkpoint_thread_id(owner_hash, conversation_id)}}
         try: await graph.aupdate_state(config, {"terminal_status": status, "answer": partial_answer[:4000]})
         except Exception: pass
+
+
+async def set_pending_request(owner_hash: str, conversation_id: str, card: dict) -> None:
+    """Make ``card`` the conversation's pending request, as if its last turn had proposed it: the next
+    press of its button is checked against it exactly like any other card (agent_tasks.mint_card)."""
+    from .checkpoints import open_postgres_checkpointer
+    from .settings import checkpoint_database_url
+    async with open_postgres_checkpointer(checkpoint_database_url()) as saver:
+        graph = build_workflow(saver)
+        config = {"configurable": {"thread_id": checkpoint_thread_id(owner_hash, conversation_id)}}
+        await graph.aupdate_state(config, {"pending_request": card})
 
 
 async def run_workflow(**kwargs) -> dict:

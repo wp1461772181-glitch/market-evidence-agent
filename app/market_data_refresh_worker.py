@@ -84,6 +84,11 @@ def refresh_once(*, now: datetime | None = None) -> dict[str, object]:
             # persistent launchd log limited to a stable exception class.
             results[symbol] = {"status": "failed", "error_type": type(exc).__name__}
 
+    if any(row["status"] == "updated" for row in results.values()):
+        # The owner's price lines are checked against the new closes (never raises).
+        from .agent_task_runner import run_alert_hooks
+        run_alert_hooks("prices", now=instant)
+
     return {
         "checked_at": instant.isoformat(),
         "latest_completed_session": latest_session.isoformat(),

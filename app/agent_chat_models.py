@@ -1,6 +1,6 @@
 import uuid
-from datetime import datetime
-from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint, Uuid, func
+from datetime import date, datetime
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint, Uuid, func
 from sqlalchemy.orm import Mapped, mapped_column
 from .database import Base
 
@@ -106,4 +106,69 @@ class AgentConversationRecall(Base):
     title: Mapped[str] = mapped_column(String(120), nullable=False, default="")
     text: Mapped[str] = mapped_column(Text, nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class AgentTask(Base):
+    """A scheduled job of the owner (agent_tasks).  ``kind`` brief: the agent answers ``instruction``
+    unattended (read tools only) and the answer goes to the inbox; kind alerts: no model, the runner checks
+    new filings, news leads and price lines (``config``) for the scope.  Schedule math is in agent_tasks."""
+    __tablename__ = "agent_tasks"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    owner_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(80), nullable=False)
+    kind: Mapped[str] = mapped_column(String(12), nullable=False, default="brief")
+    schedule_kind: Mapped[str] = mapped_column(String(12), nullable=False)      # daily | weekdays | hourly
+    schedule_time: Mapped[str] = mapped_column(String(5), nullable=False)       # HH:MM (hourly: only MM counts)
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False)
+    instruction: Mapped[str | None] = mapped_column(Text, nullable=True)
+    skill_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)     # Phase 5
+    scope: Mapped[str] = mapped_column(String(16), nullable=False, default="research_queue")  # research_queue | symbols
+    symbols: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    channel: Mapped[str] = mapped_column(String(12), nullable=False, default="inbox")         # inbox | telegram
+    config: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    run_token_cap: Mapped[int] = mapped_column(Integer, nullable=False)
+    daily_token_cap: Mapped[int] = mapped_column(Integer, nullable=False)
+    usage_day: Mapped[date | None] = mapped_column(Date, nullable=True)
+    usage_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    last_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    last_conversation_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class AgentInboxItem(Base):
+    """One entry of the owner's inbox.  Section brief (简报): a task's answer or an alert, each with its
+    numbered ``sources``; section confirm (待你确认): a write an unattended run suggested.  A suggestion holds
+    the validated operation and no capability: the owner mints the card from the inbox and presses it."""
+    __tablename__ = "agent_inbox_items"
+    __table_args__ = (UniqueConstraint("owner_hash", "dedupe_key", name="uq_agent_inbox_dedupe"),)
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    owner_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    section: Mapped[str] = mapped_column(String(10), nullable=False)              # brief | confirm
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)                 # task_brief | filing | news | price | action
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    sources: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    task_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True, index=True)
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    dedupe_key: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    status: Mapped[str] = mapped_column(String(12), nullable=False, default="unread")  # unread | read | done | dismissed
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+
+
+class AgentBackgroundModel(Base):
+    """The model the owner's scheduled tasks use.  A chat key lives only in one request's memory, so
+    tasks need their own: encrypted with secret_box, never returned, revocable (``ciphertext`` NULL)."""
+    __tablename__ = "agent_background_model"
+    owner_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    model: Mapped[str] = mapped_column(String(160), nullable=False)
+    base_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)

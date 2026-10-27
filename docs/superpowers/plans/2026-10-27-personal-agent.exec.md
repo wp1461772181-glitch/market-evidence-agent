@@ -124,6 +124,24 @@ Claim gates (`CLAIM_QUOTE_GATE`, `CLAIM_JEV_SUPPORT`) are not touched; their tes
 - Alerts: hook SEC monitor results, `news_discovery`, price thresholds after market refresh.
 - Tests: schedule math incl. catch-up, unattended write → inbox card not executed, revoked key → "未运行：缺少模型".
 
+As built (resolutions):
+- **Inbox cards carry no capability.** A consent card lives 10 minutes, so an unattended run stores only the
+  validated operation (`grants.suggestion_operation`) in a 待你确认 item. `POST /agent-chat/inbox/{id}/card` mints
+  the card when the owner is there: `consent.propose`, then `graph.set_pending_request` makes it the run
+  conversation's pending request, and a stored turn ("从收件箱查看建议：…" + card) shows it. Pressing it is an ordinary card press.
+- **Unattended = `AgentRuntimeContext.unattended`.** `Turn.write_allowed` is always False, classify grants nothing,
+  `propose` refuses, `ask_user` is refused, the tool loop gets `UNATTENDED_NOTE`, and `request_action` appends to
+  `action_sink` instead of minting. A direct write call is refused, not converted.
+- **Alerts are a task kind** (`kind='alerts'`, no model) with `config` = filings / news / price lines, so price lines
+  need no fourth table. The SEC monitor CLI (v2) and the market refresh call `run_alert_hooks` after they run; the
+  same checks run on the task's own schedule; `dedupe_key` keeps each alert single.
+- **Runner** runs in-process (`agent_task_runner.run_unattended_turn` stores an ordinary owner conversation) as
+  the configured owner credential (`data/personal-chat-login.json`); tasks of any other owner hash are skipped.
+- **Caps**: the per-run cap is the turn's soft token stop (min with the 150k default); no model call starts past
+  1.5× of it; the run budget is min(run cap, what is left today). Retry: once, only for provider/stall reasons,
+  only when the failed run queued no suggestion and returned no citations; the retry is unattended again (reads only).
+- Telegram channel is stored now and delivered in Phase 4; until then such briefs say so and stay in the inbox.
+
 ## Phase 4 — Telegram
 - `scripts/run_telegram_bridge.py` long-poll process + launchd installer; bound chat id stored server-side;
   fixed "手机" conversation; cards → inline buttons carrying a short id (token stays server-side).

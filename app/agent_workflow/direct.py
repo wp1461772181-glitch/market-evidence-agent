@@ -28,6 +28,11 @@ MAX_INVALID_CALLS=6
 # A person waiting on an answer: past this the loop answers from the evidence it already holds.
 SOFT_TURN_SECONDS=90
 SOFT_TURN_TOKENS=150_000
+# A scheduled task stops gathering at its per-run cap; past this multiple of it no model call starts at all.
+TASK_HARD_CAP_FACTOR=1.5
+UNATTENDED_NOTE=('当前是所有者设定的定时任务，无人值守：只能用读取工具，本轮没有任何可直接执行或提出确认卡的写操作。'
+    '确有必要的写操作（抓取、导入、分析等）用 request_action 建议一次，它会放进收件箱「待你确认」，由所有者以后决定，本轮不会执行。'
+    '没有人能回答追问：不要用 ask_user，按任务说明尽力完成，缺的资料直接说明。')
 HARD_TURN_SECONDS=150
 # A model that keeps asking the same question gets the same answer back a few times; past this it
 # is looping, not working, so the turn stops with no_progress.
@@ -526,13 +531,19 @@ class Turn:
         if not outcome.get('ok'):self.write_error(name,outcome.get('error_code') or 'write_failed')
         for item in outcome.get('data',[]):
             if isinstance(item,dict) and item.get('status') in {'not_newer','already_exists'}:self.write_error(name,item['status'])
+    def unattended(self):return bool(getattr(self.context,'unattended',False))
     def write_allowed(self,name):
+        # A scheduled task has nobody to press a card: whatever its words say, nothing is granted.
+        if self.unattended():return False
         if name not in self.granted_actions:return False
         return not vetoed(name,self.authorization_question)
     def stage(self,name,value):self.audit['stages'][name]=bounded_stage(value,self.context.api_key)
     def reference_stage(self,passed=True,reason=None,*,skipped=False):
         value=self.reference_value
         self.stage('resolver',{'skipped':skipped,'relationship':value.relationship if value else 'new','canonical_question':value.canonical_question if value else self.original,'referents':[r.model_dump() for r in value.referents] if value else [],'validator':{'passed':passed,'rejected_reason':reason}})
+    def token_cap(self):
+        cap=getattr(self.context,'token_budget',None)
+        return min(SOFT_TURN_TOKENS,cap) if isinstance(cap,int) and cap>0 else SOFT_TURN_TOKENS
     def budget(self,soft=True):
         # Returns a stop reason (truthy) or None. The decision ceiling and repeated server-refused
         # calls stop a turn; past the soft time/token cap the loop stops gathering and answers from
@@ -541,7 +552,7 @@ class Turn:
         if len(self.invalid_calls)>=MAX_INVALID_CALLS:return 'no_progress'
         elapsed=time.monotonic()-self.started
         if elapsed>HARD_TURN_SECONDS:return 'turn_budget'
-        if soft and (elapsed>SOFT_TURN_SECONDS or self.audit['token_usage']>SOFT_TURN_TOKENS):return 'turn_budget'
+        if soft and (elapsed>SOFT_TURN_SECONDS or self.audit['token_usage']>self.token_cap()):return 'turn_budget'
         return None
 
     async def provider_request(self,messages,tool_schemas):
@@ -561,6 +572,8 @@ class Turn:
         size=len(json.dumps(messages,ensure_ascii=False).encode())+len(json.dumps(tool_schemas).encode())
         if size>layers.RUNNING_REQUEST_BYTES:raise ValueError('chat_context_too_large')
         for attempt in range(protocol_retries+1):
+            cap=getattr(self.context,'token_budget',None)
+            if isinstance(cap,int) and cap>0 and self.audit['token_usage']>=cap*TASK_HARD_CAP_FACTOR:raise ValueError('task_token_cap')
             self.audit['model_calls']+=1
             response,message=await self.provider_request(messages,tool_schemas)
             mark_progress()
@@ -777,7 +790,7 @@ class Turn:
                 self.audit['classification_retries']=1
                 messages.append({'role':'system','content':'The previous classification was invalid JSON/schema or added an unrequested fiscal period. Return complete valid classify_request arguments using only enum values; leave unspecified period/form null.'})
         self.route=routing.category;self.scope=routing.model_dump();self.audit['route']=self.route
-        self.granted_actions=set(routing.requested_actions)
+        self.granted_actions=set() if self.unattended() else set(routing.requested_actions)
         self.stage('classifier',{'category':self.route,'scope':{k:self.scope[k] for k in ('symbol','company','metrics','period','form','days_back')},'retries':self.audit.get('classification_retries',0),'requested_actions':routing.requested_actions})
         await self.validate_business_reference()
         if self.pending:return
@@ -1030,7 +1043,9 @@ class Turn:
         from .claim_gate_flags import claim_quote_gate_mode
         if claim_quote_gate_mode() in {'shadow','enforce'}:
             instruction+='\n'+CLAIM_EVIDENCE_NOTE
-        if self.owner:
+        if self.owner and self.unattended():
+            instruction+='\n'+UNATTENDED_NOTE
+        elif self.owner:
             unavailable=[p.name for p in definitions().values() if p.level in {'reversible','costly'} and p.name not in self.granted_actions]
             instruction+=('\n当前身份：所有者。本轮可直接提出确认卡的写操作：'+('、'.join(sorted(self.granted_actions)) or '无')+
                 '；其他需要批准的操作（'+'、'.join(unavailable)+'）不能直接调用，确有必要时用 request_action 建议一次，由用户在卡片上决定。')
@@ -1295,6 +1310,7 @@ class Turn:
 
     async def propose(self,name,args):
         if not self.owner:return self.write_error(name,'owner_login_required')
+        if self.unattended():return self.write_error(name,'unattended_read_only')
         if name in self.completed_writes:return tools.error('already_executed')
         if not self.write_allowed(name):return self.write_error(name,'write_negated' if name in self.granted_actions else 'write_tool_not_granted')
         if name=='revise_forecast':return await self.propose_revision(args)
@@ -1449,8 +1465,18 @@ class Turn:
             if ordinal is not None and not older:return self.write_error(name,'comparison_date_unavailable')
             operation['comparison_citations']=[copy.deepcopy(older)] if older else []
         display={'title':'这是 Agent 的建议，不是你的要求：'+WRITE_TITLES.get(name,name),'agent_suggestion':True,'targets':[operation['arguments']],'alternative':str(args.get('reason') or '')[:400]}
+        if self.unattended():
+            # Nobody is here to press a card, and a card's capability lives ten minutes: the suggestion goes
+            # to the inbox (待你确认) without one; the owner mints the card there, later, and presses it.
+            sink=getattr(self.context,'action_sink',None)
+            if sink is None:return self.write_error(name,'unattended_read_only')
+            sink.append({'operation':copy.deepcopy(operation),'display':copy.deepcopy(display),'question':self.request_words()})
+            self.suggestion_used=True;self.audit['write_outcome']='queued_for_owner'
+            return {'ok':True,'data':[{'status':'queued_for_owner_review','tool':name,
+                    'note':'已放进收件箱「待你确认」，本轮不会执行。'}]}
         self.pending=await asyncio.to_thread(consent.propose,self.context.identity_credential,self.context.conversation_id,[operation],display,question=self.request_words())
-        self.pending['choices'][0]['label']='授权发现目标，查看确认卡' if name in {'fetch_sec','refresh_sec'} else ('批准建议，查看正文确认卡' if operation.get('grant_only') else '批准并执行')
+        from .grants import label_suggestion_card
+        label_suggestion_card(self.pending,operation)
         self.suggestion_used=True;self.audit['write_outcome']='proposed'
         return {'ok':True,'data':[{'status':'awaiting_suggestion_approval','tool':name}]}
 
@@ -2235,6 +2261,9 @@ class Turn:
                     # for ever and the stored turn restores it as failed.
                     await self.publish_result(name,outcome)
                     if not outcome.get('ok'):batch_failed=True
+                elif name=='ask_user' and self.unattended():
+                    self.audit['tool_calls']+=1;outcome=tools.error('unattended_no_user');self.feedback.append(outcome)
+                    await self.publish_result(name,outcome)
                 elif name=='ask_user':
                     self.audit['tool_calls']+=1;self.pending=self.card(args['question'],args['options'])
                     await self.publish_result(name,{'ok':True,'data':[{'status':'waiting_for_input','question':args['question']}]})

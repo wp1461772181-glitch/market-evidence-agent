@@ -702,6 +702,9 @@ def main(argv: list[str] | None = None) -> int:
             )
     except ValueError as exc:
         parser.error(str(exc))
+    # The owner's alerts tasks report new filings of their scope to the inbox (never raises).
+    from .agent_task_runner import run_alert_hooks
+    run_alert_hooks("filings")
     print(json.dumps(result.as_dict(), sort_keys=True))
     return 0
 

@@ -101,7 +101,8 @@ app = FastAPI(title="Market Evidence Agent", version="0.1.0")
 
 @app.exception_handler(RequestValidationError)
 async def safe_agent_chat_validation(request: Request, exc: RequestValidationError):
-    if request.url.path in {"/agent-chat/hello", "/agent-chat/messages", "/agent-chat/stream", "/agent-chat/models", "/agent-chat/personal-login"}:
+    if request.url.path in {"/agent-chat/hello", "/agent-chat/messages", "/agent-chat/stream", "/agent-chat/models", "/agent-chat/personal-login",
+                            "/agent-chat/background-model"}:
         from .agent_chat_api import safe_validation_response
         return await safe_validation_response(request, exc)
     return await request_validation_exception_handler(request, exc)
