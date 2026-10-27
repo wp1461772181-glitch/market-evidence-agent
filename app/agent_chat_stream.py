@@ -636,3 +636,16 @@ async def delete_profile_endpoint(item_id: str, x_chat_session: str | None = Hea
     if not await asyncio.to_thread(delete_item, owner_hash(credential), item_id):
         raise HTTPException(404, "profile_item_not_found")
     return {"deleted": True}
+
+
+@router.get("/recall")
+async def get_recall_endpoint(q: str | None = None, limit: int = 20, x_chat_session: str | None = Header(default=None)):
+    """The owner's past conversations for the memory page: newest first, or the best matches for ``q``.
+    Memory, not evidence; another credential's conversations are never listed."""
+    from . import agent_recall as recall
+    credential = _owner_only(x_chat_session)
+    if q and q.strip():
+        items = await asyncio.to_thread(recall.search, owner_hash(credential), q.strip()[:200], recall.MAX_LIMIT)
+    else:
+        items = await asyncio.to_thread(recall.recent, owner_hash(credential), max(1, min(50, limit)))
+    return {"items": items, "label": recall.LABEL}

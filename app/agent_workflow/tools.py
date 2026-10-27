@@ -87,6 +87,12 @@ async def _dispatch(name,args,context,is_owner,emit):
     if name=='read_history_citation':
         from .history_citations import read_history_citation
         return await read_history_citation(args,context)
+    if name=='recall_conversations':
+        # The owner's own conversations, never another credential's; memory, not evidence (agent_recall).
+        from .. import agent_recall as recall
+        if not is_owner:return error('owner_login_required')
+        rows=await asyncio.to_thread(recall.search,context.owner_hash,args['query'],args.get('limit',3),exclude=context.conversation_id)
+        return {**result(rows,'past conversations'),'label':recall.LABEL,'note':recall.NOTE}
     if context.executor:
         value=context.executor(name,args)
         return await value if hasattr(value,'__await__') else value

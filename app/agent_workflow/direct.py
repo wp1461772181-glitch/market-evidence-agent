@@ -486,6 +486,9 @@ class Turn:
         self.history=bounded_history(messages);self.started=time.monotonic();self.state=state or {}
         self.owner=owner_credential_matches(context.identity_credential)
         self.route='D';self.scope={};self.citations=[];self.observations=[];self.feedback=[]
+        # Past-conversation rows (recall_conversations): observation kind 'recall', kept apart from
+        # self.observations so that no evidence path, citation number or claim gate ever sees them.
+        self.recalls=[]
         self.sets=[x for x in self.state.get('result_sets',[]) if x.get('owner')==context.owner_hash and x.get('conversation')==context.conversation_id and isinstance(x.get('rows'),list)][-6:]
         self.pending=None;self.proposals=[];self.followup=False;self.refinement=False;self.seen=set();self.evidence_signatures=set();self.no_new=0;self.repeated_evidence=0
         self.audit={'tool_calls':0,'distinct_successful_calls':0,'retry_count':0,'decision_steps':0,'model_calls':0,'token_usage':0,'usage_mode':'actual','nodes':[],'stop_reason':None,'stages':{}}
@@ -1167,7 +1170,7 @@ class Turn:
         # Read results reach SSE/history only after the same gate used by the answer.
         policy=definitions()[name]
         if not outcome.get('ok'):safe=outcome if outcome.get('bindable_values') else tools.error(outcome.get('error_code') or 'tool_failed')
-        elif policy.level!='read' or name in {'query_system_status','query_research_queue'}:safe=outcome
+        elif policy.level!='read' or name in {'query_system_status','query_research_queue','recall_conversations'}:safe=outcome
         elif self.last_accepted is not None:safe=self.last_accepted
         else:safe={k:v for k,v in self.feedback[-1].items() if k in {'ok','data','status','error_code','hint'}}
         from ..agent_chat_stream import bounded_tool_result
@@ -1202,6 +1205,13 @@ class Turn:
             self.last_accepted=safe
             self.observations.append({'name':name,'arguments':args,'result':safe,'accepted_evidence':bool(safe.get('ok'))})
             self.feedback.append({'name':name,'result':safe});return
+        if name=='recall_conversations':
+            # Memory, not evidence: no ordinal, no citation, not accepted_evidence.
+            shown={'ok':True,'label':outcome.get('label'),'note':outcome.get('note'),
+                   'data':[{k:r.get(k) for k in ('conversation_id','title','date','summary','link')} for r in rows if isinstance(r,dict)]}
+            self.recalls.append({'name':name,'kind':'recall','arguments':args,'result':shown,'accepted_evidence':False})
+            self.audit['recalled_conversations']=self.audit.get('recalled_conversations',0)+len(shown['data'])
+            self.feedback.append({'name':name,'result':shown});return
         if policy.level!='read' or name in {'query_system_status','query_research_queue'}:
             self.feedback.append({'name':name,'result':outcome});return
         from .evidence import canonical_metric

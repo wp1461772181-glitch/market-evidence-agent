@@ -47,6 +47,7 @@ export const TOOL_LABELS = {
   review_knowledge_candidate: "审核知识候选",
   remember: "记住偏好",
   forget: "忘掉偏好",
+  recall_conversations: "回想往事",
 };
 
 /** The display name of a tool, falling back to its identifier when unknown. */

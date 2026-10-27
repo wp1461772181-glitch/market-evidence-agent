@@ -180,6 +180,9 @@ def create_tables() -> None:
     create_evidence_revision_tables()
     from .agent_chat_store import ensure_conversation_archive_column
     ensure_conversation_archive_column()
+    # Conversations stored before the past-conversation index existed (agent_recall) are indexed once.
+    from .agent_recall import backfill as backfill_recall, safe_hook
+    safe_hook(backfill_recall)
     with SessionLocal() as session:
         seed_faq(session)
         session.commit()

@@ -1,4 +1,4 @@
-import hashlib, uuid, json
+import asyncio, hashlib, uuid, json
 from sqlalchemy import select, func, true
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -6,9 +6,13 @@ from .config import DATABASE_URL
 from .agent_chat_models import (AgentConversation, AgentConversationSummary, AgentConversationTitle, AgentMessage,
                                 AgentResearchQueue)
 from . import agent_context as layers
+from . import agent_recall as recall
 ASYNC_URL=DATABASE_URL
 engine=create_async_engine(ASYNC_URL,pool_pre_ping=True,connect_args={"connect_timeout":3})
 Session=async_sessionmaker(engine,expire_on_commit=False)
+async def _recall(hook,*args):
+    # The past-conversation index is derived data: a failed update never fails the write it follows.
+    await asyncio.to_thread(recall.safe_hook,hook,*args)
 def owner_hash(credential: str)->str: return hashlib.sha256(credential.encode()).hexdigest()
 def _message_bytes(m):
     return layers.row_bytes({"role":m.role,"content":m.content,"tool_calls":m.tool_calls,
@@ -29,6 +33,7 @@ async def append_message(conversation_id: str, turn_id: str, role: str, content:
         conv=await s.get(AgentConversation,cid)
         if conv: conv.updated_at=func.now()
         await s.commit()
+    if role=="user":await _recall(recall.index_question,conversation_id,content)
 async def history(conversation_id: str, credential: str, limit_bytes=14000):
     if not await verify_conversation(conversation_id,credential): return None
     async with Session() as s:
@@ -112,12 +117,14 @@ async def append_summary(conversation_id: str, from_sequence: int, upto_sequence
             return False
         s.add(AgentConversationSummary(conversation_id=cid, seq=(last.seq if last else 0) + 1,
                                        from_sequence=from_sequence, upto_sequence=upto_sequence, content=content))
+        seq=(last.seq if last else 0) + 1
         try:
             await s.commit()
         except IntegrityError:
             await s.rollback()
             return False
-        return True
+    await _recall(recall.index_summary, conversation_id, seq, content)
+    return True
 
 
 def _eligible_turn_groups(rows):
@@ -244,7 +251,8 @@ async def set_conversation_title(credential: str, conversation_id: str, title: s
         else:
             row.title = title
         await s.commit()
-        return True
+    await _recall(recall.index_title, conversation_id)
+    return True
 
 
 MAX_RESEARCH_QUEUE = 30  # the same bound as the front end's list

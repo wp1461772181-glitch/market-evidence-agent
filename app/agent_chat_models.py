@@ -92,3 +92,18 @@ class AgentProfileItem(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AgentConversationRecall(Base):
+    """The owner's index of past conversations, read by ``recall_conversations`` and the memory page.
+    Row ``seq`` 0 holds the owner's own questions; rows 1.. mirror the summary segments.  Every row
+    carries the conversation's name.  It is memory, not evidence: nothing here is ever numbered or cited.
+    Derived from the conversation tables, so ``agent_recall.backfill`` can rebuild it."""
+    __tablename__ = "agent_conversation_recall"
+    conversation_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("agent_conversations.id", ondelete="CASCADE"), primary_key=True)
+    seq: Mapped[int] = mapped_column(Integer, primary_key=True)
+    owner_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
