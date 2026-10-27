@@ -17,7 +17,8 @@ def test_phase1_acceptance_fixtures():
         bodies = {}
         for citation in citations:
             if citation.get("quote"):
-                bodies[citation["ordinal"]] = citation["quote"]
+                parts = [citation["quote"], *(citation.get("evidence_quotes") or [])]
+                bodies[citation["ordinal"]] = "\n".join(parts)
         accepted, issues = reviewed_claims(parse_claims(case["claims"]), citations, bodies)
         assert [item.id for item in accepted] == case["expect_accepted"], path.name
         assert [item["reason"] for item in issues] == case["expect_reasons"], path.name

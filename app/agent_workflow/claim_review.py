@@ -53,7 +53,10 @@ def collect_source_bodies(citations, observations=None) -> tuple[dict[int, str],
         if full and len(full) > len(quote):
             bodies[ordinal] = full
         else:
-            bodies[ordinal] = quote
+            # A saved analysis exposes verified evidence quotes beside a short
+            # summary; they are source text even when the observation row is gone.
+            parts = [quote, *(str(item) for item in citation.get("evidence_quotes") or [] if isinstance(item, str) and item)]
+            bodies[ordinal] = "\n".join(part for part in parts if part)
             fallbacks.append(ordinal)
     return bodies, fallbacks
 
@@ -271,6 +274,7 @@ def _row_text(citation: dict, rows: list[dict]) -> str:
     }
     if not keys:
         return ""
+    analysis_key = str(citation.get("analysis_id") or "")
     best = ""
     for row in rows:
         row_ids = {
@@ -278,10 +282,17 @@ def _row_text(citation: dict, rows: list[dict]) -> str:
             for name in ("source_id", "id", "document_id", "chunk_id", "url", "source_url")
             if row.get(name)
         }
+        if analysis_key:
+            row_analysis = str(row.get("analysis_id") or row.get("id") or "")
+            if row_analysis and row_analysis != analysis_key:
+                continue
         if keys.isdisjoint(row_ids):
             continue
         for name in _BODY_KEYS:
             value = row.get(name)
             if isinstance(value, str) and len(value) > len(best):
                 best = value
+        for quote in row.get("evidence_quotes") or []:
+            if isinstance(quote, str) and quote and quote not in best:
+                best = f"{best}\n{quote}" if best else quote
     return best

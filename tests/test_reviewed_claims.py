@@ -87,16 +87,26 @@ def test_field_evidence_price_ok_and_bad_ordinal_drops():
     assert issues[0]["reason"] == "bad_ordinal"
 
 
-def test_bare_margin_requires_calculate_but_calculation_field_passes():
-    filing = "Gross margin was 46.2 percent for the fiscal year ended September 28."
-    bare = _quote_claim("Gross margin was 46.2%.", filing)
+def test_computed_margin_requires_calculate_but_directly_reported_margin_passes():
+    raw_cells = "Revenue was 100.0 and cost of sales was 53.8 for the fiscal year."
+    computed = _quote_claim("Gross margin was 46.2%.", raw_cells)
     accepted, issues = reviewed_claims(
-        bare,
-        [{"ordinal": 1, "quote": filing, "source_type": "official_filing"}],
-        {1: filing},
+        computed,
+        [{"ordinal": 1, "quote": raw_cells, "source_type": "official_filing"}],
+        {1: raw_cells},
     )
     assert accepted == []
     assert issues[0]["reason"] == "derived_requires_calculate"
+
+    reported = "Gross margin was 46.2 percent for the fiscal year ended September 28."
+    direct = _quote_claim("Gross margin was 46.2%.", reported)
+    accepted, issues = reviewed_claims(
+        direct,
+        [{"ordinal": 1, "quote": reported, "source_type": "official_filing"}],
+        {1: reported},
+    )
+    assert issues == []
+    assert [item.id for item in accepted] == ["c1"]
 
     calculated = parse_claims({
         "claims": [{
@@ -144,3 +154,84 @@ def test_reviewed_answer_is_unchanged_when_claim_gate_flag_is_set(monkeypatch):
     assert os.environ["CLAIM_QUOTE_GATE"] == "enforce"
     assert issues == []
     assert "16,128" in kept
+
+
+def test_number_rows_carries_analysis_metadata_and_verified_quotes():
+    from app.agent_workflow.claim_review import collect_source_bodies
+
+    summary = "版本 2 对英特尔最新季度经营情况作了更完整的梳理。"
+    quote = "总资产为 2,024.39 亿美元，股东权益为 875.42 亿美元。"
+    row = {
+        "id": "analysis-version-2",
+        "source_id": "intc-filing",
+        "source_type": "official_filing",
+        "version_no": 2,
+        "created_at": "2026-10-26T02:17:00+00:00",
+        "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+        "summary": summary,
+        "evidence_quotes": [quote],
+    }
+    citations = []
+    from app.agent_workflow.evidence import number_rows
+
+    number_rows("query_material_analysis", [row], citations, {})
+    assert citations[0]["fields"]["version_no"] == 2
+    assert citations[0]["fields"]["model"] == "nvidia/nemotron-3-ultra-550b-a55b:free"
+    assert citations[0]["evidence_quotes"] == [quote]
+
+    claims = parse_claims({
+        "claims": [
+            {
+                "id": "version",
+                "statement": "第 2 版生成于 2026-10-26 02:17。",
+                "citation_ordinal": 1,
+                "evidence": {"type": "field", "fields": {"version_no": 2}},
+            },
+            {
+                "id": "assets",
+                "statement": "总资产为 2,024.39 亿美元。",
+                "citation_ordinal": 1,
+                "evidence": {"type": "quote", "evidence_quote": quote},
+            },
+        ]
+    })
+    accepted, issues = reviewed_claims(claims, citations, {})
+    assert issues == []
+    assert [item.id for item in accepted] == ["version", "assets"]
+
+    bodies, fallbacks = collect_source_bodies(
+        citations,
+        [{"result": {"data": [{**row, "evidence_quotes": [quote]}]}}],
+    )
+    assert quote in bodies[1]
+    assert fallbacks == []
+
+
+def test_analysis_bodies_are_selected_by_analysis_id_not_shared_source_id():
+    from app.agent_workflow.claim_review import collect_source_bodies
+    from app.agent_workflow.evidence import number_rows
+
+    rows = [
+        {
+            "source_id": "intc-filing",
+            "analysis_id": "analysis-version-2",
+            "source_type": "official_filing",
+            "version_no": 2,
+            "summary": "版本 2 摘要。",
+            "evidence_quotes": ["版本 2 的资产为 2,024.39 亿美元。"],
+        },
+        {
+            "source_id": "intc-filing",
+            "analysis_id": "analysis-version-1",
+            "source_type": "official_filing",
+            "version_no": 1,
+            "summary": "版本 1 摘要。",
+            "evidence_quotes": ["版本 1 的资产为 1,900.00 亿美元。"],
+        },
+    ]
+    citations = []
+    number_rows("query_material_analysis", rows, citations, {})
+    bodies, fallbacks = collect_source_bodies(citations, [{"result": {"data": rows}}])
+    assert "版本 2 的资产" in bodies[1] and "版本 1 的资产" not in bodies[1]
+    assert "版本 1 的资产" in bodies[2] and "版本 2 的资产" not in bodies[2]
+    assert fallbacks == []

@@ -241,6 +241,36 @@ def citation_errors(answer: str,citations: list[dict]) -> list[int]:
     return [int(n) for n in citation_markers(answer,citations) if int(n) not in valid]
 
 
+_CITATION_FIELD_SKIP={'excerpt','answer','summary','content','text','body','quote','raw_content','content_text',
+    'source_snapshot','payload','_citations','citation','evidence_quotes','figures'}
+
+
+def _citation_fields(row: dict) -> dict:
+    """Scalar row fields a claim may bind to, kept beside the prose quote.
+
+    Structured sources (price, XBRL, forecasts, saved analyses) expose values the
+    answer may cite without a natural-language passage.  The citation has to carry
+    those values too, otherwise a correct field claim would fail as a mismatch.
+    """
+    fields={}
+    for key,value in row.items():
+        if key in _CITATION_FIELD_SKIP or str(key).startswith('_') or value is None:
+            continue
+        if isinstance(value,bool) or isinstance(value,(int,float)):
+            fields[str(key)]=value
+        elif isinstance(value,str) and len(value)<=300:
+            fields[str(key)]=value
+    return fields
+
+
+def _evidence_quotes(row: dict) -> list[str]:
+    quotes=[]
+    for quote in row.get('evidence_quotes') or []:
+        if isinstance(quote,str) and quote and quote not in quotes:
+            quotes.append(quote)
+    return quotes
+
+
 def number_rows(name: str,rows: list[dict],citations: list[dict],scope: dict) -> list[dict]:
     """Give accepted rows a citation without changing provenance or raw saved snapshots."""
     accepted=[]
@@ -253,7 +283,12 @@ def number_rows(name: str,rows: list[dict],citations: list[dict],scope: dict) ->
                 old=next((c for c in citations if c.get('chunk_id')==original_citation.get('chunk_id') and c.get('source_hash')==original_citation.get('source_hash')),None)
                 number=old['ordinal'] if old else len(citations)+1
                 mapping[original_citation['ordinal']]=number
-                if not old:citations.append({**original_citation,'quote':original_citation.get('quote') or str(row.get('excerpt') or row.get('answer') or '')[:5000],'ordinal':number})
+                if not old:
+                    citations.append({**original_citation,'quote':original_citation.get('quote') or str(row.get('excerpt') or row.get('answer') or '')[:5000],
+                        'ordinal':number,'fields':_citation_fields(row),'evidence_quotes':_evidence_quotes(row)})
+                else:
+                    old.setdefault('fields',_citation_fields(row))
+                    old.setdefault('evidence_quotes',_evidence_quotes(row))
             for field in ('excerpt','answer','summary'):
                 if isinstance(row.get(field),str):row[field]=re.sub(r'\[(\d+)\]',lambda m:'['+str(mapping.get(int(m[1]),int(m[1])))+']',row[field])
             row['citation']='['+str(next(iter(mapping.values())))+']'
@@ -274,7 +309,8 @@ def number_rows(name: str,rows: list[dict],citations: list[dict],scope: dict) ->
                 'published_at':row.get('published_at') or row.get('filed_at') or row.get('trading_date'),
                 'observed_at':row.get('fetched_at') or row.get('observed_at'),'quote':body[:5000],
                 'trading_date':row.get('trading_date'),'source':row.get('source'),'fetched_at':row.get('fetched_at'),
-                'symbol':row.get('symbol') or scope.get('symbol'),'analysis_id':row.get('analysis_id'),'derived':kind=='ai_analysis','truncated':bool(row.get('truncated'))})
+                'symbol':row.get('symbol') or scope.get('symbol'),'analysis_id':row.get('analysis_id'),'derived':kind=='ai_analysis','truncated':bool(row.get('truncated')),
+                'fields':_citation_fields(row),'evidence_quotes':_evidence_quotes(row)})
         if kind=='saved_price':
             citations[ordinal-1]['quote']=str(row['close'])
             # The quote stays the close (the restore check compares it); the row's other prices are
@@ -688,9 +724,7 @@ def reviewed_claims(claims, citations, source_bodies=None, *, min_chars=24):
         if citation is None:
             _drop(issues, audit, claim, "bad_ordinal")
             continue
-        if _DERIVED_CLAIM.search(claim.statement) and not _calculation_citation(citation):
-            _drop(issues, audit, claim, "derived_requires_calculate")
-            continue
+        derived = bool(_DERIVED_CLAIM.search(claim.statement)) and not _calculation_citation(citation)
         if isinstance(claim.evidence, FieldEvidence):
             if not field_evidence_matches(claim.evidence, citation):
                 _drop(issues, audit, claim, "field_mismatch")
@@ -698,7 +732,7 @@ def reviewed_claims(claims, citations, source_bodies=None, *, min_chars=24):
             material = _citation_material(citation)
             unsupported = numbers_supported(claim.statement, material)
             if unsupported:
-                _drop(issues, audit, claim, "unsupported_numeric", values=unsupported)
+                _drop(issues, audit, claim, "derived_requires_calculate" if derived else "unsupported_numeric", values=unsupported)
                 continue
             accepted.append(claim)
             continue
@@ -715,7 +749,7 @@ def reviewed_claims(claims, citations, source_bodies=None, *, min_chars=24):
         context = header_context(source, bound.start_char)
         unsupported = numbers_supported(claim.statement, bound.resolved_quote, header_context=context)
         if unsupported:
-            _drop(issues, audit, claim, "unsupported_numeric", values=unsupported)
+            _drop(issues, audit, claim, "derived_requires_calculate" if derived else "unsupported_numeric", values=unsupported)
             continue
         audit["quote_match_kinds"].append(bound.match_kind)
         audit["resolved_span_hashes"].append(hashlib.sha256(bound.resolved_quote.encode()).hexdigest())
@@ -758,11 +792,18 @@ def _source_body(bodies, ordinal, citation):
     text = bodies.get(ordinal) if isinstance(bodies, dict) else None
     if isinstance(text, str) and text.strip():
         return text, False
-    return str(citation.get("quote") or ""), True
+    parts = [str(citation.get("quote") or "")]
+    parts.extend(str(quote) for quote in citation.get("evidence_quotes") or [] if isinstance(quote, str) and quote)
+    return "\n".join(part for part in parts if part), True
 
 
 def _citation_material(citation):
-    parts = [str(citation.get(key) or "") for key in ("quote", "figures", "title")]
+    parts = [str(citation.get(key) or "") for key in ("quote", "figures", "title",
+             "published_at", "observed_at", "filed_at", "analysis_id", "accession_number", "form")]
+    fields = citation.get("fields")
+    if isinstance(fields, dict):
+        parts.append(json.dumps(fields, ensure_ascii=False, default=str))
+    parts.extend(str(quote) for quote in citation.get("evidence_quotes") or [] if isinstance(quote, str) and quote)
     calculation = citation.get("calculation")
     if isinstance(calculation, dict):
         parts.append(json.dumps(calculation, ensure_ascii=False, default=str))

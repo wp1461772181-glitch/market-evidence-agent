@@ -18,7 +18,7 @@ from app.agent_workflow.semantic import _MAGNITUDE, figure_values
 
 _TIME = re.compile(r"\b\d{1,2}:\d{2}(?::\d{2})?\b")
 _DURATION = re.compile(
-    r"\d+(?:\.\d+)?\s*(?:天|日|个月|年|周|条|篇|份|项|页|行|个|次|点|位|名|步|轮|倍|小时|分|秒|字符|字|days?|hours?|items?|times?|points?|characters?|chars?)",
+    r"\d+(?:\.\d+)?\s*(?:天|日|个月|年|周|条|篇|份|项|页|行|个(?!百分点)|次|点|位|名|步|轮|倍|小时|分|秒|字符|字|days?|hours?|items?|times?|points?|characters?|chars?)",
     re.I,
 )
 _DATE = re.compile(
@@ -137,20 +137,58 @@ def _rounded_match(value: float, digits: int, allowed: set[float]) -> bool:
     return any(_round_to(candidate, digits) == _round_to(value, digits) for candidate in allowed if candidate)
 
 
+_UNIT_SCALES = (1e3, 1e4, 1e6, 1e8, 1e9)
+
+
+def _scaled_unit_variant(value: float, allowed: set[float]) -> bool:
+    """A value written with its own unit (``2,024.39 亿美元``) against a bare cell.
+
+    The source may say ``202,439`` under an ``In millions`` header, or simply
+    omit the header from the saved excerpt.  Only an exact power-of-ten unit
+    relation is accepted, so a wrong amount still fails.
+    """
+    tolerance = 1e-6 * max(1.0, abs(value))
+    for scale in _UNIT_SCALES:
+        if any(abs(value - candidate * scale) <= tolerance for candidate in allowed if candidate):
+            return True
+    return False
+
+
+_FIELD_ALIASES = {
+    "version": "version_no",
+    "analysis_version": "version_no",
+    "generated_at": "created_at",
+    "timestamp": "created_at",
+    "time": "created_at",
+}
+
+
 def _field_supported(key: str, value: Any, citation: dict) -> bool:
-    if key in citation and _same_value(citation.get(key), value):
-        return True
+    if key in citation:
+        return _same_value(citation.get(key), value)
+    fields = citation.get("fields")
+    if isinstance(fields, dict):
+        if key in fields:
+            return _same_value(fields.get(key), value)
+        alias = _FIELD_ALIASES.get(key)
+        if alias and alias in fields:
+            return _same_value(fields.get(alias), value)
     calculation = citation.get("calculation")
-    if isinstance(calculation, dict) and key in calculation and _same_value(calculation.get(key), value):
-        return True
+    if isinstance(calculation, dict) and key in calculation:
+        return _same_value(calculation.get(key), value)
     return _value_in_text(value, _citation_blob(citation))
 
 
 def _citation_blob(citation: dict) -> str:
     parts: list[str] = []
-    for key in ("quote", "figures", "title", "trading_date", "concept", "period", "metric"):
+    for key in ("quote", "figures", "title", "trading_date", "concept", "period", "metric",
+                "published_at", "observed_at", "filed_at", "analysis_id", "accession_number", "form"):
         if citation.get(key) is not None:
             parts.append(str(citation[key]))
+    fields = citation.get("fields")
+    if isinstance(fields, dict):
+        parts.append(json.dumps(fields, ensure_ascii=False, default=str))
+    parts.extend(str(quote) for quote in citation.get("evidence_quotes") or [] if isinstance(quote, str) and quote)
     calculation = citation.get("calculation")
     if isinstance(calculation, dict):
         parts.append(json.dumps(calculation, ensure_ascii=False, default=str))
@@ -170,13 +208,33 @@ def _value_in_text(value: Any, blob: str) -> bool:
     number = _as_number(value)
     if number is not None and not isinstance(value, bool):
         return _number_in_text(number, blob)
-    return str(value).strip().casefold() in blob.casefold()
+    text = str(value).strip()
+    if text.casefold() in blob.casefold():
+        return True
+    figures = [
+        (scaled, digits)
+        for _token, scaled, digits, unitless in _statement_figures(text)
+        if not _ignored_figure(scaled, unitless)
+    ]
+    if not figures:
+        return False
+    allowed = set(figure_values(blob))
+    allowed.update(_header_scaled_cells(blob, _header_scale(blob)))
+    for scaled, digits in figures:
+        if scaled in allowed or _rounded_match(scaled, digits, allowed) or _scaled_unit_variant(scaled, allowed):
+            continue
+        return False
+    return True
 
 
 def _number_in_text(number: float, text: str) -> bool:
     plain = _comma_strip(text)
     tolerance = 1e-6 * max(1.0, abs(number))
-    return any(abs(float(match.group()) - number) <= tolerance for match in re.finditer(r"\d+(?:\.\d+)?", plain))
+    if any(abs(float(match.group()) - number) <= tolerance for match in re.finditer(r"\d+(?:\.\d+)?", plain)):
+        return True
+    allowed = set(figure_values(text))
+    allowed.update(_header_scaled_cells(text, _header_scale(text)))
+    return number in allowed or _scaled_unit_variant(number, allowed)
 
 
 def _as_number(value: Any) -> float | None:

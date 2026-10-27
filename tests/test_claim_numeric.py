@@ -78,3 +78,31 @@ def test_field_evidence_matches_calculate_and_xbrl_values():
     }
     evidence = FieldEvidence("field", {"concept": "Revenues", "period": "2024", "value": 16128})
     assert field_evidence_matches(evidence, filing)
+
+
+def test_a_version_field_must_match_the_structured_value_not_any_digit_in_the_text():
+    citation = {
+        "source_type": "ai_analysis",
+        "quote": "第 1 版摘要提到资产 202,439。",
+        "fields": {"version_no": 2},
+    }
+    assert not field_evidence_matches(FieldEvidence("field", {"version_no": 1}), citation)
+    assert field_evidence_matches(FieldEvidence("field", {"version_no": 2}), citation)
+
+
+def test_field_value_with_its_own_unit_can_match_a_bare_cell():
+    citation = {
+        "source_type": "ai_analysis",
+        "quote": "Total assets were 202,439.",
+        "fields": {"metric": "total_assets"},
+    }
+    assert field_evidence_matches(FieldEvidence("field", {"total_assets": "2,024.39 亿美元"}), citation)
+    assert not field_evidence_matches(FieldEvidence("field", {"total_assets": "999 亿美元"}), citation)
+
+
+def test_percentage_points_are_a_figure_not_a_duration():
+    bad = numbers_supported(
+        "毛利率同比提升 1.2 个百分点。",
+        "营收同比增长 6.4%，毛利率为 38.1%。",
+    )
+    assert bad

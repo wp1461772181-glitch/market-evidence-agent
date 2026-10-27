@@ -1,0 +1,25 @@
+{
+  "source_ordinal": 1,
+  "citations": [
+    {
+      "ordinal": 1,
+      "source_type": "official_filing",
+      "quote": "Gross margin was 46.2 percent for the fiscal year ended September 28."
+    }
+  ],
+  "claims": {
+    "claims": [
+      {
+        "id": "reported_margin",
+        "statement": "Gross margin was 46.2%.",
+        "citation_ordinal": 1,
+        "evidence": {
+          "type": "quote",
+          "evidence_quote": "Gross margin was 46.2 percent for the fiscal year ended September 28."
+        }
+      }
+    ]
+  },
+  "expect_accepted": ["reported_margin"],
+  "expect_reasons": []
+}

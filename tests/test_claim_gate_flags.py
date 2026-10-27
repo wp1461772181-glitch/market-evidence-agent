@@ -60,3 +60,13 @@ def test_invalid_numbers_fall_back(monkeypatch):
     assert legacy_prose_guards_enabled() is False
     monkeypatch.setenv("CLAIM_JEV_DAILY_CAP", "12")
     assert claim_jev_daily_cap() == 12
+
+
+def test_committed_env_example_never_turns_claim_gates_to_enforce():
+    from pathlib import Path
+
+    text = (Path(__file__).parent.parent / ".env.example").read_text()
+    assert "CLAIM_QUOTE_GATE=shadow" in text
+    assert "CLAIM_JEV_SUPPORT=shadow" in text
+    assert "CLAIM_QUOTE_GATE=enforce" not in text
+    assert "CLAIM_JEV_SUPPORT=enforce" not in text

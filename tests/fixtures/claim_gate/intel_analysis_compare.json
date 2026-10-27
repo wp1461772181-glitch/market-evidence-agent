@@ -1,0 +1,118 @@
+{
+  "source_ordinal": 6,
+  "citations": [
+    {
+      "ordinal": 6,
+      "source_type": "ai_analysis",
+      "title": "Intel latest saved AI analysis",
+      "quote": "版本 2 对英特尔最新季度经营情况作了更完整的梳理，并覆盖了资产、权益和增长指标。",
+      "analysis_id": "analysis-version-2",
+      "source_id": "intc-filing-2026-10-26",
+      "fields": {
+        "source_type": "official_filing",
+        "source_id": "intc-filing-2026-10-26",
+        "version_no": 2,
+        "created_at": "2026-10-26T02:17:00+00:00",
+        "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+        "analysis_id": "analysis-version-2",
+        "symbol": "INTC",
+        "published_at": "2026-10-26T02:17:00+00:00",
+        "observed_at": "2026-10-26T02:18:00+00:00"
+      },
+      "evidence_quotes": [
+        "根据最新财报，总资产为 2,024.39 亿美元，股东权益为 875.42 亿美元，较上一季度有所增长。",
+        "根据最新财报，营收同比增长 6.4%，毛利率为 38.1%，经营现金流保持稳定。"
+      ]
+    },
+    {
+      "ordinal": 7,
+      "source_type": "ai_analysis",
+      "title": "Intel previous saved AI analysis",
+      "quote": "版本 1 给出了英特尔上一版分析摘要。",
+      "analysis_id": "analysis-version-1",
+      "source_id": "intc-filing-2026-10-26",
+      "fields": {
+        "source_type": "official_filing",
+        "source_id": "intc-filing-2026-10-26",
+        "version_no": 1,
+        "created_at": "2026-10-26T02:15:00+00:00",
+        "model": "deepseek-v4.1-flash-1017",
+        "analysis_id": "analysis-version-1",
+        "symbol": "INTC",
+        "published_at": "2026-10-26T02:15:00+00:00",
+        "observed_at": "2026-10-26T02:16:00+00:00",
+        "role": "previous_version"
+      },
+      "evidence_quotes": []
+    }
+  ],
+  "claims": {
+    "claims": [
+      {
+        "id": "version2",
+        "statement": "第 2 版生成于 2026-10-26 02:17。",
+        "citation_ordinal": 6,
+        "evidence": {
+          "type": "field",
+          "fields": {"version_no": 2, "created_at": "2026-10-26T02:17:00+00:00"}
+        }
+      },
+      {
+        "id": "model2",
+        "statement": "版本 2 使用 nvidia/nemotron-3-ultra-550b-a55b:free 模型。",
+        "citation_ordinal": 6,
+        "evidence": {
+          "type": "field",
+          "fields": {"model": "nvidia/nemotron-3-ultra-550b-a55b:free"}
+        }
+      },
+      {
+        "id": "assets",
+        "statement": "总资产为 2,024.39 亿美元。",
+        "citation_ordinal": 6,
+        "evidence": {
+          "type": "quote",
+          "evidence_quote": "根据最新财报，总资产为 2,024.39 亿美元，股东权益为 875.42 亿美元，较上一季度有所增长。"
+        }
+      },
+      {
+        "id": "direct_growth",
+        "statement": "营收同比增长 6.4%。",
+        "citation_ordinal": 6,
+        "evidence": {
+          "type": "quote",
+          "evidence_quote": "根据最新财报，营收同比增长 6.4%，毛利率为 38.1%，经营现金流保持稳定。"
+        }
+      },
+      {
+        "id": "computed_growth",
+        "statement": "毛利率同比提升 1.2 个百分点。",
+        "citation_ordinal": 6,
+        "evidence": {
+          "type": "quote",
+          "evidence_quote": "根据最新财报，营收同比增长 6.4%，毛利率为 38.1%，经营现金流保持稳定。"
+        }
+      },
+      {
+        "id": "version1_wrong",
+        "statement": "第 1 版生成于 2026-10-26 02:17。",
+        "citation_ordinal": 6,
+        "evidence": {
+          "type": "field",
+          "fields": {"version_no": 1}
+        }
+      },
+      {
+        "id": "missing_quote",
+        "statement": "管理层在电话会上预计下一季度需求将明显回升，并计划扩大资本开支。",
+        "citation_ordinal": 6,
+        "evidence": {
+          "type": "quote",
+          "evidence_quote": "管理层在电话会上预计下一季度需求将明显回升，并计划扩大资本开支。"
+        }
+      }
+    ]
+  },
+  "expect_accepted": ["version2", "model2", "assets", "direct_growth"],
+  "expect_reasons": ["derived_requires_calculate", "field_mismatch", "quote_not_found"]
+}
