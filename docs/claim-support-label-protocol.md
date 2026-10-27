@@ -34,6 +34,9 @@ Shadow reports must include latency and answer-quality notes, not only bind hit 
 ```sh
 CLAIM_QUOTE_GATE=shadow
 CLAIM_JEV_SUPPORT=shadow
+CLAIM_JEV_DAILY_CAP=200
 ```
 
-Leave `CLAIM_JEV_DAILY_CAP` set to an operator limit before shadow traffic is real. The file counter under `artifacts/claim-jev-daily.json` is per process.
+The daily cap is an operator limit; 200 is the suggested starting value. It must be set before shadow traffic is real. The file counter under `artifacts/claim-jev-daily.json` is per process.
+
+This repo owns no production env file: the real settings live in the ignored `.env` next to the checkout (read by `scripts/run_api_server.sh` via uvicorn `--env-file`). Operators must add the three lines above to that `.env` and restart the API; `.env.example` carries them for new installs. Never set `enforce` there.

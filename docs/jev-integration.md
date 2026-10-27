@@ -50,4 +50,4 @@ Failure isolation: HTTP errors, timeouts, validation failures, `unrelated`, and 
 
 Do not write claim-support choices into forecast learning or calibration (`app/jev_learning.py` is not imported). Do not set `CLAIM_JEV_SUPPORT=enforce` until a labelled set has been scored and the metrics are recorded under `docs/reports/`. The labelling rules are in [claim-support-label-protocol.md](claim-support-label-protocol.md). `scripts/probe_jev.py` remains the direction probe and is unchanged.
 
-`CLAIM_QUOTE_GATE` and `CLAIM_JEV_SUPPORT` both default to `off`. Shadow runs the check and records latency, bind results, and quality notes while the legacy prose guards still decide the visible answer. See `.env.example`.
+`CLAIM_QUOTE_GATE` and `CLAIM_JEV_SUPPORT` both default to `off` in code when unset; `.env.example` and the runbook in [claim-support-label-protocol.md](claim-support-label-protocol.md) set `shadow` with `CLAIM_JEV_DAILY_CAP=200`. Shadow runs the check and records latency, bind results, and quality notes while the legacy prose guards still decide the visible answer. See `.env.example`.
