@@ -65,15 +65,19 @@ async def stream_workflow(*, question: str, messages: list[dict], provider: str,
                           classifier: object | None = None, watchlist: list[str] | None = None,
                           history_citation_catalogue: list[dict] | None = None,
                           profile_block: str | None = None, unattended: bool = False,
-                          token_budget: int | None = None, action_sink: list | None = None):
+                          token_budget: int | None = None, action_sink: list | None = None,
+                          bot: dict | None = None):
     # These former routing hints/results stay accepted so older callers do not fail;
-    # none may influence the direct route or tool scope.
+    # none may influence the direct route or tool scope.  ``bot`` (agent_bots.turn_settings) does narrow it.
     from .checkpoints import open_postgres_checkpointer
     from .settings import checkpoint_database_url
+    bot = bot or {}
     context = AgentRuntimeContext(provider=provider, model=model, api_key=api_key, base_url=base_url,
         owner_hash=owner_hash, conversation_id=conversation_id, identity_credential=identity_credential,
         classifier=classifier, history_citation_catalogue=tuple(history_citation_catalogue or ()),
-        profile_block=profile_block, unattended=unattended, token_budget=token_budget, action_sink=action_sink)
+        profile_block=profile_block, unattended=unattended, token_budget=token_budget, action_sink=action_sink,
+        bot_id=bot.get("bot_id"), bot_block=bot.get("block"), tool_scope=bot.get("tool_scope"),
+        default_company=bot.get("default_company"))
     thread = checkpoint_thread_id(owner_hash, conversation_id)
     async with open_postgres_checkpointer(checkpoint_database_url()) as saver:
         graph = build_workflow(saver)

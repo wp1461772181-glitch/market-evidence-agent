@@ -102,7 +102,7 @@ app = FastAPI(title="Market Evidence Agent", version="0.1.0")
 @app.exception_handler(RequestValidationError)
 async def safe_agent_chat_validation(request: Request, exc: RequestValidationError):
     if request.url.path in {"/agent-chat/hello", "/agent-chat/messages", "/agent-chat/stream", "/agent-chat/models", "/agent-chat/personal-login",
-                            "/agent-chat/background-model"}:
+                            "/agent-chat/background-model"} or request.url.path.startswith(("/agent-chat/model-catalog", "/agent-chat/bots")):
         from .agent_chat_api import safe_validation_response
         return await safe_validation_response(request, exc)
     return await request_validation_exception_handler(request, exc)
@@ -120,6 +120,8 @@ else:
 app.include_router(agent_chat_router)
 app.include_router(local_model_profiles_router)
 app.include_router(agent_chat_stream_router)
+from .agent_bots_api import router as agent_bots_router
+app.include_router(agent_bots_router)
 app.include_router(knowledge_router)
 app.include_router(agent_chat_identity_router)
 app.include_router(forecast_v2_router)
@@ -181,6 +183,12 @@ def create_tables() -> None:
     create_evidence_revision_tables()
     from .agent_chat_store import ensure_conversation_archive_column
     ensure_conversation_archive_column()
+    # Bots (second edition): the conversation's bot column, the earlier model settings folded into the
+    # catalog once, and a line per catalog model saying whether it can be used (never a key).
+    from . import agent_model_catalog as model_catalog
+    from .agent_recall import safe_hook as _safe
+    _safe(model_catalog.migrate_legacy)
+    model_catalog.log_startup_report()
     # Conversations stored before the past-conversation index existed (agent_recall) are indexed once.
     from .agent_recall import backfill as backfill_recall, safe_hook
     safe_hook(backfill_recall)

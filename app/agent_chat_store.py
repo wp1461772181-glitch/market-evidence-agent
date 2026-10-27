@@ -182,6 +182,9 @@ def ensure_conversation_archive_column() -> None:
     from .database import engine as sync_engine
     with sync_engine.begin() as connection:
         connection.execute(text("ALTER TABLE agent_conversations ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ"))
+        # The bot whose line a conversation is (agent_bots); NULL until the default bot adopts it.
+        connection.execute(text("ALTER TABLE agent_conversations ADD COLUMN IF NOT EXISTS bot_id UUID"))
+        connection.execute(text("CREATE INDEX IF NOT EXISTS ix_agent_conversations_bot_id ON agent_conversations (bot_id)"))
 
 
 async def set_conversation_archived(credential: str, conversation_id: str, archived: bool) -> bool:

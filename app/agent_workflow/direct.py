@@ -523,7 +523,11 @@ class Turn:
                                  protocol_retries=0)
         return parse_variants(message.get('content'))
 
-    def exposed_tools(self):return schemas(owner=self.owner,granted=self.granted_actions)
+    def in_scope(self,name):
+        # A bot's tool scope only removes tools: None is every tool of the catalogue.
+        scope=getattr(self.context,'tool_scope',None)
+        return scope is None or name in scope
+    def exposed_tools(self):return [t for t in schemas(owner=self.owner,granted=self.granted_actions) if self.in_scope(t['function']['name'])]
     def write_error(self,name,code):
         self.write_reasons[name]=code;self.audit['write_outcome']='refused:'+code
         return tools.error(code)
@@ -535,7 +539,7 @@ class Turn:
     def write_allowed(self,name):
         # A scheduled task has nobody to press a card: whatever its words say, nothing is granted.
         if self.unattended():return False
-        if name not in self.granted_actions:return False
+        if name not in self.granted_actions or not self.in_scope(name):return False
         return not vetoed(name,self.authorization_question)
     def stage(self,name,value):self.audit['stages'][name]=bounded_stage(value,self.context.api_key)
     def reference_stage(self,passed=True,reason=None,*,skipped=False):
@@ -693,6 +697,9 @@ class Turn:
         trusted=' '.join(str(m.get('content','')) for m in relevant)+' '+self.original+' '+json.dumps([s.get('scope') for s in self.sets],ensure_ascii=False)
         trusted+=' '+json.dumps(self.state.get('previous_scope',{}),ensure_ascii=False)
         trusted+=' '+' '.join(r['text'] for r in self.verified_referents)
+        if self.audit.get('default_company'):
+            # The owner's own setting is a grounded source of the company, like their words.
+            company=self.audit['default_company'];trusted+=' '+company['symbol']+' '+(company.get('company') or '')
         entity_trusted=trusted+' '+self.question
         if self.scope.get('company') and not self.scope.get('symbol') and normalized(self.scope['company']).casefold() not in normalized(entity_trusted).casefold():
             from .entities import resolve_ticker
@@ -768,6 +775,9 @@ class Turn:
         self.audit['nodes'].append('classify_intent')
         await self.emit({'event':'status','status':'recognizing_intent'})
         payload={'question':self.question,'original':self.original,'user_action_words':self.authorization_question,'previous_category':self.state.get('previous_category'),'history':self.history,'previous_scope':self.state.get('previous_scope'),'as_of_utc':datetime.now(UTC).isoformat(),'write_tools':write_tool_catalogue()}
+        company=self.default_company()
+        if company:payload['default_company']={'symbol':company['symbol'],'company':company.get('company'),
+            'note':'Set by the owner for this bot. Use it only when the request names no company; a named company wins.'}
         prompt=CLASSIFY_PROMPT
         messages=[{'role':'system','content':prompt},{'role':'user','content':json.dumps(payload,ensure_ascii=False)}]
         is_injected=bool(self.context.intent_recognizer or self.context.classifier)
@@ -790,7 +800,8 @@ class Turn:
                 self.audit['classification_retries']=1
                 messages.append({'role':'system','content':'The previous classification was invalid JSON/schema or added an unrequested fiscal period. Return complete valid classify_request arguments using only enum values; leave unspecified period/form null.'})
         self.route=routing.category;self.scope=routing.model_dump();self.audit['route']=self.route
-        self.granted_actions=set() if self.unattended() else set(routing.requested_actions)
+        self.granted_actions=set() if self.unattended() else {name for name in routing.requested_actions if self.in_scope(name)}
+        self.apply_default_company()
         self.stage('classifier',{'category':self.route,'scope':{k:self.scope[k] for k in ('symbol','company','metrics','period','form','days_back')},'retries':self.audit.get('classification_retries',0),'requested_actions':routing.requested_actions})
         await self.validate_business_reference()
         if self.pending:return
@@ -828,6 +839,21 @@ class Turn:
             elif not explicit:
                 self.scope['symbol']=routing.symbol or previous_symbol
                 self.scope['company']=routing.company or known_company or None
+
+    def default_company(self):
+        company=getattr(self.context,'default_company',None)
+        return company if self.owner and isinstance(company,dict) and company.get('symbol') else None
+
+    def apply_default_company(self):
+        """A bot whose focus is exactly one company answers an unnamed question about that company.  Only
+        when the classifier found no company in the request; the audit says the company came from the bot."""
+        company=self.default_company()
+        if not company or self.route not in {'A','D'}:return
+        if any(self.scope.get(k) for k in ('symbol','symbols','company','company_mention')):return
+        if self.followup and (self.state.get('previous_scope') or {}).get('symbol'):return
+        self.scope['symbol']=company['symbol'];self.scope['company']=company.get('company')
+        self.audit['default_company']={'symbol':company['symbol'],'company':company.get('company'),'source':'bot_settings',
+                                       'bot_id':company.get('bot_id'),'bot_name':company.get('bot_name')}
 
     def card(self,question,choices):
         identity=str(uuid.uuid4())
@@ -1027,7 +1053,8 @@ class Turn:
 
     def profile_messages(self):
         block=self.context.profile_block if self.owner else None
-        return [{'role':'system','content':block}] if block else []
+        bot=getattr(self.context,'bot_block',None) if self.owner else None
+        return [{'role':'system','content':text} for text in (bot,block) if text]
 
     def tool_messages(self,closing=False):
         accepted=[o for o in self.observations if o.get('accepted_evidence')]
@@ -1046,7 +1073,7 @@ class Turn:
         if self.owner and self.unattended():
             instruction+='\n'+UNATTENDED_NOTE
         elif self.owner:
-            unavailable=[p.name for p in definitions().values() if p.level in {'reversible','costly'} and p.name not in self.granted_actions]
+            unavailable=[p.name for p in definitions().values() if p.level in {'reversible','costly'} and p.name not in self.granted_actions and self.in_scope(p.name)]
             instruction+=('\n当前身份：所有者。本轮可直接提出确认卡的写操作：'+('、'.join(sorted(self.granted_actions)) or '无')+
                 '；其他需要批准的操作（'+'、'.join(unavailable)+'）不能直接调用，确有必要时用 request_action 建议一次，由用户在卡片上决定。')
         else:
@@ -1447,6 +1474,7 @@ class Turn:
         if not self.owner:return tools.error('owner_login_required')
         if self.suggestion_used:return tools.error('suggestion_limit')
         name=args.get('tool')
+        if not self.in_scope(name):return tools.error('tool_not_in_bot_scope')
         if name in self.granted_actions:return tools.error('tool_already_granted')
         if vetoed(name,self.authorization_question):return self.write_error(name,'write_negated')
         try:
@@ -2201,6 +2229,11 @@ class Turn:
                 # Calls the model already decided on run to the hard cap; the soft cap only ends gathering.
                 if self.budget(soft=False):stop=self.budget(soft=False);break
                 function=call.get('function',{});name=function.get('name')
+                if name in definitions() and not self.in_scope(name):
+                    # Outside this bot's tool scope: refused whatever the model or a page asked for.
+                    self.audit['tool_calls']+=1;outcome=tools.error('tool_not_in_bot_scope');self.feedback.append({'name':name,**outcome})
+                    self.audit.setdefault('out_of_scope_calls',[]).append(name)
+                    self.protocol.append({'role':'tool','tool_call_id':call['id'],'content':json.dumps(outcome)});batch_failed=True;continue
                 if name in definitions() and name not in {t['function']['name'] for t in self.exposed_tools()}:
                     # An ungranted write is refused, never converted: page text can make a model call
                     # one, and a card the user might click is the wrong answer to an injected request.

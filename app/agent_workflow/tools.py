@@ -61,6 +61,8 @@ async def search_knowledge(args,context):
 
 
 async def invoke(name,args,context,*,emit=None):
+    scope=getattr(context,'tool_scope',None)
+    if scope is not None and name not in scope:return error('tool_not_in_bot_scope')
     try:args=validate(name,args)
     except Exception:return error('invalid_arguments')
     policy=definitions()[name];is_owner=owner_credential_matches(context.identity_credential)

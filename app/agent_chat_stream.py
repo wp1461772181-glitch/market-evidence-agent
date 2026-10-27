@@ -239,7 +239,10 @@ class StreamRequest(BaseModel):
   if isinstance(value,dict):return {key:item for key,item in value.items() if key!='watchlist'}
   return value
 
- provider:str=Field(pattern="^(deepseek|kimi|minimax|qwen|zhipu|doubao|hunyuan|baidu|siliconflow|openrouter|custom)$"); base_url:str|None=Field(default=None,max_length=2048); model:str=Field(min_length=1,max_length=160,pattern=r"^[A-Za-z0-9._:/-]+$"); api_key:SecretStr; message:str=Field(min_length=1,max_length=4000); conversation_id:str|None=None; pending_request_id:str|None=Field(default=None,max_length=36); display_message:str|None=Field(default=None,max_length=120)
+ # A bot's turn (bot_id) takes its model from the server's catalog: no provider, model or key comes from the
+ # browser, and conversation_id, when sent, must be that bot's.  Without bot_id the browser sends all three.
+ provider:str|None=Field(default=None,pattern="^(deepseek|kimi|minimax|qwen|zhipu|doubao|hunyuan|baidu|siliconflow|openrouter|custom)$"); base_url:str|None=Field(default=None,max_length=2048); model:str|None=Field(default=None,min_length=1,max_length=160,pattern=r"^[A-Za-z0-9._:/-]+$"); api_key:SecretStr|None=None; message:str=Field(min_length=1,max_length=4000); conversation_id:str|None=None; pending_request_id:str|None=Field(default=None,max_length=36); display_message:str|None=Field(default=None,max_length=120)
+ bot_id:str|None=Field(default=None,max_length=36)
  @field_validator("base_url")
  @classmethod
  def valid_endpoint(cls,value):
@@ -252,12 +255,13 @@ class StreamRequest(BaseModel):
   return _validated_base_url(value)
  @model_validator(mode="after")
  def custom_has_endpoint(self):
+  if self.bot_id is None and (self.provider is None or self.model is None or self.api_key is None):raise ValueError("model settings required")
   if self.provider=="custom" and not self.base_url:raise ValueError("custom endpoint required")
   return self
  @field_validator("api_key")
  @classmethod
  def valid_key(cls,value):
-  if not 8<=len(value.get_secret_value())<=2048:raise ValueError("invalid key length")
+  if value is not None and not 8<=len(value.get_secret_value())<=2048:raise ValueError("invalid key length")
   return value
  @field_validator("message")
  @classmethod
@@ -308,10 +312,34 @@ async def _profile_block(credential:str|None)->str|None:
   return block
  except Exception:
   return None
+def _bot_turn(payload,credential):
+ """A bot's turn settings and its model from the catalog (key in memory only).  The model is resolved on
+ every request, so a changed model takes effect on the bot's next turn."""
+ from . import agent_bots as bots
+ from . import agent_model_catalog as catalog
+ if not _is_owner(credential):raise HTTPException(403,"owner_only")
+ settings=bots.turn_settings(owner_hash(credential),payload.bot_id)
+ if settings is None:raise HTTPException(404,"bot_not_found")
+ if payload.conversation_id and payload.conversation_id!=settings["conversation_id"]:raise HTTPException(409,"bot_conversation_mismatch")
+ try:resolved=catalog.resolve(settings["model"])
+ except catalog.CatalogError as exc:raise HTTPException(409,str(exc)) from None
+ return settings,resolved
+class _Model:
+ """The provider settings of one turn, from the browser or from the catalog.  Its repr has no key."""
+ def __init__(self,provider,model,api_key,base_url):self.provider=provider;self.model=model;self.base_url=base_url;self._key=api_key
+ def key(self):return self._key
+ def __repr__(self):return f"_Model({self.provider!r}, {self.model!r})"
 @router.post("/stream")
 async def stream_chat(payload:StreamRequest,request:Request,x_chat_session:str|None=Header(default=None)):
  if not x_chat_session or len(x_chat_session)<32 or len(x_chat_session)>256: raise HTTPException(401,"chat_session_required")
- if len(payload.api_key.get_secret_value())<8: raise HTTPException(422,"invalid_agent_chat_request")
+ bot=None
+ if payload.bot_id:
+  bot,resolved=await asyncio.to_thread(_bot_turn,payload,x_chat_session)
+  chosen=_Model(resolved["provider"],resolved["model"],resolved["api_key"],resolved["base_url"])
+  payload.conversation_id=bot["conversation_id"]
+ else:
+  if payload.api_key is None or len(payload.api_key.get_secret_value())<8: raise HTTPException(422,"invalid_agent_chat_request")
+  chosen=_Model(payload.provider,payload.model,payload.api_key.get_secret_value(),payload.base_url)
  cid=payload.conversation_id
  if cid:
   if not await verify_conversation(cid,x_chat_session):raise HTTPException(404,"conversation_not_found")
@@ -369,11 +397,11 @@ async def stream_chat(payload:StreamRequest,request:Request,x_chat_session:str|N
    legacy_result_sets=hydrate_legacy_web_sets(history_rows,owner=owner_hash(x_chat_session),conversation=cid)
    legacy_source_choices=legacy_web_source_choices(history_rows)
    profile_block=await _profile_block(x_chat_session)
-   async for event in stream_workflow(question=payload.message,messages=messages,provider=payload.provider,model=payload.model,
-     api_key=payload.api_key.get_secret_value(),base_url=payload.base_url,owner_hash=owner_hash(x_chat_session),
+   async for event in stream_workflow(question=payload.message,messages=messages,provider=chosen.provider,model=chosen.model,
+     api_key=chosen.key(),base_url=chosen.base_url,owner_hash=owner_hash(x_chat_session),
      conversation_id=cid,identity_credential=x_chat_session,turn_id=turn,pending_request_id=payload.pending_request_id,
      legacy_result_sets=legacy_result_sets,legacy_source_choices=legacy_source_choices,
-     history_citation_catalogue=context.get("catalogue", []),profile_block=profile_block):
+     history_citation_catalogue=context.get("catalogue", []),profile_block=profile_block,bot=bot):
     kind=event.get("event")
     if kind=="assistant_tool_request":
      await append_message(cid,turn,"assistant","",tool_calls=event["protocol"])
@@ -423,13 +451,13 @@ async def stream_chat(payload:StreamRequest,request:Request,x_chat_session:str|N
      await append_message(cid,turn,"assistant",text_out,tool_calls=protocol,status="failed" if event.get("status")=="failed" else "complete")
      await finish_conversation(cid,"active")
      from .agent_context_summary import schedule_summary
-     schedule_summary(cid,x_chat_session,provider=payload.provider,model=payload.model,
-                      api_key=payload.api_key.get_secret_value(),base_url=payload.base_url)
+     schedule_summary(cid,x_chat_session,provider=chosen.provider,model=chosen.model,
+                      api_key=chosen.key(),base_url=chosen.base_url)
      if _is_owner(x_chat_session) and not payload.pending_request_id:
       from .agent_profile_extract import schedule_extraction
       schedule_extraction(owner_hash(x_chat_session),payload.message,conversation_id=cid,turn_id=turn,
-                          provider=payload.provider,model=payload.model,
-                          api_key=payload.api_key.get_secret_value(),base_url=payload.base_url)
+                          provider=chosen.provider,model=chosen.model,
+                          api_key=chosen.key(),base_url=chosen.base_url)
      if restored:yield frame("citations",{"turn_id":turn,"items":restored})
      yield frame("done",{"conversation_id":cid,"turn_id":turn,"status":event.get("status","complete"),"reason":event.get("reason"),"thinking_ms":thinking_ms})
    if not terminal:raise HTTPException(502,"workflow_incomplete")

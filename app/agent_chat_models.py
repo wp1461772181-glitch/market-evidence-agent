@@ -19,6 +19,9 @@ class AgentConversation(Base):
     # Archiving is a logical delete: the conversation and its messages stay, it just stops being
     # listed.  NULL means not archived.
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # The bot whose line this is (agent_bots).  NULL: a guest's conversation, or an owner's from before bots;
+    # the owner's are moved under the default bot when it is created.
+    bot_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
@@ -171,6 +174,53 @@ class AgentBackgroundModel(Base):
     base_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class AgentBot(Base):
+    """One of the owner's bots (personal agent plan, second edition): a long-lived post with one ongoing
+    conversation.  ``description`` is its work instruction.  ``focus`` narrows attention, never data:
+    ``{"companies": [{"symbol", "name"}], "theme": str|None}``; exactly one company makes it the default
+    company of unnamed questions.  ``tool_scope`` NULL means every tool; a list can only remove tools.
+    ``model`` names a model catalog entry (agent_model_catalog); NULL uses the catalog's default."""
+    __tablename__ = "agent_bots"
+    __table_args__ = (UniqueConstraint("owner_hash", "name", name="uq_agent_bots_owner_name"),)
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    owner_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(40), nullable=False)
+    title: Mapped[str] = mapped_column(String(60), nullable=False, default="")
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    focus: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    tool_scope: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    model: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    avatar: Mapped[str] = mapped_column(String(16), nullable=False, default="")
+    group_name: Mapped[str] = mapped_column(String(40), nullable=False, default="")
+    pinned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    hidden: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    template: Mapped[str] = mapped_column(String(20), nullable=False, default="blank")
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    daily_notify_cap: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class AgentModelEntry(Base):
+    """A model catalog entry the owner added on the settings page (agent_model_catalog).  Entries from the
+    deployment's config file are not rows.  The key is either here, encrypted with secret_box
+    (``key_source`` vault), or read from the named environment variable (``key_source`` env)."""
+    __tablename__ = "agent_model_catalog"
+    name: Mapped[str] = mapped_column(String(40), primary_key=True)
+    display_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    model: Mapped[str] = mapped_column(String(160), nullable=False)
+    base_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    key_source: Mapped[str] = mapped_column(String(8), nullable=False)          # vault | env
+    key_env: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    migrated_from: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
 

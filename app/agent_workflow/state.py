@@ -48,6 +48,13 @@ class AgentRuntimeContext:
     unattended: bool = False
     token_budget: int | None = None
     action_sink: list | None = field(default=None, repr=False, compare=False)
+    # The bot this turn belongs to (agent_bots.turn_settings).  ``bot_block`` is its work instruction, a
+    # setting and never evidence or write authority.  ``tool_scope`` None: every tool; otherwise the only
+    # tool names this turn may offer or run.  ``default_company`` applies only when the question names none.
+    bot_id: str | None = None
+    bot_block: str | None = field(default=None, repr=False, compare=False)
+    tool_scope: frozenset | None = field(default=None, compare=False)
+    default_company: dict | None = field(default=None, compare=False)
 
 
 def checkpoint_thread_id(owner_hash: str, conversation_id: str) -> str:

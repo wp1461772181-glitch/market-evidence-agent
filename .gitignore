@@ -31,3 +31,6 @@ frontend-build/
 
 # Local build and model-evaluation scratch output.
 build/
+
+# Server model catalog (personal agent): only the example is committed.
+config/models.yaml

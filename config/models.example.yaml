@@ -1,0 +1,32 @@
+# Model catalog example (personal agent, second edition).
+#
+# Copy to config/models.yaml (git-ignored) and `chmod 600` it, so only the account running the API reads it.
+# This file only lists models; it never holds a key.  Each entry names the environment variable (in .env or
+# the service environment) its key is read from.  The name must end in _API_KEY.  A key written here
+# (api_key: / key:) is ignored and reported at start-up.
+#
+# Bots pick a model by `name`.  Entries can also be added on the settings page (key kept encrypted in the
+# database).  At start-up the server logs which models are usable and which are missing a key, never a key.
+
+default: deepseek-chat
+
+models:
+  - name: deepseek-chat              # lowercase letters, digits, . _ -
+    display_name: DeepSeek Chat
+    provider: deepseek               # deepseek | kimi | minimax | qwen | zhipu | doubao | hunyuan | baidu | siliconflow | openrouter | custom
+    model: deepseek-chat
+    key_env: DEEPSEEK_API_KEY
+
+  - name: qwen-plus
+    display_name: 通义千问 Plus
+    provider: qwen
+    model: qwen-plus
+    key_env: DASHSCOPE_API_KEY
+
+  # A custom OpenAI-compatible endpoint needs base_url (https, or an endpoint listed in AGENT_LOCAL_MODEL_BASE_URLS).
+  # - name: my-gateway
+  #   display_name: My gateway
+  #   provider: custom
+  #   base_url: https://llm.example.com/v1
+  #   model: some-model
+  #   key_env: MY_GATEWAY_API_KEY

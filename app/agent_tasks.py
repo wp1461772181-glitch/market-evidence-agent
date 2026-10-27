@@ -360,6 +360,10 @@ def revoke_background_key(owner_hash: str) -> dict:
         row = db.get(AgentBackgroundModel, owner_hash, with_for_update=True)
         if row is not None and row.ciphertext:
             row.ciphertext, row.revoked_at = None, datetime.now(UTC)
+            # The model catalog's copy of this key (agent_model_catalog.migrate_legacy) goes with it.
+            from .agent_chat_models import AgentModelEntry
+            db.query(AgentModelEntry).filter(AgentModelEntry.migrated_from == f"background:{owner_hash[:16]}").update(
+                {"ciphertext": None}, synchronize_session=False)
             db.commit()
     return background_summary(owner_hash)
 
