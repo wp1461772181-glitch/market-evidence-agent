@@ -18,7 +18,7 @@ Each row is one claim that already passed quote or field binding. Label the **re
 `does_not_support`: the span contradicts the claim or does not state it (a digit typo that survived fuzzy bind belongs here).
 `unrelated`: the span is about a different fact.
 
-Seed rows live in `tests/fixtures/claim_jev_labels/`. That directory is an example, not a scored set.
+The scored set is `tests/fixtures/claim_jev_labels/labels.json` (`example.json` only shows the row shape). `scripts/score_claim_jev_labels.py --live --check` scores Jev against it; `--subset reached` limits the run to the rows the quote gate passes on to Jev.
 
 ## Accuracy bar
 

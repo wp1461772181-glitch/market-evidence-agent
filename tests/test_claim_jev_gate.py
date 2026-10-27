@@ -126,3 +126,34 @@ def test_per_turn_cap_batches_one_request_and_skips_the_rest():
     assert len(seen) == 1 and len(seen[0]) == 1
     assert application.audit["jev_support_calls"] == 1
     assert application.audit["jev_skipped_reasons"][0]["reason"] == "per_turn_cap"
+
+
+def test_quote_sent_to_jev_carries_the_table_unit_header():
+    # A scaled claim ("161.28 亿美元") is only checkable when the "In millions" header travels with the span.
+    fixture = json.loads(open("tests/fixtures/claim_gate/millions_header.json", encoding="utf-8").read())
+    answer = "营收为 161.28 亿美元 [1]。\n" + json.dumps(fixture["claims"], ensure_ascii=False)
+    seen = []
+
+    def support(items, **kwargs):
+        seen.extend(items)
+        return [_result("supports") for _ in items]
+
+    application = apply_claim_gate(
+        answer, fixture["citations"], mode="enforce", support_mode="enforce", support_fn=support,
+    )
+    assert application.audit["jev_support_calls"] == 1
+    (_id, quote, _claim), = seen
+    assert quote.startswith("In millions\n")
+    assert quote.endswith("Total net sales were 16,128 for fiscal 2024.")
+    assert "Item A" not in quote
+
+
+def test_quote_without_unit_header_is_sent_as_the_resolved_span():
+    seen = []
+
+    def support(items, **kwargs):
+        seen.extend(items)
+        return [_result("supports") for _ in items]
+
+    apply_claim_gate(_answer(), CITATIONS, mode="enforce", support_mode="enforce", support_fn=support)
+    assert seen[0][1] == "Total net sales were 16,128 for fiscal 2024."

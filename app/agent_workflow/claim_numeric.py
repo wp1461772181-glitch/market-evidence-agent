@@ -116,6 +116,12 @@ def _header_scale(header: str) -> float:
     return 1.0
 
 
+def header_unit_lines(header: str) -> str:
+    """Only the header lines that set a table unit, so a checker sees the scale without unrelated rows."""
+    lines = [line.strip() for line in (header or "").splitlines()]
+    return "\n".join(line for line in lines if line and any(p.search(line) for p, _ in _HEADER_SCALE))
+
+
 def _header_scaled_cells(span: str, scale: float) -> set[float]:
     if scale == 1.0:
         return set()

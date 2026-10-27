@@ -5,7 +5,7 @@ import re
 import time
 from dataclasses import dataclass, field
 
-from .claim_numeric import header_context, numbers_supported
+from .claim_numeric import header_context, header_unit_lines, numbers_supported
 from .claim_units import ClaimParseError, FieldEvidence, QuoteEvidence, extract_claims_payload, parse_claims
 from .evidence import _citation_material, factual_claim, reviewed_claims
 
@@ -100,6 +100,7 @@ def apply_claim_gate(
         accepted,
         issues,
         citations,
+        bodies,
         support_mode=support_mode,
         support_fn=support_fn,
         threshold=support_threshold,
@@ -141,7 +142,7 @@ def apply_claim_gate(
     return ClaimGateApplication(prose, kept, issues, display, dropped, audit)
 
 
-def _apply_support(accepted, issues, citations, *, support_mode, support_fn, threshold, max_per_turn):
+def _apply_support(accepted, issues, citations, bodies=None, *, support_mode, support_fn, threshold, max_per_turn):
     """Optional Jev pass. Only explicit ``does_not_support`` in enforce drops a claim."""
     audit = {"jev_support_calls": 0, "jev_skipped_reasons": [], "semantic_unchecked": [], "jev_choices": []}
     if support_mode == "off" or support_fn is None or not accepted:
@@ -163,6 +164,12 @@ def _apply_support(accepted, issues, citations, *, support_mode, support_fn, thr
     for claim in eligible:
         if isinstance(claim.evidence, QuoteEvidence):
             quote = claim.evidence.evidence_quote
+            # The span alone drops a table's "In millions"; without it a correctly scaled claim reads as unsupported.
+            source = (bodies or {}).get(claim.citation_ordinal) or str(indexed.get(claim.citation_ordinal, {}).get("quote") or "")
+            start = source.find(quote)
+            units = header_unit_lines(header_context(source, start if start >= 0 else None))
+            if units:
+                quote = f"{units}\n{quote}"
         else:
             quote = _citation_material(indexed.get(claim.citation_ordinal, {}))
         payload.append((claim.id, quote, claim.statement))
