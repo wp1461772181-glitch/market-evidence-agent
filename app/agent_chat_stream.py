@@ -293,6 +293,20 @@ _FAILURE_NOTICES={
 def _failure_notice(exc:Exception)->str:
  code=exc.detail if isinstance(exc,HTTPException) and isinstance(exc.detail,str) else ""
  return _FAILURE_NOTICES.get(code,"这一轮没有完成，没有生成回答。请再发一次。")
+def _is_owner(credential:str|None)->bool:
+ from .agent_chat_identity import owner_credential_matches
+ return owner_credential_matches(credential)
+async def _profile_block(credential:str|None)->str|None:
+ """The owner's profile message for this turn (None for guests, or when it cannot be read: a profile is a
+ convenience and never blocks a turn)."""
+ if not _is_owner(credential):return None
+ from .agent_profile import render_block,touch_used
+ try:
+  block,ids=await asyncio.to_thread(render_block,owner_hash(credential))
+  if ids:await asyncio.to_thread(touch_used,owner_hash(credential),ids)
+  return block
+ except Exception:
+  return None
 @router.post("/stream")
 async def stream_chat(payload:StreamRequest,request:Request,x_chat_session:str|None=Header(default=None)):
  if not x_chat_session or len(x_chat_session)<32 or len(x_chat_session)>256: raise HTTPException(401,"chat_session_required")
@@ -353,11 +367,12 @@ async def stream_chat(payload:StreamRequest,request:Request,x_chat_session:str|N
    from .agent_workflow.semantic import hydrate_legacy_web_sets, legacy_web_source_choices
    legacy_result_sets=hydrate_legacy_web_sets(history_rows,owner=owner_hash(x_chat_session),conversation=cid)
    legacy_source_choices=legacy_web_source_choices(history_rows)
+   profile_block=await _profile_block(x_chat_session)
    async for event in stream_workflow(question=payload.message,messages=messages,provider=payload.provider,model=payload.model,
      api_key=payload.api_key.get_secret_value(),base_url=payload.base_url,owner_hash=owner_hash(x_chat_session),
      conversation_id=cid,identity_credential=x_chat_session,turn_id=turn,pending_request_id=payload.pending_request_id,
      legacy_result_sets=legacy_result_sets,legacy_source_choices=legacy_source_choices,
-     history_citation_catalogue=context.get("catalogue", [])):
+     history_citation_catalogue=context.get("catalogue", []),profile_block=profile_block):
     kind=event.get("event")
     if kind=="assistant_tool_request":
      await append_message(cid,turn,"assistant","",tool_calls=event["protocol"])
@@ -409,6 +424,11 @@ async def stream_chat(payload:StreamRequest,request:Request,x_chat_session:str|N
      from .agent_context_summary import schedule_summary
      schedule_summary(cid,x_chat_session,provider=payload.provider,model=payload.model,
                       api_key=payload.api_key.get_secret_value(),base_url=payload.base_url)
+     if _is_owner(x_chat_session) and not payload.pending_request_id:
+      from .agent_profile_extract import schedule_extraction
+      schedule_extraction(owner_hash(x_chat_session),payload.message,conversation_id=cid,turn_id=turn,
+                          provider=payload.provider,model=payload.model,
+                          api_key=payload.api_key.get_secret_value(),base_url=payload.base_url)
      if restored:yield frame("citations",{"turn_id":turn,"items":restored})
      yield frame("done",{"conversation_id":cid,"turn_id":turn,"status":event.get("status","complete"),"reason":event.get("reason"),"thinking_ms":thinking_ms})
    if not terminal:raise HTTPException(502,"workflow_incomplete")
@@ -587,3 +607,32 @@ async def put_research_queue_endpoint(body: ResearchQueueBody, x_chat_session: s
     credential = _owner_only(x_chat_session)
     return {"symbols": await put_research_queue(credential, body.symbols)}
 
+
+
+@router.get("/profile")
+async def get_profile_endpoint(x_chat_session: str | None = Header(default=None)):
+    """The owner's profile items, active and archived, for the memory page."""
+    from .agent_profile import list_items
+    credential = _owner_only(x_chat_session)
+    return {"items": await asyncio.to_thread(list_items, owner_hash(credential))}
+
+
+@router.post("/profile/{item_id}/confirm")
+async def confirm_profile_endpoint(item_id: str, x_chat_session: str | None = Header(default=None)):
+    """The owner confirms an inferred item on the memory page; it becomes explicit."""
+    from .agent_profile import confirm_item
+    credential = _owner_only(x_chat_session)
+    item = await asyncio.to_thread(confirm_item, owner_hash(credential), item_id)
+    if item is None:
+        raise HTTPException(404, "profile_item_not_found")
+    return {"item": item}
+
+
+@router.delete("/profile/{item_id}")
+async def delete_profile_endpoint(item_id: str, x_chat_session: str | None = Header(default=None)):
+    """The owner deletes an item on the memory page; the next turn no longer carries it."""
+    from .agent_profile import delete_item
+    credential = _owner_only(x_chat_session)
+    if not await asyncio.to_thread(delete_item, owner_hash(credential), item_id):
+        raise HTTPException(404, "profile_item_not_found")
+    return {"deleted": True}

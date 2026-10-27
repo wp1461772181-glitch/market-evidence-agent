@@ -45,6 +45,8 @@ export const TOOL_LABELS = {
   scan_official: "扫描官方申报目录",
   translate_content: "内容翻译",
   review_knowledge_candidate: "审核知识候选",
+  remember: "记住偏好",
+  forget: "忘掉偏好",
 };
 
 /** The display name of a tool, falling back to its identifier when unknown. */

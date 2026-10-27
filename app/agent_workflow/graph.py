@@ -63,14 +63,16 @@ async def stream_workflow(*, question: str, messages: list[dict], provider: str,
                           pending_request_id: str | None = None, legacy_result_sets: list[dict] | None = None,
                           legacy_source_choices: list[dict] | None = None,
                           classifier: object | None = None, watchlist: list[str] | None = None,
-                          history_citation_catalogue: list[dict] | None = None):
+                          history_citation_catalogue: list[dict] | None = None,
+                          profile_block: str | None = None):
     # These former routing hints/results stay accepted so older callers do not fail;
     # none may influence the direct route or tool scope.
     from .checkpoints import open_postgres_checkpointer
     from .settings import checkpoint_database_url
     context = AgentRuntimeContext(provider=provider, model=model, api_key=api_key, base_url=base_url,
         owner_hash=owner_hash, conversation_id=conversation_id, identity_credential=identity_credential,
-        classifier=classifier, history_citation_catalogue=tuple(history_citation_catalogue or ()))
+        classifier=classifier, history_citation_catalogue=tuple(history_citation_catalogue or ()),
+        profile_block=profile_block)
     thread = checkpoint_thread_id(owner_hash, conversation_id)
     async with open_postgres_checkpointer(checkpoint_database_url()) as saver:
         graph = build_workflow(saver)

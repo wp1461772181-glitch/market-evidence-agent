@@ -70,3 +70,25 @@ class AgentResearchQueue(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(),
                                                  onupdate=func.now(), nullable=False)
 
+
+
+class AgentProfileItem(Base):
+    """One line of the owner's profile: a lasting preference, something about the owner, or a standing
+    instruction.  Every row quotes the owner's own words (``quote``); text from pages, filings or tool
+    results never becomes a row.  Rows are archived rather than deleted when a newer one replaces them;
+    only the owner deleting a row on the memory page removes it."""
+    __tablename__ = "agent_profile_items"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    owner_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    # A short slug (currency_unit, answer_language): a newer item of the same kind and topic replaces
+    # the older one.  NULL: the item replaces nothing.
+    topic: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    text: Mapped[str] = mapped_column(String(200), nullable=False)
+    origin: Mapped[str] = mapped_column(String(10), nullable=False)
+    source_message_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    quote: Mapped[str] = mapped_column(String(200), nullable=False)
+    status: Mapped[str] = mapped_column(String(10), nullable=False, default="active")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

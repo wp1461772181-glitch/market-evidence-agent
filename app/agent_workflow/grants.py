@@ -4,6 +4,8 @@ from ..agent_tool_catalog import validate,write_tool_names
 
 def suggestion_operation(name,arguments):
     if name not in write_tool_names():raise ValueError('invalid_action_tool')
+    # The profile learns only from the user's own words: an agent suggestion is not one.
+    if name in {'remember','forget'}:raise ValueError('invalid_action_tool')
     args=validate(name,arguments)
     operation={'name':name,'arguments':copy.deepcopy(args)}
     if name in {'fetch_sec','refresh_sec'}:

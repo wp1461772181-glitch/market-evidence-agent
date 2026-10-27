@@ -36,6 +36,8 @@ WRITE_ARGUMENTS={
  'import_sources':{'source_type':'sec','source_ids':['11111111-1111-4111-8111-111111111111']},
  'save_material_evidence':{'symbol':'AMD','title':'Test Title','source_url':'https://example.com','published_at':'2026-10-10','content':'Test Content'},
  'withdraw_knowledge_document':{'document_id':'11111111-1111-4111-8111-111111111111'},
+ 'remember':{'kind':'preference','topic':'currency_unit','text':'金额用亿美元','quote':'以后金额用亿美元'},
+ 'forget':{'item_id':'#1a2b3c4d'},
 }
 
 

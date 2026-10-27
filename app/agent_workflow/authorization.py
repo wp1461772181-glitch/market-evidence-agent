@@ -25,13 +25,20 @@ VERBS={
     'save_material_evidence':r'保存|上传|录入|收录|save|upload',
     'withdraw_knowledge_document':r'撤回|删除|撤销|withdraw|delete',
     'test_retrieval_diagnostics':r'诊断|测试|检索|diagnose|test',
+    'remember':r'记住|记下|记得|以后|今后|往后|从现在起|每次都|一律|remember|from now on|always',
+    'forget':r'忘掉|忘记|忘了|删掉|删除|去掉|forget|delete',
 }
+# "以后别再用万元" is a standing instruction, not a refusal: for remember these are the request itself.
+_STANDING_INSTRUCTION=re.compile(r'(?:以后|今后|往后|从现在起)?(?:都)?(?:别再|不要再|不再|别用|不要用)')
+_REMEMBER_REFUSED=re.compile(r'(?:不要|别|不用|无需|不必)(?:帮我)?(?:记住|记下|记)|do not remember|don.t remember',re.I)
 NEGATION=re.compile(r'(?:不要|别|勿|无需|不用|不能|不想|禁止|切勿|请勿|千万别|do not|don.t|never|without)[^，。；;.!?\n]{0,35}',re.I)
 _POLITE_NON_NEGATION=re.compile(r'不用(?:客气|担心|多说|慌|犹豫|管|急|在意|考虑|理会|查其他|看其他|管其他|确认)|别(?:客气|担心|急|管)|无需(?:向我)?确认|不需确认',re.I)
 
 def authorized(name,words):
     pattern=VERBS.get(name)
     if not pattern:return False
+    if name=='remember' and _REMEMBER_REFUSED.search(words):return False
+    if name=='remember' and _STANDING_INSTRUCTION.search(words):return True
     # Token boundaries for English avoid authorizing "import" inside "important".
     verbs=re.compile('|'.join(r'(?<![A-Za-z])'+p+r'(?![A-Za-z])' if p.isascii() else p for p in pattern.split('|')),re.I)
     clean_words=_POLITE_NON_NEGATION.sub('',words)
@@ -43,6 +50,7 @@ def vetoed(name,words):
     """Negative veto only. This function can NEVER grant an operation."""
     pattern=VERBS.get(name)
     if not pattern:return False
+    if name=='remember':return bool(_REMEMBER_REFUSED.search(words))
     clean_words=_POLITE_NON_NEGATION.sub('',words)
     verb_pattern='|'.join(r'(?<![A-Za-z])'+p+r'(?![A-Za-z])' if p.isascii() else p for p in pattern.split('|'))
     has_negated = any(re.search(verb_pattern,n.group(0),re.I) for n in NEGATION.finditer(clean_words))

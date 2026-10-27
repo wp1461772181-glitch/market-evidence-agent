@@ -1267,5 +1267,7 @@
   "工具执行失败": "Tool failed",
   "多次检索没有进展": "Search made no progress",
   "达到本轮时间上限": "Turn time limit reached",
-  "模型返回格式无效": "Model returned an invalid format"
+  "模型返回格式无效": "Model returned an invalid format",
+  "记住偏好": "Remember preference",
+  "忘掉偏好": "Forget preference"
 }

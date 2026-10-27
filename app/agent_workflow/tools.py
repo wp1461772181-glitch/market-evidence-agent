@@ -78,6 +78,7 @@ async def execute_reversible(operation,key,context,*,emit=None):
         if saved['status']!='executing' or saved['operations'][int(index)]!=operation:raise ValueError('confirmation_parameter_mismatch')
         name=operation['name'];args=validate(name,operation['arguments'])
         if definitions()[name].level!='reversible':raise ValueError('invalid_action_tool')
+        if name=='remember':args['_source_message_id']=operation.get('source_message_id')
     except (ValueError,IndexError,KeyError,TypeError):return error('confirmation_required')
     return await _dispatch(name,args,context,True,emit)
 
@@ -193,6 +194,21 @@ async def _dispatch(name,args,context,is_owner,emit):
             if not row:return error('source_not_found')
             review_inventory_filing(symbol=row.symbol,accession_number=row.accession_number,decision=args['decision'],note=args['note'],db=db)
             db.commit();return result([{'source_id':args['source_id'],'decision':args['decision']}],'relevance review')
+    if name in {'remember','forget'}:
+        # Only reached through execute_reversible: the card was pressed and the frozen operation matched.
+        from .. import agent_profile as profile
+        if not is_owner:return error('owner_login_required')
+        if name=='forget':
+            item=await asyncio.to_thread(profile.archive_item,context.owner_hash,args['item_id'])
+            return result([{'status':'forgotten','text':item['text'],'handle':item['handle']}],'owner profile') if item else error('profile_item_not_found')
+        # The quote was checked against the user's message when the card was made (Turn.propose), and
+        # the operation carrying it is frozen under the confirmation token; here only its shape is checked.
+        try:value=await asyncio.to_thread(profile.add_item,context.owner_hash,origin='explicit',message=args['quote'],
+                                          source_message_id=args.get('_source_message_id'),
+                                          **{k:args[k] for k in ('kind','topic','text','quote')})
+        except profile.ProfileError as exc:return error(str(exc))
+        if value.get('status')=='skipped':return error(value.get('reason') or 'profile_write_skipped')
+        return result([{'status':'remembered','text':value['item']['text'],'handle':value['item']['handle']}],'owner profile')
     return error('unknown_tool')
 
 
