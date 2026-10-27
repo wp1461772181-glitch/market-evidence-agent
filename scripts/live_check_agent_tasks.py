@@ -21,6 +21,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from sqlalchemy import create_engine, text  # noqa: E402
 from sqlalchemy.engine import make_url  # noqa: E402
 
+# Imported before this script's own DATABASE_URL: importing live_check_profile points DATABASE_URL
+# at its own (never created) database, so ours must be set after it.
+from live_check_profile import env_value  # noqa: E402
+
 ADMIN_URL = make_url(os.getenv("TEST_DATABASE_URL",
                                "postgresql+psycopg://market_evidence:market_evidence_dev@localhost:55432/test_market_evidence"))
 DATABASE = f"test_live_tasks_{uuid.uuid4().hex[:12]}"
@@ -28,7 +32,6 @@ os.environ["DATABASE_URL"] = ADMIN_URL.set(database=DATABASE).render_as_string(h
 os.environ["PERSONAL_CHAT_LOGIN_PATH"] = f"/tmp/live-tasks-missing-{uuid.uuid4().hex}.json"
 os.environ.setdefault("MODEL_CREDENTIAL_KEY", "live-check-model-credential-key-0123456789")
 
-from live_check_profile import env_value  # noqa: E402
 
 
 def main() -> int:
@@ -66,6 +69,14 @@ def run(key: str, model: str) -> int:
     Base.metadata.create_all(engine, tables=[t for t in Base.metadata.tables.values()
                                              if not t.name.endswith("_v2") and not t.name.startswith("knowledge_")
                                              and t.name not in skipped])
+    # The workflow's LangGraph checkpoint tables (scripts/migrate_agent_workflow.py does this for the real DB);
+    # without them every unattended turn fails with UndefinedTable before the model is called.
+    from app.agent_workflow.checkpoints import open_postgres_checkpointer
+
+    async def migrate():
+        async with open_postgres_checkpointer(os.environ["DATABASE_URL"]) as saver:
+            await saver.setup()
+    asyncio.run(migrate())
     owner = "live-owner-" + uuid.uuid4().hex
     for module in (consent, direct, tools, identity):
         module.owner_credential_matches = lambda c, o=owner: c == o
@@ -100,6 +111,8 @@ def run(key: str, model: str) -> int:
     print("   consent cards:", cards, "| research queue:", queue, "| 待你确认:", [i["title"] for i in confirm])
     if cards or queue != ["NVDA", "AAPL"]:
         failures.append("unattended_wrote")
+    if "failed" in status.values():
+        failures.append("run_failed")
 
     print("2 · inbox brief")
     briefs = tasks.list_inbox(hashed, section="brief")
