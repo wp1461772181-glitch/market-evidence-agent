@@ -21,11 +21,32 @@ LABEL = "com.market-evidence-agent.agent-tasks"
 INTERVAL_SECONDS = 300
 
 
+def _rag_enabled(project_root: Path) -> bool:
+    flag = os.environ.get("RAG_ENABLED", "")
+    env_file = project_root / ".env"
+    if not flag and env_file.is_file():
+        for line in env_file.read_text(encoding="utf-8").splitlines():
+            name, sep, value = line.partition("=")
+            if sep and name.strip() == "RAG_ENABLED":
+                flag = value.split("#", 1)[0].strip().strip("'\"")
+    return flag.lower() in {"1", "true", "yes"}
+
+
+def runner_python(project_root: Path) -> Path:
+    """The interpreter the API uses (scripts/run_api_server.sh): MARKET_EVIDENCE_API_PYTHON, else .venv-rag
+    when RAG_ENABLED, else .venv.  The runner needs the same packages (langgraph) as the API."""
+    override = os.environ.get("MARKET_EVIDENCE_API_PYTHON")
+    if override:
+        path = Path(override)
+        return path if path.is_absolute() else project_root / path
+    return project_root / (".venv-rag" if _rag_enabled(project_root) else ".venv") / "bin" / "python"
+
+
 def plist(project_root: Path) -> dict:
     log_directory = project_root / "logs"
     return {
         "Label": LABEL,
-        "ProgramArguments": [str(project_root / ".venv" / "bin" / "python"), str(project_root / "scripts" / "run_agent_tasks.py")],
+        "ProgramArguments": [str(runner_python(project_root)), str(project_root / "scripts" / "run_agent_tasks.py")],
         "WorkingDirectory": str(project_root),
         "StartInterval": INTERVAL_SECONDS,
         # One run right after login/boot picks up whatever came due while the Mac was off.
