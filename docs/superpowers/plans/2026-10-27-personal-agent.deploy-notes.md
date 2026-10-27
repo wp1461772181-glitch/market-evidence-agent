@@ -81,3 +81,44 @@ Verified on CodeBot: the Phase 1 commits cherry-picked onto main `7aa0f1d` (temp
 1036 passed and the same 4 failures across `tests/test_agent_*.py tests/test_claim_*.py tests/test_jev_claim_support.py tests/test_reviewed_claims.py`.
 
 Check whether they also fail on the Mac before you read them as regressions.
+
+## Phase 3 — tasks, inbox, background model, alerts (Mac steps)
+
+Commits: `5db3da4` (backend, tests, runner, launchd installer) and `4875544` (frontend), plus the notes commit.
+Land the branch on a clean main as before (`git cherry-pick bfcb274^..worktree-personal-agent` lands every phase).
+
+1. **Tests on the Mac**
+   ```bash
+   .venv/bin/python -m pytest -q tests/test_agent_tasks.py tests/test_agent_tool_catalog.py tests/test_agent_*.py \
+     tests/test_claim_*.py tests/test_jev_claim_support.py tests/test_reviewed_claims.py tests/test_official_monitor_v2.py
+   cd frontend && npm run test:i18n && npm run build && cd ..
+   ```
+   The same 4 pre-existing failures are expected (see the list above). Nothing else should fail.
+2. **Live check (real model)**: `.venv/bin/python scripts/live_check_agent_tasks.py`. It uses
+   `DEEPSEEK_API_KEY` from `.env` and a disposable `test_live_tasks_*` database, and never prints the key. Expect `RESULT: PASS`:
+   the unattended run creates no consent card and leaves the research queue unchanged, a brief lands in the inbox, and after revoking the key
+   the task shows 未运行：缺少模型.
+3. **Deploy backend**: `python scripts/deploy.py --backend-only`, then `curl -s http://127.0.0.1:8000/health`.
+   Startup creates `agent_tasks`, `agent_inbox_items` and `agent_background_model` (additive, `create_all`).
+   `MODEL_CREDENTIAL_KEY` (or `APP_API_ACCESS_KEY`, already set) encrypts the background key. Do not change `.env`.
+4. **Install the runner** (after the deploy):
+   ```bash
+   .venv/bin/python scripts/install_agent_tasks_launchagent.py --print   # review
+   .venv/bin/python scripts/install_agent_tasks_launchagent.py           # com.market-evidence-agent.agent-tasks, every 300 s
+   .venv/bin/python scripts/run_agent_tasks.py --dry-run                 # lists due tasks, runs nothing
+   tail -f logs/agent-tasks.out.log
+   ```
+   The runner acts as the owner credential in `data/personal-chat-login.json`, and only one runner works at a time.
+   For a SEC-monitor alert hook right after each scan, the monitor must run in `v2` mode; otherwise the alerts task's own schedule picks up new filings.
+   The market refresh calls the price-line check whenever it stores new bars.
+5. **Manual check after deploy**: the frontend needs a Pages push, so do this on a local `vite` build, or after the owner approves the push.
+   - In 设置 → 后台任务模型, choose a tested model profile, then 用这个模型. The page shows only 「已保存 key」.
+   - In 简报 → 任务 → 新建任务, create 工作日 08:00 研究队列简报. For a quick test, set the time a few minutes ahead and wait for the next tick.
+   - The brief appears in 简报 with [n] sources, and 打开对话 continues it as a chat.
+   - If the instruction asks for a write (e.g. 加入研究队列), the suggestion appears in 待你确认 and nothing changes until you press
+     生成确认卡 → 同意 in the opened conversation. The card's capability lasts 10 minutes from 生成确认卡.
+   - 撤销 key → the next run shows 未运行：缺少模型.
+6. **Frontend push** (briefs page, settings card) needs the owner's OK: `deploy.py` without `--backend-only`.
+
+Not in Phase 3: the Telegram channel is stored, but delivery comes in Phase 4. Such briefs stay in the inbox and say so.
+Phase 5 (Skills) fills `skill_id`.
