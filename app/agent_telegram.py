@@ -125,6 +125,19 @@ def unbind(owner_hash: str) -> dict:
     return status(owner_hash)
 
 
+def load_bot_token(owner_hash: str) -> str | None:
+    """The bot token alone, whether or not a chat is bound: the bridge needs it to receive the /bind that
+    binds one.  None when no token is saved or it no longer decrypts."""
+    with SessionLocal() as db:
+        row = db.get(AgentTelegramBind, owner_hash)
+        if row is None or not row.bot_token_cipher:
+            return None
+        try:
+            return decrypt_secret(row.bot_token_cipher)
+        except CredentialEncryptionError:
+            return None
+
+
 def load_bind(owner_hash: str) -> dict | None:
     """The bridge's lookup: bot token (decrypted), bound chat, conversation id.  Returns None when
     there is no saved token or the token no longer decrypts."""

@@ -339,3 +339,11 @@ class TestApiEndpoints:
         response = client.post("/agent-chat/telegram/token",
                                json={"bot_token": "1234567890:AAvalidTokenButNoAuth"})
         assert response.status_code == 403
+
+
+def test_the_token_loads_before_any_chat_is_bound(owner):
+    import app.agent_telegram as tg
+    token = "1234567890:AAbCdEfGhIjKlMnOpQrStUvWxYz0123456789"
+    tg.save_token(owner, token)
+    assert tg.load_bind(owner) is None
+    assert tg.load_bot_token(owner) == token

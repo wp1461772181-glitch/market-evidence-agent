@@ -1,7 +1,8 @@
 """Telegram bridge for the personal agent (plan §2.4).
 
 Long-polls the Telegram Bot API with getUpdates (no webhook).  Only handles messages and button presses
-from the bound account in the bound chat; strangers are ignored.  Owner text is forwarded to the agent chat API (a fixed conversation named
+from the bound account in the bound chat; strangers are ignored.  Until a chat is bound it answers
+only /bind <code> (or /start <code>) in a private chat.  Owner text is forwarded to the agent chat API (a fixed conversation named
 「手机」).  Consent cards become inline keyboard buttons with a short id (the real token stays server-side);
 callback_query runs consent.execute once and sends a receipt.  Inbox briefs with channel=telegram are
 delivered to this chat.
@@ -12,7 +13,7 @@ delivered to this chat.
 The bridge reads the bot token and binding from the database (encrypted), the owner credential from
 data/personal-chat-login.json, and the background model (the LLM key) from the database.  It calls the
 local agent-chat stream endpoint via HTTP, so the API server must be running.  Fails closed when the
-token or binding is missing.
+token is missing; with no chat bound yet it waits for /bind.
 """
 from __future__ import annotations
 
@@ -71,12 +72,9 @@ async def main(dry_run: bool = False) -> int:
     from app.agent_tasks import load_background_model, add_item
     owner = owner_hash(credential)
 
-    bind = await asyncio.to_thread(tg.load_bind, owner)
-    if not bind:
-        print("Telegram bridge: no bound bot token or chat.  Save a token and bind a chat first.")
-        return 0 if dry_run else 1
-    if not bind.get("chat_id"):
-        print("Telegram bridge: bot token saved but no chat is bound.  Run /bind in the settings page.")
+    bot_token = await asyncio.to_thread(tg.load_bot_token, owner)
+    if not bot_token:
+        print("Telegram bridge: no bot token saved.  Save one in the settings page first.")
         return 0 if dry_run else 1
 
     model = await asyncio.to_thread(load_background_model, owner)
@@ -84,15 +82,16 @@ async def main(dry_run: bool = False) -> int:
         print("Telegram bridge: no background model configured.  The bridge cannot chat without a model.")
         return 0 if dry_run else 1
 
-    bot_token = bind["bot_token"]
-    bound_chat = bind["chat_id"]
+    # No chat bound yet is fine: the bridge has to be running to receive the /bind that binds one.
+    bind = await asyncio.to_thread(tg.load_bind, owner) or {}
+    bound_chat = bind.get("chat_id")
     bound_user = bind.get("user_id")
     conversation_id = bind.get("conversation_id")
     del bind  # the decrypted token stays in bot_token only
 
     if dry_run:
         print("Bot token: ****" + bot_token[-4:])
-        print(f"Bound chat: {bound_chat}")
+        print(f"Bound chat: {bound_chat or '(none yet; send /bind <code> to the bot in a private chat)'}")
         print(f"Conversation: {conversation_id or '(will create 「手机」 on first message)'}")
         print(f"Model: {model['provider']} / {model['model']}")
         print(f"Local API: {LOCAL_API}")
@@ -118,13 +117,26 @@ async def main(dry_run: bool = False) -> int:
     last_inbox_check = 0.0
     offset = 0
 
-    print(f"Telegram bridge started.  Chat: {bound_chat}, API: {LOCAL_API}")
+    print(f"Telegram bridge started.  Chat: {bound_chat or 'none yet, waiting for /bind'}, API: {LOCAL_API}")
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(LONG_POLL_TIMEOUT + 15)) as client:
         while True:
             try:
+                # Re-read the token and binding every round, so a first /bind, an unbind or a new token saved
+                # in the settings page takes effect without restarting the bridge.
+                latest_token = await asyncio.to_thread(tg.load_bot_token, owner)
+                if not latest_token:
+                    print("Telegram bridge: the bot token is gone or no longer decrypts.  Stopping.",
+                          file=sys.stderr)
+                    return 1
+                if latest_token != bot_token:
+                    bot_token, offset = latest_token, 0  # update ids belong to one bot
+                bind = await asyncio.to_thread(tg.load_bind, owner) or {}
+                bound_chat, bound_user = bind.get("chat_id"), bind.get("user_id")
+                del bind
+
                 now = time.time()
-                if now - last_inbox_check >= INBOX_CHECK_INTERVAL:
+                if bound_chat is not None and now - last_inbox_check >= INBOX_CHECK_INTERVAL:
                     await _deliver_inbox(client, credential, owner, bound_chat, tg)
                     last_inbox_check = now
 
@@ -183,10 +195,8 @@ def _from_owner(chat: dict, sender: dict | None, bound_chat: int, bound_user: in
 
 
 async def _handle_message(client, credential: str, owner: str, model: dict, message: dict,
-                          bound_chat: int, bound_user: int | None, pending_cards: dict, tg, ensure_conv):
+                          bound_chat: int | None, bound_user: int | None, pending_cards: dict, tg, ensure_conv):
     chat = message.get("chat", {})
-    if not _from_owner(chat, message.get("from"), bound_chat, bound_user):
-        return
     text = str(message.get("text") or message.get("caption") or "").strip()
     entities = message.get("entities") or []
     bot_cmd = None
@@ -196,19 +206,22 @@ async def _handle_message(client, credential: str, owner: str, model: dict, mess
             if cmd_text.startswith("/"):
                 bot_cmd = cmd_text
                 break
+    binding = bool(bot_cmd) and bot_cmd.startswith(("/start", "/bind"))
+    if bound_chat is None:
+        # Nothing is bound yet: the one thing a chat can do is bind with the code from the settings page.
+        if binding:
+            await _handle_bind_command(client, chat, message.get("from"), owner, text[len(bot_cmd):].strip(), tg)
+        return
+    if not _from_owner(chat, message.get("from"), bound_chat, bound_user):
+        return
     if bot_cmd:
-        if bot_cmd.startswith("/start"):
-            code = text[len(bot_cmd):].strip()
-            await _handle_bind_command(client, chat, message.get("from"), owner, code, tg)
-            return
-        elif bot_cmd.startswith("/bind"):
-            code = text[len(bot_cmd):].strip()
-            await _handle_bind_command(client, chat, message.get("from"), owner, code, tg)
-            return
+        if binding:
+            await _handle_bind_command(client, chat, message.get("from"), owner, text[len(bot_cmd):].strip(), tg)
         return
 
     if not text:
         return
+    bot_token = _bot_token_for_send(owner, tg)
     cid = await ensure_conv()
     answer, cards = await _ask_agent(client, credential, owner, model, text, cid)
     keyboard = _make_keyboard(cards, pending_cards, cid, credential)
@@ -247,10 +260,8 @@ async def _handle_bind_command(client, chat: dict, sender: dict | None, owner: s
 
 def _bot_token_for_send(owner: str, tg) -> str:
     from app import agent_telegram
-    bind = agent_telegram.load_bind(owner)
-    if bind:
-        return bind["bot_token"]
-    return ""
+    # Not load_bind: before any chat is bound the bridge still has to answer /bind.
+    return agent_telegram.load_bot_token(owner) or ""
 
 
 async def _ask_agent(client, credential: str, owner: str, model: dict, text: str, conversation_id: str):
@@ -441,26 +452,36 @@ async def _send_text(client, bot_token: str, chat_id: int, text: str,
     import httpx
     if not bot_token:
         return
+    url = f"{TELEGRAM_API}/bot{bot_token}/sendMessage"
     body: dict = {"chat_id": chat_id, "text": text[:ANSWER_MAX_CHARS],
                   "parse_mode": "Markdown", "disable_web_page_preview": True}
     if inline_keyboard:
         body["reply_markup"] = {"inline_keyboard": inline_keyboard}
     try:
-        await client.post(f"{TELEGRAM_API}/bot{bot_token}/sendMessage", json=body)
+        response = await client.post(url, json=body)
     except httpx.HTTPError:
-        # Retry without Markdown if it fails (common with unescaped characters)
-        body["text"] = _strip_markdown(text[:ANSWER_MAX_CHARS])
-        del body["parse_mode"]
-        try:
-            await client.post(f"{TELEGRAM_API}/bot{bot_token}/sendMessage", json=body)
-        except httpx.HTTPError:
-            pass
+        response = None
+    if response is not None and response.status_code != 400:
+        if response.status_code > 400:
+            print(f"Telegram sendMessage failed: {response.status_code} {_redact(response.text[:200])}",
+                  file=sys.stderr)
+        return
+    # Telegram answers 400, without raising, when it cannot parse the Markdown (one stray * or _ is enough).
+    # Send the same words as plain text; deleting characters instead would turn -14.93% into 1493%.
+    body["text"] = _plain(body["text"])
+    del body["parse_mode"]
+    try:
+        response = await client.post(url, json=body)
+        if response.status_code >= 400:
+            print(f"Telegram sendMessage failed: {response.status_code} {_redact(response.text[:200])}",
+                  file=sys.stderr)
+    except httpx.HTTPError as exc:
+        print(f"Telegram sendMessage failed: {_redact(exc)}", file=sys.stderr)
 
 
-def _strip_markdown(text: str) -> str:
-    for char in "*_[]()~`>#+-=|{}.!":
-        text = text.replace(char, "")
-    return text
+def _plain(text: str) -> str:
+    """The text as plain text: drop the backslashes that escaped Markdown, keep every other character."""
+    return re.sub(r"\\([\[\]*_`])", r"\1", text)
 
 
 async def _answer_callback(client, bot_token: str, callback_id: str) -> None:

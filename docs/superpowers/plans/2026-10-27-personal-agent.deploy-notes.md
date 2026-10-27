@@ -130,25 +130,25 @@ Land the branch on a clean main as before (`git cherry-pick bfcb274^..worktree-p
 
 1. **Tests on the Mac**
    ```bash
-   .venv/bin/python -m pytest -q tests/test_telegram_bridge.py
+   .venv/bin/python -m pytest -q tests/test_telegram_bridge.py tests/test_telegram_bridge_owner_only.py tests/test_telegram_bridge_flow.py
    ```
-   Expect 22 passed.
+   Expect all passed.
 
 2. **Get a bot from @BotFather** on Telegram: `/newbot` → name it → copy the token (looks like `1234567890:AA...`).
 
 3. **Deploy backend**: `python scripts/deploy.py --backend-only`, then `curl -s http://127.0.0.1:8000/health`.
    Startup creates `agent_telegram_bind` (additive, `create_all`).
 
-4. **Configure in the UI** (needs frontend push, or a local vite build):
-   - 设置 → Telegram 随身入口 → paste the Bot Token → 保存 Token.
-   - 生成绑定码 → copy the code → on Telegram, send `/bind <code>` to your bot.
-   - The card shows "已绑定 @yourbot".
+4. **Save the token in the UI** (needs frontend push, or a local vite build):
+   设置 → Telegram 随身入口 → paste the Bot Token → 保存 Token.
 
-5. **First run**:
+5. **Start the bridge, then bind** (the bridge must be running to receive `/bind`):
    ```bash
-   .venv/bin/python scripts/run_telegram_bridge.py --dry-run   # validates config
+   .venv/bin/python scripts/run_telegram_bridge.py --dry-run   # validates config; no bound chat yet is fine
    .venv/bin/python scripts/run_telegram_bridge.py              # long-poll forever
    ```
+   - 设置 → 生成绑定码 → copy the code → in a private chat with your bot, send `/bind <code>`.
+   - The bot answers 绑定成功 and the card shows "已绑定 @yourbot"; no restart needed.
    The bridge needs the background model configured in 设置 → 后台任务模型 (same as Phase 3).
    It calls the local agent-chat stream API at `http://127.0.0.1:8000`; the API server must be running.
    On first message from the bound chat, a 「手机」 conversation is created.
