@@ -117,7 +117,7 @@ class RememberArgs(Args):
     kind:Literal['preference','about_me','instruction']
     topic:str|None=Field(default=None,pattern=r'^[a-z][a-z0-9_]{0,39}$',description='Short slug of the setting this changes (currency_unit, answer_language, answer_order); a newer item with the same kind and topic replaces the older one. Null when it replaces nothing.')
     text:str=Field(min_length=1,max_length=200,description='Short note of what to remember, in the user\'s language.')
-    quote:str=Field(min_length=2,max_length=200,description="The user's own words of THIS turn that ask for it, copied character for character.")
+    quote:str=Field(min_length=2,max_length=200,description="The user's own words of THIS turn that ask for it, copied character for character; the server quotes the user's message when this is not in it.")
 class ForgetArgs(Args):
     item_id:str=Field(pattern=r'^#?[0-9a-f]{8}$',description='The #handle of a line of the user profile.')
 

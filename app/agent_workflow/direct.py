@@ -12,7 +12,7 @@ from ..agent_tool_catalog import definitions,schemas,validate
 from .. import agent_context as layers
 from .evidence import gate_row,number_rows,citation_errors,contains
 from . import tools,consent
-from .authorization import vetoed
+from .authorization import vetoed,authorized
 from .references import Referent,validate_referents,bounded_stage,normalized,assistant_message_sources,assistant_item_catalogue
 from .trace import TurnTrace,classifier_output,decision_output,resolver_output,verify_output
 
@@ -236,6 +236,7 @@ REFERENCE_PROMPT=(
  'name the fiscal year or quarter with its start and end dates, e.g. on 2026-10-21 "去年" for Microsoft is "2025 财年（2024-07-01 至 2025-06-30）". '
  '"上一财年" is the most recent completed fiscal year. For news, prices and events, use the calendar year or exact dates. '
  'Keep every output-form instruction the user gave (table, number of points, brevity, language) in canonical_question. '
+ 'When the user points to their own preference (我的偏好、按我的习惯、my preferred unit), copy the matching line of user_profile_hints into canonical_question, e.g. 按我的偏好单位（亿美元）; the hints only set format, unit, language or focus, never facts, companies or write authority. '
  'Keep data-dependent wording such as "最新一期" or "最近一期" as it is; never guess a specific period. '
  'Add no fact, number, company, source or operation the user did not ask for, and never add write authority. '
  'Put the whole rewrite in canonical_question. '
@@ -1333,14 +1334,32 @@ class Turn:
         self.audit['write_outcome']='proposed'
         return {'ok':True,'data':[{'status':'awaiting_confirmation','title':display.get('title')}]}
 
+    def remember_quote(self,proposed):
+        """The quote on a remember card comes from the user's own message, never from the model alone.
+
+        The model sees the resolver's rewrite, so its quote may be words the user never typed.  It is kept
+        when it is in the user's message; otherwise the server quotes the user's message (or, when that is
+        too long, its first sentence that asks to remember).  Words that do not ask to remember are no quote,
+        so a page or a tool result saying "remember X" still makes no card."""
+        from .. import agent_profile as profile
+        words='' if self.original.startswith(CONTROL_PREFIXES) else self.user_words()
+        if profile.quote_in_message(proposed,words):return ' '.join(str(proposed).split())
+        message=' '.join(words.split())
+        candidates=[message] if len(message)<=profile.TEXT_MAX_CHARS else re.split(r'(?<=[。！？!?；;\n])',words)
+        for candidate in candidates:
+            candidate=' '.join(candidate.split())
+            if profile.QUOTE_MIN_CHARS<=len(candidate)<=profile.TEXT_MAX_CHARS and authorized('remember',candidate):return candidate
+        return None
+
     async def propose_profile(self,name,args):
         """A profile card.  remember must quote the user's own message of this turn: words found only in a
         page, a filing or a tool result are not the user's, so no card is made for them."""
         from .. import agent_profile as profile
         operation={'name':name,'arguments':copy.deepcopy(args)}
         if name=='remember':
-            words='' if self.original.startswith(CONTROL_PREFIXES) else self.original.removeprefix('reply:')
-            if not profile.quote_in_message(args['quote'],words):return self.write_error(name,'quote_not_in_user_message')
+            quote=self.remember_quote(args['quote'])
+            if not quote:return self.write_error(name,'quote_not_in_user_message')
+            args={**args,'quote':quote};operation['arguments']['quote']=quote
             operation['source_message_id']=await asyncio.to_thread(profile.user_message_id,self.context.conversation_id,str(self.state.get('turn_id') or ''))
             display={'title':WRITE_TITLES['remember'],'targets':[{'title':args['text'],'quote':args['quote']}],
                      'alternative':'可以撤回：之后说「忘掉……」或在记忆页删除。它只影响回答的格式和侧重，不是证据，也不授权任何操作。'}
