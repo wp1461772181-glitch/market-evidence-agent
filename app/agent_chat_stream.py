@@ -781,3 +781,51 @@ async def revoke_background_key_endpoint(x_chat_session: str | None = Header(def
     from .agent_tasks import revoke_background_key
     credential = _owner_only(x_chat_session)
     return await asyncio.to_thread(revoke_background_key, owner_hash(credential))
+
+
+# --- Telegram bridge binding (personal agent plan §2.4); owner only ---------------------------------
+
+class TelegramTokenBody(BaseModel):
+    bot_token: str = Field(min_length=8, max_length=256)
+
+
+@router.get("/telegram/status")
+async def telegram_status_endpoint(x_chat_session: str | None = Header(default=None)):
+    """Whether a bot token is saved, whether a chat is bound, and the bot username.  Never the token."""
+    from . import agent_telegram as tg
+    credential = _owner_only(x_chat_session)
+    return await asyncio.to_thread(tg.status, owner_hash(credential))
+
+
+@router.post("/telegram/token")
+async def telegram_token_endpoint(body: TelegramTokenBody, x_chat_session: str | None = Header(default=None)):
+    from . import agent_telegram as tg
+    from .agent_telegram import TelegramError
+    credential = _owner_only(x_chat_session)
+    try:
+        return await asyncio.to_thread(tg.save_token, owner_hash(credential), body.bot_token)
+    except TelegramError as exc:
+        raise HTTPException(422, str(exc))
+
+
+@router.post("/telegram/bind")
+async def telegram_bind_endpoint(x_chat_session: str | None = Header(default=None)):
+    """Generate a one-time code to bind a Telegram account.  Send it to the bot; the bridge confirms."""
+    from . import agent_telegram as tg
+    from .agent_telegram import TelegramError
+    credential = _owner_only(x_chat_session)
+    try:
+        return await asyncio.to_thread(tg.start_bind, owner_hash(credential))
+    except TelegramError as exc:
+        raise HTTPException(422, str(exc))
+
+
+@router.post("/telegram/unbind")
+async def telegram_unbind_endpoint(x_chat_session: str | None = Header(default=None)):
+    from . import agent_telegram as tg
+    from .agent_telegram import TelegramError
+    credential = _owner_only(x_chat_session)
+    try:
+        return await asyncio.to_thread(tg.unbind, owner_hash(credential))
+    except TelegramError as exc:
+        raise HTTPException(422, str(exc))

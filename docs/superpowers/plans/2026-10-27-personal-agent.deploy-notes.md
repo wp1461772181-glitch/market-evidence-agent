@@ -122,3 +122,78 @@ Land the branch on a clean main as before (`git cherry-pick bfcb274^..worktree-p
 
 Not in Phase 3: the Telegram channel is stored, but delivery comes in Phase 4. Such briefs stay in the inbox and say so.
 Phase 5 (Skills) fills `skill_id`.
+
+## Phase 4 — Telegram
+
+Commits: (next) (backend, bridge, launchd installer, tests, frontend settings card).
+Land the branch on a clean main as before (`git cherry-pick bfcb274^..worktree-personal-agent` lands every phase).
+
+1. **Tests on the Mac**
+   ```bash
+   .venv/bin/python -m pytest -q tests/test_telegram_bridge.py
+   ```
+   Expect 22 passed.
+
+2. **Get a bot from @BotFather** on Telegram: `/newbot` → name it → copy the token (looks like `1234567890:AA...`).
+
+3. **Deploy backend**: `python scripts/deploy.py --backend-only`, then `curl -s http://127.0.0.1:8000/health`.
+   Startup creates `agent_telegram_bind` (additive, `create_all`).
+
+4. **Configure in the UI** (needs frontend push, or a local vite build):
+   - 设置 → Telegram 随身入口 → paste the Bot Token → 保存 Token.
+   - 生成绑定码 → copy the code → on Telegram, send `/bind <code>` to your bot.
+   - The card shows "已绑定 @yourbot".
+
+5. **First run**:
+   ```bash
+   .venv/bin/python scripts/run_telegram_bridge.py --dry-run   # validates config
+   .venv/bin/python scripts/run_telegram_bridge.py              # long-poll forever
+   ```
+   The bridge needs the background model configured in 设置 → 后台任务模型 (same as Phase 3).
+   It calls the local agent-chat stream API at `http://127.0.0.1:8000`; the API server must be running.
+   On first message from the bound chat, a 「手机」 conversation is created.
+
+6. **Verify**:
+   - Send a question on Telegram. The answer arrives with citation markers.
+   - Press a confirmation button (when the agent proposes a write). The second press replays, doesn't re-execute.
+   - Create a task with channel=Telegram; the brief arrives in the Telegram chat.
+   - Send a message from a different Telegram account: no response.
+
+7. **Install the bridge as a LaunchAgent** (KeepAlive, runs forever):
+   ```bash
+   .venv/bin/python scripts/install_telegram_bridge_launchagent.py --print   # review
+   .venv/bin/python scripts/install_telegram_bridge_launchagent.py           # com.market-evidence-agent.telegram-bridge
+   tail -f logs/telegram-bridge.out.log
+   ```
+
+8. **Live check** (no real Telegram API calls, tests bind flow and consent in-process):
+   ```bash
+   .venv/bin/python scripts/live_check_telegram.py
+   ```
+   Expect `RESULT: PASS`. Never prints tokens.
+
+9. **Frontend push** (Telegram settings card) needs the owner's OK: `deploy.py` without `--backend-only`.
+
+### Endpoints (owner-only)
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/agent-chat/telegram/status` | Has token, is bound, bot username, chat id (never the token) |
+| POST | `/agent-chat/telegram/token` | Save/update bot token (body: `{"bot_token":"..."}`) |
+| POST | `/agent-chat/telegram/bind` | Generate one-time bind code (returns `{"code":"abcdef01"}`) |
+| POST | `/agent-chat/telegram/unbind` | Clear chat/user binding (token stays) |
+
+### New files
+
+| File | Purpose |
+|------|---------|
+| `app/agent_telegram.py` | Bind store (encrypt token, generate bind code, confirm/unbind) |
+| `app/agent_chat_models.py` | `AgentTelegramBind` model |
+| `app/agent_chat_stream.py` | 4 new owner-only endpoints |
+| `scripts/run_telegram_bridge.py` | Long-poll getUpdates, forward to agent, handle inline buttons |
+| `scripts/install_telegram_bridge_launchagent.py` | LaunchAgent installer |
+| `scripts/live_check_telegram.py` | In-process live check (no real Telegram API) |
+| `tests/test_telegram_bridge.py` | 22 tests |
+| `frontend/src/AgentChatPanel.tsx` | `TelegramBindCard` in 设置 page |
+| `frontend/src/api.ts` | `TelegramBindStatus` type, 4 API functions, 6 error labels |
+| `frontend/src/PersonalPages.tsx` | Updated channel option label and pending-delivery note |

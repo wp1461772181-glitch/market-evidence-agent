@@ -182,7 +182,7 @@ export function BriefsPage({ onNavigate }: { onNavigate: Go }) {
           {item.sources && item.sources.length > 0
             ? <ol className="brief-sources">{numberedSources(item).map(s => <li key={s.ordinal}>[{s.ordinal}] {s.url ? <a href={s.url} target="_blank" rel="noreferrer">{s.title}</a> : s.title}</li>)}</ol>
             : <p className="fine-print">{t("没有来源，不含事实性结论。")}</p>}
-          {item.payload.channel_pending === "telegram" && <p className="fine-print">{t("Telegram 推送将在下一阶段接入，这条先放在收件箱。")}</p>}
+          {item.payload.channel_pending === "telegram" && <p className="fine-print">{t("等待 Telegram 推送。")}</p>}
           {item.payload.missed_slots && item.payload.missed_slots > 1 ? <p className="fine-print">{t("Mac 睡眠期间错过的运行已合并为这一次。")}</p> : null}
           <div className="memory-actions">
             {item.conversation_id && <button type="button" className="secondary-action" disabled={busy === item.id} onClick={() => void openItem(item)}>{t("打开对话")}</button>}
@@ -249,7 +249,7 @@ export function BriefsPage({ onNavigate }: { onNavigate: Go }) {
           </>}
           <label>{t("推送")}<select value={draftChannel} onChange={e => setDraftChannel(e.target.value as AgentTask["channel"])}>
             <option value="inbox">{t("收件箱")}</option>
-            <option value="telegram">{t("Telegram（下一阶段）")}</option>
+            <option value="telegram">{t("Telegram")}</option>
           </select></label>
           <label>{t("单次 token 上限")}<input type="number" value={draftRunCap} onChange={e => setDraftRunCap(Number(e.target.value))} /></label>
           <label>{t("每日 token 上限")}<input type="number" value={draftDailyCap} onChange={e => setDraftDailyCap(Number(e.target.value))} /></label>

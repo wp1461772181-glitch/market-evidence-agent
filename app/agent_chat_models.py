@@ -172,3 +172,20 @@ class AgentBackgroundModel(Base):
     ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class AgentTelegramBind(Base):
+    """The owner's Telegram bridge binding.  The bot token is encrypted with secret_box, never
+    returned by any endpoint.  The one-time bind code lives here (hash of a random short code)
+    and is cleared after confirmation.  ``chat_id`` and ``user_id`` are the bound Telegram
+    account; the bridge ignores messages from any other sender."""
+    __tablename__ = "agent_telegram_bind"
+    owner_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    bot_token_cipher: Mapped[str | None] = mapped_column(Text, nullable=True)
+    bot_username: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    chat_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    bind_code_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    bound_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
