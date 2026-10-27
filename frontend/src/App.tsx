@@ -1,7 +1,9 @@
-import { AgentAdminPage, AgentChatPanel, AgentChatProviderRoot, useOpenConversation } from "./AgentChatPanel";
+import { AgentAdminPage, AgentChatPanel, AgentChatProviderRoot, useOpenConversation, useSelectBot } from "./AgentChatPanel";
+import { BotRailList, BotSide, NewBotDialog, useBots } from "./BotPages";
+import { botFromHash } from "./bot-items.mjs";
 import { Tx, formatDateTime as formatLocalizedDateTime, getLocalePreference, translatePhrase, useLocale } from "./i18n";
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ApiError, getFilingInventory, getJevLearningStatus, getMaterialLibrary, getV2Evaluations, getV2ForecastRoots, getV2MonitorStatus, getV2Prices, getV2Workspace, initializeMarketData, scanOfficialFilings } from "./api";
+import { ApiError, type Bot, getFilingInventory, getJevLearningStatus, getMaterialLibrary, getV2Evaluations, getV2ForecastRoots, getV2MonitorStatus, getV2Prices, getV2Workspace, initializeMarketData, scanOfficialFilings } from "./api";
 import type { FilingInventory, JevLearningStatus, PriceHistory } from "./types";
 import { V2ForecastWorkspace } from "./V2ForecastWorkspace";
 import { EvidenceCenter } from "./EvidenceCenter";
@@ -22,8 +24,8 @@ const DEFAULT_SYMBOLS = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"
 const WATCHLIST_KEY = "market-evidence-agent:watchlist:v1";
 type SupportedSymbol = string;
 type FilingState = { kind: "idle" } | { kind: "loading" } | { kind: "ready"; data: FilingInventory } | { kind: "error"; message: string };
-type WorkspaceSection = "overview" | "forecast" | "evidence" | "materials" | "revisions" | "evaluation" | "replay" | "agent" | "admin" | "briefs" | "skills" | "memory" | "me";
-type ResearchSection = Exclude<WorkspaceSection, "agent" | "admin" | "briefs" | "skills" | "memory" | "me">;
+type WorkspaceSection = "overview" | "forecast" | "evidence" | "materials" | "revisions" | "evaluation" | "replay" | "agent" | "bot" | "admin" | "briefs" | "skills" | "memory" | "me";
+type ResearchSection = Exclude<WorkspaceSection, "agent" | "bot" | "admin" | "briefs" | "skills" | "memory" | "me">;
 // The personal-agent navigation groups the older sections: 公司 holds 总览 and the 预测 tab (预测, 修订,
 // 到期评估, 历史回放); 资料库 holds 材料库 and 证据.  The older hashes stay the addresses, so links inside
 // the older pages (#materials, #evidence/<id>/…) and the agent's open_page keep working unchanged.
@@ -32,7 +34,7 @@ const FORECAST_TABS = ["forecast", "revisions", "evaluation", "replay"] as const
 const LIBRARY_TABS = ["materials", "evidence"] as const;
 const HASH_ALIASES: Record<string, WorkspaceSection> = { chat: "agent", company: "overview", library: "materials", settings: "admin" };
 function navGroup(section: WorkspaceSection): NavGroup {
-  if (section === "agent") return "chat";
+  if (section === "agent" || section === "bot") return "chat";
   if (section === "admin") return "settings";
   if (section === "briefs" || section === "skills" || section === "memory") return section;
   if (section === "me") return "memory";
@@ -130,19 +132,31 @@ function WorkspaceApp({onModeChange}:{onModeChange:(mode:"guest"|"personal")=>vo
   }, []);
   // A past-conversation link (#agent/<id>, from recall_conversations) opens that conversation.
   const openConversation = useOpenConversation(), openRef = useRef(openConversation); openRef.current = openConversation;
+  const selectBot = useSelectBot(), selectBotRef = useRef(selectBot); selectBotRef.current = selectBot;
+  // A past conversation (from the memory page) opens outside any bot's line, read and continued as before.
+  const [pastConversation, setPastConversation] = useState(false);
   useEffect(() => {
     const follow = () => {
       const id = conversationFromHash(window.location.hash);
       if (!id) return;
-      window.history.replaceState(null, "", "#agent"); setActiveSection("agent");
-      void openRef.current(id).catch(() => { /* the panel reports a conversation it cannot restore */ });
+      window.history.replaceState(null, "", "#agent"); setActiveSection("agent"); setPastConversation(true);
+      void selectBotRef.current(null).then(() => openRef.current(id)).catch(() => { /* the panel reports a conversation it cannot restore */ });
     };
     follow();
     window.addEventListener("hashchange", follow);
     return () => window.removeEventListener("hashchange", follow);
   }, []);
 
+  // Bots (owner only): the sidebar lists them; #agent is the default bot's line, #bot/<id> another's.
+  const botList = useBots(personal);
+  const [botId, setBotId] = useState(() => botFromHash(window.location.hash));
+  const [newBotOpen, setNewBotOpen] = useState(false);
+  useEffect(() => { const read = () => setBotId(botFromHash(window.location.hash)); window.addEventListener("hashchange", read); return () => window.removeEventListener("hashchange", read); }, []);
+  const activeBot: Bot | null = !personal ? null : activeSection === "bot" ? botList.bots.find(b => b.id === botId) ?? null : activeSection === "agent" && !pastConversation ? botList.defaultBot : null;
+  function openBot(bot: Bot) { setPastConversation(false); if (bot.is_default) navigate("agent"); else { window.location.hash = `bot/${bot.id}`; setActiveSection("bot"); setBotId(bot.id); } }
+
   function navigate(section: WorkspaceSection) {
+    if (section === "agent") setPastConversation(false);
     if (section === activeSection) {
       if (section === "evidence" && window.location.hash !== "#evidence") window.location.hash = "evidence";
       return;
@@ -178,7 +192,12 @@ function WorkspaceApp({onModeChange}:{onModeChange:(mode:"guest"|"personal")=>vo
 
   function addWatchSymbol() { const ticker = normalizeTicker(watchInput); if (!ticker) { setWatchError("请输入有效的美股代码，例如 AMD 或 BRK.B。"); return; } if (symbols.includes(ticker)) { setWatchError("该代码已在关注列表中。"); return; } if (symbols.length >= MAX_WATCHLIST) { setWatchError("关注列表最多保存 30 个代码。"); return; } setSymbols(items => [...items, ticker]); setWatchInput(""); setWatchError(""); openStock(ticker); }
   function removeWatchSymbol(ticker: string) { const remaining = symbols.filter(item => item !== ticker); setSymbols(remaining); setRequestedSymbol(current => selectionForWatchlist(current, remaining)); }
-  const shellProps = { activeSection, navigate, symbol: requestedSymbol, symbols, onSelectStock: openStock, watchInput, setWatchInput, addWatchSymbol, watchError, setWatchError, onModeChange };
+  const botRail = personal ? (close: () => void) => <BotRailList bots={botList.bots} error={botList.error} activeBotId={activeBot?.id ?? null} onOpen={bot => { close(); openBot(bot); }} onNew={() => { close(); setNewBotOpen(true); }} /> : undefined;
+  const newBotDialog = newBotOpen && <NewBotDialog onClose={() => setNewBotOpen(false)} onCreated={bot => { setNewBotOpen(false); void botList.reload().then(() => openBot(bot)); }} />;
+  const shellProps = { activeSection, navigate, symbol: requestedSymbol, symbols, onSelectStock: openStock, watchInput, setWatchInput, addWatchSymbol, watchError, setWatchError, onModeChange, botRail, overlay: newBotDialog };
+  if (activeBot) return <Shell {...shellProps}><BotPage bot={activeBot} symbol={requestedSymbol} onOpenCompany={ticker => { const clean = normalizeTicker(ticker); if (clean) { if (!symbols.includes(clean) && symbols.length < MAX_WATCHLIST) setSymbols(items => [...items, clean]); openStock(clean); } }} onChanged={() => void botList.reload()} onDeleted={() => { void botList.reload(); navigate("agent"); }} onSettings={() => navigate("admin")} onModeChange={onModeChange} /></Shell>;
+  if (personal && activeSection === "agent" && !pastConversation && !botList.loaded) return <Shell {...shellProps}><main className="workspace"><p role="status">{translatePhrase("正在读取…")}</p></main></Shell>;
+  if (activeSection === "bot") return <Shell {...shellProps}><main className="workspace"><p role="status">{botList.loaded ? translatePhrase("bot 不存在或已删除。") : translatePhrase("正在读取…")}</p></main></Shell>;
   if (activeSection === "agent") return <Shell {...shellProps}><AgentChatPanel onSettings={() => navigate("admin")} onModeChange={onModeChange} /></Shell>;
   if (activeSection === "admin") return <Shell {...shellProps}><AgentAdminPage onBack={() => navigate("agent")} /></Shell>;
   if (activeSection === "briefs") return <Shell {...shellProps}><BriefsPage onNavigate={navigate} /></Shell>;
@@ -215,6 +234,13 @@ function WorkspaceApp({onModeChange}:{onModeChange:(mode:"guest"|"personal")=>vo
       {activeSection === "replay" && <HistoricalReplayWorkspace key={requestedSymbol} initialSymbol={requestedSymbol} symbols={symbols} />}
     </main>
   </Shell>;
+}
+
+/** A bot's page: its one line in the middle, 工作区 / 档案 on the right.  Its turns go out with only its id. */
+function BotPage({ bot, symbol, onOpenCompany, onChanged, onDeleted, onSettings, onModeChange }: { bot: Bot; symbol: string; onOpenCompany: (ticker: string) => void; onChanged: () => void; onDeleted: () => void; onSettings: () => void; onModeChange: (mode: "guest" | "personal") => void }) {
+  const selectBot = useSelectBot();
+  useEffect(() => { void selectBot(bot); }, [bot]); // eslint-disable-line react-hooks/exhaustive-deps
+  return <AgentChatPanel bot={bot} onSettings={onSettings} onModeChange={onModeChange} onTurnSettled={onChanged} side={<BotSide key={bot.id} bot={bot} symbol={symbol} onOpenCompany={onOpenCompany} onChanged={onChanged} onDeleted={onDeleted} />} />;
 }
 
 function CurrentOverviewWorkspace({ symbols, onRemove, symbol, currentFilings, priceHistory, priceError, onNavigate, onOpenStock, onPricesInitialized }: { symbols: string[]; onRemove: (ticker: string) => void; symbol: string; currentFilings: FilingState; priceHistory: PriceHistory | null; priceError: string | null; onNavigate: (section: WorkspaceSection) => void; onOpenStock: (ticker: SupportedSymbol) => void; onPricesInitialized: () => void }) {
@@ -355,7 +381,7 @@ function WorkspaceIntro({ eyebrow, title, description, action }: { eyebrow: stri
   </section>;
 }
 
-function Shell({ activeSection, navigate, symbol, symbols, onSelectStock, watchInput, setWatchInput, addWatchSymbol, watchError, setWatchError, onModeChange, children }: { activeSection: WorkspaceSection; navigate: (section: WorkspaceSection) => void; symbol: string; symbols: string[]; onSelectStock: (ticker: SupportedSymbol) => void; watchInput: string; setWatchInput: (value: string) => void; addWatchSymbol: () => void; watchError: string; setWatchError: (value: string) => void; onModeChange:(mode:"guest"|"personal")=>void; children: ReactNode }) {
+function Shell({ activeSection, navigate, symbol, symbols, onSelectStock, watchInput, setWatchInput, addWatchSymbol, watchError, setWatchError, onModeChange, botRail, overlay, children }: { activeSection: WorkspaceSection; navigate: (section: WorkspaceSection) => void; symbol: string; symbols: string[]; onSelectStock: (ticker: SupportedSymbol) => void; watchInput: string; setWatchInput: (value: string) => void; addWatchSymbol: () => void; watchError: string; setWatchError: (value: string) => void; onModeChange:(mode:"guest"|"personal")=>void; botRail?: (close: () => void) => ReactNode; overlay?: ReactNode; children: ReactNode }) {
   const { locale, setLocale, t } = useLocale();
   const navRef = useRef<HTMLElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -409,8 +435,9 @@ function Shell({ activeSection, navigate, symbol, symbols, onSelectStock, watchI
         <button className="rail-nav-close" type="button" aria-label={t("收起导航")} aria-controls="workspace-navigation" onClick={closeNavDrawer}><span aria-hidden="true">×</span></button>
       <a className="workspace-brand" href="#agent" onClick={() => navigate("agent")} aria-label={`Market Evidence Agent · ${t("对话")}`}><img className="brand-logo" src={`${import.meta.env.BASE_URL}logo.svg`} width="32" height="32" alt="" /><span>market<br /><em>evidence</em></span></a>
       <div className="rail-context"><span>{!research ? t("工作区") : <Tx text={"当前股票"} />}</span><strong>{!research ? t("Agent") : symbol}</strong><small>{<Tx text={"Agent 研究工作台"} />}</small></div>
-      <nav ref={navRef} className="workspace-nav">
-        {nav.map((item) => <button key={item.id} type="button" className={navGroup(activeSection) === item.group ? "active" : ""} aria-current={navGroup(activeSection) === item.group ? "page" : undefined} onClick={() => drawerNavigate(item.id)}><span aria-hidden="true">{item.icon}</span><span><strong>{item.label}</strong><small>{item.hint}</small></span></button>)}
+      {botRail?.(() => { if (isNarrow || !pinned) setMenuOpen(false); })}
+      <nav ref={navRef} className={`workspace-nav${botRail ? " is-bottom" : ""}`}>
+        {nav.filter(item => !botRail || item.id !== "agent").map((item) => <button key={item.id} type="button" className={navGroup(activeSection) === item.group ? "active" : ""} aria-current={navGroup(activeSection) === item.group ? "page" : undefined} onClick={() => drawerNavigate(item.id)}><span aria-hidden="true">{item.icon}</span><span><strong>{item.label}</strong><small>{item.hint}</small></span></button>)}
       </nav>
       <div className="rail-bottom">{research && <span><span className="rail-review-dot" aria-hidden="true" />{<Tx text={"判断可回到原始来源查看"} />}</span>}</div>
       </aside>
@@ -448,6 +475,7 @@ function Shell({ activeSection, navigate, symbol, symbols, onSelectStock, watchI
         </div>
       </header>
       {children}
+      {overlay}
       {ownerDialog&&<div className="owner-auth-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)setOwnerDialog(false)}}><section ref={ownerDialogRef} className="owner-auth-dialog" role="dialog" aria-modal="true" aria-labelledby="owner-auth-title"><button className="owner-auth-close" type="button" aria-label={t("关闭")} onClick={()=>setOwnerDialog(false)}>×</button><p className="eyebrow">{t("站点写入操作")}</p><h2 id="owner-auth-title">{t("请登录个人账户")}</h2><p>{t("登录后可继续进行站点操作。登录完成后，请手动重试刚才未完成的操作。")}</p><label>{t("个人登录密码或口令")}<input ref={ownerInputRef} type="password" value={ownerInput} autoComplete="current-password" onChange={e=>setOwnerInput(e.target.value)}/></label>{ownerError&&<p role="alert">{ownerError}</p>}<div><button className="primary-action" disabled={!ownerInput||ownerBusy} onClick={()=>{setOwnerBusy(true);void personalChatLogin(ownerInput).then(credential=>{completePersonalLogin(credential,setChatMode,onModeChange);setOwnerDialog(false);setOwnerInput("")}).catch(error=>setOwnerError(error instanceof Error?error.message:t("登录暂不可用。"))).finally(()=>setOwnerBusy(false))}}>{ownerBusy?t("正在登录…"):t("登录并授权")}</button><button className="secondary-action" onClick={()=>setOwnerDialog(false)}>{t("稍后")}</button></div></section></div>}
       <footer>{<Tx text={"Market Evidence Agent · 本地研究记录 · 研究判断可追溯到原始来源"} />}</footer>
       <nav className="mobile-tabbar" aria-label={t("主要导航")}>
@@ -480,7 +508,7 @@ function isSupportedSymbol(symbol: string): symbol is SupportedSymbol { return i
 function isValidSymbol(symbol: string): boolean { return /^[A-Z]{1,5}(?:[.-][A-Z]{1,2})?$/i.test(symbol.trim()); }
 function sectionFromHash(): WorkspaceSection {
   const value = window.location.hash.replace(/^#/, "").split("/", 1)[0];
-  if ((["overview", "forecast", "evidence", "materials", "revisions", "evaluation", "replay", "agent", "admin", "briefs", "skills", "memory", "me"] as const).includes(value as WorkspaceSection)) return value as WorkspaceSection;
+  if ((["overview", "forecast", "evidence", "materials", "revisions", "evaluation", "replay", "agent", "bot", "admin", "briefs", "skills", "memory", "me"] as const).includes(value as WorkspaceSection)) return value as WorkspaceSection;
   // The conversation is the home page.
   return HASH_ALIASES[value] ?? "agent";
 }

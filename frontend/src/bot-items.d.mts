@@ -1,0 +1,11 @@
+import type { Bot, BotFocus, BotTemplate, BotTool, CatalogModel, ModelCatalog } from "./api";
+export const MAX_FOCUS_COMPANIES: number;
+export function botFromHash(hash: string): string | null;
+export function botSections(bots: Bot[], options?: { showHidden?: boolean }): { top: Bot | null; groups: Array<{ name: string; bots: Bot[] }> };
+export function botDraft(template: BotTemplate | null | undefined, tools: BotTool[]): { name: string; title: string; description: string; tool_scope: string[] | null; template: string; focus: BotFocus; model: string | null };
+export function toggleTool(scope: string[] | null | undefined, name: string, allNames: string[]): string[] | null;
+export function toolEnabled(scope: string[] | null | undefined, name: string): boolean;
+export function parseFocusSymbols(text: string): { companies: Array<{ symbol: string }>; invalid: string[]; truncated: boolean };
+export function focusText(focus: BotFocus | null | undefined): string;
+export function keyStatusLabel(entry: CatalogModel | null | undefined): string;
+export function botModelLabel(bot: Bot | null | undefined, catalog: ModelCatalog | null | undefined): { name: string | null; label: string; usable: boolean; isDefault: boolean };

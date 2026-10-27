@@ -192,7 +192,7 @@ export async function restoreAgentChat(selectedId?: string | null, signal?: Abor
 }
 export function clearAgentConversation(): void { selectConversationForMode(window.localStorage,window.sessionStorage,null); }
 export function selectAgentConversation(id:string|null,createdAt?:string|null):void { selectConversationForMode(window.localStorage,window.sessionStorage,id,undefined,createdAt); }
-export async function agentChatStream(config: AgentChatConfig, message: string, conversationId: string | null, signal: AbortSignal, onEvent: (event: AgentChatEvent) => boolean | void, pendingRequestId?:string, displayMessage?:string): Promise<string> {
+export async function agentChatStream(config: AgentChatConfig | { bot_id: string }, message: string, conversationId: string | null, signal: AbortSignal, onEvent: (event: AgentChatEvent) => boolean | void, pendingRequestId?:string, displayMessage?:string): Promise<string> {
   const response = await fetch(agentChatUrl("stream", configuredApiBaseUrl), { method: "POST", signal, cache: "no-store", headers: { Accept: "text/event-stream", "Content-Type": "application/json", "X-Chat-Session": chatCredential() }, body: JSON.stringify({ ...config, message, conversation_id: conversationId, ...(pendingRequestId?{pending_request_id:pendingRequestId,...(displayMessage?{display_message:displayMessage}:{})}:{}) }) });
   if (!response.ok) { const payload = await response.json().catch(() => null); throw apiErrorFromPayload(payload, response.status); }
   const reader = response.body?.getReader(); if (!reader) throw new ApiError("服务未返回流式响应。");
@@ -600,3 +600,46 @@ export async function getKnowledgeImportable(source:'faq'|'upload'|'sec'|'analys
 }
 export type KnowledgeCitationDetail={title:string;section:string;excerpt:string;source_url:string|null;observed_at:string|null;coverage:string;start_offset:number;end_offset:number;derived?:boolean;analysis_version?:string;version_no?:number|null;model?:string;classification?:string;original_source_type?:string;original_quotes?:string[]};
 export async function getKnowledgeCitation(chunkId:string):Promise<KnowledgeCitationDetail>{return requestJson(`/api/knowledge/citations/${encodeURIComponent(chunkId)}`,{headers:{'X-Chat-Session':chatCredential()}})}
+
+// Bots (personal agent, second edition).  A bot's turn sends only bot_id: the server picks the model from its
+// catalog, so no key leaves the browser.  Catalog entries say configured / missing, never the key.
+export type BotFocus = { companies: Array<{ symbol: string; name?: string | null }>; theme: string | null };
+export type Bot = { id: string; name: string; title: string; description: string; focus: BotFocus; tool_scope: string[] | null; model: string | null;
+  avatar: string; group: string; pinned: boolean; hidden: boolean; is_default: boolean; template: string; conversation_id: string | null;
+  daily_notify_cap: number; default_company: { symbol: string; company: string | null } | null; last_message: string | null; last_at: string | null;
+  created_at?: string | null; updated_at?: string | null };
+export type BotTemplate = { id: string; label: string; name: string; title: string; description: string; tool_scope: string[] | null };
+export type BotTool = { name: string; level: string; owner_only: boolean };
+export type BotFields = Partial<Pick<Bot, "name" | "title" | "description" | "focus" | "tool_scope" | "model" | "avatar" | "group" | "pinned" | "hidden" | "template" | "daily_notify_cap">>;
+export type CatalogModel = { name: string; display_name: string; provider: string; model: string; base_url: string | null; origin: "file" | "server";
+  key_source: "vault" | "env"; key_env: string | null; key_status: "configured" | "missing"; is_default: boolean; migrated: boolean };
+export type ModelCatalog = { models: CatalogModel[]; default: string | null; config_file: { present: boolean; problems: string[] } };
+const BOT_ERRORS:Record<string,string>={invalid_name:"名字无效（1 到 40 字）。",name_taken:"已有同名 bot。",invalid_title:"头衔最多 60 字。",invalid_description:"说明最多 4000 字。",
+  invalid_focus:"关注范围无效。",invalid_focus_symbol:"股票代码无效，例如 AAPL 或 BRK.B。",too_many_companies:"关注公司最多 20 家。",invalid_tool_scope:"工具范围无效。",
+  unknown_tool:"工具范围里有不存在的工具。",unknown_model:"模型目录里没有这个模型。",invalid_avatar:"头像最多 16 个字符。",invalid_group:"分组名最多 40 字。",
+  default_bot_not_hidden:"默认 bot 不能隐藏。",default_bot_undeletable:"默认 bot 不能删除。",invalid_notify_cap:"每日通知上限为 0 到 50。",too_many_bots:"bot 已达上限（30 个）。",
+  bot_not_found:"bot 不存在或已删除。",unknown_template:"模板无效。",model_exists:"已有同名模型。",model_not_found:"模型不存在。",model_in_use:"有 bot 正在用这个模型，先给它们换模型。",
+  model_from_file:"这个模型来自服务器配置文件，只能在服务器上改。",default_from_file:"默认模型由服务器配置文件指定。",invalid_provider:"模型服务无效。",invalid_model:"Model ID 无效。",
+  invalid_endpoint:"接口地址无效：须为 HTTPS，自定义服务必须填写。",invalid_key:"API key 格式不对。",invalid_key_env:"环境变量名须以 _API_KEY 结尾，且不能是服务器自己的密钥。",
+  one_key_source:"API key 和环境变量只能填一个。",key_required:"换了服务或接口地址，需要重新填写 key。",credential_key_missing:"服务器没有配置加密密钥，无法保存 key。",
+  too_many_models:"模型已达上限（40 个）。",invalid_agent_chat_request:"填写的内容无效。"};
+async function botJson<T>(path:string,init:{method?:string;body?:unknown;signal?:AbortSignal},failure:string):Promise<T>{
+  const response=await fetch(agentPath(path),{method:init.method??"GET",signal:init.signal,cache:"no-store",headers:ownerHeaders(init.body!==undefined),
+    ...(init.body!==undefined?{body:JSON.stringify(init.body)}:{})});
+  if(!response.ok){
+    const detail=(await response.json().catch(()=>null) as {detail?:unknown}|null)?.detail;
+    throw new ApiError(response.status===403||response.status===401?"登录个人聊天后才能使用 bot。":(typeof detail==="string"&&BOT_ERRORS[detail])||failure,response.status);
+  }
+  return await response.json() as T;
+}
+export async function listBots(signal?:AbortSignal):Promise<{bots:Bot[];default_bot_id:string|null}>{ return await botJson("bots",{signal},"bot 列表暂时无法读取。"); }
+export async function getBotTemplates(signal?:AbortSignal):Promise<{templates:BotTemplate[];tools:BotTool[];always_on:string[]}>{ return await botJson("bot-templates",{signal},"模板暂时无法读取。"); }
+export async function createBot(fields:BotFields):Promise<Bot>{ return (await botJson<{bot:Bot}>("bots",{method:"POST",body:fields},"创建失败，请重试。")).bot; }
+export async function updateBot(id:string,fields:BotFields):Promise<Bot>{ return (await botJson<{bot:Bot}>(`bots/${encodeURIComponent(id)}`,{method:"PATCH",body:fields},"保存失败，请重试。")).bot; }
+export async function deleteBot(id:string):Promise<void>{ await botJson(`bots/${encodeURIComponent(id)}`,{method:"DELETE"},"删除失败，请重试。"); }
+export async function getModelCatalog(signal?:AbortSignal):Promise<ModelCatalog>{ return await botJson("model-catalog",{signal},"模型目录暂时无法读取。"); }
+export type CatalogEntryInput = { name?: string; display_name?: string; provider?: string; model?: string; base_url?: string | null; api_key?: string; key_env?: string; is_default?: boolean };
+export async function addCatalogModel(value:CatalogEntryInput):Promise<CatalogModel>{ return (await botJson<{model:CatalogModel}>("model-catalog",{method:"POST",body:value},"保存失败。")).model; }
+export async function updateCatalogModel(name:string,value:CatalogEntryInput):Promise<CatalogModel>{ return (await botJson<{model:CatalogModel}>(`model-catalog/${encodeURIComponent(name)}`,{method:"PATCH",body:value},"保存失败。")).model; }
+export async function deleteCatalogModel(name:string):Promise<void>{ await botJson(`model-catalog/${encodeURIComponent(name)}`,{method:"DELETE"},"删除失败。"); }
+export async function setDefaultCatalogModel(name:string):Promise<CatalogModel>{ return (await botJson<{model:CatalogModel}>("model-catalog/default",{method:"PUT",body:{name}},"保存失败。")).model; }
