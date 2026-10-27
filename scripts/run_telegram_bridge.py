@@ -1,7 +1,7 @@
 """Telegram bridge for the personal agent (plan §2.4).
 
-Long-polls the Telegram Bot API with getUpdates (no webhook).  Only handles messages from the bound
-chat; strangers are ignored.  Owner text is forwarded to the agent chat API (a fixed conversation named
+Long-polls the Telegram Bot API with getUpdates (no webhook).  Only handles messages and button presses
+from the bound account in the bound chat; strangers are ignored.  Owner text is forwarded to the agent chat API (a fixed conversation named
 「手机」).  Consent cards become inline keyboard buttons with a short id (the real token stays server-side);
 callback_query runs consent.execute once and sends a receipt.  Inbox briefs with channel=telegram are
 delivered to this chat.
@@ -20,6 +20,8 @@ import asyncio
 import hashlib
 import json
 import os
+import re
+import secrets
 import sys
 import time
 import uuid
@@ -35,8 +37,14 @@ LONG_POLL_TIMEOUT = 60
 INBOX_CHECK_INTERVAL = 120
 MESSAGE_MAX_CHARS = 4000
 ANSWER_MAX_CHARS = 3800
+# httpx puts the request URL, and with it /bot<token>/, into its error text.
+BOT_TOKEN_PATTERN = re.compile(r"\d{5,}:[A-Za-z0-9_-]{30,}")
 
 os.chdir(PROJECT_ROOT)
+
+
+def _redact(value) -> str:
+    return BOT_TOKEN_PATTERN.sub("***", str(value))
 
 
 def _owner_credential() -> str:
@@ -78,6 +86,7 @@ async def main(dry_run: bool = False) -> int:
 
     bot_token = bind["bot_token"]
     bound_chat = bind["chat_id"]
+    bound_user = bind.get("user_id")
     conversation_id = bind.get("conversation_id")
     del bind  # the decrypted token stays in bot_token only
 
@@ -134,12 +143,13 @@ async def main(dry_run: bool = False) -> int:
 
                     if isinstance(message, dict):
                         await _handle_message(client, credential, owner, model, message,
-                                              bound_chat, pending_cards, tg,
+                                              bound_chat, bound_user, pending_cards, tg,
                                               lambda: _ensure_conversation())
                     elif isinstance(callback, dict):
-                        await _handle_callback(client, callback, pending_cards, owner, credential)
+                        await _handle_callback(client, callback, pending_cards, owner, credential,
+                                               bound_chat, bound_user)
             except Exception as exc:
-                print(f"Bridge error: {exc}", file=sys.stderr)
+                print(f"Bridge error: {_redact(exc)}", file=sys.stderr)
                 await asyncio.sleep(10)
 
 
@@ -153,21 +163,29 @@ async def _get_updates(client, bot_token: str, offset: int, timeout: int) -> lis
         response.raise_for_status()
         data = response.json()
         if not data.get("ok"):
-            print(f"Telegram API error: {data}", file=sys.stderr)
+            print(f"Telegram API error: {_redact(data)}", file=sys.stderr)
             return None
         return data.get("result") or []
     except httpx.TimeoutException:
         return []
     except Exception as exc:
-        print(f"Telegram API error: {exc}", file=sys.stderr)
+        print(f"Telegram API error: {_redact(exc)}", file=sys.stderr)
         return None
 
 
+def _from_owner(chat: dict, sender: dict | None, bound_chat: int, bound_user: int | None) -> bool:
+    """Only the bound account in the bound chat.  A bind saved before the user id was recorded falls back
+    to the chat id, which is the user id in a private chat; a group with no user id is refused."""
+    if not isinstance(chat, dict) or chat.get("id") != bound_chat:
+        return False
+    owner_id = bound_user if bound_user is not None else (bound_chat if chat.get("type") == "private" else None)
+    return owner_id is not None and isinstance(sender, dict) and sender.get("id") == owner_id
+
+
 async def _handle_message(client, credential: str, owner: str, model: dict, message: dict,
-                          bound_chat: int, pending_cards: dict, tg, ensure_conv):
+                          bound_chat: int, bound_user: int | None, pending_cards: dict, tg, ensure_conv):
     chat = message.get("chat", {})
-    chat_id = chat.get("id")
-    if chat_id != bound_chat:
+    if not _from_owner(chat, message.get("from"), bound_chat, bound_user):
         return
     text = str(message.get("text") or message.get("caption") or "").strip()
     entities = message.get("entities") or []
@@ -181,11 +199,11 @@ async def _handle_message(client, credential: str, owner: str, model: dict, mess
     if bot_cmd:
         if bot_cmd.startswith("/start"):
             code = text[len(bot_cmd):].strip()
-            await _handle_bind_command(client, chat_id, owner, code, tg)
+            await _handle_bind_command(client, chat, message.get("from"), owner, code, tg)
             return
         elif bot_cmd.startswith("/bind"):
             code = text[len(bot_cmd):].strip()
-            await _handle_bind_command(client, chat_id, owner, code, tg)
+            await _handle_bind_command(client, chat, message.get("from"), owner, code, tg)
             return
         return
 
@@ -205,21 +223,26 @@ async def _handle_message(client, credential: str, owner: str, model: dict, mess
         await _send_text(client, bot_token, bound_chat, "（这条回复没有内容。）")
 
 
-async def _handle_bind_command(client, chat_id: int, owner: str, code: str, tg):
+async def _handle_bind_command(client, chat: dict, sender: dict | None, owner: str, code: str, tg):
     from app.agent_telegram import TelegramError
+    chat_id = chat.get("id")
     bot_token = _bot_token_for_send(owner, tg)
+    if chat.get("type") != "private":
+        await _send_text(client, bot_token, chat_id, "请在和 bot 的私聊里绑定。")
+        return
     if not code:
         await _send_text(client, bot_token, chat_id, "请发送绑定码，例如 /bind abcdef01")
         return
     try:
-        result = tg.confirm_bind(owner, code, chat_id, None)
+        # The sender's id is recorded so later messages and button presses can be checked against it.
+        result = tg.confirm_bind(owner, code, chat_id, (sender or {}).get("id"))
         bound = result.get("bound")
         if bound:
             await _send_text(client, bot_token, chat_id, "绑定成功！现在可以从这个聊天使用 Agent。")
         else:
             await _send_text(client, bot_token, chat_id, "绑定码无效或已过期。请在设置页面重新生成。")
     except TelegramError as exc:
-        await _send_text(client, bot_token, chat_id, f"绑定失败：{exc}")
+        await _send_text(client, bot_token, chat_id, f"绑定失败：{_redact(exc)}")
 
 
 def _bot_token_for_send(owner: str, tg) -> str:
@@ -283,7 +306,7 @@ async def _ask_agent(client, credential: str, owner: str, model: dict, text: str
                         elif kind == "done":
                             pass
     except Exception as exc:
-        answer_parts.append(f"\n\n（Agent 回答出错：{exc}）")
+        answer_parts.append(f"\n\n（Agent 回答出错：{_redact(exc)}）")
 
     answer = "".join(answer_parts)
     if citations:
@@ -326,23 +349,22 @@ def _make_keyboard(cards: list[dict], pending: dict, cid: str, credential: str) 
     return buttons if buttons else None
 
 
-_SHORT_ID_COUNTER = 0
-
-
 def _make_short_id() -> str:
-    global _SHORT_ID_COUNTER
-    _SHORT_ID_COUNTER += 1
-    stamp = int(time.time() * 1000) % 0x1000000
-    return format(stamp, "06x") + format(_SHORT_ID_COUNTER, "x")
+    # Pressing a button needs nothing but this id, so it must not be guessable.
+    return secrets.token_urlsafe(9)
 
 
-async def _handle_callback(client, callback: dict, pending: dict, owner: str, credential: str):
+async def _handle_callback(client, callback: dict, pending: dict, owner: str, credential: str,
+                           bound_chat: int, bound_user: int | None):
     cb_id = callback.get("id")
-    message = callback.get("message", {})
-    chat_id = message.get("chat", {}).get("id")
+    message = callback.get("message") or {}
+    chat = message.get("chat") or {}
+    chat_id = chat.get("id")
     data = str(callback.get("data") or "")
 
     if not chat_id or not cb_id:
+        return
+    if not _from_owner(chat, callback.get("from"), bound_chat, bound_user):
         return
 
     bot_token = _bot_token_for_send(owner, None)
@@ -374,9 +396,9 @@ async def _handle_callback(client, callback: dict, pending: dict, owner: str, cr
             errors = [str(d.get("error_code", "failed")) for d in data_items if isinstance(d, dict) and not d.get("ok")]
             await _send_text(client, bot_token, chat_id, f"未能执行：{', '.join(errors) or 'unknown'}")
     except ConsentError as exc:
-        await _send_text(client, bot_token, chat_id, f"未能执行：{exc}")
+        await _send_text(client, bot_token, chat_id, f"未能执行：{_redact(exc)}")
     except Exception as exc:
-        await _send_text(client, bot_token, chat_id, f"执行出错：{exc}")
+        await _send_text(client, bot_token, chat_id, f"执行出错：{_redact(exc)}")
 
 
 async def _deliver_inbox(client, credential: str, owner: str, bound_chat: int, tg) -> None:
