@@ -197,3 +197,27 @@ Land the branch on a clean main as before (`git cherry-pick bfcb274^..worktree-p
 | `frontend/src/AgentChatPanel.tsx` | `TelegramBindCard` in 设置 page |
 | `frontend/src/api.ts` | `TelegramBindStatus` type, 4 API functions, 6 error labels |
 | `frontend/src/PersonalPages.tsx` | Updated channel option label and pending-delivery note |
+
+## Stage A — bots and the server model catalog (second edition)
+
+Commits `72b8b8d` (backend) and `5cdeeaa` (frontend). Nothing pushed or deployed from CodeBot.
+
+1. **Model keys stay on the server.** Pick one per model:
+   - env var: put e.g. `DEEPSEEK_API_KEY=…` in the backend's environment (`.env`); the name must end in `_API_KEY`;
+   - config file: copy `config/models.example.yaml` to `config/models.yaml` (gitignored, `chmod 600`) and list
+     models with `key_env:`; models from the file are read-only in the UI;
+   - vault: enter the key once in 设置 → 服务器模型目录 (needs `MODEL_CREDENTIAL_KEY` set, as for the background model).
+2. **Migrate the old settings:** `.venv/bin/python scripts/migrate_model_catalog.py` (idempotent; startup does it
+   too). It folds `agent_background_model` and `data/model-profiles.json` keys into the vault and prints which
+   models are usable / missing a key — never a key. Only after a bot has answered with a migrated model:
+   `scripts/migrate_model_catalog.py --strip` blanks the plaintext keys left in `data/model-profiles.json`.
+3. `deploy.py --backend-only`, then `curl -s localhost:<port>/health`. Startup adds `agent_bots`,
+   `agent_conversations.bot_id`, creates 「助理」 and moves existing conversations under it. The startup log
+   lists catalog models with configured / missing only.
+4. **Live check (real model):** in 设置 set a default catalog model (★). Create 读财报 from 财报解读, set its focus
+   to AAPL, ask 「去年营收多少」: the answer is Apple's, and the turn's audit says the company came from the bot
+   settings. Create 抓新闻 from 新闻监控, ask it to read SEC filings: the filing tools are not offered. Delete
+   抓新闻: 读财报 and 助理 are unchanged. Switch 读财报's model in 档案: the next turn uses it. In the browser
+   devtools, no request or response carries a key.
+5. The frontend (bot sidebar, bot page, catalog card) goes live only with a push (`deploy.py` without
+   `--backend-only`), which needs the owner's OK.
