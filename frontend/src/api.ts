@@ -110,6 +110,51 @@ export async function listRecall(query="",signal?:AbortSignal): Promise<RecallIt
   const data=await response.json().catch(()=>null) as {items?:unknown}|null;
   return Array.isArray(data?.items)?data.items as RecallItem[]:[];
 }
+// Scheduled tasks, the inbox and the background model (owner only).  The background key is sent once
+// when saved and never comes back: the server answers with has_key only.
+export type InboxSource = { ordinal:number; title:string; url:string|null; source_type:string|null; published_at?:string|null };
+export type InboxItem = { id:string; section:"brief"|"confirm"; kind:"task_brief"|"filing"|"news"|"price"|"action"; title:string; body:string; sources:InboxSource[];
+  payload:{ task_name?:string; channel_pending?:string; missed_slots?:number; display?:{ title?:string; targets?:unknown[]; alternative?:string } };
+  task_id:string|null; conversation_id:string|null; status:"unread"|"read"|"done"|"dismissed"; created_at:string|null };
+export type PriceLine = { symbol:string; above?:number; below?:number };
+export type AgentTask = { id:string; name:string; kind:"brief"|"alerts"; schedule_kind:"daily"|"weekdays"|"hourly"; schedule_time:string; timezone:string;
+  instruction:string|null; scope:"research_queue"|"symbols"; symbols:string[]; channel:"inbox"|"telegram";
+  config:{ filings?:boolean; news?:boolean; price_lines?:PriceLine[] }; enabled:boolean; run_token_cap:number; daily_token_cap:number; tokens_today:number;
+  last_run_at:string|null; next_run_at:string|null; last_status:string|null; last_status_label:string|null; last_conversation_id:string|null };
+export type AgentTaskInput = Partial<Omit<AgentTask,"id"|"tokens_today"|"last_run_at"|"next_run_at"|"last_status"|"last_status_label"|"last_conversation_id">>;
+export type BackgroundModel = { configured:boolean; has_key:boolean; provider?:string; model?:string; base_url?:string|null; revoked_at?:string|null; updated_at?:string|null };
+async function ownerJson<T>(path:string,init:{method?:string;body?:unknown;signal?:AbortSignal},failure:string):Promise<T>{
+  const response=await fetch(agentPath(path),{method:init.method??"GET",signal:init.signal,cache:"no-store",headers:ownerHeaders(init.body!==undefined),
+    ...(init.body!==undefined?{body:JSON.stringify(init.body)}:{})});
+  if(!response.ok){
+    const detail=(await response.json().catch(()=>null) as {detail?:unknown}|null)?.detail;
+    throw new ApiError(response.status===403||response.status===401?"登录个人聊天后才能使用简报和任务。":(typeof detail==="string"&&TASK_ERRORS[detail])||failure,response.status);
+  }
+  return await response.json() as T;
+}
+const TASK_ERRORS:Record<string,string>={invalid_schedule:"时间格式应为 HH:MM。",invalid_timezone:"时区无效。",invalid_instruction:"请写任务说明（最多 2000 字）。",
+  invalid_symbols:"股票代码无效，或指定公司时没有填代码。",invalid_price_lines:"价格线无效：填股票代码和上穿或下穿的价格。",invalid_token_caps:"token 上限无效：单次 5000 到 150000，每日不少于单次。",
+  too_many_tasks:"任务已达上限（20 个）。",invalid_name:"请填任务名称（最多 80 字）。",key_required:"请填写 API key。",invalid_key:"API key 格式不对。",
+  invalid_endpoint:"接口地址无效：须为 HTTPS，自定义服务必须填写。",credential_key_missing:"服务器没有配置加密密钥，无法保存 key。",invalid_agent_chat_request:"填写的内容无效。"};
+export async function listAgentTasks(signal?:AbortSignal):Promise<AgentTask[]>{ return (await ownerJson<{tasks:AgentTask[]}>("tasks",{signal},"任务暂时无法读取。")).tasks; }
+export async function createAgentTask(task:AgentTaskInput):Promise<AgentTask>{ return (await ownerJson<{task:AgentTask}>("tasks",{method:"POST",body:task},"保存任务失败。")).task; }
+export async function updateAgentTask(id:string,task:AgentTaskInput):Promise<AgentTask>{ return (await ownerJson<{task:AgentTask}>(`tasks/${encodeURIComponent(id)}`,{method:"PATCH",body:task},"保存任务失败。")).task; }
+export async function deleteAgentTask(id:string):Promise<void>{ await ownerJson(`tasks/${encodeURIComponent(id)}`,{method:"DELETE"},"删除任务失败。"); }
+export async function listInbox(section?:"brief"|"confirm",signal?:AbortSignal):Promise<InboxItem[]>{
+  return (await ownerJson<{items:InboxItem[]}>(section?`inbox?section=${section}`:"inbox",{signal},"简报暂时无法读取。")).items;
+}
+export async function setInboxStatus(id:string,status:InboxItem["status"]):Promise<InboxItem>{
+  return (await ownerJson<{item:InboxItem}>(`inbox/${encodeURIComponent(id)}/status`,{method:"POST",body:{status}},"操作失败，请重试。")).item;
+}
+/** Mint the confirmation card of a 待你确认 item in its conversation; open that conversation to press it. */
+export async function mintInboxCard(id:string):Promise<{conversation_id:string;request_id:string;expires_at:string|null}>{
+  return await ownerJson(`inbox/${encodeURIComponent(id)}/card`,{method:"POST"},"生成确认卡失败，请重试。");
+}
+export async function getBackgroundModel(signal?:AbortSignal):Promise<BackgroundModel>{ return await ownerJson("background-model",{signal},"后台模型设置暂时无法读取。"); }
+export async function saveBackgroundModel(value:{provider:string;model:string;base_url?:string|null;api_key?:string}):Promise<BackgroundModel>{
+  return await ownerJson("background-model",{method:"PUT",body:value},"保存失败。");
+}
+export async function revokeBackgroundKey():Promise<BackgroundModel>{ return await ownerJson("background-model/key",{method:"DELETE"},"撤销失败，请重试。"); }
 export async function listAgentConversations(offset=0,signal?:AbortSignal): Promise<{conversations:ConversationSummary[];hasMore:boolean}> {
   const url = agentChatUrl("stream", configuredApiBaseUrl).replace(/stream$/, `conversations?limit=30&offset=${offset}`);
   const response = await fetch(url,{signal,cache:"no-store",headers:{Accept:"application/json","X-Chat-Session":chatCredential()}});

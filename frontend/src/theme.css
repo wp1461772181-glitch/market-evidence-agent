@@ -314,3 +314,9 @@ body { background: var(--me-bg); color: var(--me-ink); font-family: var(--me-fon
   color: var(--me-ink);
 }
 :root[data-theme="dark"] input, :root[data-theme="dark"] select, :root[data-theme="dark"] textarea { background: var(--me-surface-2); color: var(--me-ink); border-color: var(--me-line-strong); }
+
+.brief-sources { margin: 4px 0 0; padding-left: 0; list-style: none; display: grid; gap: 2px; font-size: 13px; }
+.brief-sources a { color: inherit; text-decoration: underline; }
+.task-form { display: grid; gap: 10px; }
+.task-form label { display: grid; gap: 4px; }
+.task-form-row { display: flex; gap: 10px; flex-wrap: wrap; }

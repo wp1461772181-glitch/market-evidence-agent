@@ -1,6 +1,6 @@
 import { dispatchAgentAction } from "./agent-client-actions.mjs";
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
-import { agentChatRequest, agentChatModels, agentChatStream, configuredApiBaseUrl, restoreAgentChat, clearAgentConversation, getChatMode, setChatMode, listAgentConversations, renameAgentConversation, archiveAgentConversation, selectAgentConversation, personalChatLogin, getKnowledgeCitation, getMaterialAnalysisSettings, saveMaterialAnalysisSettings, resetMaterialAnalysisSettings, type KnowledgeCitationDetail, type ConversationSummary, type AgentChatConfig, type AgentChatMessage, type AgentChatProvider, type AgentChatEvent, type MaterialAnalysisSettings } from "./api";
+import { agentChatRequest, agentChatModels, agentChatStream, configuredApiBaseUrl, restoreAgentChat, clearAgentConversation, getChatMode, setChatMode, listAgentConversations, renameAgentConversation, archiveAgentConversation, selectAgentConversation, personalChatLogin, getKnowledgeCitation, getMaterialAnalysisSettings, saveMaterialAnalysisSettings, resetMaterialAnalysisSettings, getBackgroundModel, saveBackgroundModel, revokeBackgroundKey, type BackgroundModel, type KnowledgeCitationDetail, type ConversationSummary, type AgentChatConfig, type AgentChatMessage, type AgentChatProvider, type AgentChatEvent, type MaterialAnalysisSettings } from "./api";
 import { chatTurnPreviews, plainChatPreview } from "./chat-thread.mjs";
 import { citationOrdinal, linkCitationMarkers } from "./chat-citations.mjs";
 import ReactMarkdown from "react-markdown";
@@ -413,7 +413,7 @@ export function AgentAdminPage({ onBack }: { onBack: () => void }) {
  function cancelTest(){if(saving)return;testController.current?.abort();discovery.current.cancel();discoveryTimer.current.cancel();setBusy(false);setSaving(false);setOpen(false);setDraft(null);previous.current?.focus()}
  const update=(patch:Partial<ModelProfile>)=>setDraft(x=>x?{...x,...patch}:x);
  if(knowledgeTab)return <KnowledgeAdminPage onBack={()=>setKnowledgeTab(false)}/>;
- return <main className="workspace agent-admin" aria-labelledby="agent-admin-title"><header className="workspace-heading"><div><p className="eyebrow">Market Evidence Agent / {t("后台设置")}</p><h1 id="agent-admin-title">{t("模型连接设置")}</h1></div><div className="agent-header-actions"><button type="button" className="secondary-action" onClick={()=>setKnowledgeTab(true)}>研究知识库</button><button type="button" className="secondary-action" onClick={onBack}>{t("返回 Agent 对话")}</button></div></header><ChatArchiveSettings/><section className="agent-settings-card"><p>{t(c.storage==="Local file"?"本地文件模式：配置保存在本机后端的普通文件中；清除浏览器站点数据不会删除该文件。":"浏览器模式：配置保存在当前浏览器中；清除站点数据会删除这些配置。")}{c.storageError&&<span role="alert"> {c.storageError}</span>}{c.storageError&&!c.loadingProfiles&&<button type="button" className="secondary-action" onClick={()=>window.location.reload()}>{t("Retry model profiles")}</button>}</p><div className="chat-archive-tools"><button type="button" className="secondary-action" disabled={c.loadingProfiles||c.mutationPending||busy||c.state==="testing"||c.state==="sending"} onClick={c.exportProfiles}>{t("导出模型配置")}</button><button type="button" className="secondary-action" disabled={c.loadingProfiles||c.mutationPending||busy||c.state==="testing"||c.state==="sending"} onClick={()=>profileImportRef.current?.click()}>{t("导入模型配置")}</button><input ref={profileImportRef} className="visually-hidden" type="file" accept="application/json,.json" aria-label={t("导入模型配置文件")} onChange={e=>{const file=e.target.files?.[0];if(file)void c.importProfiles(file).then(()=>setProfileStatus(t("导入的模型需重新测试"))).catch(err=>setProfileStatus(err instanceof Error?err.message:t("模型配置导入失败")));e.target.value="";}}/>{profileStatus&&<span role="status">{profileStatus}</span>}<small>{t("备份文件包含 API keys，请妥善保管并仅在可信设备导入。")}</small></div><div className="profile-grid">{c.profiles.map(p=><button disabled={c.loadingProfiles||c.mutationPending||busy||c.state==="testing"||c.state==="sending"} className={`profile-card ${p.id===c.selectedId?"is-active":""}`} key={p.id} onClick={()=>edit(p)}><span>{t(p.id===c.selectedId?"当前使用":"已保存")}</span><strong>{p.display_name}</strong><small>{t(CATALOG.find(x=>x.provider===p.provider)?.label??p.provider)} · {p.model}</small><small>{t(p.api_key?"API key 已保存":"未保存 key")} · {p.tested_at?`${t("上次测试 ")}${new Date(p.tested_at).toLocaleString()}`:t("尚未测试")}</small></button>)}<button disabled={c.loadingProfiles||c.mutationPending||busy||c.state==="testing"||c.state==="sending"} className="profile-card profile-add" onClick={add}><strong>{t("＋ 添加模型")}</strong><small>{t("添加一个已兼容的服务配置")}</small></button></div><small>{c.storage==="Local file"?`${t("本地文件")}: ${c.profilePath}`:c.storage==="OPFS"?t("本地浏览器私有文件：model-profiles.json (OPFS)"):c.storage==="IndexedDB"?t("本地浏览器存储：IndexedDB（当前浏览器不支持 OPFS）"):t("本地浏览器存储状态未知")} · {c.storage==="Local file"?t("本机文件权限保护配置。"):t("不加密；同源页面代码可读取。")}</small></section><MaterialAnalysisDefaultCard/>{open&&draft&&<div className="profile-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)close()}}><section ref={modal} className="profile-modal" role="dialog" aria-modal="true" aria-labelledby="profile-title"><button className="profile-close" onClick={close} aria-label={t("关闭")} disabled={busy}>×</button><p className="eyebrow">{draft.id&&c.profiles.some(p=>p.id===draft.id)?t("编辑模型配置"):t("新建模型配置")}</p><h2 id="profile-title">{draft.id&&c.profiles.some(p=>p.id===draft.id)?t("模型配置"):t("添加模型配置")}</h2><label>{t("显示名称")}<input disabled={busy} value={draft.display_name} maxLength={100} onChange={e=>update({display_name:e.target.value})} placeholder={t("例如：财报研究助手")} /></label><label>{t("模型服务")}<select disabled={busy||saving||c.state==="testing"||c.state==="sending"||c.mutationPending} value={draft.provider} onChange={e=>{const p=CATALOG.find(x=>x.provider===e.target.value)!;discoveryTimer.current.cancel();discoveryTimer.current.setContext(`${p.provider}:${p.baseUrl}`);discovery.current.cancel();setModelCandidates([]);setDiscoveryStatus("");update({provider:p.provider,base_url:p.baseUrl,model:"",api_key:""})}}>{CATALOG.map(x=><option key={x.provider} value={x.provider}>{t(x.label)}</option>)}</select></label><label>{t("Base URL")}<input disabled={busy||saving||c.state==="testing"||c.state==="sending"||c.mutationPending} value={draft.base_url} maxLength={2048} onChange={e=>{discoveryTimer.current.cancel();discoveryTimer.current.setContext(`${draft?.provider}:${e.target.value}`);discovery.current.cancel();setModelCandidates([]);setDiscoveryStatus("");update({base_url:e.target.value})}} autoComplete="url" /></label><label>{t("Model ID")}<input disabled={busy} value={draft.model} maxLength={160} onChange={e=>update({model:e.target.value})} placeholder={t(CATALOG.find(x=>x.provider===draft.provider)?.suggestion??"请输入 Model ID")} /></label><label>{t("服务商可用模型")}<span className="model-discovery-row"><select disabled={busy||saving||c.state==="testing"||c.state==="sending"||c.mutationPending} aria-label={t("服务商可用模型")} value="" onChange={e=>{const item=modelCandidates.find(x=>x.id===e.target.value);if(item)update({model:item.id})}}><option value="" disabled>{t("选择列表中的模型填入 Model ID")}</option>{modelCandidates.map(item=><option key={item.id} value={item.id}>{item.name===item.id?item.id:`${item.name} · ${item.id}`}</option>)}</select><button type="button" className="secondary-action" disabled={busy||saving||c.state==="testing"||c.state==="sending"||c.mutationPending} onClick={()=>void fetchModels()}>{t("刷新")}</button></span>{discoveryStatus&&<small role="status">{discoveryStatus}</small>}</label><label>{t("API key")}<input disabled={busy} type="password" value={draft.api_key} maxLength={2048} onChange={e=>changeKey(e.target.value)} autoComplete="new-password" /></label><p className="profile-note">{t("测试并保存会使用当前填写的 endpoint、Model ID 和 API key 进行验证。测试成功且完成本地保存后，修改才会生效。")}</p>{error&&<p className="agent-chat-status is-error" role="alert">{error}</p>}{c.storageError&&<p role="alert">{c.storageError}</p>}<button type="button" className="secondary-action" onClick={cancelTest} disabled={!busy||saving}>{t("取消测试")}</button><button className="primary-action" disabled={busy||!draft.display_name.trim()||!draft.model.trim()||!draft.api_key||!draft.base_url} onClick={()=>void testSave()}>{busy?t("正在测试…"):t("测试并保存")}</button></section></div>}</main>;
+ return <main className="workspace agent-admin" aria-labelledby="agent-admin-title"><header className="workspace-heading"><div><p className="eyebrow">Market Evidence Agent / {t("后台设置")}</p><h1 id="agent-admin-title">{t("模型连接设置")}</h1></div><div className="agent-header-actions"><button type="button" className="secondary-action" onClick={()=>setKnowledgeTab(true)}>研究知识库</button><button type="button" className="secondary-action" onClick={onBack}>{t("返回 Agent 对话")}</button></div></header><ChatArchiveSettings/><section className="agent-settings-card"><p>{t(c.storage==="Local file"?"本地文件模式：配置保存在本机后端的普通文件中；清除浏览器站点数据不会删除该文件。":"浏览器模式：配置保存在当前浏览器中；清除站点数据会删除这些配置。")}{c.storageError&&<span role="alert"> {c.storageError}</span>}{c.storageError&&!c.loadingProfiles&&<button type="button" className="secondary-action" onClick={()=>window.location.reload()}>{t("Retry model profiles")}</button>}</p><div className="chat-archive-tools"><button type="button" className="secondary-action" disabled={c.loadingProfiles||c.mutationPending||busy||c.state==="testing"||c.state==="sending"} onClick={c.exportProfiles}>{t("导出模型配置")}</button><button type="button" className="secondary-action" disabled={c.loadingProfiles||c.mutationPending||busy||c.state==="testing"||c.state==="sending"} onClick={()=>profileImportRef.current?.click()}>{t("导入模型配置")}</button><input ref={profileImportRef} className="visually-hidden" type="file" accept="application/json,.json" aria-label={t("导入模型配置文件")} onChange={e=>{const file=e.target.files?.[0];if(file)void c.importProfiles(file).then(()=>setProfileStatus(t("导入的模型需重新测试"))).catch(err=>setProfileStatus(err instanceof Error?err.message:t("模型配置导入失败")));e.target.value="";}}/>{profileStatus&&<span role="status">{profileStatus}</span>}<small>{t("备份文件包含 API keys，请妥善保管并仅在可信设备导入。")}</small></div><div className="profile-grid">{c.profiles.map(p=><button disabled={c.loadingProfiles||c.mutationPending||busy||c.state==="testing"||c.state==="sending"} className={`profile-card ${p.id===c.selectedId?"is-active":""}`} key={p.id} onClick={()=>edit(p)}><span>{t(p.id===c.selectedId?"当前使用":"已保存")}</span><strong>{p.display_name}</strong><small>{t(CATALOG.find(x=>x.provider===p.provider)?.label??p.provider)} · {p.model}</small><small>{t(p.api_key?"API key 已保存":"未保存 key")} · {p.tested_at?`${t("上次测试 ")}${new Date(p.tested_at).toLocaleString()}`:t("尚未测试")}</small></button>)}<button disabled={c.loadingProfiles||c.mutationPending||busy||c.state==="testing"||c.state==="sending"} className="profile-card profile-add" onClick={add}><strong>{t("＋ 添加模型")}</strong><small>{t("添加一个已兼容的服务配置")}</small></button></div><small>{c.storage==="Local file"?`${t("本地文件")}: ${c.profilePath}`:c.storage==="OPFS"?t("本地浏览器私有文件：model-profiles.json (OPFS)"):c.storage==="IndexedDB"?t("本地浏览器存储：IndexedDB（当前浏览器不支持 OPFS）"):t("本地浏览器存储状态未知")} · {c.storage==="Local file"?t("本机文件权限保护配置。"):t("不加密；同源页面代码可读取。")}</small></section><MaterialAnalysisDefaultCard/><BackgroundModelCard/>{open&&draft&&<div className="profile-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)close()}}><section ref={modal} className="profile-modal" role="dialog" aria-modal="true" aria-labelledby="profile-title"><button className="profile-close" onClick={close} aria-label={t("关闭")} disabled={busy}>×</button><p className="eyebrow">{draft.id&&c.profiles.some(p=>p.id===draft.id)?t("编辑模型配置"):t("新建模型配置")}</p><h2 id="profile-title">{draft.id&&c.profiles.some(p=>p.id===draft.id)?t("模型配置"):t("添加模型配置")}</h2><label>{t("显示名称")}<input disabled={busy} value={draft.display_name} maxLength={100} onChange={e=>update({display_name:e.target.value})} placeholder={t("例如：财报研究助手")} /></label><label>{t("模型服务")}<select disabled={busy||saving||c.state==="testing"||c.state==="sending"||c.mutationPending} value={draft.provider} onChange={e=>{const p=CATALOG.find(x=>x.provider===e.target.value)!;discoveryTimer.current.cancel();discoveryTimer.current.setContext(`${p.provider}:${p.baseUrl}`);discovery.current.cancel();setModelCandidates([]);setDiscoveryStatus("");update({provider:p.provider,base_url:p.baseUrl,model:"",api_key:""})}}>{CATALOG.map(x=><option key={x.provider} value={x.provider}>{t(x.label)}</option>)}</select></label><label>{t("Base URL")}<input disabled={busy||saving||c.state==="testing"||c.state==="sending"||c.mutationPending} value={draft.base_url} maxLength={2048} onChange={e=>{discoveryTimer.current.cancel();discoveryTimer.current.setContext(`${draft?.provider}:${e.target.value}`);discovery.current.cancel();setModelCandidates([]);setDiscoveryStatus("");update({base_url:e.target.value})}} autoComplete="url" /></label><label>{t("Model ID")}<input disabled={busy} value={draft.model} maxLength={160} onChange={e=>update({model:e.target.value})} placeholder={t(CATALOG.find(x=>x.provider===draft.provider)?.suggestion??"请输入 Model ID")} /></label><label>{t("服务商可用模型")}<span className="model-discovery-row"><select disabled={busy||saving||c.state==="testing"||c.state==="sending"||c.mutationPending} aria-label={t("服务商可用模型")} value="" onChange={e=>{const item=modelCandidates.find(x=>x.id===e.target.value);if(item)update({model:item.id})}}><option value="" disabled>{t("选择列表中的模型填入 Model ID")}</option>{modelCandidates.map(item=><option key={item.id} value={item.id}>{item.name===item.id?item.id:`${item.name} · ${item.id}`}</option>)}</select><button type="button" className="secondary-action" disabled={busy||saving||c.state==="testing"||c.state==="sending"||c.mutationPending} onClick={()=>void fetchModels()}>{t("刷新")}</button></span>{discoveryStatus&&<small role="status">{discoveryStatus}</small>}</label><label>{t("API key")}<input disabled={busy} type="password" value={draft.api_key} maxLength={2048} onChange={e=>changeKey(e.target.value)} autoComplete="new-password" /></label><p className="profile-note">{t("测试并保存会使用当前填写的 endpoint、Model ID 和 API key 进行验证。测试成功且完成本地保存后，修改才会生效。")}</p>{error&&<p className="agent-chat-status is-error" role="alert">{error}</p>}{c.storageError&&<p role="alert">{c.storageError}</p>}<button type="button" className="secondary-action" onClick={cancelTest} disabled={!busy||saving}>{t("取消测试")}</button><button className="primary-action" disabled={busy||!draft.display_name.trim()||!draft.model.trim()||!draft.api_key||!draft.base_url} onClick={()=>void testSave()}>{busy?t("正在测试…"):t("测试并保存")}</button></section></div>}</main>;
 }
 
 function MaterialAnalysisDefaultCard() {
@@ -464,6 +464,77 @@ function MaterialAnalysisDefaultCard() {
     </select></label>
     <div className="chat-archive-tools">
       <button type="button" className="primary-action" disabled={busy || c.loadingProfiles} onClick={() => void apply()}>{busy ? t("正在保存…") : profile ? t("设为默认") : t("恢复系统默认")}</button>
+    </div>
+    {c.profiles.filter((item) => item.api_key.trim()).length === 0 && <small>{t("还没有带 API key 的模型配置；请先在上方添加并测试一个模型。")}</small>}
+    {status && <p role="status">{status}</p>}
+  </section>;
+}
+
+function BackgroundModelCard() {
+  const { t } = useLocale();
+  const c = useChat();
+  const [bm, setBm] = useState<BackgroundModel | null>(null);
+  const [selected, setSelected] = useState("");
+  const [status, setStatus] = useState("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    getBackgroundModel()
+      .then((value) => { if (!cancelled) setBm(value); })
+      .catch((error: unknown) => { if (!cancelled) setStatus(error instanceof Error ? error.message : t("后台模型设置暂时无法读取。")); });
+    return () => { cancelled = true; };
+  }, []);
+  useEffect(() => {
+    if (bm?.configured && bm.has_key && bm.provider) {
+      const match = c.profiles.find((item) => item.provider === bm.provider && item.model === bm.model && (item.base_url || "") === (bm.base_url || ""));
+      if (match) setSelected(match.id);
+      else setSelected("");
+    }
+  }, [bm, c.profiles]);
+  const profile = c.profiles.find((item) => item.id === selected);
+  if (getChatMode() !== "personal") return null;
+  async function apply() {
+    if (!profile) return;
+    setBusy(true);
+    setStatus("");
+    try {
+      const next = await saveBackgroundModel({ provider: profile.provider, model: profile.model, base_url: profile.base_url || null, api_key: profile.api_key });
+      setBm(next);
+      setStatus(t("已保存。定时任务将使用这个模型。"));
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : t("保存失败，请重试。"));
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function revoke() {
+    if (!window.confirm(t("撤销后，定时任务在你重新保存前不会运行。确定撤销？"))) return;
+    setBusy(true);
+    setStatus("");
+    try {
+      const next = await revokeBackgroundKey();
+      setBm(next);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : t("撤销失败，请重试。"));
+    } finally {
+      setBusy(false);
+    }
+  }
+  let summary = "";
+  if (bm?.configured && bm.has_key) summary = `${bm.provider}${bm.model ? ` · ${bm.model}` : ""}${t("（已保存 key）")}`;
+  else if (bm?.configured && !bm.has_key) summary = `${t("key 已撤销")}${bm.revoked_at ? ` ${new Date(bm.revoked_at).toLocaleString()}` : ""}`;
+  else summary = t("尚未设置");
+  return <section className="agent-settings-card" aria-labelledby="background-model-title">
+    <h2 id="background-model-title">{t("后台任务模型")}</h2>
+    <p>{t("定时任务没有人在线，用这里保存的模型运行。key 加密保存在本机服务器，页面不会再显示它；可以随时撤销，撤销后任务显示「未运行：缺少模型」。")}</p>
+    <p><strong>{t("当前默认")}：</strong>{summary}</p>
+    <label>{t("默认模型")}<select value={selected} onChange={(event) => { setSelected(event.target.value); setStatus(""); }} disabled={busy || c.loadingProfiles}>
+      <option value="">{t("尚未设置")}</option>
+      {c.profiles.filter((item) => item.api_key.trim()).map((item) => <option key={item.id} value={item.id}>{item.display_name} · {item.model}</option>)}
+    </select></label>
+    <div className="chat-archive-tools">
+      <button type="button" className="primary-action" disabled={busy || c.loadingProfiles || !selected || !c.profiles.find(x => x.id === selected)?.api_key.trim()} onClick={() => void apply()}>{busy ? t("正在保存…") : t("用这个模型")}</button>
+      {bm?.has_key && <button type="button" className="secondary-action" disabled={busy} onClick={() => void revoke()}>{t("撤销 key")}</button>}
     </div>
     {c.profiles.filter((item) => item.api_key.trim()).length === 0 && <small>{t("还没有带 API key 的模型配置；请先在上方添加并测试一个模型。")}</small>}
     {status && <p role="status">{status}</p>}

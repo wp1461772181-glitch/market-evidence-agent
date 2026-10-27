@@ -1,27 +1,266 @@
 import { useCallback, useEffect, useState } from "react";
 import { useOpenConversation } from "./AgentChatPanel";
-import { confirmProfileItem, deleteProfileItem, getChatMode, listProfileItems, listRecall, type ProfileItem, type RecallItem } from "./api";
+import { confirmProfileItem, createAgentTask, deleteAgentTask, deleteProfileItem, getChatMode, listAgentTasks, listInbox, listProfileItems, listRecall, mintInboxCard, setInboxStatus, updateAgentTask, type AgentTask, type AgentTaskInput, type InboxItem, type ProfileItem, type RecallItem } from "./api";
 import { useLocale } from "./i18n";
+import { formatPriceLines, inboxKindLabel, inboxOrder, numberedSources, parsePriceLines, parseSymbols, scheduleLabel } from "./inbox-items.mjs";
 import { originLabel, profileGroups, recallKindLabel } from "./memory-items.mjs";
 
-// Pages of the personal agent.  Briefs and skills are placeholders until their phases; the memory page
-// lists the owner's profile items and past conversations through the owner-only /agent-chat API.
+// Pages of the personal agent.  Skills is a placeholder until its phase.  The briefs page shows the owner's
+// inbox (简报 with numbered sources, 待你确认 suggestions of unattended runs) and scheduled tasks; the memory
+// page lists profile items and past conversations.  All through the owner-only /agent-chat API.
 
 type Go = (section: "agent" | "briefs" | "skills" | "memory" | "admin" | "materials") => void;
 
 export function BriefsPage({ onNavigate }: { onNavigate: Go }) {
   const { t } = useLocale();
+  const openConversation = useOpenConversation();
+  const [tab, setTab] = useState<"brief" | "confirm" | "tasks">("brief");
+  const [briefs, setBriefs] = useState<InboxItem[] | null>(null);
+  const [confirms, setConfirms] = useState<InboxItem[] | null>(null);
+  const [tasks, setTasks] = useState<AgentTask[] | null>(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState<string | null>(null);
+  const [formOpen, setFormOpen] = useState(false);
+  const [editingTask, setEditingTask] = useState<AgentTask | null>(null);
+  const [formError, setFormError] = useState("");
+  const [formBusy, setFormBusy] = useState(false);
+  const [draftName, setDraftName] = useState("");
+  const [draftKind, setDraftKind] = useState<AgentTask["kind"]>("brief");
+  const [draftSchedule, setDraftSchedule] = useState<AgentTask["schedule_kind"]>("weekdays");
+  const [draftTime, setDraftTime] = useState("08:00");
+  const [draftTimezone, setDraftTimezone] = useState("Asia/Shanghai");
+  const [draftScope, setDraftScope] = useState<AgentTask["scope"]>("research_queue");
+  const [draftSymbols, setDraftSymbols] = useState("");
+  const [draftInstruction, setDraftInstruction] = useState("");
+  const [draftFilings, setDraftFilings] = useState(true);
+  const [draftNews, setDraftNews] = useState(true);
+  const [draftPriceLines, setDraftPriceLines] = useState("");
+  const [draftChannel, setDraftChannel] = useState<AgentTask["channel"]>("inbox");
+  const [draftRunCap, setDraftRunCap] = useState(60000);
+  const [draftDailyCap, setDraftDailyCap] = useState(200000);
+  const personal = getChatMode() === "personal";
+
+  const loadBriefs = useCallback((signal?: AbortSignal) => {
+    listInbox("brief", signal).then(setBriefs).catch(e => { if (!signal?.aborted) setError(e instanceof Error ? e.message : "简报暂时无法读取。"); });
+  }, []);
+  const loadConfirms = useCallback((signal?: AbortSignal) => {
+    listInbox("confirm", signal).then(setConfirms).catch(e => { if (!signal?.aborted) setError(e instanceof Error ? e.message : "简报暂时无法读取。"); });
+  }, []);
+  const loadTasks = useCallback((signal?: AbortSignal) => {
+    listAgentTasks(signal).then(setTasks).catch(e => { if (!signal?.aborted) setError(e instanceof Error ? e.message : "任务暂时无法读取。"); });
+  }, []);
+  const reload = useCallback(() => {
+    const ctrl = new AbortController();
+    loadBriefs(ctrl.signal);
+    loadConfirms(ctrl.signal);
+    loadTasks(ctrl.signal);
+    return () => ctrl.abort();
+  }, [loadBriefs, loadConfirms, loadTasks]);
+  useEffect(() => { if (personal) return reload(); }, [personal, reload]);
+
+  function openForm(task?: AgentTask) {
+    setFormError("");
+    if (task) {
+      setEditingTask(task);
+      setDraftName(task.name);
+      setDraftKind(task.kind);
+      setDraftSchedule(task.schedule_kind);
+      setDraftTime(task.schedule_time);
+      setDraftTimezone(task.timezone);
+      setDraftScope(task.scope);
+      setDraftSymbols(task.symbols.join(", "));
+      setDraftInstruction(task.instruction ?? "");
+      setDraftFilings(task.config.filings ?? true);
+      setDraftNews(task.config.news ?? true);
+      setDraftPriceLines(formatPriceLines(task.config.price_lines ?? []));
+      setDraftChannel(task.channel);
+      setDraftRunCap(task.run_token_cap);
+      setDraftDailyCap(task.daily_token_cap);
+    } else {
+      setEditingTask(null);
+      setDraftName("研究队列简报");
+      setDraftKind("brief");
+      setDraftSchedule("weekdays");
+      setDraftTime("08:00");
+      setDraftTimezone("Asia/Shanghai");
+      setDraftScope("research_queue");
+      setDraftSymbols("");
+      setDraftInstruction("");
+      setDraftFilings(true);
+      setDraftNews(true);
+      setDraftPriceLines("");
+      setDraftChannel("inbox");
+      setDraftRunCap(60000);
+      setDraftDailyCap(200000);
+    }
+    setFormOpen(true);
+  }
+
+  async function submitForm(e: React.FormEvent) {
+    e.preventDefault();
+    if (!draftName.trim() || draftName.length > 80) { setFormError(t("请填任务名称（最多 80 字）。")); return; }
+    const symbols = draftScope === "symbols" ? parseSymbols(draftSymbols) : [];
+    if (draftScope === "symbols" && symbols.length === 0) { setFormError(t("股票代码无效，或指定公司时没有填代码。")); return; }
+    if (draftKind === "alerts" && draftPriceLines.trim()) {
+      const lines = parsePriceLines(draftPriceLines);
+      if (lines === null) { setFormError(t("价格线格式：代码>价格 或 代码<价格，用逗号分隔。")); return; }
+    }
+    setFormBusy(true);
+    setFormError("");
+    try {
+      const input: AgentTaskInput = {
+        name: draftName.trim(),
+        kind: draftKind,
+        schedule_kind: draftSchedule,
+        schedule_time: draftTime,
+        timezone: draftTimezone,
+        scope: draftScope,
+        symbols,
+        channel: draftChannel,
+        run_token_cap: draftRunCap,
+        daily_token_cap: draftDailyCap,
+        instruction: draftKind === "brief" ? draftInstruction : null,
+        config: draftKind === "alerts" ? { filings: draftFilings, news: draftNews, price_lines: parsePriceLines(draftPriceLines) ?? [] } : {},
+      };
+      if (editingTask) await updateAgentTask(editingTask.id, input);
+      else await createAgentTask(input);
+      setFormOpen(false);
+      loadTasks();
+    } catch (e) {
+      setFormError(e instanceof Error ? e.message : "保存失败，请重试。");
+    } finally {
+      setFormBusy(false);
+    }
+  }
+
+  // One busy marker and one error line for every action of the page.
+  async function act(id: string, action: () => Promise<unknown>) {
+    setBusy(id); setError("");
+    try { await action(); } catch (e) { setError(e instanceof Error ? e.message : "操作失败，请重试。"); } finally { setBusy(null); }
+  }
+  const markRead = (id: string) => act(id, async () => { await setInboxStatus(id, "read"); loadBriefs(); loadConfirms(); });
+  const dismiss = (id: string) => act(id, async () => { await setInboxStatus(id, "dismissed"); loadBriefs(); loadConfirms(); });
+  const toggleTask = (task: AgentTask) => act(task.id, async () => { await updateAgentTask(task.id, { enabled: !task.enabled }); loadTasks(); });
+  async function removeTask(task: AgentTask) {
+    if (!window.confirm(t("删除这个任务？已生成的简报会保留。"))) return;
+    await act(task.id, async () => { await deleteAgentTask(task.id); loadTasks(); });
+  }
+  const openItem = (item: InboxItem) => act(item.id, async () => {
+    await openConversation(item.conversation_id!);
+    if (item.status === "unread") await setInboxStatus(item.id, "read");
+    onNavigate("agent");
+  });
+  // The card is minted now, with its own ten-minute capability, in the conversation of the run.
+  const mintCard = (item: InboxItem) => act(item.id, async () => {
+    const minted = await mintInboxCard(item.id);
+    await openConversation(minted.conversation_id);
+    onNavigate("agent");
+  });
+
+  const unreadBriefs = (briefs ?? []).filter(i => i.status === "unread").length;
+  const unreadConfirms = (confirms ?? []).filter(i => i.status === "unread").length;
+
+  if (!personal) return <main className="personal-page" aria-labelledby="briefs-title">
+    <h1 id="briefs-title">{t("简报")}</h1>
+    <section className="personal-card"><p>{t("登录个人聊天后才能查看简报和任务。")}</p></section>
+    <div><button className="primary-action" type="button" onClick={() => onNavigate("agent")}>{t("去对话")}</button></div>
+  </main>;
+
   return <main className="personal-page" aria-labelledby="briefs-title">
     <h1 id="briefs-title">{t("简报")}</h1>
-    <section className="personal-card">
-      <span className="personal-badge">{t("即将推出")}</span>
-      <h2>{t("还没有简报")}</h2>
-      <p>{t("设好主动任务后，研究队列的每日简报、新申报和新闻提醒会出现在这里，每条都带来源编号；点进去就是普通对话，可以接着追问。")}</p>
-    </section>
-    <section className="personal-card">
-      <h2>{t("待你确认")}</h2>
-      <p>{t("后台任务只读不写。它想做的写操作会以确认卡的形式放在这里，你确认后才执行。")}</p>
-    </section>
+    <nav className="section-tabs" aria-label={t("简报")}>
+      <button type="button" aria-current={tab === "brief" ? "page" : undefined} onClick={() => setTab("brief")}>{t("简报")}{unreadBriefs > 0 ? ` · ${unreadBriefs}` : ""}</button>
+      <button type="button" aria-current={tab === "confirm" ? "page" : undefined} onClick={() => setTab("confirm")}>{t("待你确认")}{unreadConfirms > 0 ? ` · ${unreadConfirms}` : ""}</button>
+      <button type="button" aria-current={tab === "tasks" ? "page" : undefined} onClick={() => setTab("tasks")}>{t("任务")}</button>
+    </nav>
+    {error && <p role="alert">{error}</p>}
+    {tab === "brief" && <section className="personal-card memory-panel">
+      {briefs === null && !error ? <p>{t("正在加载…")}</p> : inboxOrder(briefs ?? []).length === 0 ? <p>{t("还没有简报。设好任务后，简报和提醒会出现在这里，每条都带来源编号。")}</p> :
+        <ul className="memory-list">{inboxOrder(briefs ?? []).map(item => <li key={item.id}>
+          <div className="memory-line"><span className="personal-badge">{t(inboxKindLabel(item.kind))}</span><strong>{item.title}</strong><span className="num fine-print">{item.created_at ? new Date(item.created_at).toLocaleString() : ""}</span></div>
+          <p style={{ whiteSpace: "pre-wrap" }}>{item.body}</p>
+          {item.sources && item.sources.length > 0
+            ? <ol className="brief-sources">{numberedSources(item).map(s => <li key={s.ordinal}>[{s.ordinal}] {s.url ? <a href={s.url} target="_blank" rel="noreferrer">{s.title}</a> : s.title}</li>)}</ol>
+            : <p className="fine-print">{t("没有来源，不含事实性结论。")}</p>}
+          {item.payload.channel_pending === "telegram" && <p className="fine-print">{t("Telegram 推送将在下一阶段接入，这条先放在收件箱。")}</p>}
+          {item.payload.missed_slots && item.payload.missed_slots > 1 ? <p className="fine-print">{t("Mac 睡眠期间错过的运行已合并为这一次。")}</p> : null}
+          <div className="memory-actions">
+            {item.conversation_id && <button type="button" className="secondary-action" disabled={busy === item.id} onClick={() => void openItem(item)}>{t("打开对话")}</button>}
+            {item.status === "unread" && <button type="button" className="secondary-action" disabled={busy === item.id} onClick={() => void markRead(item.id)}>{t("标为已读")}</button>}
+            <button type="button" className="secondary-action" disabled={busy === item.id} onClick={() => void dismiss(item.id)}>{t("移除")}</button>
+          </div>
+        </li>)}</ul>}
+    </section>}
+    {tab === "confirm" && <section className="personal-card memory-panel">
+      <p>{t("定时任务在无人值守时只读不写。它想做的写操作会放在这里，不会自动执行；点「生成确认卡」后到对话里核对，点「同意」才执行。")}</p>
+      {confirms === null && !error ? <p>{t("正在加载…")}</p> : inboxOrder(confirms ?? []).length === 0 ? <p>{t("没有待你确认的操作。")}</p> :
+        <ul className="memory-list">{inboxOrder(confirms ?? []).map(item => <li key={item.id}>
+          <div className="memory-line"><span className="personal-badge">{t("Agent 的建议")}</span><strong>{item.title}</strong></div>
+          {item.body && <blockquote className="memory-quote">“{item.body}”</blockquote>}
+          {item.payload.task_name && <p className="fine-print">{t("来自任务：")}{item.payload.task_name}</p>}
+          <div className="memory-actions">
+            <button type="button" className="secondary-action" disabled={busy === item.id} onClick={() => void mintCard(item)}>{t("生成确认卡")}</button>
+            <button type="button" className="secondary-action" disabled={busy === item.id} onClick={() => void dismiss(item.id)}>{t("忽略")}</button>
+          </div>
+        </li>)}</ul>}
+    </section>}
+    {tab === "tasks" && <section className="personal-card memory-panel">
+      <p>{t("任务按时运行（Mac 每 5 分钟检查一次；睡眠期间错过的会在醒来后补跑一次）。简报类任务需要在设置里配置后台任务模型；提醒类任务不调用模型。")}</p>
+      {tasks === null && !error ? <p>{t("正在加载…")}</p> : (tasks ?? []).length === 0 ? <p>{t("还没有任务。")}</p> :
+        <ul className="memory-list">{(tasks ?? []).map(task => <li key={task.id}>
+          <div className="memory-line"><strong>{task.name}</strong><span className="personal-badge">{t(task.kind === "brief" ? "简报" : "提醒")}</span><span className="fine-print">{scheduleLabel(task)} · {task.timezone}</span></div>
+          <p className="fine-print">{task.last_status_label ?? t("尚未运行")}{task.enabled && task.next_run_at ? ` · ${t("下次：")}${new Date(task.next_run_at).toLocaleString()}` : ""}<span className="num"> · {t("今日用量：")}{`${task.tokens_today} / ${task.daily_token_cap} tokens`}</span></p>
+          {task.instruction && <blockquote className="memory-quote">“{task.instruction}”</blockquote>}
+          <div className="memory-actions">
+            <button type="button" className="secondary-action" disabled={busy === task.id} onClick={() => void toggleTask(task)}>{t(task.enabled ? "暂停" : "启用")}</button>
+            <button type="button" className="secondary-action" disabled={busy === task.id} onClick={() => openForm(task)}>{t("编辑")}</button>
+            <button type="button" className="secondary-action" disabled={busy === task.id} onClick={() => void removeTask(task)}>{t("删除")}</button>
+            {task.last_conversation_id && <button type="button" className="secondary-action" disabled={busy === task.id} onClick={() => void act(task.id, async () => { await openConversation(task.last_conversation_id!); onNavigate("agent"); })}>{t("打开上次对话")}</button>}
+          </div>
+        </li>)}</ul>}
+      <div><button type="button" className="secondary-action" onClick={() => openForm()}>{t("新建任务")}</button></div>
+      {formOpen && <section className="personal-card">
+        <form className="task-form" onSubmit={submitForm}>
+          <label>{t("名称")}<input type="text" value={draftName} maxLength={80} onChange={e => setDraftName(e.target.value)} /></label>
+          <label>{t("类型")}<select value={draftKind} onChange={e => setDraftKind(e.target.value as AgentTask["kind"])}>
+            <option value="brief">{t("简报（Agent 回答一段说明）")}</option>
+            <option value="alerts">{t("提醒（新申报、新闻、价格线）")}</option>
+          </select></label>
+          <label>{t("频率")}<select value={draftSchedule} onChange={e => setDraftSchedule(e.target.value as AgentTask["schedule_kind"])}>
+            <option value="daily">{t("每天")}</option>
+            <option value="weekdays">{t("工作日")}</option>
+            <option value="hourly">{t("每小时")}</option>
+          </select></label>
+          <label>{t("时间")}<input type="time" value={draftTime} onChange={e => setDraftTime(e.target.value)} />
+            {draftSchedule === "hourly" && <span className="fine-print">{t("每小时按这里的分钟运行。")}</span>}</label>
+          <label>{t("时区")}<input type="text" value={draftTimezone} onChange={e => setDraftTimezone(e.target.value)} placeholder="Asia/Shanghai" /></label>
+          <label>{t("范围")}<select value={draftScope} onChange={e => setDraftScope(e.target.value as AgentTask["scope"])}>
+            <option value="research_queue">{t("研究队列")}</option>
+            <option value="symbols">{t("指定公司")}</option>
+          </select></label>
+          {draftScope === "symbols" && <label>{t("股票代码")}<input type="text" value={draftSymbols} onChange={e => setDraftSymbols(e.target.value)} placeholder="AAPL, MSFT" /></label>}
+          {draftKind === "brief" && <label>{t("任务说明")}<textarea value={draftInstruction} maxLength={2000} onChange={e => setDraftInstruction(e.target.value)} placeholder={t("例如：总结研究队列公司过去一天的新申报和新闻，列出值得注意的变化。")} /></label>}
+          {draftKind === "alerts" && <>
+            <div className="task-form-row">
+              <label><input type="checkbox" checked={draftFilings} onChange={e => setDraftFilings(e.target.checked)} /> {t("新申报")}</label>
+              <label><input type="checkbox" checked={draftNews} onChange={e => setDraftNews(e.target.checked)} /> {t("新闻线索")}</label>
+            </div>
+            <label>{t("价格线")}<input type="text" value={draftPriceLines} onChange={e => setDraftPriceLines(e.target.value)} placeholder="NVDA&gt;150, AAPL&lt;180" /></label>
+          </>}
+          <label>{t("推送")}<select value={draftChannel} onChange={e => setDraftChannel(e.target.value as AgentTask["channel"])}>
+            <option value="inbox">{t("收件箱")}</option>
+            <option value="telegram">{t("Telegram（下一阶段）")}</option>
+          </select></label>
+          <label>{t("单次 token 上限")}<input type="number" value={draftRunCap} onChange={e => setDraftRunCap(Number(e.target.value))} /></label>
+          <label>{t("每日 token 上限")}<input type="number" value={draftDailyCap} onChange={e => setDraftDailyCap(Number(e.target.value))} /></label>
+          {formError && <p role="alert">{formError}</p>}
+          <div className="memory-actions">
+            <button type="submit" className="primary-action" disabled={formBusy}>{t("保存任务")}</button>
+            <button type="button" className="secondary-action" onClick={() => setFormOpen(false)}>{t("取消")}</button>
+          </div>
+        </form>
+      </section>}
+    </section>}
     <div><button className="primary-action" type="button" onClick={() => onNavigate("agent")}>{t("去对话")}</button></div>
   </main>;
 }
