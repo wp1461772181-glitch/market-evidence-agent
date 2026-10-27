@@ -1,0 +1,58 @@
+{
+  "source_ordinal": 1,
+  "citations": [
+    {
+      "ordinal": 1,
+      "source_type": "official_filing",
+      "quote": "Apple Inc. Total net sales were 16,128 for fiscal 2024. Operating income follows."
+    },
+    {
+      "ordinal": 2,
+      "source_type": "saved_price",
+      "figures": "trading_date 2024-01-02 close 192.5",
+      "quote": "192.5"
+    }
+  ],
+  "claims": {
+    "claims": [
+      {
+        "id": "revenue",
+        "statement": "Revenue was 16,128.",
+        "citation_ordinal": 1,
+        "evidence": {
+          "type": "quote",
+          "evidence_quote": "Total net sales were 16,128 for fiscal 2024."
+        }
+      },
+      {
+        "id": "missing_quote",
+        "statement": "The company repurchased shares during the quarter.",
+        "citation_ordinal": 1,
+        "evidence": {
+          "type": "quote",
+          "evidence_quote": "The company repurchased shares during the quarter at prevailing prices."
+        }
+      },
+      {
+        "id": "price",
+        "statement": "Close was 192.5 on 2024-01-02.",
+        "citation_ordinal": 2,
+        "evidence": {
+          "type": "field",
+          "fields": {"trading_date": "2024-01-02", "close": 192.5}
+        }
+      },
+      {
+        "id": "wrong_close",
+        "statement": "Close was 199.0 on 2024-01-02.",
+        "citation_ordinal": 2,
+        "evidence": {
+          "type": "field",
+          "fields": {"trading_date": "2024-01-02", "close": 199.0}
+        }
+      }
+    ]
+  },
+  "expect_accepted": ["revenue", "price"],
+  "expect_reasons": ["quote_not_found", "field_mismatch"]
+}

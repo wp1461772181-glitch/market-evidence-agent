@@ -1,9 +1,11 @@
 import json
+from pathlib import Path
 
 from app.agent_workflow import direct
 from app.agent_workflow.state import AgentRuntimeContext
 
 SOURCE = "Apple Inc. Total net sales were 16,128 for fiscal 2024. Operating income follows."
+FIXTURES = Path(__file__).parent / "fixtures" / "claim_gate"
 
 
 def _turn():
@@ -47,6 +49,21 @@ def test_shadow_records_a_bad_quote_while_legacy_keeps_the_prose(monkeypatch):
     assert "latency_ms" in shadow
     assert shadow["answer_quality_notes"]["prose_chars"] > 0
     assert "legacy_disagreement" in shadow["answer_quality_notes"]
+
+
+def test_shadow_fixture_quote_not_found_keeps_numeric_prose(monkeypatch):
+    monkeypatch.setenv("CLAIM_QUOTE_GATE", "shadow")
+    case = json.loads((FIXTURES / "quote_not_found.json").read_text())
+    claim = case["claims"]["claims"][0]
+    answer = f"{claim['statement']} [{claim['citation_ordinal']}]\n" + json.dumps(case["claims"])
+    turn = _turn()
+    turn.citations = case["citations"]
+    result = turn.finish(answer)
+    assert result["status"] == "succeeded"
+    assert "16,128" in result["answer"]
+    shadow = result["audit"]["claim_gate_shadow"]
+    assert shadow["drop_reasons"] == ["quote_not_found"]
+    assert shadow["answer_quality_notes"]["prose_chars"] > 0
 
 
 def test_enforce_drops_a_claim_the_resolved_span_does_not_support(monkeypatch):
