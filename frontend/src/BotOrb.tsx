@@ -1,9 +1,9 @@
 // FinBot faces.  A bot's avatar is one of 16 minimal round-face robots (4 silhouettes × 4 eye colours, from the
 // FinBot 极简版 design): dark shell, visor, two pill eyes with a glint, a thin monocle ring; the eyes follow the
-// pointer.  BrandLogo is the sidebar mark: the 捧报偷瞄笑 pose (public/logo-peek.svg).  Older emoji or text avatars
-// are shown as they were.
-import { useEffect, useRef } from "react";
-import { createGazeHub, MOOD_COLORS, parseAvatar, type BotMood, type BotStyle, type GazeHub } from "./orb.mjs";
+// pointer.  BrandLogo is the sidebar mark: the three newspaper-reading poses (public/logo*.svg) crossfading in a
+// random order.  Older emoji or text avatars are shown as they were.
+import { useEffect, useRef, useState } from "react";
+import { createGazeHub, MOOD_COLORS, nextPose, parseAvatar, type BotMood, type BotStyle, type GazeHub } from "./orb.mjs";
 
 let hub: GazeHub | null = null;
 const gazeHub = () => (hub ??= createGazeHub(window));
@@ -38,9 +38,22 @@ export function BotFace({ style, mood, pupils }: { style: BotStyle; mood: BotMoo
   </svg>;
 }
 
-/** The brand mark: FinBot peeking over its newspaper with a smile. */
+const BRAND_POSES = ["logo.svg", "logo-peek.svg", "logo-3d.svg"];
+
+/** The brand mark: tilt / peek / 3-quarter poses, each held 4–8 s, the next picked at random, 600 ms crossfade.
+ * Reduced motion: the tilt pose stays. */
 export function BrandLogo() {
-  return <img className="brand-logo" src={`${import.meta.env.BASE_URL}logo-peek.svg`} alt="" aria-hidden="true" />;
+  const [pose, setPose] = useState(0);
+  useEffect(() => {
+    if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+    let timer = 0;
+    const tick = () => { timer = window.setTimeout(() => { if (document.visibilityState !== "hidden") setPose(p => nextPose(p, BRAND_POSES.length)); tick(); }, 4000 + Math.random() * 4000); };
+    tick();
+    return () => window.clearTimeout(timer);
+  }, []);
+  return <span className="brand-logo" aria-hidden="true">
+    {BRAND_POSES.map((src, i) => <img key={src} src={`${import.meta.env.BASE_URL}${src}`} alt="" className={i === pose ? "is-on" : undefined} />)}
+  </span>;
 }
 
 export function BotOrb({ avatar, name, size = 28, track = false, className = "" }: { avatar: string | null | undefined; name: string; size?: number; track?: boolean; className?: string }) {

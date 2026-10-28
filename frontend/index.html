@@ -4,8 +4,10 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#141414" />
-    <link rel="icon" type="image/svg+xml" href="%BASE_URL%favicon.svg" />
-    <link rel="apple-touch-icon" href="%BASE_URL%apple-touch-icon.png" />
+    <!-- Safari draws tab icons from PNG, not SVG; the ?v= makes browsers drop the icon they cached before. -->
+    <link rel="icon" type="image/png" sizes="64x64" href="%BASE_URL%favicon.png?v=peek" />
+    <link rel="icon" type="image/svg+xml" href="%BASE_URL%favicon.svg?v=peek" />
+    <link rel="apple-touch-icon" href="%BASE_URL%apple-touch-icon.png?v=peek" />
     <title>FinBot | 研究工作台</title>
   </head>
   <body>
