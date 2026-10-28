@@ -302,7 +302,11 @@ def format_turn(events: list[tuple[str, dict]]):
         elif kind == "delta":
             answer_parts.append(str(data.get("text", "")))
         elif kind == "clarification":
-            cards.append(data)
+            # The stream names the card ``request_id`` (agent_chat_stream); the consent record calls it ``id``.
+            card = dict(data)
+            if not card.get("id") and card.get("request_id"):
+                card["id"] = card["request_id"]
+            cards.append(card)
     return chat_text("".join(answer_parts)), cards, conversation_id
 
 
@@ -312,7 +316,10 @@ def _make_keyboard(cards: list[dict], pending: dict, cid: str, credential: str, 
     sources) has no Telegram form and gets no buttons."""
     buttons = []
     for card in cards:
-        if not isinstance(card, dict) or not card.get("id") or card.get("options"):
+        if not isinstance(card, dict) or card.get("options"):
+            continue
+        card_id = card.get("id") or card.get("request_id")
+        if not card_id:
             continue
         row = []
         for choice in card.get("choices") or []:
@@ -322,7 +329,7 @@ def _make_keyboard(cards: list[dict], pending: dict, cid: str, credential: str, 
                 continue
             short_id = _make_short_id()
             label = str(choice.get("label") or ("同意" if kind == "ok" else "取消"))[:20]
-            pending[short_id] = {"value": value, "card_id": str(card["id"]), "conversation_id": cid,
+            pending[short_id] = {"value": value, "card_id": str(card_id), "conversation_id": cid,
                                  "credential": credential, "bot_id": bot_id, "bot_name": bot_name, "label": label, "group": []}
             row.append({"text": label, "callback_data": f"{kind}:{short_id}"})
         # Either button of a card uses the card up, so pressing one forgets the other.

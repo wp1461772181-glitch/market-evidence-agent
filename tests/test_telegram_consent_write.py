@@ -190,3 +190,57 @@ def test_a_notification_lists_no_sources():
     from app.agent_telegram import render
     citations = [{"ordinal": 1, "title": "Tesla IR", "source_url": "https://ir.tesla.com"}]
     assert render("抓新闻", "特斯拉发布交付数据 [1]。", citations, [1]) == "【抓新闻】\n特斯拉发布交付数据。"
+
+
+# --- a card as it arrives on the wire ----------------------------------------------------------------------
+
+def test_a_streamed_save_card_becomes_telegram_buttons_not_a_go_to_the_web_note(owner, monkeypatch):
+    """Regression (2026-10-28): 「那就把第三天存进资料库吧」 on Telegram got only 「请核对确认卡…」 and
+    「（这一步需要在网页里选择后确认。）」.  The stream's clarification frame names the card ``request_id``
+    (agent_chat_stream), and the bridge only looked for ``id``, so no streamed card ever got buttons; the
+    unit tests passed the consent record (which has ``id``) straight to ``_make_keyboard``."""
+    conversation = "tg-line-" + uuid.uuid4().hex[:8]
+    operation = _material()
+    card = consent.propose(owner, conversation, [operation], {"title": "保存材料"}, question="把第三天存进资料库")
+    # Exactly the keys agent_chat_stream puts on the clarification frame.
+    wire = {"request_id": card["id"], "reason": card["reason"], "choices": card["choices"],
+            "display": card.get("display"), "question": card.get("question")}
+    events = [("conversation", {"conversation_id": conversation, "turn_id": "t-1"}),
+              ("delta", {"text": "请核对确认卡中的全部操作、来源和日期，确认后执行。"}),
+              ("clarification", wire)]
+    sent, asked = [], []
+
+    async def stream(client, credential, bot_id, text, **press):
+        return bridge.format_turn(events)
+
+    async def send_text(client, bot_token, chat_id, text, inline_keyboard=None, *, markdown=True):
+        sent.append((text, inline_keyboard))
+        return 3000 + len(sent)
+
+    monkeypatch.setattr(bridge, "_ask_agent", stream)
+    monkeypatch.setattr(bridge, "_send_text", send_text)
+    monkeypatch.setattr(bridge, "_bot_token_for_send", lambda owner_hash, tg: "123:x")
+    pending = {}
+    asyncio.run(bridge._bot_turn(None, owner, OWNER_HASH, OWNER_ID, pending, _Telegram(), "b-1", "助理",
+                                 "那就把第三天存进资料库吧"))
+
+    text, keyboard = sent[-1]
+    assert "网页" not in text
+    assert keyboard and [b["text"] for b in keyboard[0]] == ["同意", "取消"]
+    entry = pending[keyboard[0][0]["callback_data"].split(":", 1)[1]]
+    assert entry["card_id"] == card["id"] and entry["conversation_id"] == conversation
+
+    # Pressing 同意 on that keyboard still lands the write through the server's confirmed handler.
+    monkeypatch.setattr(bridge, "_ask_agent", _server_line(conversation, card, asked))
+
+    async def answer_callback(*_):
+        pass
+
+    monkeypatch.setattr(bridge, "_answer_callback", answer_callback)
+    press = {"id": "cb-1", "from": {"id": OWNER_ID}, "data": keyboard[0][0]["callback_data"],
+             "message": {"chat": {"id": OWNER_ID, "type": "private"}}}
+    asyncio.run(bridge._handle_callback(None, press, pending, OWNER_HASH, owner, OWNER_ID, OWNER_ID, _Telegram()))
+    assert asked[0]["pending_request_id"] == card["id"] and asked[0]["text"].startswith("confirm:")
+    with SessionLocal() as db:
+        assert db.scalar(select(UploadedEvidence).where(
+            UploadedEvidence.source_url == operation["arguments"]["source_url"])) is not None
