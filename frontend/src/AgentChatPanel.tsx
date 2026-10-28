@@ -1,9 +1,10 @@
 import { dispatchAgentAction } from "./agent-client-actions.mjs";
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
-import { agentChatRequest, agentChatModels, agentChatStream, configuredApiBaseUrl, restoreAgentChat, clearAgentConversation, getChatMode, setChatMode, listAgentConversations, renameAgentConversation, archiveAgentConversation, selectAgentConversation, personalChatLogin, getKnowledgeCitation, getMaterialAnalysisSettings, saveMaterialAnalysisSettings, resetMaterialAnalysisSettings, getBackgroundModel, saveBackgroundModel, revokeBackgroundKey, getTelegramBind, saveTelegramToken, startTelegramBind, unbindTelegram, type BackgroundModel, type Bot, type TelegramBindStatus, type KnowledgeCitationDetail, type ConversationSummary, type AgentChatConfig, type AgentChatMessage, type AgentChatProvider, type AgentChatEvent, type MaterialAnalysisSettings } from "./api";
+import { listSkills, type Skill, agentChatRequest, agentChatModels, agentChatStream, configuredApiBaseUrl, restoreAgentChat, clearAgentConversation, getChatMode, setChatMode, listAgentConversations, renameAgentConversation, archiveAgentConversation, selectAgentConversation, personalChatLogin, getKnowledgeCitation, getMaterialAnalysisSettings, saveMaterialAnalysisSettings, resetMaterialAnalysisSettings, getBackgroundModel, saveBackgroundModel, revokeBackgroundKey, getTelegramBind, saveTelegramToken, startTelegramBind, unbindTelegram, type BackgroundModel, type Bot, type TelegramBindStatus, type KnowledgeCitationDetail, type ConversationSummary, type AgentChatConfig, type AgentChatMessage, type AgentChatProvider, type AgentChatEvent, type MaterialAnalysisSettings } from "./api";
 import { isTaskPostHead, parseTaskPostHead } from "./task-posts.mjs";
 import { chatTurnPreviews, plainChatPreview } from "./chat-thread.mjs";
 import { ModelCatalogCard } from "./BotPages";
+import { slashMatches } from "./skill-items.mjs";
 import { citationOrdinal, linkCitationMarkers } from "./chat-citations.mjs";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -333,7 +334,19 @@ export function AgentChatPanel({ onSettings,onModeChange,bot,side,onTurnSettled 
   async function showCitation(chunkId:string, unavailable:boolean){if(unavailable)return;try{const value=await getKnowledgeCitation(chunkId);setCitationDetails(x=>({...x,[chunkId]:value}))}catch{setCitationDetails(x=>({...x,[chunkId]:{title:t("来源已撤回或不可访问"),section:"",excerpt:"",source_url:null,observed_at:null,coverage:"unavailable",start_offset:0,end_offset:0}}))}}
   function feedbackOf(turnId:string):string{try{return localStorage.getItem(`market-evidence-agent:feedback:${turnId}`)??""}catch{return ""}}
   function giveFeedback(turnId:string,value:"up"|"down"){const key=`market-evidence-agent:feedback:${turnId}`;try{if(localStorage.getItem(key)===value)localStorage.removeItem(key);else localStorage.setItem(key,value)}catch{}setFeedbackTick(x=>x+1)}
+  // The "/" picker: a draft like "/财" (no space yet) lists the bot's matching enabled skills, its usual ones first.
+  const [skillList,setSkillList]=useState<Skill[]|null>(null),[pickIndex,setPickIndex]=useState(0),[pickClosed,setPickClosed]=useState(false);
+  const slashActive=Boolean(bot)&&mode==="personal"&&c.draft.startsWith("/")&&!/\s/.test(c.draft);
+  useEffect(()=>{if(!slashActive||skillList)return;let live=true;listSkills().then(d=>{if(live)setSkillList(d.skills)}).catch(()=>{if(live)setSkillList([])});return()=>{live=false}},[slashActive,skillList]);
+  const slashItems=slashActive&&!pickClosed?slashMatches(skillList??[],c.draft,bot?.skills??[]):[];
+  useEffect(()=>{setPickIndex(0);setPickClosed(false)},[c.draft]);
+  function pickSkill(skill:Skill){c.setDraft(`/${skill.name} `);draftBox.current?.focus()}
   function onComposerKey(event:ReactKeyboardEvent<HTMLTextAreaElement>){
+    if(slashItems.length){
+      if(event.key==="ArrowDown"||event.key==="ArrowUp"){event.preventDefault();setPickIndex(i=>(i+(event.key==="ArrowDown"?1:-1)+slashItems.length)%slashItems.length);return}
+      if((event.key==="Enter"||event.key==="Tab")&&!event.shiftKey&&!event.nativeEvent.isComposing){event.preventDefault();pickSkill(slashItems[Math.min(pickIndex,slashItems.length-1)]);return}
+      if(event.key==="Escape"){event.preventDefault();setPickClosed(true);return}
+    }
     // Enter sends, Shift+Enter breaks the line; a key that confirms an IME composition is left alone.
     if(event.key!=="Enter"||event.shiftKey||event.nativeEvent.isComposing||event.keyCode===229)return;
     event.preventDefault();
@@ -396,7 +409,8 @@ export function AgentChatPanel({ onSettings,onModeChange,bot,side,onTurnSettled 
         {c.status && <p className={`agent-chat-status ${c.state === "error" ? "is-error" : ""}`} role={c.state === "error" ? "alert" : "status"}>{c.status}</p>}
         <form ref={composerForm} className="agent-composer" onSubmit={c.send}>
           <label htmlFor="agent-draft">{t("输入消息")}</label>
-          <textarea id="agent-draft" ref={draftBox} rows={1} value={c.draft} onChange={e => c.setDraft(e.target.value)} onKeyDown={onComposerKey} maxLength={4000} disabled={Boolean(c.archiveView)||c.restoring||!c.verified || c.state === "sending" || c.state === "testing" || c.loadingProfiles || c.mutationPending} placeholder={bot?`${t("给")} ${bot.name} ${t("发消息…")}`:t(c.verified?"给 Agent 发消息…":"请先在设置里填写并测试模型")} />
+          {slashItems.length>0&&<ul className="skill-picker" id="skill-picker" role="listbox" aria-label={t("技能")}>{slashItems.map((skill,i)=><li key={skill.id} id={`skill-option-${i}`} role="option" aria-selected={i===Math.min(pickIndex,slashItems.length-1)} onMouseDown={e=>{e.preventDefault();pickSkill(skill)}}><strong>/{skill.name}</strong><small>{skill.description}</small></li>)}</ul>}
+          <textarea id="agent-draft" ref={draftBox} {...(slashItems.length>0?{role:"combobox","aria-expanded":true,"aria-controls":"skill-picker","aria-activedescendant":`skill-option-${Math.min(pickIndex,slashItems.length-1)}`}:{})} rows={1} value={c.draft} onChange={e => c.setDraft(e.target.value)} onKeyDown={onComposerKey} maxLength={4000} disabled={Boolean(c.archiveView)||c.restoring||!c.verified || c.state === "sending" || c.state === "testing" || c.loadingProfiles || c.mutationPending} placeholder={bot?`${t("给")} ${bot.name} ${t("发消息…")}`:t(c.verified?"给 Agent 发消息…":"请先在设置里填写并测试模型")} />
           <div className="agent-composer-bottom">
             {bot?<span className="agent-composer-hint">{t("Enter 发送，Shift+Enter 换行")} · {t("模型和 key 只在服务器上，浏览器不保存 key。")}</span>:
             <span className="agent-composer-hint" title={t(c.storage==="Local file"?"API key 保存在本机文件中，并随请求发送给所选服务方，不会写入聊天记录。":"API key 保存在当前浏览器的模型配置中，并随请求发送给所选服务方，不会写入聊天记录。")}>{t("Enter 发送，Shift+Enter 换行")} · {t(c.storage==="Local file"?"API key 保存在本机文件中，并随请求发送给所选服务方，不会写入聊天记录。":"API key 保存在当前浏览器的模型配置中，并随请求发送给所选服务方，不会写入聊天记录。")}</span>}

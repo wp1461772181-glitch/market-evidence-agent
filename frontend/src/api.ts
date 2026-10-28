@@ -126,10 +126,10 @@ export type InboxItem = { id:string; section:"brief"|"confirm"; kind:"task_brief
   task_id:string|null; bot_id:string|null; posted:boolean; conversation_id:string|null; status:"unread"|"read"|"done"|"dismissed"; created_at:string|null };
 export type PriceLine = { symbol:string; above?:number; below?:number };
 export type AgentTask = { id:string; name:string; kind:"brief"|"alerts"; schedule_kind:"daily"|"weekdays"|"hourly"; schedule_time:string; timezone:string;
-  bot_id:string|null; instruction:string|null; scope:"research_queue"|"symbols"; symbols:string[]; channel:"inbox"|"telegram";
+  bot_id:string|null; skill_id:string|null; instruction:string|null; scope:"research_queue"|"symbols"; symbols:string[]; channel:"inbox"|"telegram";
   config:{ filings?:boolean; news?:boolean; price_lines?:PriceLine[] }; enabled:boolean; run_token_cap:number; daily_token_cap:number; tokens_today:number;
   last_run_at:string|null; next_run_at:string|null; last_status:string|null; last_status_label:string|null; last_conversation_id:string|null };
-export type AgentTaskInput = Partial<Omit<AgentTask,"id"|"tokens_today"|"last_run_at"|"next_run_at"|"last_status"|"last_status_label"|"last_conversation_id">>;
+export type AgentTaskInput = Partial<Omit<AgentTask,"skill_id"|"id"|"tokens_today"|"last_run_at"|"next_run_at"|"last_status"|"last_status_label"|"last_conversation_id">> & {skill_id?:string|null};
 export type BackgroundModel = { configured:boolean; has_key:boolean; provider?:string; model?:string; base_url?:string|null; revoked_at?:string|null; updated_at?:string|null };
 async function ownerJson<T>(path:string,init:{method?:string;body?:unknown;signal?:AbortSignal},failure:string):Promise<T>{
   const response=await fetch(agentPath(path),{method:init.method??"GET",signal:init.signal,cache:"no-store",headers:ownerHeaders(init.body!==undefined),
@@ -146,7 +146,8 @@ const TASK_ERRORS:Record<string,string>={invalid_schedule:"时间格式应为 HH
   invalid_endpoint:"接口地址无效：须为 HTTPS，自定义服务必须填写。",credential_key_missing:"服务器没有配置加密密钥，无法保存 key。",invalid_agent_chat_request:"填写的内容无效。",
   invalid_bot_token:"Bot Token 格式无效：应从 BotFather 获取。",no_bot_token:"请先保存 Bot Token。",
   no_active_bind:"没有正在进行的绑定。",bind_code_mismatch:"绑定码不匹配。",bind_already_confirmed:"已绑定，请勿重复确认。",
-  not_bound:"尚未绑定任何 Telegram 账号。",invalid_bind_code:"绑定码格式无效。",invalid_chat_id:"Chat ID 无效。",unknown_bot:"这个 bot 不存在或不是你的。"};
+  not_bound:"尚未绑定任何 Telegram 账号。",invalid_bind_code:"绑定码格式无效。",invalid_chat_id:"Chat ID 无效。",unknown_bot:"这个 bot 不存在或不是你的。",
+  unknown_skill:"这个技能不存在。"};
 export async function listAgentTasks(signal?:AbortSignal,botId?:string):Promise<AgentTask[]>{ return (await ownerJson<{tasks:AgentTask[]}>(botId?`tasks?bot_id=${encodeURIComponent(botId)}`:"tasks",{signal},"任务暂时无法读取。")).tasks; }
 export type TaskRun = { id:string; task_id:string; task_name:string; status:string; status_label:string; posted:number; tokens:number; conversation_id:string|null; created_at:string|null };
 export async function listTaskRuns(botId:string,signal?:AbortSignal):Promise<TaskRun[]>{ return (await ownerJson<{runs:TaskRun[]}>(`tasks/runs?bot_id=${encodeURIComponent(botId)}&limit=20`,{signal},"最近运行暂时无法读取。")).runs; }
@@ -617,12 +618,12 @@ export async function getKnowledgeCitation(chunkId:string):Promise<KnowledgeCita
 // catalog, so no key leaves the browser.  Catalog entries say configured / missing, never the key.
 export type BotFocus = { companies: Array<{ symbol: string; name?: string | null }>; theme: string | null };
 export type Bot = { id: string; name: string; title: string; description: string; focus: BotFocus; tool_scope: string[] | null; model: string | null;
-  avatar: string; group: string; pinned: boolean; hidden: boolean; is_default: boolean; template: string; conversation_id: string | null;
+  skills: string[]; avatar: string; group: string; pinned: boolean; hidden: boolean; is_default: boolean; template: string; conversation_id: string | null;
   daily_notify_cap: number; default_company: { symbol: string; company: string | null } | null; last_message: string | null; last_at: string | null; unread: number; pending: number;
   created_at?: string | null; updated_at?: string | null };
 export type BotTemplate = { id: string; label: string; name: string; title: string; description: string; tool_scope: string[] | null };
 export type BotTool = { name: string; level: string; owner_only: boolean };
-export type BotFields = Partial<Pick<Bot, "name" | "title" | "description" | "focus" | "tool_scope" | "model" | "avatar" | "group" | "pinned" | "hidden" | "template" | "daily_notify_cap">>;
+export type BotFields = Partial<Pick<Bot, "name" | "title" | "description" | "focus" | "tool_scope" | "model" | "avatar" | "group" | "pinned" | "hidden" | "template" | "daily_notify_cap" | "skills">>;
 export type CatalogModel = { name: string; display_name: string; provider: string; model: string; base_url: string | null; origin: "file" | "server";
   key_source: "vault" | "env"; key_env: string | null; key_status: "configured" | "missing"; is_default: boolean; migrated: boolean };
 export type ModelCatalog = { models: CatalogModel[]; default: string | null; config_file: { present: boolean; problems: string[] } };
@@ -630,7 +631,7 @@ const BOT_ERRORS:Record<string,string>={invalid_name:"名字无效（1 到 40 �
   invalid_focus:"关注范围无效。",invalid_focus_symbol:"股票代码无效，例如 AAPL 或 BRK.B。",too_many_companies:"关注公司最多 20 家。",invalid_tool_scope:"工具范围无效。",
   unknown_tool:"工具范围里有不存在的工具。",unknown_model:"模型目录里没有这个模型。",invalid_avatar:"头像最多 16 个字符。",invalid_group:"分组名最多 40 字。",
   default_bot_not_hidden:"默认 bot 不能隐藏。",default_bot_undeletable:"默认 bot 不能删除。",invalid_notify_cap:"每日通知上限为 0 到 50。",too_many_bots:"bot 已达上限（30 个）。",
-  bot_not_found:"bot 不存在或已删除。",unknown_template:"模板无效。",model_exists:"已有同名模型。",model_not_found:"模型不存在。",model_in_use:"有 bot 正在用这个模型，先给它们换模型。",
+  bot_not_found:"bot 不存在或已删除。",unknown_template:"模板无效。",unknown_skill:"这个技能不存在。",model_exists:"已有同名模型。",model_not_found:"模型不存在。",model_in_use:"有 bot 正在用这个模型，先给它们换模型。",
   model_from_file:"这个模型来自服务器配置文件，只能在服务器上改。",default_from_file:"默认模型由服务器配置文件指定。",invalid_provider:"模型服务无效。",invalid_model:"Model ID 无效。",
   invalid_endpoint:"接口地址无效：须为 HTTPS，自定义服务必须填写。",invalid_key:"API key 格式不对。",invalid_key_env:"环境变量名须以 _API_KEY 结尾，且不能是服务器自己的密钥。",
   one_key_source:"API key 和环境变量只能填一个。",key_required:"换了服务或接口地址，需要重新填写 key。",credential_key_missing:"服务器没有配置加密密钥，无法保存 key。",
@@ -655,3 +656,35 @@ export async function addCatalogModel(value:CatalogEntryInput):Promise<CatalogMo
 export async function updateCatalogModel(name:string,value:CatalogEntryInput):Promise<CatalogModel>{ return (await botJson<{model:CatalogModel}>(`model-catalog/${encodeURIComponent(name)}`,{method:"PATCH",body:value},"保存失败。")).model; }
 export async function deleteCatalogModel(name:string):Promise<void>{ await botJson(`model-catalog/${encodeURIComponent(name)}`,{method:"DELETE"},"删除失败。"); }
 export async function setDefaultCatalogModel(name:string):Promise<CatalogModel>{ return (await botJson<{model:CatalogModel}>("model-catalog/default",{method:"PUT",body:{name}},"保存失败。")).model; }
+
+// Skills (stage E): recipes — name, one-line description, steps, allowed catalog tools, optional output template; never code.
+export type Skill = { id:string; name:string; description:string; body:string; allowed_tools:string[]; output_template:string|null; version:number; enabled:boolean;
+  origin:"builtin"|"mine"|"imported"; status:"active"|"draft"; builtin:boolean; updated_at:string|null };
+export type SkillInput = { name:string; description:string; body:string; allowed_tools:string[]; output_template?:string|null; enabled?:boolean; save_draft?:boolean };
+export type SkillTool = { name:string; level:string };
+export type SkillImportPreview = { skill:{ name:string; description:string; body:string; output_template:string|null; allowed_tools:string[] }; tools:Array<{ name:string; level:string; write:boolean }> };
+const SKILL_ERRORS:Record<string,string>={...TASK_ERRORS,invalid_name:"名字不能为空，最多 40 字，不能含 / @ #。",unknown_tool:"技能里有工具目录之外的工具，不能保存。",code_not_allowed:"技能只能是文字步骤，不能带代码。",
+  invalid_skill_file:"文件格式不对：开头要有 name / description / tools。",name_taken:"已经有同名技能。",invalid_description:"请写一句话说明什么时候用（最多 120 字）。",invalid_body:"请写步骤（最多 6000 字）。",
+  invalid_allowed_tools:"至少选一个工具。",too_many_skills:"技能太多了（最多 60 个）。",unknown_skill:"这个技能不存在。"};
+async function skillJson<T>(path:string,init:{method?:string;body?:unknown;signal?:AbortSignal},failure:string):Promise<T>{
+  const response=await fetch(agentPath(path),{method:init.method??"GET",signal:init.signal,cache:"no-store",headers:ownerHeaders(init.body!==undefined),
+    ...(init.body!==undefined?{body:JSON.stringify(init.body)}:{})});
+  if(!response.ok){
+    const detail=(await response.json().catch(()=>null) as {detail?:unknown}|null)?.detail;
+    throw new ApiError(response.status===403||response.status===401?"登录个人聊天后才能使用技能。":(typeof detail==="string"&&SKILL_ERRORS[detail])||(response.status===404?SKILL_ERRORS.unknown_skill:failure),response.status);
+  }
+  return await response.json() as T;
+}
+export async function listSkills(signal?:AbortSignal):Promise<{skills:Skill[];tools:SkillTool[]}>{ return await skillJson("skills",{signal},"技能暂时无法读取。"); }
+export async function createSkill(input:SkillInput):Promise<Skill>{ return (await skillJson<{skill:Skill}>("skills",{method:"POST",body:input},"保存失败，请重试。")).skill; }
+export async function updateSkill(id:string,input:Partial<SkillInput>):Promise<Skill>{ return (await skillJson<{skill:Skill}>(`skills/${encodeURIComponent(id)}`,{method:"PATCH",body:input},"保存失败，请重试。")).skill; }
+export async function setSkillEnabled(id:string,enabled:boolean):Promise<Skill>{ return (await skillJson<{skill:Skill}>(`skills/${encodeURIComponent(id)}/enabled`,{method:"POST",body:{enabled}},"操作失败，请重试。")).skill; }
+export async function copySkill(id:string):Promise<Skill>{ return (await skillJson<{skill:Skill}>(`skills/${encodeURIComponent(id)}/copy`,{method:"POST"},"复制失败，请重试。")).skill; }
+export async function deleteSkill(id:string):Promise<void>{ await skillJson(`skills/${encodeURIComponent(id)}`,{method:"DELETE"},"删除失败，请重试。"); }
+export async function exportSkill(id:string):Promise<string>{
+  const response=await fetch(agentPath(`skills/${encodeURIComponent(id)}/export`),{cache:"no-store",headers:ownerHeaders()});
+  if(!response.ok) throw new ApiError(response.status===404?SKILL_ERRORS.unknown_skill:"导出失败，请重试。",response.status);
+  return await response.text();
+}
+export async function previewSkillImport(markdown:string):Promise<SkillImportPreview>{ return await skillJson("skills/import/preview",{method:"POST",body:{markdown}},"文件无法预览。"); }
+export async function importSkill(markdown:string):Promise<Skill>{ return (await skillJson<{skill:Skill}>("skills/import",{method:"POST",body:{markdown}},"导入失败，请重试。")).skill; }

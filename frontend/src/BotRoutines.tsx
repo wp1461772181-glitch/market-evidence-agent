@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import { createAgentTask, deleteAgentTask, listAgentTasks, listTaskRuns, updateAgentTask, type AgentTask, type AgentTaskInput, type TaskRun } from "./api";
+import { createAgentTask, deleteAgentTask, listAgentTasks, listSkills, listTaskRuns, updateAgentTask, type Skill, type AgentTask, type AgentTaskInput, type TaskRun } from "./api";
 import { translatePhrase, useLocale } from "./i18n";
+import { usableSkills } from "./skill-items.mjs";
 import { formatPriceLines, parsePriceLines, parseSymbols, scheduleLabel } from "./inbox-items.mjs";
 
 // A bot's routines (personal agent, second edition): its scheduled tasks and its last 20 runs.  A brief task's
@@ -17,6 +18,7 @@ export function TaskManager({ botId }: { botId: string }) {
   const [draftSchedule, setDraftSchedule] = useState<AgentTask["schedule_kind"]>("weekdays"), [draftTime, setDraftTime] = useState("08:00"), [draftTimezone, setDraftTimezone] = useState("Asia/Shanghai");
   const [draftScope, setDraftScope] = useState<AgentTask["scope"]>("research_queue"), [draftSymbols, setDraftSymbols] = useState(""), [draftInstruction, setDraftInstruction] = useState("");
   const [draftFilings, setDraftFilings] = useState(true), [draftNews, setDraftNews] = useState(true), [draftPriceLines, setDraftPriceLines] = useState("");
+  const [skills, setSkills] = useState<Skill[]>([]), [draftSkill, setDraftSkill] = useState("");
   const [draftChannel, setDraftChannel] = useState<AgentTask["channel"]>("inbox"), [draftRunCap, setDraftRunCap] = useState(60000), [draftDailyCap, setDraftDailyCap] = useState(200000);
 
   const loadTasks = useCallback((signal?: AbortSignal) => {
@@ -27,6 +29,8 @@ export function TaskManager({ botId }: { botId: string }) {
   }, [botId]);
   useEffect(() => { const ctrl = new AbortController(); loadTasks(ctrl.signal); loadRuns(ctrl.signal); return () => ctrl.abort(); }, [loadTasks, loadRuns]);
 
+  useEffect(() => { const ctrl = new AbortController(); listSkills(ctrl.signal).then(d => setSkills(d.skills)).catch(() => { /* the select then offers 无 only */ }); return () => ctrl.abort(); }, []);
+
   function openForm(task?: AgentTask) {
     setFormError("");
     setEditingTask(task ?? null);
@@ -34,6 +38,7 @@ export function TaskManager({ botId }: { botId: string }) {
     setDraftTimezone(task?.timezone ?? "Asia/Shanghai"); setDraftScope(task?.scope ?? "research_queue"); setDraftSymbols(task?.symbols.join(", ") ?? ""); setDraftInstruction(task?.instruction ?? "");
     setDraftFilings(task?.config.filings ?? true); setDraftNews(task?.config.news ?? true); setDraftPriceLines(formatPriceLines(task?.config.price_lines ?? []));
     setDraftChannel(task?.channel ?? "inbox"); setDraftRunCap(task?.run_token_cap ?? 60000); setDraftDailyCap(task?.daily_token_cap ?? 200000);
+    setDraftSkill(task?.skill_id ?? "");
     setFormOpen(true);
   }
 
@@ -48,7 +53,7 @@ export function TaskManager({ botId }: { botId: string }) {
       const input: AgentTaskInput = {
         name: draftName.trim(), kind: draftKind, schedule_kind: draftSchedule, schedule_time: draftTime, timezone: draftTimezone, scope: draftScope, symbols,
         channel: draftKind === "alerts" ? draftChannel : "inbox", run_token_cap: draftRunCap, daily_token_cap: draftDailyCap, bot_id: botId,
-        instruction: draftKind === "brief" ? draftInstruction : null,
+        instruction: draftKind === "brief" ? draftInstruction : null, skill_id: draftKind === "brief" ? draftSkill : "",
         config: draftKind === "alerts" ? { filings: draftFilings, news: draftNews, price_lines: parsePriceLines(draftPriceLines) ?? [] } : {},
       };
       if (editingTask) await updateAgentTask(editingTask.id, input); else await createAgentTask(input);
@@ -102,6 +107,11 @@ export function TaskManager({ botId }: { botId: string }) {
       </select></label>
       {draftScope === "symbols" && <label>{t("股票代码")}<input type="text" value={draftSymbols} onChange={e => setDraftSymbols(e.target.value)} placeholder="AAPL, MSFT" /></label>}
       {draftKind === "brief" && <label>{t("任务说明")}<textarea value={draftInstruction} maxLength={2000} onChange={e => setDraftInstruction(e.target.value)} placeholder={t("例如：总结研究队列公司过去一天的新申报和新闻，列出值得注意的变化。")} /></label>}
+      {draftKind === "brief" && <label>{t("技能")}<select value={draftSkill} onChange={e => setDraftSkill(e.target.value)}>
+        <option value="">{t("无")}</option>
+        {usableSkills(skills).map(skill => <option key={skill.id} value={skill.id}>{skill.name}</option>)}
+        {draftSkill && !usableSkills(skills).some(skill => skill.id === draftSkill) && <option value={draftSkill}>{skills.find(skill => skill.id === draftSkill)?.name ?? t("（已不可用的技能）")}</option>}
+      </select></label>}
       {draftKind === "alerts" && <>
         <div className="task-form-row">
           <label><input type="checkbox" checked={draftFilings} onChange={e => setDraftFilings(e.target.checked)} /> {t("新申报")}</label>

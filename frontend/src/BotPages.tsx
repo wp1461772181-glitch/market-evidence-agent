@@ -2,10 +2,11 @@
 // server model catalog card in settings.  A bot never holds a key: it names a catalog model, and the catalog says
 // only configured / missing.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { addCatalogModel, createBot, deleteBot, deleteCatalogModel, getBotTemplates, getChatMode, getModelCatalog, listBots, setDefaultCatalogModel, updateBot, updateCatalogModel,
-  type Bot, type BotFields, type BotTemplate, type BotTool, type CatalogEntryInput, type CatalogModel, type ModelCatalog } from "./api";
+import { addCatalogModel, createBot, deleteBot, deleteCatalogModel, getBotTemplates, getChatMode, getModelCatalog, listBots, listSkills, setDefaultCatalogModel, updateBot, updateCatalogModel,
+  type Skill, type Bot, type BotFields, type BotTemplate, type BotTool, type CatalogEntryInput, type CatalogModel, type ModelCatalog } from "./api";
 import { translatePhrase, useLocale } from "./i18n";
 import { botDraft, botModelLabel, botSections, focusText, keyStatusLabel, parseFocusSymbols, toggleTool, toolEnabled } from "./bot-items.mjs";
+import { toggleUsual, usableSkills } from "./skill-items.mjs";
 import { toolLabel } from "./agent-tool-labels.mjs";
 import { TaskManager } from "./BotRoutines";
 import { CATALOG } from "./model-profiles.mjs";
@@ -138,6 +139,24 @@ export function NewBotDialog({ onClose, onCreated }: { onClose: () => void; onCr
   </div>;
 }
 
+/** A bot's 常用技能: a checklist of enabled active skills, saved on its own (the bot PATCH `skills`). */
+function BotSkills({ bot, onChanged }: { bot: Bot; onChanged: (bot: Bot) => void }) {
+  const { t } = useLocale();
+  const [skills, setSkills] = useState<Skill[] | null>(null), [busy, setBusy] = useState(false), [status, setStatus] = useState("");
+  useEffect(() => { const ctrl = new AbortController(); listSkills(ctrl.signal).then(d => setSkills(d.skills)).catch(err => { if (!ctrl.signal.aborted) setStatus(message(err, t("技能暂时无法读取。"))); }); return () => ctrl.abort(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const usual = bot.skills ?? [], options = usableSkills(skills ?? []);
+  async function toggle(id: string) {
+    setBusy(true); setStatus("");
+    try { onChanged(await updateBot(bot.id, { skills: toggleUsual(usual, id) })); } catch (err) { setStatus(message(err, t("保存失败，请重试。"))); } finally { setBusy(false); }
+  }
+  return <section className="bot-skills"><h3>{t("技能")}</h3>
+    <p className="fine-print">{t("常用技能排在列表前面，也排在「/」菜单前面。")}</p>
+    {skills === null && !status ? <p>{t("正在加载…")}</p> : options.length === 0 ? <p className="fine-print">{t("还没有可用的技能。")}</p> :
+      <ul className="bot-tool-list">{options.map(skill => <li key={skill.id}><label className="bot-check"><input type="checkbox" checked={usual.includes(skill.id)} disabled={busy} onChange={() => void toggle(skill.id)} />{skill.name}<span className="fine-print"> · {skill.description}</span></label></li>)}</ul>}
+    {status && <p role="alert">{status}</p>}
+  </section>;
+}
+
 /** The 档案 tab: the bot's settings, saved as a whole; its memory, routines and skills arrive in later stages. */
 function BotProfileTab({ bot, onChanged, onDeleted }: { bot: Bot; onChanged: (bot: Bot) => void; onDeleted: () => void }) {
   const { t } = useLocale();
@@ -165,7 +184,7 @@ function BotProfileTab({ bot, onChanged, onDeleted }: { bot: Bot; onChanged: (bo
     {bot.is_default && <small>{t("默认 bot 可以改名和说明，不能删除。没指明给谁的消息进它。")}</small>}
     <section className="bot-placeholder"><h3>{t("它的记忆")}</h3><p>{t("这个 bot 自己的记忆在下一阶段加入；现在全局记忆在「记忆」页。")}</p></section>
     <TaskManager botId={bot.id} />
-    <section className="bot-placeholder"><h3>{t("技能")}</h3><p>{t("给 bot 指定常用技能在后续阶段加入。")}</p></section>
+    <BotSkills bot={bot} onChanged={onChanged} />
   </div>;
 }
 

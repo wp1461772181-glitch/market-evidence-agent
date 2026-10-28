@@ -466,3 +466,6 @@
 .bot-routines { display: grid; gap: 10px; }
 .bot-routines h3, .bot-routines h4 { margin: 0; font-size: 12px; }
 .agent-message.is-user.is-task-post { align-self: stretch; max-width: none; padding: 0; border-radius: 0; background: transparent; }
+.bot-skills { display: grid; gap: 6px; }
+.bot-skills h3 { margin: 0; font-size: 12px; }
+.bot-tool-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }

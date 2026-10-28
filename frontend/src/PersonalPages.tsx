@@ -2,10 +2,11 @@ import { useCallback, useEffect, useState } from "react";
 import { useOpenConversation } from "./AgentChatPanel";
 import { confirmProfileItem, deleteProfileItem, getChatMode, listBots, listInbox, listProfileItems, listRecall, mintInboxCard, setInboxStatus, updateProfileItem, type Bot, type InboxItem, type ProfileBot, type ProfileItem, type RecallItem } from "./api";
 import { useLocale } from "./i18n";
+export { SkillsPage } from "./SkillsPage";
 import { inboxOrder } from "./inbox-items.mjs";
 import { layerLabel, originLabel, profileGroups, profileLayers, recallGroups, recallKindLabel } from "./memory-items.mjs";
 
-// Pages of the personal agent.  Skills is a placeholder until its phase.  The briefs route (kept for URL
+// Pages of the personal agent (the skills page lives in SkillsPage.tsx).  The briefs route (kept for URL
 // compatibility) shows only the 待你确认 suggestions of unattended runs; routines live on each bot's page; the memory
 // page lists profile items and past conversations.  All through the owner-only /agent-chat API.
 
@@ -69,27 +70,6 @@ export function BriefsPage({ onNavigate, onChanged }: { onNavigate: Go; onChange
         </li>)}</ul>}
     </section>
     <div><button className="primary-action" type="button" onClick={() => onNavigate("agent")}>{t("去对话")}</button></div>
-  </main>;
-}
-
-const BUILTIN_SKILLS = [
-  { name: "财报速读", text: "读最新一份 10-K 或 10-Q，列出收入、利润、现金流的变化和管理层提到的风险，每条带出处。" },
-  { name: "同行对比", text: "把几家公司同一期的关键指标放在一张表里，数字都取自本轮读取的申报。" },
-  { name: "新闻摘要及对研究队列的影响", text: "汇总近期新闻，标出和研究队列里哪家公司有关、可能影响什么。" },
-] as const;
-
-export function SkillsPage() {
-  const { t } = useLocale();
-  return <main className="personal-page" aria-labelledby="skills-title">
-    <h1 id="skills-title">{t("技能")}</h1>
-    <p className="fine-print">{t("技能是一份做事的步骤和允许用的工具清单，不是代码。技能只能缩小可用的工具，写操作仍然要你在确认卡上同意。")}</p>
-    <div className="personal-grid">
-      {BUILTIN_SKILLS.map(skill => <article className="personal-card" key={skill.name}>
-        <span className="personal-badge">{t("内置 · 即将推出")}</span>
-        <h2>{t(skill.name)}</h2>
-        <p>{t(skill.text)}</p>
-      </article>)}
-    </div>
   </main>;
 }
 

@@ -326,3 +326,15 @@ body { background: var(--me-bg); color: var(--me-ink); font-family: var(--me-fon
 .memory-scope { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--me-muted); }
 .memory-scope select, .memory-search select { font: inherit; font-size: 13px; padding: 4px 8px; border: 1px solid var(--me-line); border-radius: 8px; background: var(--me-surface); color: var(--me-ink); max-width: 12em; }
 .memory-edit { flex: 1; min-width: 0; font: inherit; padding: 4px 8px; border: 1px solid var(--me-line); border-radius: 8px; background: var(--me-surface); color: var(--me-ink); }
+.skill-card { display: grid; gap: 8px; align-content: start; }
+.skill-card .memory-line h2 { margin: 0; }
+.skill-group { display: grid; gap: 8px; margin-top: 18px; }
+.skill-group > h2 { font-size: 14px; margin: 0; }
+.skill-tools { display: flex; flex-wrap: wrap; gap: 4px; list-style: none; margin: 0; padding: 0; }
+.skill-tool-list { display: grid; gap: 4px; border: 1px solid var(--me-line); border-radius: 8px; padding: 8px 10px; }
+.skill-editor, .skill-import { margin: 12px 0; }
+.skill-editor textarea, .skill-import textarea { font: inherit; width: 100%; box-sizing: border-box; }
+.skill-picker { position: absolute; left: 0; right: 0; bottom: 100%; z-index: 5; margin: 0 0 4px; padding: 4px; list-style: none; background: var(--c-surface, #fff); border: 1px solid var(--c-line-strong, #ccc); border-radius: 8px; max-height: 260px; overflow: auto; }
+.skill-picker li { display: grid; gap: 2px; padding: 6px 8px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+.skill-picker li[aria-selected="true"], .skill-picker li:hover { background: var(--c-hover, rgba(127,127,127,.15)); }
+.skill-picker small { color: var(--c-muted, #666); }
