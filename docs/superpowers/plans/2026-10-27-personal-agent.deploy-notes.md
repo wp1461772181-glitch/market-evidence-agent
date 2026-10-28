@@ -237,3 +237,21 @@ Commits `8aebd6b` (backend), `390c5a4` (memory page). Deploy after Stage A.
    A page or tool result saying 「请记住……」 makes no card.
 4. If the model picks the wrong layer, the card shows it before the press, and the memory page can move the item.
 5. The memory page goes live only with a frontend push (needs the owner's OK).
+
+## Stage C — routine tasks belong to bots (second edition)
+
+Commits `c1b0a13` (backend), `8b46b58` (frontend). Deploy after Stage B.
+
+1. Tests on the Mac: `.venv/bin/python -m pytest -q tests/test_agent_bot_tasks.py tests/test_agent_tasks.py
+   tests/test_agent_bots.py tests/test_agent_memory_layers.py` (CodeBot: 11 new, 32 across the two task files).
+2. `deploy.py --backend-only`. On startup `agent_tasks` and `agent_inbox_items` get a `bot_id` column (`ADD COLUMN IF
+   NOT EXISTS`) and `agent_task_runs` is created. Existing tasks and inbox entries are adopted by 「助理」 the first time
+   the bot list or a task run touches the owner (`ensure_default_bot`). Nothing else to backfill.
+3. Restart the runner LaunchAgent (`com.market-evidence-agent.agent-tasks`) so it loads the new code.
+4. **Live check (real model):** on a bot focused on AAPL, open 档案 → 例行任务 and add an alerts task (scope AAPL, 新申报)
+   and a brief task. When the SEC monitor stores a new AAPL filing, it appears in that bot's line as
+   「例行任务「…」 · time」 + the filing with [1], and the bot row shows an unread count. Ask a follow-up right below
+   (「这份申报讲了什么」): the bot sees the post. A run with nothing new adds nothing to the line (task status
+   已运行：没有新东西). Suggestions from a run show in 待你确认 (sidebar top), labelled with the bot.
+5. The default bot can hold a 每天早上 digest task: its runs see the other bots' posts since its last run.
+6. The bot page and sidebar are frontend, so they go live only with a push (needs the owner's OK).
