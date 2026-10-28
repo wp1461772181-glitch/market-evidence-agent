@@ -241,11 +241,12 @@ def test_judge_sends_message_candidate_and_evidence_and_applies_the_threshold(tm
     assert gate.memory_jev_threshold() == 0.85
 
 
-def test_judge_failures_never_allow_a_write(tmp_path):
+def test_judge_failures_never_allow_a_write(tmp_path, monkeypatch):
     path = str(tmp_path / "d.json")
     assert gate.judge("m", "c", "e", client=_Client(_Response({}, status=500)), daily_path=path).status == "http_error"
     assert gate.judge("m", "c", "e", client=_Client(_Response({"answers": {}})), daily_path=path).status == "validation_error"
     assert not gate.MemoryVerdict("timeout").allows()
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     assert gate.judge("m", "c", "e").status == "skipped"  # no key
 
 
