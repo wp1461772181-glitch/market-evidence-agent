@@ -40,7 +40,7 @@ _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 # They stay in every bot, so a narrow scope never leaves a bot unable to ask or to cite.  notify_telegram too:
 # whether a bot notifies is its instruction's call, and its daily cap (0: never) is the switch.
 ALWAYS_ON = frozenset({"ask_user", "use_result_set", "calculate", "read_history_citation", "select_stock",
-                       "open_page", "request_action", "notify_telegram"})
+                       "open_page", "request_action", "notify_telegram", "use_skill", "draft_skill"})
 
 TEMPLATES = {
     "blank": {"label": "空白", "name": "", "title": "", "description": "", "tool_scope": None},
@@ -95,6 +95,7 @@ def serialize(bot: AgentBot, last: dict | None = None, counts: dict | None = Non
             "is_default": bot.is_default, "template": bot.template,
             "conversation_id": str(bot.conversation_id) if bot.conversation_id else None,
             "daily_notify_cap": bot.daily_notify_cap, "default_company": default_company(bot),
+            "skills": list(bot.skills or []),
             "last_message": (last or {}).get("text"), "last_at": (last or {}).get("at"),
             "unread": (counts or {}).get("unread", 0), "pending": (counts or {}).get("pending", 0),
             "created_at": _stamp(bot.created_at), "updated_at": _stamp(bot.updated_at)}
@@ -193,6 +194,17 @@ def _apply(bot: AgentBot, fields: dict) -> None:
         if fields["template"] not in TEMPLATES:
             raise BotError("unknown_template")
         bot.template = fields["template"]
+
+
+def _apply_skills(owner_hash: str, bot: AgentBot, fields: dict) -> None:
+    """A bot's usual skills (stage E): skills the owner can use; null clears them."""
+    if "skills" not in fields:
+        return
+    from .agent_skills import SkillError, clean_usual
+    try:
+        bot.skills = clean_usual(owner_hash, fields["skills"])
+    except SkillError as exc:
+        raise BotError(str(exc)) from exc
 
 
 def _name_taken(db, owner_hash: str, name: str, bot_id=None) -> bool:
@@ -296,6 +308,7 @@ def create_bot(owner_hash: str, fields: dict) -> dict:
                        tool_scope=None, avatar="", group_name="", pinned=False, hidden=False, is_default=False,
                        template="blank", daily_notify_cap=5)
         _apply(bot, {"name": fields.get("name"), **fields})
+        _apply_skills(owner_hash, bot, fields)
         if _name_taken(db, owner_hash, bot.name):
             raise BotError("name_taken")
         db.add(bot)
@@ -313,6 +326,7 @@ def update_bot(owner_hash: str, bot_id, fields: dict) -> dict | None:
         if bot is None:
             return None
         _apply(bot, fields)
+        _apply_skills(owner_hash, bot, fields)
         if "name" in fields and _name_taken(db, owner_hash, bot.name, bot.id):
             raise BotError("name_taken")
         db.commit()

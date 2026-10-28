@@ -314,6 +314,18 @@ async def _profile_block(credential:str|None,bot:dict|None=None)->str|None:
   return block
  except Exception:
   return None
+async def _skills(credential:str|None,bot:dict|None,message:str):
+ """The owner's skill listing for this turn and the skill 「/名字」 starts (with the question left), if any.
+ A skill is a convenience: a failure to read them never blocks a turn."""
+ if not _is_owner(credential):return None,None,message
+ from . import agent_skills as skills
+ try:
+  owner=owner_hash(credential);usual=await asyncio.to_thread(skills.bot_usual,owner,(bot or {}).get("bot_id"))
+  block=await asyncio.to_thread(skills.catalogue_block,owner,usual)
+  active,question=await asyncio.to_thread(skills.slash,owner,message)
+  return block,active,question
+ except Exception:
+  return None,None,message
 def _bot_turn(payload,credential):
  """A bot's turn settings and its model from the catalog (key in memory only).  The model is resolved on
  every request, so a changed model takes effect on the bot's next turn."""
@@ -389,7 +401,8 @@ async def stream_chat(payload:StreamRequest,request:Request,x_chat_session:str|N
    messages.extend(layers.history_messages(context.get("half_turns",[])))
    for group in layers.complete_turns(history_rows):
     messages.extend(layers.project_turn_history(group))
-   messages.append({"role":"user","content":payload.message})
+   skill_block,active_skill,question=await _skills(x_chat_session,bot,payload.message) if not payload.pending_request_id else (None,None,payload.message)
+   messages.append({"role":"user","content":question})
    memory_note=layers.summary_message(context.get("segments",[]))
    if memory_note:messages.append(memory_note)
    catalogue=layers.render_citation_catalogue(context.get("catalogue",[]))
@@ -399,7 +412,7 @@ async def stream_chat(payload:StreamRequest,request:Request,x_chat_session:str|N
    legacy_result_sets=hydrate_legacy_web_sets(history_rows,owner=owner_hash(x_chat_session),conversation=cid)
    legacy_source_choices=legacy_web_source_choices(history_rows)
    profile_block=await _profile_block(x_chat_session,bot)
-   async for event in stream_workflow(question=payload.message,messages=messages,provider=chosen.provider,model=chosen.model,
+   async for event in stream_workflow(question=question,messages=messages,skill_block=skill_block,active_skill=active_skill,provider=chosen.provider,model=chosen.model,
      api_key=chosen.key(),base_url=chosen.base_url,owner_hash=owner_hash(x_chat_session),
      conversation_id=cid,identity_credential=x_chat_session,turn_id=turn,pending_request_id=payload.pending_request_id,
      legacy_result_sets=legacy_result_sets,legacy_source_choices=legacy_source_choices,
@@ -735,6 +748,8 @@ class TaskBody(BaseModel):
     daily_token_cap: int | None = None
     # The bot the task belongs to (stage C); left out on create: the default bot.
     bot_id: str | None = Field(default=None, max_length=36)
+    # The skill a brief runs with (stage E); "" clears it.
+    skill_id: str | None = Field(default=None, max_length=36)
 
 
 class InboxStatusBody(BaseModel):

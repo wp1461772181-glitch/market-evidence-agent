@@ -494,6 +494,8 @@ class Turn:
         # Past-conversation rows (recall_conversations): observation kind 'recall', kept apart from
         # self.observations so that no evidence path, citation number or claim gate ever sees them.
         self.recalls=[]
+        # A skill started for this turn (「/名字」 or a task's), or loaded with use_skill: it narrows the tools.
+        self.active_skill=getattr(context,'active_skill',None)
         self.sets=[x for x in self.state.get('result_sets',[]) if x.get('owner')==context.owner_hash and x.get('conversation')==context.conversation_id and isinstance(x.get('rows'),list)][-6:]
         self.pending=None;self.proposals=[];self.followup=False;self.refinement=False;self.seen=set();self.evidence_signatures=set();self.no_new=0;self.repeated_evidence=0
         self.audit={'tool_calls':0,'distinct_successful_calls':0,'retry_count':0,'decision_steps':0,'model_calls':0,'token_usage':0,'usage_mode':'actual','nodes':[],'stop_reason':None,'stages':{}}
@@ -524,9 +526,15 @@ class Turn:
         return parse_variants(message.get('content'))
 
     def in_scope(self,name):
-        # A bot's tool scope only removes tools: None is every tool of the catalogue.
+        # A bot's tool scope only removes tools: None is every tool of the catalogue.  An active skill removes
+        # more: only its tools and the basics that ask, cite, calculate or suggest stay.
         scope=getattr(self.context,'tool_scope',None)
-        return scope is None or name in scope
+        if scope is not None and name not in scope:return False
+        skill=getattr(self,'active_skill',None)
+        if skill:
+            from ..agent_bots import ALWAYS_ON
+            return name in skill['tools'] or name in ALWAYS_ON
+        return True
     def exposed_tools(self):return [t for t in schemas(owner=self.owner,granted=self.granted_actions) if self.in_scope(t['function']['name'])]
     def write_error(self,name,code):
         self.write_reasons[name]=code;self.audit['write_outcome']='refused:'+code
@@ -1051,6 +1059,16 @@ class Turn:
         turns=list(reversed(selected))
         return ([{'role':'system','content':str(memory.get('content'))[:6000]}] if memory else []) + ([{'role':'system','content':str(catalogue.get('content'))}] if catalogue else [])+turns
 
+    def skill_messages(self):
+        """The enabled skills' one-line list (stable, part of the cached prefix) and the active skill's steps."""
+        if not self.owner:return []
+        listing=getattr(self.context,'skill_block',None)
+        out=[{'role':'system','content':listing}] if listing else []
+        if self.active_skill:
+            from ..agent_skills import render_active
+            out.append({'role':'system','content':render_active(self.active_skill)})
+        return out
+
     def profile_messages(self):
         block=self.context.profile_block if self.owner else None
         bot=getattr(self.context,'bot_block',None) if self.owner else None
@@ -1086,7 +1104,7 @@ class Turn:
               'referents':[r.get('text') or r.get('mention') for r in self.verified_referents if r.get('text') or r.get('mention')][:6],
               'classifier_scope':{k:self.scope.get(k) for k in ('symbol','symbols','company','metrics','period','form','financial_only','latest','days_back','max_results','requested_actions') if self.scope.get(k) not in (None,[],'',False)}}
         # The profile sits after the fixed instruction and before the conversation, so the prefix is stable.
-        return [{'role':'system','content':instruction},*self.profile_messages(),*([{'role':'system','content':HISTORY_NOTE},*prior] if prior else []),
+        return [{'role':'system','content':instruction},*self.profile_messages(),*self.skill_messages(),*([{'role':'system','content':HISTORY_NOTE},*prior] if prior else []),
             {'role':'user','content':self.question},
             {'role':'system','content':UNDERSTANDING_NOTE+json.dumps(hint,ensure_ascii=False,default=str)},
             *([{'role':'system','content':self.resume_note}] if self.resume_note else []),*([] if closing else self.protocol),
@@ -1474,6 +1492,27 @@ class Turn:
                 +'\n'.join(lines)+'\n\n'
                 f'修订在后台计算，通常一两分钟完成，结果会生成新版本，{version} 保留不变。'
                 f'稍后问我「修订好了吗」，我会读出新版本的概率，并和 {version} 对比。')
+
+    async def use_skill(self,args):
+        """Load an enabled skill: its steps go into the next prompt and the tools narrow to it (never widen)."""
+        if not self.owner:return tools.error('owner_login_required')
+        from .. import agent_skills as skills
+        skill=await asyncio.to_thread(skills.active,self.context.owner_hash,name=args['name'])
+        if skill is None:return tools.error('skill_not_found')
+        self.active_skill=skill;self.audit['skill']={'name':skill['name'],'version':skill['version']}
+        return {'ok':True,'data':[{'status':'skill_active','name':skill['name'],'steps':skill['body'],
+                'output_template':skill.get('output_template'),'tools':sorted(skill['tools'])}]}
+
+    async def draft_skill(self,args):
+        """Draft a skill when the owner asked for it in this turn; the draft is inert until saved in the editor."""
+        if not self.owner:return tools.error('owner_login_required')
+        if self.unattended():return tools.error('unattended_no_user')
+        from .. import agent_skills as skills
+        try:saved=await asyncio.to_thread(skills.draft,self.context.owner_hash,args,owner_words=self.user_words())
+        except skills.SkillError as exc:return tools.error(str(exc))
+        self.audit['skill_draft']=saved['id']
+        return {'ok':True,'data':[{'status':'draft_saved','id':saved['id'],'name':saved['name'],
+                'note':'草稿已放进技能页；所有者在编辑器里保存后才会生效。','link':'#skills/'+saved['id']}]}
 
     async def notify(self,args):
         """notify_telegram: queue a message of this bot for the owner's bound chat.  Its facts must be this turn's
@@ -2327,6 +2366,9 @@ class Turn:
                 elif name=='request_action':
                     self.audit['tool_calls']+=1;outcome=await self.request_action(args);self.feedback.append(outcome)
                     await self.publish_result(name,outcome)
+                elif name in {'use_skill','draft_skill'}:
+                    self.audit['tool_calls']+=1;outcome=await (self.use_skill(args) if name=='use_skill' else self.draft_skill(args))
+                    self.feedback.append(outcome);await self.publish_result(name,outcome)
                 elif name=='notify_telegram':
                     self.audit['tool_calls']+=1;outcome=await self.notify(args);self.feedback.append(outcome)
                     await self.publish_result(name,outcome)

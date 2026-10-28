@@ -66,7 +66,8 @@ async def stream_workflow(*, question: str, messages: list[dict], provider: str,
                           history_citation_catalogue: list[dict] | None = None,
                           profile_block: str | None = None, unattended: bool = False,
                           token_budget: int | None = None, action_sink: list | None = None,
-                          bot: dict | None = None):
+                          bot: dict | None = None, skill_block: str | None = None,
+                          active_skill: dict | None = None):
     # These former routing hints/results stay accepted so older callers do not fail;
     # none may influence the direct route or tool scope.  ``bot`` (agent_bots.turn_settings) does narrow it.
     from .checkpoints import open_postgres_checkpointer
@@ -78,7 +79,7 @@ async def stream_workflow(*, question: str, messages: list[dict], provider: str,
         profile_block=profile_block, unattended=unattended, token_budget=token_budget, action_sink=action_sink,
         bot_id=bot.get("bot_id"), bot_name=bot.get("bot_name"), bot_is_default=bool(bot.get("is_default")),
         bot_block=bot.get("block"), tool_scope=bot.get("tool_scope"),
-        default_company=bot.get("default_company"))
+        default_company=bot.get("default_company"), skill_block=skill_block, active_skill=active_skill)
     thread = checkpoint_thread_id(owner_hash, conversation_id)
     async with open_postgres_checkpointer(checkpoint_database_url()) as saver:
         graph = build_workflow(saver)

@@ -42,6 +42,8 @@ class BotBody(BaseModel):
     hidden: bool | None = None
     template: str | None = Field(default=None, max_length=20)
     daily_notify_cap: int | None = None
+    # Usual skills (agent_skills ids); null clears them.
+    skills: list[str] | None = Field(default=None, max_length=20)
 
 
 class ModelEntryBody(BaseModel):

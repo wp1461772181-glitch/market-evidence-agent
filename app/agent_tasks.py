@@ -164,7 +164,8 @@ def serialize_task(task: AgentTask, now: datetime | None = None) -> dict:
             "last_run_at": _stamp(task.last_run_at), "next_run_at": _stamp(task.next_run_at),
             "last_status": task.last_status, "last_status_label": STATUS_LABELS.get(task.last_status or "", None),
             "last_conversation_id": str(task.last_conversation_id) if task.last_conversation_id else None,
-            "bot_id": str(task.bot_id) if task.bot_id else None}
+            "bot_id": str(task.bot_id) if task.bot_id else None,
+            "skill_id": str(task.skill_id) if task.skill_id else None}
 
 
 def _symbols(values) -> list[str]:
@@ -290,6 +291,17 @@ def migrate_brief_channels() -> int:
         return len(rows)
 
 
+def _task_skill(owner_hash: str, skill_id) -> uuid.UUID | None:
+    """The skill a task runs with (stage E): one the owner can use, or none ("" clears it)."""
+    if skill_id in (None, ""):
+        return None
+    from .agent_skills import SkillError, clean_usual
+    try:
+        return uuid.UUID(clean_usual(owner_hash, [skill_id])[0])
+    except SkillError as exc:
+        raise TaskError("unknown_skill") from exc
+
+
 def _task_bot(db, owner_hash: str, bot_id) -> uuid.UUID:
     """The bot a task is attached to: one of this owner's bots, or the default bot when none is named."""
     if bot_id in (None, ""):
@@ -313,6 +325,7 @@ def create_task(owner_hash: str, fields: dict, *, now: datetime | None = None) -
             raise TaskError("too_many_tasks")
         task = AgentTask(owner_hash=owner_hash, enabled=True, usage_tokens=0, symbols=[], config={})
         task.bot_id = _task_bot(db, owner_hash, fields.get("bot_id"))
+        task.skill_id = _task_skill(owner_hash, fields.get("skill_id"))
         _apply(task, fields, now)
         db.add(task)
         db.commit()
@@ -337,6 +350,8 @@ def update_task(owner_hash: str, task_id, fields: dict, *, now: datetime | None 
             return None
         if "bot_id" in fields:
             task.bot_id = _task_bot(db, owner_hash, fields["bot_id"])
+        if "skill_id" in fields:
+            task.skill_id = _task_skill(owner_hash, fields["skill_id"])
         _apply(task, fields, now)
         db.commit()
         db.refresh(task)

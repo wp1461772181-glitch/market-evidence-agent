@@ -122,6 +122,8 @@ app.include_router(local_model_profiles_router)
 app.include_router(agent_chat_stream_router)
 from .agent_bots_api import router as agent_bots_router
 app.include_router(agent_bots_router)
+from .agent_skills_api import router as agent_skills_router
+app.include_router(agent_skills_router)
 app.include_router(knowledge_router)
 app.include_router(agent_chat_identity_router)
 app.include_router(forecast_v2_router)
@@ -195,6 +197,10 @@ def create_tables() -> None:
     from .agent_tasks import migrate_brief_channels
     ensure_telegram_columns()
     _safe_hook(migrate_brief_channels)
+    # Stage E: a bot's usual skills, and the built-in skills seeded (a changed text gets a new version).
+    from . import agent_skills as skills_store
+    skills_store.ensure_columns()
+    _safe_hook(skills_store.seed_builtins)
     # Bots (second edition): the conversation's bot column, the earlier model settings folded into the
     # catalog once, and a line per catalog model saying whether it can be used (never a key).
     from . import agent_model_catalog as model_catalog

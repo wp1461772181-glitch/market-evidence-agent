@@ -58,6 +58,10 @@ class AgentRuntimeContext:
     bot_block: str | None = field(default=None, repr=False, compare=False)
     tool_scope: frozenset | None = field(default=None, compare=False)
     default_company: dict | None = field(default=None, compare=False)
+    # Skills (agent_skills): the listing of enabled skills, and a skill started for this turn (「/名字」 or a
+    # task's skill): {name, version, body, output_template, tools}.  Steps, never evidence or write authority.
+    skill_block: str | None = field(default=None, repr=False, compare=False)
+    active_skill: dict | None = field(default=None, repr=False, compare=False)
 
 
 def checkpoint_thread_id(owner_hash: str, conversation_id: str) -> str:

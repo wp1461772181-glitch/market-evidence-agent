@@ -81,7 +81,7 @@ def _attach_to_bot(conversation_id: str, bot_id) -> None:
 
 
 async def run_unattended_turn(credential: str, question: str, model: dict, *, token_budget: int, title: str,
-                              bot: dict | None = None, notes: list[str] | None = None) -> dict:
+                              bot: dict | None = None, notes: list[str] | None = None, skill_id=None) -> dict:
     """One agent turn with nobody watching, stored as an ordinary conversation of the owner (under ``bot``,
     whose settings it runs with) so that the run opens as a chat the owner can continue.  ``notes`` go into
     the system-written memory note (not evidence).  Returns answer, citations, audit, status, reason,
@@ -101,6 +101,12 @@ async def run_unattended_turn(credential: str, question: str, model: dict, *, to
     actions: list[dict] = []
     answer, done, genuine = "", None, set()
     messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": question}]
+    from . import agent_skills as skills
+    try:
+        skill_block = skills.catalogue_block(owner, skills.bot_usual(owner, (bot or {}).get("bot_id")))
+        active_skill = skills.active(owner, skill_id=skill_id) if skill_id else None
+    except Exception:
+        skill_block, active_skill = None, None
     note = layers.summary_message([{"content": text} for text in notes or []])
     if note:
         messages.append(note)
@@ -110,7 +116,7 @@ async def run_unattended_turn(credential: str, question: str, model: dict, *, to
                                            owner_hash=owner, conversation_id=cid, identity_credential=credential,
                                            turn_id=turn, profile_block=await _profile_block(credential, bot),
                                            unattended=True, token_budget=token_budget, action_sink=actions,
-                                           bot=bot):
+                                           bot=bot, skill_block=skill_block, active_skill=active_skill):
             kind = event.get("event")
             if kind == "assistant_tool_request":
                 await append_message(cid, turn, "assistant", "", tool_calls=event["protocol"])
@@ -400,6 +406,7 @@ async def run_brief(task_id, credential: str, *, now: datetime, missed: int = 1)
             else:
                 notes = run_notes(db, task, settings, now)
         owner, name, channel, bot_id, timezone = task.owner_hash, task.name, task.channel, task.bot_id, task.timezone
+        skill_id = task.skill_id
         symbols = tasks.scope_symbols(db, task)
         question = brief_question(task, symbols, now)
         run_cap, daily_left = task.run_token_cap, task.daily_token_cap - tasks.tokens_used_today(task, now)
@@ -420,7 +427,8 @@ async def run_brief(task_id, credential: str, *, now: datetime, missed: int = 1)
             break
         budget = max(1, min(run_cap, daily_left - used))
         result = await run_unattended_turn(credential, question, model, token_budget=budget,
-                                           title=f"{name} · {local:%m-%d %H:%M}", bot=settings, notes=notes)
+                                           title=f"{name} · {local:%m-%d %H:%M}", bot=settings, notes=notes,
+                                           **({"skill_id": skill_id} if skill_id else {}))
         used += int((result.get("audit") or {}).get("token_usage") or 0)
         retry = (result["status"] == "failed" and retryable(result.get("reason")) and not result["actions"]
                  and not result.get("citations"))

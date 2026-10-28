@@ -227,6 +227,9 @@ class AgentBot(Base):
     template: Mapped[str] = mapped_column(String(20), nullable=False, default="blank")
     conversation_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
     daily_notify_cap: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+    # Its usual skills (agent_skills ids, listed first and offered first after 「/」); NULL: none.  Added to
+    # older tables by ``agent_skills.ensure_columns``.
+    skills: Mapped[list | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
@@ -288,3 +291,24 @@ class AgentTelegramMessage(Base):
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AgentSkill(Base):
+    """A skill (agent_skills): a recipe of steps, the catalog tools it may use and an output format, never
+    code.  ``owner_hash`` builtin for the seeded ones.  ``status`` draft: drafted by the model at the owner's
+    request, inert (never listed or usable) until the owner saves it in the editor."""
+    __tablename__ = "agent_skills"
+    __table_args__ = (UniqueConstraint("owner_hash", "name", name="uq_agent_skills_owner_name"),)
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    owner_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(40), nullable=False)
+    description: Mapped[str] = mapped_column(String(120), nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    allowed_tools: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    output_template: Mapped[str | None] = mapped_column(Text, nullable=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    origin: Mapped[str] = mapped_column(String(10), nullable=False)          # builtin | mine | imported
+    status: Mapped[str] = mapped_column(String(10), nullable=False, default="active")  # active | draft
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
