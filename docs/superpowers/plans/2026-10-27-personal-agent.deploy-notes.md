@@ -421,3 +421,56 @@ Telegram bot stays in `agent_telegram_bind` and keeps working unchanged for 助�
    - Delete the bot → its Telegram row is gone (revoke the token in BotFather).
 4. Not done this round: the settings-page overview of every bot's Telegram, persistent Telegram cards across
    restarts (`agent_telegram_cards`), `live_check_telegram.py` multi-token mode.
+
+## 2026-10-28 UX batch 3 — memory, settings, logo
+
+Five stage commits on `worktree-personal-agent` (not pushed): `1340187` memory backend, `6c4ab31` 画像 page,
+`02e6b28` logo, `146e864` settings.  **No migration, no new table or column** (`agent_profile_items.origin` is
+`String(10)`; the new value `manual` fits).  Backend restart + Pages push.
+
+1. **Tests on the Mac** (all were also run on the Linux box against an embedded Postgres: full suite 1942 passed,
+   the 16 failures are the same as at `4553779` — rag/knowledge tests that need pgvector or network):
+   `.venv/bin/python -m pytest -q tests/test_agent_memory_batch3.py tests/test_model_catalog_settings.py
+   tests/test_agent_profile.py tests/test_agent_memory_layers.py tests/test_agent_bots.py`.
+   Frontend `npm run test:i18n` (new `scripts/catalog-form.test.mjs`, memory-items additions) and `npm run build`.
+2. **New env (optional):** `MEMORY_JEV_THRESHOLD` (default 0.85), `MEMORY_JEV_DAILY_CAP` (unset: none),
+   `MEMORY_JEV_DAILY_PATH` (default `artifacts/memory-jev-daily.json`).  Uses the existing `OPENROUTER_API_KEY`
+   (Jev `typesafe/jev-1.13`, question `jev-memory-write-v1`, one 5 s attempt per candidate).  Without the key the
+   extractor keeps only exactly-quoted candidates, as before.
+3. **What changed**
+   - 写记忆失败 but saved (AppleBot): root cause — a bot whose tool scope left out `remember` refused the call
+     (`write_tool_not_granted`, the turn appended 「操作未执行」, no card) while the post-turn extractor stored the
+     same words as `inferred`.  Now `remember`/`forget` are always on in every bot; the owner's own words that ask to
+     remember grant `remember` even if the classifier missed it; an ask that got no card (model answered in prose)
+     gets a server-made card from the extractor prompt; a refused remember (quote not the user's) stays refused.
+     The turn's `audit.profile_ask` keeps the background extractor out of that turn: card or stated refusal, never a
+     silent second write.
+   - Background extraction: evidence is snapped to the closest span of the owner's message (the stored quote stays
+     their own words; evidence matching < 60 % is dropped), then Jev must give P(remember) ≥ 0.85.
+   - 画像: ＋ 添加 form (范围 全局 / 本 bot · 名字, 类型, 内容) → `POST /agent-chat/profile` (origin `manual`, badge
+     「你写的」, ranks with confirmed items).  Edit / 范围 / 确认 / 删除 unchanged.
+   - Settings: the browser model profiles section (grid, modal, import/export) and the 后台任务模型 card are gone.
+     「模型配置」 is the server catalog with the old dialog (display name, provider, Base URL, Model ID, 服务商可用模型
+     + 刷新, key from vault or env, 测试并保存).  New owner-only `POST /agent-chat/model-catalog/test` and
+     `/agent-chat/model-catalog/models`.  Owner turns outside a bot send `catalog_model` (catalog default);
+     **guest chat now needs a personal login** (no browser keys anywhere).  Material analysis default and the
+     per-analysis picker name a catalog entry.
+   - **Keys migration:** none needed — `agent_model_catalog.migrate_legacy` (since stage 2) already folded the background
+     model and `data/model-profiles.json` into the catalog.  Keys a browser kept only in its own OPFS/IndexedDB are not
+     on the server: re-add those models once in 模型配置 (测试并保存).  The old browser storage is left untouched.
+   - Logo: `logo.svg`, `favicon.svg`, `logo-lockup.svg`, the in-app `orb:finbot`, and `apple-touch-icon.png` (180×180,
+     rendered with headless Chrome — no Mac step needed).
+4. **Check by hand**
+   - AppleBot (a bot with a narrow tool scope): 「记住我看好苹果的服务业务」 → a 「记住这条偏好」 card (web and Telegram
+     buttons); 同意 → 画像 shows it once; 取消 → nothing in 画像, also not as 推断.  「以后金额都用亿美元」 in a bot whose
+     model answers in prose → still a card.
+   - 画像 › ＋ 添加: 全局 「金额都用亿美元」 and 本 bot · AppleBot 「先讲服务业务」 → both listed with 「你写的」; the next
+     AppleBot turn follows both, another bot only the global one.
+   - 设置 › 模型配置: no browser profile grid; ＋ 添加模型 → pick DeepSeek, paste a key → 服务商可用模型 fills, pick one →
+     测试并保存 → card shows 已配置; 编辑 without retyping the key → 刷新 / 测试并保存 work (stored key); switch the provider
+     → asks for the key again; env mode with `DEEPSEEK_API_KEY` works.  材料分析默认模型 lists catalog models.
+   - Logged out (guest): the chat says to log in; nothing asks for a key.
+   - Favicon / sidebar logo / bot orb show the new FinBot (brows, sideways smile, arrow tuft, gold sparkle).
+5. Not done: ponytail on the box CLIs is CodeBot's (no AGENTS.md in this repo, nothing added).  The old
+   `model-profiles.mjs` storage code and `/agent-chat/local-model-profiles` stay for now (only its provider list is
+   still used); remove in a later cleanup.
