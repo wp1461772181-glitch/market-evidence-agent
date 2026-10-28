@@ -219,7 +219,7 @@ export async function restoreAgentChat(selectedId?: string | null, signal?: Abor
 }
 export function clearAgentConversation(): void { selectConversationForMode(window.localStorage,window.sessionStorage,null); }
 export function selectAgentConversation(id:string|null,createdAt?:string|null):void { selectConversationForMode(window.localStorage,window.sessionStorage,id,undefined,createdAt); }
-export async function agentChatStream(config: AgentChatConfig | { bot_id: string }, message: string, conversationId: string | null, signal: AbortSignal, onEvent: (event: AgentChatEvent) => boolean | void, pendingRequestId?:string, displayMessage?:string): Promise<string> {
+export async function agentChatStream(config: AgentChatConfig | { bot_id: string } | { catalog_model: string }, message: string, conversationId: string | null, signal: AbortSignal, onEvent: (event: AgentChatEvent) => boolean | void, pendingRequestId?:string, displayMessage?:string): Promise<string> {
   const response = await fetch(agentChatUrl("stream", configuredApiBaseUrl), { method: "POST", signal, cache: "no-store", headers: { Accept: "text/event-stream", "Content-Type": "application/json", "X-Chat-Session": chatCredential() }, body: JSON.stringify({ ...config, message, conversation_id: conversationId, ...(pendingRequestId?{pending_request_id:pendingRequestId,...(displayMessage?{display_message:displayMessage}:{})}:{}) }) });
   if (!response.ok) { const payload = await response.json().catch(() => null); throw apiErrorFromPayload(payload, response.status); }
   const reader = response.body?.getReader(); if (!reader) throw new ApiError("服务未返回流式响应。");
@@ -391,7 +391,8 @@ export async function getMaterialLibrary(
   return requestJson<MaterialLibraryResponse>(`/api/v3/materials?${params}`, { signal: options.signal });
 }
 
-export type MaterialAnalysisModelOverride = {
+/** A server catalog entry for one analysis (UX batch 3); the provider form is kept for older callers. */
+export type MaterialAnalysisModelOverride = { catalog_model: string } | {
   provider: AgentChatProvider;
   base_url?: string;
   model: string;
@@ -416,7 +417,7 @@ export async function createMaterialAnalysisJob(
   const body = {
     idempotency_key: idempotencyKey,
     force,
-    ...(model ? { provider: model.provider, base_url: model.base_url, model: model.model, api_key: model.api_key } : {}),
+    ...(model ? "catalog_model" in model ? { catalog_model: model.catalog_model } : { provider: model.provider, base_url: model.base_url, model: model.model, api_key: model.api_key } : {}),
   };
   return requestJson<MaterialAnalysisJob>(`/api/v3/materials/${sourceType}/${encodeURIComponent(sourceId)}/analysis-jobs`, {
     method: "POST",
@@ -430,7 +431,7 @@ export async function getMaterialAnalysisSettings(signal?: AbortSignal): Promise
 }
 
 export async function saveMaterialAnalysisSettings(
-  settings: { provider: AgentChatProvider; base_url?: string; model: string; api_key?: string },
+  settings: { provider: AgentChatProvider; base_url?: string; model: string; api_key?: string } | { catalog_model: string },
   signal?: AbortSignal,
 ): Promise<MaterialAnalysisSettings> {
   return requestJson<MaterialAnalysisSettings>("/api/v3/materials/analysis-settings", {
@@ -652,7 +653,8 @@ const BOT_ERRORS:Record<string,string>={invalid_name:"名字无效（1 到 40 �
   model_from_file:"这个模型来自服务器配置文件，只能在服务器上改。",default_from_file:"默认模型由服务器配置文件指定。",invalid_provider:"模型服务无效。",invalid_model:"Model ID 无效。",
   invalid_endpoint:"接口地址无效：须为 HTTPS，自定义服务必须填写。",invalid_key:"API key 格式不对。",invalid_key_env:"环境变量名须以 _API_KEY 结尾，且不能是服务器自己的密钥。",
   one_key_source:"API key 和环境变量只能填一个。",key_required:"换了服务或接口地址，需要重新填写 key。",credential_key_missing:"服务器没有配置加密密钥，无法保存 key。",
-  too_many_models:"模型已达上限（40 个）。",invalid_agent_chat_request:"填写的内容无效。"};
+  too_many_models:"模型已达上限（40 个）。",invalid_agent_chat_request:"填写的内容无效。",
+  model_key_missing:"服务器上没有找到这个 key：检查环境变量名，或重新填写 key。",invalid_model_request:"Model ID 或接口地址无效。",model_not_configured:"模型目录是空的：先在设置里添加一个模型。"};
 async function botJson<T>(path:string,init:{method?:string;body?:unknown;signal?:AbortSignal},failure:string):Promise<T>{
   const response=await fetch(agentPath(path),{method:init.method??"GET",signal:init.signal,cache:"no-store",headers:ownerHeaders(init.body!==undefined),
     ...(init.body!==undefined?{body:JSON.stringify(init.body)}:{})});
@@ -672,6 +674,11 @@ export type CatalogEntryInput = { name?: string; display_name?: string; provider
 export async function addCatalogModel(value:CatalogEntryInput):Promise<CatalogModel>{ return (await botJson<{model:CatalogModel}>("model-catalog",{method:"POST",body:value},"保存失败。")).model; }
 export async function updateCatalogModel(name:string,value:CatalogEntryInput):Promise<CatalogModel>{ return (await botJson<{model:CatalogModel}>(`model-catalog/${encodeURIComponent(name)}`,{method:"PATCH",body:value},"保存失败。")).model; }
 export async function deleteCatalogModel(name:string):Promise<void>{ await botJson(`model-catalog/${encodeURIComponent(name)}`,{method:"DELETE"},"删除失败。"); }
+/** 测试并保存 / 服务商可用模型 of the catalog form: the typed key, an environment variable, or (``name``, same
+ *  provider and endpoint) the entry's stored key.  Nothing is saved; nothing returned carries a key. */
+export type CatalogProbe = { name?: string; provider: string; model?: string; base_url?: string | null; api_key?: string; key_env?: string };
+export async function testCatalogModel(value:CatalogProbe,signal?:AbortSignal):Promise<void>{ await botJson("model-catalog/test",{method:"POST",body:value,signal},"连接失败，请检查服务、Model ID 和 key。"); }
+export async function discoverCatalogModels(value:CatalogProbe,signal?:AbortSignal):Promise<{status:string;ordering:string;models:Array<{id:string;name:string}>}>{ return await botJson("model-catalog/models",{method:"POST",body:value,signal},"暂时无法获取服务商模型列表。"); }
 export async function setDefaultCatalogModel(name:string):Promise<CatalogModel>{ return (await botJson<{model:CatalogModel}>("model-catalog/default",{method:"PUT",body:{name}},"保存失败。")).model; }
 
 // Skills (stage E): recipes — name, one-line description, steps, allowed catalog tools, optional output template; never code.

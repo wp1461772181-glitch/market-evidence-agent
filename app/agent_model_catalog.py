@@ -198,6 +198,37 @@ def resolve(name: str | None) -> dict:
             "base_url": entry["base_url"], "api_key": key}
 
 
+def probe_key(*, provider: str, base_url: str | None, api_key: str | None = None, key_env: str | None = None,
+              name: str | None = None) -> str | None:
+    """The key a settings-page check (测试 / 服务商可用模型) uses, in memory only: the one typed, the named
+    environment variable's, or the stored key of entry ``name`` when the provider and endpoint did not
+    change (a key is never sent somewhere new).  None when nothing was given (OpenRouter lists models
+    without one).  Raises CatalogError: invalid_key, invalid_key_env, model_key_missing, key_required."""
+    if provider not in _providers():
+        raise CatalogError("invalid_provider")
+    if api_key is not None:
+        return _clean_key(api_key)
+    if key_env:
+        if not _env_allowed(key_env):
+            raise CatalogError("invalid_key_env")
+        _load_env()
+        value = (os.getenv(key_env) or "").strip()
+        if not 8 <= len(value) <= 2048:
+            raise CatalogError("model_key_missing")
+        return value
+    if name:
+        entry = next((item for item in entries()[0] if item["name"] == name), None)
+        if entry is None:
+            raise CatalogError("model_not_found")
+        if (entry["provider"], entry["base_url"]) != (provider, _endpoint(provider, base_url)):
+            raise CatalogError("key_required")
+        key = _key_for(entry)
+        if key is None:
+            raise CatalogError("model_key_missing")
+        return key
+    return None
+
+
 def _clean_key(api_key: str | None) -> str | None:
     if api_key is None:
         return None

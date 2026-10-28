@@ -1,14 +1,12 @@
 import { Tx, formatDate as formatLocalizedDate, translatePhrase, useLocale } from "./i18n";
 import { useEffect, useRef, useState } from "react";
-import { ApiError, configuredApiBaseUrl, createMaterialAnalysisJob, fetchFilingContent, getChatMode, getMaterialAnalysis, getMaterialAnalysisHistory, getMaterialAnalysisJob } from "./api";
-import type { AgentChatProvider } from "./api";
+import { ApiError, createMaterialAnalysisJob, fetchFilingContent, getChatMode, getMaterialAnalysis, getMaterialAnalysisHistory, getMaterialAnalysisJob, getModelCatalog } from "./api";
+import type { CatalogModel } from "./api";
 import type { MaterialAnalysisJob, MaterialAnalysisVersion, MaterialItem, MaterialCitation, MaterialCitationVerification } from "./types";
-import { loadProfiles } from "./model-profiles.mjs";
 import { useAiContentLocalization, withLocalizedFields } from "./useAiContentLocalization";
 
 type DetailTab = "analysis" | "original" | "history";
 type Load<T> = { kind: "idle" } | { kind: "loading" } | { kind: "ready"; value: T } | { kind: "error"; message: string };
-type SavedProfile = { id: string; display_name: string; provider: AgentChatProvider; base_url: string; model: string; api_key: string };
 type CitationSelection = { quote: string; analysisVersion: number } | null;
 
 export function MaterialAnalysisDetail({ material, initialAnalysisId = null, onUpdated }: { material: MaterialItem; initialAnalysisId?: string | null; onUpdated: () => void }) {
@@ -23,8 +21,9 @@ export function MaterialAnalysisDetail({ material, initialAnalysisId = null, onU
   const [actionError, setActionError] = useState<string | null>(null);
   const analysisRequestSequence = useRef(0);
   const [citationSelection, setCitationSelection] = useState<CitationSelection>(null);
-  const [profiles, setProfiles] = useState<SavedProfile[]>([]);
-  const [profileId, setProfileId] = useState("");
+  // The per-analysis model is a server catalog entry (UX batch 3); "" is the material-analysis default.
+  const [catalogModels, setCatalogModels] = useState<CatalogModel[]>([]);
+  const [catalogName, setCatalogName] = useState("");
   const [profileError, setProfileError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -33,17 +32,16 @@ export function MaterialAnalysisDetail({ material, initialAnalysisId = null, onU
 
   useEffect(() => {
     let cancelled = false;
-    loadProfiles(globalThis, configuredApiBaseUrl, getChatMode())
-      .then((result) => {
-        if (cancelled) return;
-        const usable = (result.data.profiles as SavedProfile[]).filter((profile) => Boolean(profile.api_key?.trim()));
-        setProfiles(usable);
+    if (getChatMode() !== "personal") return () => { cancelled = true; };
+    getModelCatalog()
+      .then((catalog) => {
+        if (!cancelled) setCatalogModels(catalog.models.filter((entry) => entry.key_status === "configured"));
       })
       .catch((error: unknown) => {
-        if (!cancelled) setProfileError(error instanceof Error ? error.message : "无法读取已保存的模型配置。");
+        if (!cancelled) setProfileError(error instanceof Error ? error.message : "模型目录暂时无法读取。");
       });
     return () => { cancelled = true; };
-    // Profiles are intentionally loaded once per material screen.
+    // The catalog is intentionally loaded once per material screen.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -116,13 +114,7 @@ export function MaterialAnalysisDetail({ material, initialAnalysisId = null, onU
     setFocusedAnalysisId(null);
     setActionError(null);
     setJob({ job_id: "", status: "queued", analysis_id: null, cache_hit: false });
-    const selectedProfile = profiles.find((profile) => profile.id === profileId);
-    const modelOverride = selectedProfile ? {
-      provider: selectedProfile.provider,
-      base_url: selectedProfile.base_url,
-      model: selectedProfile.model,
-      api_key: selectedProfile.api_key,
-    } : undefined;
+    const modelOverride = catalogName ? { catalog_model: catalogName } : undefined;
     try {
       const created = await createMaterialAnalysisJob(material.source_type, material.source_id, force, modelOverride);
       setJob(created);
@@ -193,11 +185,11 @@ export function MaterialAnalysisDetail({ material, initialAnalysisId = null, onU
       {tab === "analysis" && <>
         {canAnalyze && <div className="analysis-model-choice" style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", margin: "0 0 12px" }}>
           <span className="section-label">{t("分析模型")}</span>
-          <select value={profileId} onChange={(event) => setProfileId(event.target.value)} disabled={hasActiveJob} aria-label={t("分析模型")} style={{ maxWidth: "100%" }}>
+          <select value={catalogName} onChange={(event) => setCatalogName(event.target.value)} disabled={hasActiveJob} aria-label={t("分析模型")} style={{ maxWidth: "100%" }}>
             <option value="">{t("系统默认（后台配置）")}</option>
-            {profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.display_name} · {profile.model}</option>)}
+            {catalogModels.map((entry) => <option key={entry.name} value={entry.name}>{entry.display_name || entry.name} · {entry.model}</option>)}
           </select>
-          {profileId && <small className="analysis-quiet">{t("仅本次分析使用；默认模型在 Agent 管理页配置。")}</small>}
+          {catalogName && <small className="analysis-quiet">{t("仅本次分析使用；默认模型在 Agent 管理页配置。")}</small>}
           {profileError && <small className="analysis-quiet">{profileError}</small>}
         </div>}
         {hasActiveJob && <div className="material-job-status" role="status"><span className="loading-mark" aria-hidden="true" />{job?.status === "queued" ? t("分析任务排队中…") : t("正在分析这份材料…")}</div>}

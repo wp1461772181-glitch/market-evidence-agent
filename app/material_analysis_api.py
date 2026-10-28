@@ -41,10 +41,14 @@ class AnalysisJobRequest(BaseModel):
     base_url: str | None = Field(default=None, max_length=2048)
     model: str | None = Field(default=None, max_length=160)
     api_key: SecretStr | None = Field(default=None, max_length=2048)
+    # A model of the server catalog for this one analysis (UX batch 3); the key never comes from the page.
+    catalog_model: str | None = Field(default=None, min_length=1, max_length=40)
 
     @model_validator(mode="after")
     def _check_model_override(self):
         supplied = (self.provider, self.base_url, self.model, self.api_key)
+        if self.catalog_model is not None and any(value is not None for value in supplied):
+            raise ValueError("catalog_model replaces provider, model and api_key")
         if any(value is not None for value in supplied):
             if not self.provider or not self.model or self.api_key is None:
                 raise ValueError("provider, model, and api_key are required together")
@@ -60,10 +64,29 @@ class AnalysisJobRequest(BaseModel):
 
 class AnalysisSettingsRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    provider: str = Field(min_length=1, max_length=32)
+    provider: str | None = Field(default=None, min_length=1, max_length=32)
     base_url: str | None = Field(default=None, max_length=2048)
-    model: str = Field(min_length=1, max_length=160)
+    model: str | None = Field(default=None, min_length=1, max_length=160)
     api_key: SecretStr | None = Field(default=None, max_length=2048)
+    # The default named by a server catalog entry (UX batch 3): its provider, model and key are copied in.
+    catalog_model: str | None = Field(default=None, min_length=1, max_length=40)
+
+    @model_validator(mode="after")
+    def _one_source(self):
+        if (self.catalog_model is None) == (self.provider is None or self.model is None):
+            if self.catalog_model is None:
+                raise ValueError("provider and model are required")
+            raise ValueError("catalog_model replaces provider, model and api_key")
+        return self
+
+
+def _catalog_model(name: str) -> dict:
+    """A catalog entry's settings with its key (memory only).  These writes are owner-only (middleware)."""
+    from . import agent_model_catalog as catalog
+    try:
+        return catalog.resolve(name)
+    except catalog.CatalogError as exc:
+        raise HTTPException(status_code=409, detail={"code": str(exc), "message": "模型目录里的这个模型不可用。"}) from None
 
 
 def _db():
@@ -101,12 +124,15 @@ def materials(
 @router.post("/v3/materials/{source_type}/{source_id}/analysis-jobs", status_code=status.HTTP_202_ACCEPTED)
 def create_analysis_job(source_type: str, source_id: UUID, payload: AnalysisJobRequest, db: Session = Depends(_db)):
     _require_schema(db)
+    chosen = _catalog_model(payload.catalog_model) if payload.catalog_model else None
     try:
         return request_material_analysis(
             db=db, source_type=source_type, source_id=source_id,
             idempotency_key=payload.idempotency_key, force=payload.force,
-            provider=payload.provider, base_url=payload.base_url, model=payload.model,
-            api_key=payload.api_key.get_secret_value() if payload.api_key else None,
+            provider=chosen["provider"] if chosen else payload.provider,
+            base_url=chosen["base_url"] if chosen else payload.base_url,
+            model=chosen["model"] if chosen else payload.model,
+            api_key=chosen["api_key"] if chosen else payload.api_key.get_secret_value() if payload.api_key else None,
         )
     except MaterialAnalysisError as exc:
         raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc
@@ -121,10 +147,13 @@ def material_analysis_settings(db: Session = Depends(_db)):
 @router.put("/v3/materials/analysis-settings")
 def save_material_analysis_settings(payload: AnalysisSettingsRequest, db: Session = Depends(_db)):
     _require_schema(db)
+    chosen = _catalog_model(payload.catalog_model) if payload.catalog_model else None
     try:
         return save_analysis_settings(
-            db=db, provider=payload.provider, base_url=payload.base_url, model=payload.model,
-            api_key=payload.api_key.get_secret_value() if payload.api_key else None,
+            db=db, provider=chosen["provider"] if chosen else payload.provider,
+            base_url=chosen["base_url"] if chosen else payload.base_url,
+            model=chosen["model"] if chosen else payload.model,
+            api_key=chosen["api_key"] if chosen else payload.api_key.get_secret_value() if payload.api_key else None,
         )
     except MaterialAnalysisError as exc:
         raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc

@@ -1,7 +1,7 @@
 import { BotOrb } from "./BotOrb";
 import { dispatchAgentAction } from "./agent-client-actions.mjs";
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
-import { listSkills, type Skill, agentChatRequest, agentChatModels, agentChatStream, configuredApiBaseUrl, restoreAgentChat, clearAgentConversation, getChatMode, setChatMode, listAgentConversations, renameAgentConversation, archiveAgentConversation, selectAgentConversation, personalChatLogin, getKnowledgeCitation, getMaterialAnalysisSettings, saveMaterialAnalysisSettings, resetMaterialAnalysisSettings, getBackgroundModel, saveBackgroundModel, revokeBackgroundKey, getTelegramBind, saveTelegramToken, startTelegramBind, unbindTelegram, type BackgroundModel, type Bot, type TelegramBindStatus, type KnowledgeCitationDetail, type ConversationSummary, type AgentChatConfig, type AgentChatMessage, type AgentChatProvider, type AgentChatEvent, type MaterialAnalysisSettings } from "./api";
+import { listSkills, type Skill, agentChatStream, restoreAgentChat, clearAgentConversation, getChatMode, setChatMode, listAgentConversations, renameAgentConversation, archiveAgentConversation, selectAgentConversation, personalChatLogin, getKnowledgeCitation, getMaterialAnalysisSettings, saveMaterialAnalysisSettings, resetMaterialAnalysisSettings, getModelCatalog, getTelegramBind, saveTelegramToken, startTelegramBind, unbindTelegram, type CatalogModel, type Bot, type TelegramBindStatus, type KnowledgeCitationDetail, type ConversationSummary, type AgentChatMessage, type AgentChatEvent, type MaterialAnalysisSettings } from "./api";
 import { isTaskPostHead, parseTaskPostHead } from "./task-posts.mjs";
 import { chatTurnPreviews, plainChatPreview } from "./chat-thread.mjs";
 import { ModelCatalogCard } from "./BotPages";
@@ -10,8 +10,6 @@ import { citationOrdinal, linkCitationMarkers } from "./chat-citations.mjs";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Tx, useLocale } from "./i18n";
-import { createModelDiscovery, createModelDiscoveryScheduler } from "./model-discovery.mjs";
-import { CATALOG, loadProfiles, saveProfiles, parseProfileBackup, mergeImportedProfiles, createMutationCoordinator, type ModelProfile, type ProfileDocument } from "./model-profiles.mjs";
 import { AgentChatLifecycle, chatContext } from "./agentChatLifecycle.js";
 import { KnowledgeAdminPage } from './KnowledgeAdminPage';
 import { ContextMeter } from "./ContextMeter";
@@ -43,7 +41,7 @@ function toolResultSummary(value:unknown):string {
   return "";
 }
 type FileHandle = { name: string; getFile: () => Promise<File>; createWritable: () => Promise<{ write: (value: string) => Promise<void>; close: () => Promise<void> }> };
-type ChatSession = { conversationId:string|null; loadingProfiles:boolean; mutationPending:boolean; profilePath:string; importProfiles:(file:File)=>Promise<void>; exportProfiles:()=>void; provider: AgentChatProvider; model: string; key: string; baseUrl: string; displayName: string; profiles: ModelProfile[]; selectedId: string | null; storage: string; storageError: string; selectProfile: (id: string) => void; saveProfile: (p: ModelProfile) => Promise<void>; verified: boolean; state: State; status: string; restoring:boolean; messages: AgentChatMessage[]; historyHasMore:boolean; loadingEarlier:boolean; loadEarlier:()=>Promise<void>; draft: string; setDraft: (v: string) => void; send: (e: FormEvent) => Promise<void>; choose:(value:string,requestId:string)=>Promise<void>; chooseOptions:(values:string[],requestId:string)=>Promise<void>; replyToCard:(value:string,requestId:string)=>Promise<void>; cancel: () => void; clear: () => void; openConversation:(id:string,created?:string)=>Promise<void>; archive: ChatArchive | null; archiveView: ArchiveConversation | null; fileName: string; archiveStatus: string; connectFile: () => Promise<void>; disconnectFile: () => void; exportArchive: () => void; importArchive: (file: File) => Promise<void>; selectArchive: (id:string) => void; returnLive: () => void; bot: Bot | null; selectBot: (bot: Bot | null) => Promise<void> };
+type ChatSession = { conversationId:string|null; verified: boolean; state: State; status: string; restoring:boolean; messages: AgentChatMessage[]; historyHasMore:boolean; loadingEarlier:boolean; loadEarlier:()=>Promise<void>; draft: string; setDraft: (v: string) => void; send: (e: FormEvent) => Promise<void>; choose:(value:string,requestId:string)=>Promise<void>; chooseOptions:(values:string[],requestId:string)=>Promise<void>; replyToCard:(value:string,requestId:string)=>Promise<void>; cancel: () => void; clear: () => void; openConversation:(id:string,created?:string)=>Promise<void>; archive: ChatArchive | null; archiveView: ArchiveConversation | null; fileName: string; archiveStatus: string; connectFile: () => Promise<void>; disconnectFile: () => void; exportArchive: () => void; importArchive: (file: File) => Promise<void>; selectArchive: (id:string) => void; returnLive: () => void; bot: Bot | null; selectBot: (bot: Bot | null) => Promise<void> };
 const Context = createContext<ChatSession | null>(null);
 const WRITE_CARDS = new Set(["write_confirmation", "confirm_write", "choose_write_action", "choose_revision_sources"]);
 function Icon({ children }: { children: ReactNode }) {
@@ -138,9 +136,9 @@ function HistoryRow({item,current,onOpen,onRename,onArchive}:{item:ConversationS
 }
 export function AgentChatProviderRoot({ children }: { children: ReactNode }) {
   const { t } = useLocale();
-  const [profiles,setProfiles]=useState<ModelProfile[]>([]),[selectedId,setSelectedId]=useState<string|null>(null),[storage,setStorage]=useState(""),[storageError,setStorageError]=useState(""),[loadingProfiles,setLoadingProfiles]=useState(true),[mutationPending,setMutationPending]=useState(false),[profilePath,setProfilePath]=useState("");
-  const active=profiles.find(p=>p.id===selectedId); const provider=active?.provider??"deepseek", model=active?.model??"", key=active?.api_key??"", baseUrl=active?.base_url??"";
-  const [verified, setVerified] = useState(false), [state, setState] = useState<State>("idle"), [status, setStatus] = useState(""), [messages, setMessages] = useState<AgentChatMessage[]>([]), [draft, setDraft] = useState(""), [conversationId, setConversationId] = useState<string | null>(null);
+  // Models come only from the server catalog (UX batch 3): the owner's turns name a bot or the catalog default,
+  // never a key.  A guest has no catalog, so a guest cannot send until they log in.
+  const verified = getChatMode() === "personal", [state, setState] = useState<State>("idle"), [status, setStatus] = useState(""), [messages, setMessages] = useState<AgentChatMessage[]>([]), [draft, setDraft] = useState(""), [conversationId, setConversationId] = useState<string | null>(null);
   const [historyHasMore,setHistoryHasMore]=useState(false),[historyBefore,setHistoryBefore]=useState<number|null>(null),[loadingEarlier,setLoadingEarlier]=useState(false);
   const conversationIdRef=useRef<string|null>(null); conversationIdRef.current=conversationId;
   // The bot whose line is open.  Its turns send only bot_id: the server takes the model and key from its catalog.
@@ -152,8 +150,6 @@ export function AgentChatProviderRoot({ children }: { children: ReactNode }) {
   const handle=useRef<FileHandle|null>(null), localId=useRef(readLocalConversationId()), writer=useRef(createSerializedWriter(async (target:FileHandle,data:string)=>{if(!target)throw new Error("未连接归档文件");await writeAtomically(target,data);}));
   const lifecycle = useRef(new AgentChatLifecycle());
   useEffect(() => () => lifecycle.current.invalidate(), []);
-  const profileMode=getChatMode();
-  useEffect(()=>{void loadProfiles(globalThis,configuredApiBaseUrl,profileMode).then(({data,backend,path})=>{profilesRef.current=data.profiles;setProfiles(data.profiles);setSelectedId(data.selected_id);setStorage(backend);setProfilePath(path??"");setLoadingProfiles(false);const active=data.profiles.find(p=>p.id===data.selected_id);setVerified(Boolean(active?.api_key&&active.tested_at));}).catch(e=>{setStorageError(e instanceof Error?e.message:"本地配置读取失败");setLoadingProfiles(false);});},[]);
   useEffect(() => { const controller=new AbortController(), id=lifecycle.current.begin(controller); setRestoring(true); setState("restoring"); void restoreConversationSafely(lifecycle.current,id,controller.signal,signal=>restoreAgentChat(undefined,signal),saved=>{if(!saved.conversationId)clearAgentConversation();else{localId.current=saved.conversationId;createdAt.current=saved.createdAt??new Date().toISOString();try{window.localStorage.setItem(`market-evidence-agent:local-chat-id:${getChatMode()}:v1`,localId.current)}catch{}}setConversationId(saved.conversationId);setMessages(saved.messages.filter(m=>m.role==="user"||m.role==="assistant"));setHistoryHasMore(saved.hasMore);setHistoryBefore(saved.nextBefore);setState("idle")}).catch(() => { if (lifecycle.current.isCurrent(id)) { setStatus(t("历史记录暂时无法加载；可稍后重试。"));setState("idle"); } }).finally(()=>{if(lifecycle.current.isCurrent(id))setRestoring(false)}); return () => { controller.abort(); earlierController.current?.abort(); lifecycle.current.finish(id); }; }, []);
   const latestMessages=useRef(messages);latestMessages.current=messages;
   useEffect(()=>{if(!handle.current||(state!=="ready"&&state!=="error")||archiveView||importedReadOnly||messages.length===0)return;const timer=window.setTimeout(()=>void persistConversation(messages),700);return()=>window.clearTimeout(timer);},[messages,state,archiveView,importedReadOnly]);
@@ -170,23 +166,6 @@ export function AgentChatProviderRoot({ children }: { children: ReactNode }) {
     if (last?.role === "user") return [...items, { role: "assistant", content: "", status: "cancelled" }];
     return items;
   });
-  const invalidateSettings = () => { const wasSending = state === "sending"; lifecycle.current.invalidate(); if (wasSending) markSendingTurnCancelled(); setVerified(false); setState("idle"); setStatus(""); };
-  const config: AgentChatConfig = { provider, base_url: baseUrl, model: model.trim(), api_key: key };
-  const profileMutation=useRef(createMutationCoordinator((pending:boolean)=>setMutationPending(pending)));
-  const profilesRef=useRef(profiles);profilesRef.current=profiles;
-  function enqueueProfileMutation<T>(work:()=>Promise<T>):Promise<T>{if(loadingProfiles||state==="testing"||state==="sending")return Promise.reject(Error("请等待当前操作完成。"));return profileMutation.current.enqueue(work);}
-  async function saveProfile(profile:ModelProfile){return enqueueProfileMutation(async()=>{const next=[...profilesRef.current.filter(p=>p.id!==profile.id),profile];const doc:ProfileDocument={version:1,profiles:next,selected_id:profile.id};const backend=await saveProfiles(doc,globalThis,storage,configuredApiBaseUrl,profileMode);profilesRef.current=next;setProfiles(next);setSelectedId(profile.id);setStorage(backend);setStorageError("");setVerified(true);setState("ready");});}
-  async function selectProfile(id:string){return enqueueProfileMutation(async()=>{const p=profilesRef.current.find(x=>x.id===id);if(!p)return;const doc:ProfileDocument={version:1,profiles:profilesRef.current,selected_id:id};await saveProfiles(doc,globalThis,storage,configuredApiBaseUrl,profileMode);invalidateSettings();setSelectedId(id);setVerified(Boolean(p.api_key&&p.tested_at));setState(p.api_key&&p.tested_at?"ready":"idle");setStatus("");setStorageError("");});}
-  async function importProfiles(file:File){return enqueueProfileMutation(async()=>{const imported=await parseProfileBackup(file);const merged=mergeImportedProfiles({version:1,profiles:profilesRef.current,selected_id:selectedId},imported);await saveProfiles(merged,globalThis,storage,configuredApiBaseUrl,profileMode);lifecycle.current.invalidate();profilesRef.current=merged.profiles;setProfiles(merged.profiles);setSelectedId(merged.selected_id);setVerified(false);setState("idle");setStatus("");setStorageError("");});}
-  function exportProfiles(){if(loadingProfiles||mutationPending||state==="testing"||state==="sending")return;const data={version:1 as const,profiles:profilesRef.current.map(p=>({...p})),selected_id:selectedId};const blob=new Blob([JSON.stringify(data,null,2)+"\n"],{type:"application/json;charset=utf-8"});const url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download="market-evidence-model-profiles.json";a.click();URL.revokeObjectURL(url);}
-  async function verifyModel(candidate: string) {
-    const candidateModel = candidate.trim();
-    if (!key || !candidateModel || state === "testing" || state === "sending") return;
-    const tested = { ...config, model: candidateModel }, hadVerified = verified, controller = new AbortController(), id = lifecycle.current.begin(controller); setState("testing"); setStatus("");
-    try { const result = await agentChatRequest("hello", tested, [], controller.signal); if (!lifecycle.current.isCurrent(id)) return; setVerified(true); setState("ready"); setStatus(translate("连接测试成功")); }
-    catch (error) { if (!lifecycle.current.isCurrent(id)) return; setVerified(hadVerified); setState("error"); setStatus(error instanceof Error ? friendlyError(error.message, translate) : translate("连接失败，请重试")); }
-    finally { lifecycle.current.finish(id); }
-  }
   function translate(s: string) { return t(s); }
   async function send(e: FormEvent) {
     e.preventDefault();
@@ -212,9 +191,9 @@ export function AgentChatProviderRoot({ children }: { children: ReactNode }) {
     await sendContent(reply.message,reply.pendingRequestId);
   }
   async function sendContent(content:string,pendingRequestId?:string,label?:string) {
-    if(loadingProfiles||mutationPending)return; if (!(verified||botRef.current) || loadingProfiles || mutationPending || loadingEarlierRef.current || !content || state === "sending" || state === "testing") return;
+    if (!(verified||botRef.current) || loadingEarlierRef.current || !content || state === "sending" || state === "testing") return;
     let context: AgentChatMessage[]; try { context = chatContext(messages, { role: "user", content }); } catch (error) { setStatus(t(error instanceof Error ? error.message : "消息过长，请缩短后重试。")); return; }
-    const next = [...messages, { role: "user" as const, content: label||content }]; setMessages(next); setDraft(""); setState("sending"); setStatus(""); const turnBot = botRef.current, tested = turnBot ? { bot_id: turnBot.id } : { ...config }, controller = new AbortController(), id = lifecycle.current.begin(controller);
+    const next = [...messages, { role: "user" as const, content: label||content }]; setMessages(next); setDraft(""); setState("sending"); setStatus(""); const turnBot = botRef.current, tested = turnBot ? { bot_id: turnBot.id } : { catalog_model: "" }, controller = new AbortController(), id = lifecycle.current.begin(controller);
     let localQueue = ""; let accumulated = ""; let turnId: string|undefined; let citations: NonNullable<AgentChatMessage["citations"]> = []; let clarification:AgentChatMessage["clarification"]; let terminalStatus="complete"; let reusedSources=false; const tools: NonNullable<AgentChatMessage["tool_trace"]> = []; let trace: FlowNode[] = []; let thinkingMs: number|undefined; const startedAt = Date.now();
     try {
       await agentChatStream(tested, content, turnBot ? null : conversationId, controller.signal, (event: AgentChatEvent) => {
@@ -278,7 +257,7 @@ export function AgentChatProviderRoot({ children }: { children: ReactNode }) {
     else if(switched)clear();
   }
   const visibleMessages=archiveView?archiveView.messages as AgentChatMessage[]:messages;
-  return <Context.Provider value={{ conversationId,loadingProfiles,mutationPending,profilePath,importProfiles,exportProfiles,provider, model, key, baseUrl, displayName:active?.display_name??"",profiles,selectedId,storage,storageError,selectProfile,saveProfile,verified:verified||Boolean(bot), state, status, restoring,messages:visibleMessages, historyHasMore, loadingEarlier, loadEarlier, draft, setDraft, send, choose, chooseOptions, replyToCard, cancel, clear,openConversation,archive,archiveView,fileName,archiveStatus,connectFile,disconnectFile,exportArchive,importArchive,selectArchive,returnLive,bot,selectBot }}>{children}</Context.Provider>;
+  return <Context.Provider value={{ conversationId,verified:verified||Boolean(bot), state, status, restoring,messages:visibleMessages, historyHasMore, loadingEarlier, loadEarlier, draft, setDraft, send, choose, chooseOptions, replyToCard, cancel, clear,openConversation,archive,archiveView,fileName,archiveStatus,connectFile,disconnectFile,exportArchive,importArchive,selectArchive,returnLive,bot,selectBot }}>{children}</Context.Provider>;
 }
 function readLocalConversationId(){try{const key=`market-evidence-agent:local-chat-id:${getChatMode()}:v1`,existing=window.localStorage.getItem(key);if(existing&&/^[\w-]{1,80}$/.test(existing))return existing;const id=crypto.randomUUID();window.localStorage.setItem(key,id);return id;}catch{return crypto.randomUUID();}}
 function archiveMessages(messages:AgentChatMessage[]){return messages.filter(m=>m.role==="user"||m.role==="assistant").map(m=>({role:m.role as "user"|"assistant",content:m.content,...(m.status?{status:m.status as "failed"|"cancelled"}:{}),...(m.role==="assistant"&&m.citations?{citations:m.citations}:{}),...(m.role==="assistant"&&m.tool_trace?{tool_trace:m.tool_trace.map(x=>({call_id:x.call_id,name:x.name,arguments:x.arguments,result:x.result,status:x.status as "running"|"complete"|"not_found"|"failed"|"cancelled"}))}:{})}));}
@@ -363,8 +342,8 @@ export function AgentChatPanel({ onSettings,onModeChange,bot,side,onTurnSettled 
     if (transcript&&followTranscript.current) transcript.scrollTop = transcript.scrollHeight;
   }, [c.messages, c.state]);
   const lastIndex=c.messages.length-1;
-  const sendDisabled=Boolean(c.archiveView)||c.restoring||!c.verified||!c.draft.trim()||c.state==="sending"||c.state==="testing"||c.loadingProfiles||c.mutationPending;
-  const busy=c.state==="sending"||c.state==="testing"||c.restoring||c.loadingProfiles||c.mutationPending;
+  const sendDisabled=Boolean(c.archiveView)||c.restoring||!c.verified||!c.draft.trim()||c.state==="sending"||c.state==="testing";
+  const busy=c.state==="sending"||c.state==="testing"||c.restoring;
   const currentConversation=window.sessionStorage.getItem("market-evidence-agent:chat-conversation:v1");
   return <main className="workspace agent-page" aria-labelledby="agent-chat-title">
     <header className="workspace-heading agent-page-heading">
@@ -386,12 +365,12 @@ export function AgentChatPanel({ onSettings,onModeChange,bot,side,onTurnSettled 
       </aside></>}
       <div className="agent-main-column">
         {c.archiveView&&<div className="chat-archive-banner"><span>{t("本地归档只读查看")}</span><button className="secondary-action" onClick={c.returnLive}>{t("返回当前对话")}</button><button className="secondary-action" onClick={()=>{c.returnLive();c.clear()}}>{t("新建对话")}</button></div>}
-        <div className="agent-capability"><span aria-hidden="true">✳</span><p>{t("消息和研究工具轨迹会保存到服务端；工具按权限读取资料并执行明确请求的系统任务。")}</p><span className={`agent-connection ${c.verified ? "is-ready" : ""}`}>{bot ? `${t("模型")} · ${bot.model ?? t("服务器默认模型")}` : c.verified ? `${c.provider} · ${c.model}` : t("尚未验证模型")}</span></div>
+        <div className="agent-capability"><span aria-hidden="true">✳</span><p>{t("消息和研究工具轨迹会保存到服务端；工具按权限读取资料并执行明确请求的系统任务。")}</p><span className={`agent-connection ${c.verified ? "is-ready" : ""}`}>{bot ? `${t("模型")} · ${bot.model ?? t("服务器默认模型")}` : c.verified ? `${t("模型")} · ${t("服务器默认模型")}` : t("登录后可用")}</span></div>
         <section ref={transcriptRef} className="agent-transcript" aria-live="polite" onScroll={e=>{if(e.currentTarget.scrollTop<32)void loadEarlierAtTop();}}>
           {!c.archiveView&&c.historyHasMore&&<div className="agent-earlier"><button type="button" className="secondary-action" onClick={()=>void loadEarlierAtTop()} disabled={c.loadingEarlier}>{c.loadingEarlier?t("正在加载更早消息…"):t("加载更早消息")}</button></div>}
           {c.restoring&&<p role="status">{t("正在恢复对话…")}</p>}
           {copyStatus&&<p className="copy-status" role="status">{copyStatus}</p>}
-          {c.messages.length === 0 ? <div className="agent-welcome"><h2>{t("从一个问题开始")}</h2><p>{t(c.verified ? "连接已就绪，可以输入问题或选择下方建议。" : "请先在模型设置中填写自己的 API key 并完成连接测试。")}</p><div>{["查看 AAPL 最近行情", "AAPL 已保存的最新财报有哪些", "可信度星级是什么"].map(x => <button type="button" key={x} onClick={() => c.setDraft(t(x))}>{t(x)} <span aria-hidden="true">↗</span></button>)}</div></div> :
+          {c.messages.length === 0 ? <div className="agent-welcome"><h2>{t("从一个问题开始")}</h2><p>{t(c.verified ? "连接已就绪，可以输入问题或选择下方建议。" : "登录个人聊天后才能对话：模型由服务器模型目录提供。")}</p><div>{["查看 AAPL 最近行情", "AAPL 已保存的最新财报有哪些", "可信度星级是什么"].map(x => <button type="button" key={x} onClick={() => c.setDraft(t(x))}>{t(x)} <span aria-hidden="true">↗</span></button>)}</div></div> :
           <div className="agent-thread-grid">
             <nav className="agent-question-rail" aria-label={t("问题导航")}>{turnPreviews.map((turn,i)=><button key={turn.userIndex} type="button" aria-label={`${t("问题导航")}: ${turn.question}`} aria-current={i===activeTurn?"location":undefined} onClick={()=>document.getElementById(`chat-message-${turn.userIndex}`)?.scrollIntoView({behavior:"smooth",block:"start"})} onFocus={e=>{const r=e.currentTarget.getBoundingClientRect();setPreview({index:i,left:r.right+10,top:r.top})}} onBlur={()=>setPreview(null)} onPointerEnter={e=>{if(previewTimer.current)window.clearTimeout(previewTimer.current);const r=e.currentTarget.getBoundingClientRect();setPreview({index:i,left:r.right+10,top:r.top})}} onPointerLeave={()=>{previewTimer.current=window.setTimeout(()=>setPreview(null),140)}} />)}</nav>
             <div className="agent-thread">{c.messages.map((m, i) => <article data-turn-index={m.role==="user"?turnPreviews.findIndex(turn=>turn.userIndex===i):undefined} id={`chat-message-${i}`} className={`agent-message is-${m.role}${m.role==="user"&&isTaskPostHead(m.content)?" is-task-post":""}${i===lastIndex?" is-last":""}`} key={i}>
@@ -416,13 +395,12 @@ export function AgentChatPanel({ onSettings,onModeChange,bot,side,onTurnSettled 
         <form ref={composerForm} className="agent-composer" onSubmit={c.send}>
           <label htmlFor="agent-draft">{t("输入消息")}</label>
           {slashItems.length>0&&<ul className="skill-picker" id="skill-picker" role="listbox" aria-label={t("技能")}>{slashItems.map((skill,i)=><li key={skill.id} id={`skill-option-${i}`} role="option" aria-selected={i===Math.min(pickIndex,slashItems.length-1)} onMouseDown={e=>{e.preventDefault();pickSkill(skill)}}><strong>/{skill.name}</strong><small>{skill.description}</small></li>)}</ul>}
-          <textarea id="agent-draft" ref={draftBox} {...(slashItems.length>0?{role:"combobox","aria-expanded":true,"aria-controls":"skill-picker","aria-activedescendant":`skill-option-${Math.min(pickIndex,slashItems.length-1)}`}:{})} rows={1} value={c.draft} onChange={e => c.setDraft(e.target.value)} onKeyDown={onComposerKey} maxLength={4000} disabled={Boolean(c.archiveView)||c.restoring||!c.verified || c.state === "sending" || c.state === "testing" || c.loadingProfiles || c.mutationPending} placeholder={bot?`${t("给")} ${bot.name} ${t("发消息…")}`:t(c.verified?"给 Agent 发消息…":"请先在设置里填写并测试模型")} />
+          <textarea id="agent-draft" ref={draftBox} {...(slashItems.length>0?{role:"combobox","aria-expanded":true,"aria-controls":"skill-picker","aria-activedescendant":`skill-option-${Math.min(pickIndex,slashItems.length-1)}`}:{})} rows={1} value={c.draft} onChange={e => c.setDraft(e.target.value)} onKeyDown={onComposerKey} maxLength={4000} disabled={Boolean(c.archiveView)||c.restoring||!c.verified || c.state === "sending" || c.state === "testing"} placeholder={bot?`${t("给")} ${bot.name} ${t("发消息…")}`:t(c.verified?"给 Agent 发消息…":"登录个人聊天后才能对话")} />
           <div className="agent-composer-bottom">
-            {bot?<span className="agent-composer-hint">{t("Enter 发送，Shift+Enter 换行")} · {t("模型和 key 只在服务器上，浏览器不保存 key。")}</span>:
-            <span className="agent-composer-hint" title={t(c.storage==="Local file"?"API key 保存在本机文件中，并随请求发送给所选服务方，不会写入聊天记录。":"API key 保存在当前浏览器的模型配置中，并随请求发送给所选服务方，不会写入聊天记录。")}>{t("Enter 发送，Shift+Enter 换行")} · {t(c.storage==="Local file"?"API key 保存在本机文件中，并随请求发送给所选服务方，不会写入聊天记录。":"API key 保存在当前浏览器的模型配置中，并随请求发送给所选服务方，不会写入聊天记录。")}</span>}
+            <span className="agent-composer-hint">{t("Enter 发送，Shift+Enter 换行")} · {t("模型和 key 只在服务器上，浏览器不保存 key。")}</span>
             <div className="agent-composer-tools">
               <ContextMeter conversationId={c.conversationId} refreshKey={`${c.messages.length}:${c.state==="sending"?"sending":"settled"}`} />
-              {!bot&&<div className="agent-model-switch"><select aria-label={t("选择模型")} value={c.selectedId??""} onChange={e=>c.selectProfile(e.target.value)}><option value="" disabled>{t("选择模型")}</option>{c.profiles.map(p=><option key={p.id} value={p.id}>{p.display_name}</option>)}</select></div>}
+              
               {busy&&<button className="agent-stop" type="button" onClick={c.cancel}>{t("取消请求")}</button>}
               <button className="agent-send" type="submit" aria-label={c.state === "sending" ? t("等待回复…") : t("发送")} title={t("发送")} disabled={sendDisabled}><SendIcon /></button>
             </div>
@@ -439,42 +417,39 @@ function ChatArchiveSettings(){
 }
 
 export function AgentAdminPage({ onBack }: { onBack: () => void }) {
- const {t}=useLocale(),c=useChat();const [knowledgeTab,setKnowledgeTab]=useState(false);const profileImportRef=useRef<HTMLInputElement>(null);const [profileStatus,setProfileStatus]=useState(""); const [open,setOpen]=useState(false),[draft,setDraft]=useState<ModelProfile|null>(null),[busy,setBusy]=useState(false),[saving,setSaving]=useState(false),[error,setError]=useState(""),[modelCandidates,setModelCandidates]=useState<Array<{id:string;name:string}>>([]),[discoveryStatus,setDiscoveryStatus]=useState("");const discoveryTimer=useRef(createModelDiscoveryScheduler()),discovery=useRef(createModelDiscovery((payload,options)=>agentChatModels(payload,options.signal))),draftRef=useRef<ModelProfile|null>(null);draftRef.current=draft;const modal=useRef<HTMLDivElement>(null),previous=useRef<HTMLElement|null>(null),testController=useRef<AbortController|null>(null);
- useEffect(()=>()=>{testController.current?.abort();discovery.current.cancel();discoveryTimer.current.cancel()},[]);
- function add(){previous.current=document.activeElement as HTMLElement;discovery.current.cancel();setModelCandidates([]);setDiscoveryStatus("");setDraft({id:crypto.randomUUID(),display_name:"",provider:"deepseek",base_url:CATALOG[0].baseUrl,model:"",api_key:"",tested_at:null});setError("");setOpen(true);}
- function edit(p:ModelProfile){previous.current=document.activeElement as HTMLElement;discovery.current.cancel();setModelCandidates([]);setDiscoveryStatus("");setDraft({...p,tested_at:null});setError("");setOpen(true);}
- function close(){if(saving)return;if(busy)testController.current?.abort();discoveryTimer.current.cancel();discovery.current.cancel();setModelCandidates([]);setDiscoveryStatus("");setBusy(false);setOpen(false);setDraft(null);previous.current?.focus();}
- useEffect(()=>{if(!open)return;const el=modal.current,main=el?.closest("main.agent-admin");const inerted=main?[...main.children].filter(x=>!x.classList.contains("profile-backdrop")):[];inerted.forEach(x=>x.setAttribute("inert",""));el?.querySelector<HTMLElement>("input")?.focus();const key=(e:KeyboardEvent)=>{if(e.key==="Escape"){e.preventDefault();close();}if(e.key==="Tab"&&el){const items=[...el.querySelectorAll<HTMLElement>('button,input,select')].filter(x=>!x.hasAttribute("disabled"));const first=items[0],last=items.at(-1);if(e.shiftKey&&document.activeElement===first){e.preventDefault();last?.focus()}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first?.focus()}}};document.addEventListener("keydown",key);return()=>{document.removeEventListener("keydown",key);inerted.forEach(x=>x.removeAttribute("inert"))}},[open,busy]);
- async function fetchModels(current=draftRef.current){if(!current)return;if(!current.api_key&&current.provider!=="openrouter"){setDiscoveryStatus(t("填写 API key 后可获取模型列表"));return}setDiscoveryStatus(t("正在获取服务商模型…"));try{const result=await discovery.current.fetch({provider:current.provider,base_url:current.base_url,api_key:current.api_key});if(!result)return;setModelCandidates(result.models);setDiscoveryStatus(result.status==="unsupported"?t("该服务商没有可用的模型列表接口，可手动填写 Model ID"):result.models.length?result.ordering==="provider_timestamp_desc"?t("已按服务商提供的时间排序"):result.ordering==="provider_timestamp_desc_with_undated"?t("部分模型没有可验证的发布时间；已知时间优先排序"):t("服务商未提供可验证的发布时间，按原始顺序显示"):t("服务商暂未返回可用模型，可手动填写 Model ID"));}catch(e){setModelCandidates([]);setDiscoveryStatus(friendlyError(e instanceof Error?e.message:"model_discovery_unavailable",t));}}
- useEffect(()=>{if(open&&draft&&(draft.api_key||draft.provider==="openrouter"))void fetchModels()},[open,draft?.id]);
- function changeKey(value:string){update({api_key:value});discoveryTimer.current.setContext(`${draft?.provider}:${draft?.base_url}`);discovery.current.cancel();setModelCandidates([]);discoveryTimer.current.cancel();if(value.length>=8){setDiscoveryStatus(t("输入完成后将自动获取模型列表"));const current={...draft!,api_key:value};discoveryTimer.current.schedule(()=>void fetchModels(current))}else setDiscoveryStatus(t("填写 API key 后可获取模型列表"))}
- async function testSave(){if(!draft)return;if(!c.profiles.some(p=>p.id===draft.id)&&c.profiles.length>=20){setError(t("最多可保存 20 个模型配置。"));return}discoveryTimer.current.cancel();discovery.current.cancel();setBusy(true);setError("");const controller=new AbortController();testController.current=controller;try{await agentChatRequest("hello",{provider:draft.provider,base_url:draft.base_url,model:draft.model.trim(),api_key:draft.api_key},[],controller.signal);if(controller.signal.aborted)return;const p={...draft,model:draft.model.trim(),tested_at:new Date().toISOString()};setSaving(true);await c.saveProfile(p);if(controller.signal.aborted)return;discoveryTimer.current.cancel();discovery.current.cancel();setOpen(false);setDraft(null);previous.current?.focus();}catch(e){if(!controller.signal.aborted)setError(e instanceof Error?friendlyError(e.message,t):t("连接失败，请重试"));}finally{if(testController.current===controller)testController.current=null;setBusy(false);setSaving(false)}}
- function cancelTest(){if(saving)return;testController.current?.abort();discovery.current.cancel();discoveryTimer.current.cancel();setBusy(false);setSaving(false);setOpen(false);setDraft(null);previous.current?.focus()}
- const update=(patch:Partial<ModelProfile>)=>setDraft(x=>x?{...x,...patch}:x);
+ const {t}=useLocale();const [knowledgeTab,setKnowledgeTab]=useState(false);
  if(knowledgeTab)return <KnowledgeAdminPage onBack={()=>setKnowledgeTab(false)}/>;
- return <main className="workspace agent-admin" aria-labelledby="agent-admin-title"><header className="workspace-heading"><div><p className="eyebrow">FinBot / {t("后台设置")}</p><h1 id="agent-admin-title">{t("模型连接设置")}</h1></div><div className="agent-header-actions"><button type="button" className="secondary-action" onClick={()=>setKnowledgeTab(true)}>研究知识库</button><button type="button" className="secondary-action" onClick={onBack}>{t("返回 Agent 对话")}</button></div></header><ChatArchiveSettings/><section className="agent-settings-card"><p>{t(c.storage==="Local file"?"本地文件模式：配置保存在本机后端的普通文件中；清除浏览器站点数据不会删除该文件。":"浏览器模式：配置保存在当前浏览器中；清除站点数据会删除这些配置。")}{c.storageError&&<span role="alert"> {c.storageError}</span>}{c.storageError&&!c.loadingProfiles&&<button type="button" className="secondary-action" onClick={()=>window.location.reload()}>{t("Retry model profiles")}</button>}</p><div className="chat-archive-tools"><button type="button" className="secondary-action" disabled={c.loadingProfiles||c.mutationPending||busy||c.state==="testing"||c.state==="sending"} onClick={c.exportProfiles}>{t("导出模型配置")}</button><button type="button" className="secondary-action" disabled={c.loadingProfiles||c.mutationPending||busy||c.state==="testing"||c.state==="sending"} onClick={()=>profileImportRef.current?.click()}>{t("导入模型配置")}</button><input ref={profileImportRef} className="visually-hidden" type="file" accept="application/json,.json" aria-label={t("导入模型配置文件")} onChange={e=>{const file=e.target.files?.[0];if(file)void c.importProfiles(file).then(()=>setProfileStatus(t("导入的模型需重新测试"))).catch(err=>setProfileStatus(err instanceof Error?err.message:t("模型配置导入失败")));e.target.value="";}}/>{profileStatus&&<span role="status">{profileStatus}</span>}<small>{t("备份文件包含 API keys，请妥善保管并仅在可信设备导入。")}</small></div><div className="profile-grid">{c.profiles.map(p=><button disabled={c.loadingProfiles||c.mutationPending||busy||c.state==="testing"||c.state==="sending"} className={`profile-card ${p.id===c.selectedId?"is-active":""}`} key={p.id} onClick={()=>edit(p)}><span>{t(p.id===c.selectedId?"当前使用":"已保存")}</span><strong>{p.display_name}</strong><small>{t(CATALOG.find(x=>x.provider===p.provider)?.label??p.provider)} · {p.model}</small><small>{t(p.api_key?"API key 已保存":"未保存 key")} · {p.tested_at?`${t("上次测试 ")}${new Date(p.tested_at).toLocaleString()}`:t("尚未测试")}</small></button>)}<button disabled={c.loadingProfiles||c.mutationPending||busy||c.state==="testing"||c.state==="sending"} className="profile-card profile-add" onClick={add}><strong>{t("＋ 添加模型")}</strong><small>{t("添加一个已兼容的服务配置")}</small></button></div><small>{c.storage==="Local file"?`${t("本地文件")}: ${c.profilePath}`:c.storage==="OPFS"?t("本地浏览器私有文件：model-profiles.json (OPFS)"):c.storage==="IndexedDB"?t("本地浏览器存储：IndexedDB（当前浏览器不支持 OPFS）"):t("本地浏览器存储状态未知")} · {c.storage==="Local file"?t("本机文件权限保护配置。"):t("不加密；同源页面代码可读取。")}</small></section><MaterialAnalysisDefaultCard/><ModelCatalogCard/><BackgroundModelCard/><TelegramBindCard/>{open&&draft&&<div className="profile-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)close()}}><section ref={modal} className="profile-modal" role="dialog" aria-modal="true" aria-labelledby="profile-title"><button className="profile-close" onClick={close} aria-label={t("关闭")} disabled={busy}>×</button><p className="eyebrow">{draft.id&&c.profiles.some(p=>p.id===draft.id)?t("编辑模型配置"):t("新建模型配置")}</p><h2 id="profile-title">{draft.id&&c.profiles.some(p=>p.id===draft.id)?t("模型配置"):t("添加模型配置")}</h2><label>{t("显示名称")}<input disabled={busy} value={draft.display_name} maxLength={100} onChange={e=>update({display_name:e.target.value})} placeholder={t("例如：财报研究助手")} /></label><label>{t("模型服务")}<select disabled={busy||saving||c.state==="testing"||c.state==="sending"||c.mutationPending} value={draft.provider} onChange={e=>{const p=CATALOG.find(x=>x.provider===e.target.value)!;discoveryTimer.current.cancel();discoveryTimer.current.setContext(`${p.provider}:${p.baseUrl}`);discovery.current.cancel();setModelCandidates([]);setDiscoveryStatus("");update({provider:p.provider,base_url:p.baseUrl,model:"",api_key:""})}}>{CATALOG.map(x=><option key={x.provider} value={x.provider}>{t(x.label)}</option>)}</select></label><label>{t("Base URL")}<input disabled={busy||saving||c.state==="testing"||c.state==="sending"||c.mutationPending} value={draft.base_url} maxLength={2048} onChange={e=>{discoveryTimer.current.cancel();discoveryTimer.current.setContext(`${draft?.provider}:${e.target.value}`);discovery.current.cancel();setModelCandidates([]);setDiscoveryStatus("");update({base_url:e.target.value})}} autoComplete="url" /></label><label>{t("Model ID")}<input disabled={busy} value={draft.model} maxLength={160} onChange={e=>update({model:e.target.value})} placeholder={t(CATALOG.find(x=>x.provider===draft.provider)?.suggestion??"请输入 Model ID")} /></label><label>{t("服务商可用模型")}<span className="model-discovery-row"><select disabled={busy||saving||c.state==="testing"||c.state==="sending"||c.mutationPending} aria-label={t("服务商可用模型")} value="" onChange={e=>{const item=modelCandidates.find(x=>x.id===e.target.value);if(item)update({model:item.id})}}><option value="" disabled>{t("选择列表中的模型填入 Model ID")}</option>{modelCandidates.map(item=><option key={item.id} value={item.id}>{item.name===item.id?item.id:`${item.name} · ${item.id}`}</option>)}</select><button type="button" className="secondary-action" disabled={busy||saving||c.state==="testing"||c.state==="sending"||c.mutationPending} onClick={()=>void fetchModels()}>{t("刷新")}</button></span>{discoveryStatus&&<small role="status">{discoveryStatus}</small>}</label><label>{t("API key")}<input disabled={busy} type="password" value={draft.api_key} maxLength={2048} onChange={e=>changeKey(e.target.value)} autoComplete="new-password" /></label><p className="profile-note">{t("测试并保存会使用当前填写的 endpoint、Model ID 和 API key 进行验证。测试成功且完成本地保存后，修改才会生效。")}</p>{error&&<p className="agent-chat-status is-error" role="alert">{error}</p>}{c.storageError&&<p role="alert">{c.storageError}</p>}<button type="button" className="secondary-action" onClick={cancelTest} disabled={!busy||saving}>{t("取消测试")}</button><button className="primary-action" disabled={busy||!draft.display_name.trim()||!draft.model.trim()||!draft.api_key||!draft.base_url} onClick={()=>void testSave()}>{busy?t("正在测试…"):t("测试并保存")}</button></section></div>}</main>;
+ // UX batch 3: models are configured only in the server catalog (ModelCatalogCard); the browser model profiles,
+ // their import/export and the separate 后台任务模型 card are gone (tasks use the bot's catalog model or the default).
+ return <main className="workspace agent-admin" aria-labelledby="agent-admin-title"><header className="workspace-heading"><div><p className="eyebrow">FinBot / {t("后台设置")}</p><h1 id="agent-admin-title">{t("模型连接设置")}</h1></div><div className="agent-header-actions"><button type="button" className="secondary-action" onClick={()=>setKnowledgeTab(true)}>研究知识库</button><button type="button" className="secondary-action" onClick={onBack}>{t("返回 Agent 对话")}</button></div></header>
+  {getChatMode()!=="personal"&&<section className="agent-settings-card"><p>{t("登录个人聊天后才能配置模型：对话、bot 和定时任务都用服务器模型目录里的模型。")}</p></section>}
+  <ModelCatalogCard/><MaterialAnalysisDefaultCard/><ChatArchiveSettings/><TelegramBindCard/></main>;
 }
 
 function MaterialAnalysisDefaultCard() {
   const { t } = useLocale();
-  const c = useChat();
   const [settings, setSettings] = useState<MaterialAnalysisSettings | null>(null);
+  const [models, setModels] = useState<CatalogModel[]>([]);
   const [selected, setSelected] = useState("");
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
+  const personal = getChatMode() === "personal";
   useEffect(() => {
     let cancelled = false;
     getMaterialAnalysisSettings()
       .then((value) => { if (!cancelled) setSettings(value); })
       .catch((error: unknown) => { if (!cancelled) setStatus(error instanceof Error ? error.message : t("无法读取材料分析默认模型。")); });
+    if (personal) getModelCatalog()
+      .then((value) => { if (!cancelled) setModels(value.models.filter((item) => item.key_status === "configured")); })
+      .catch(() => { /* the catalog card above reports it */ });
     return () => { cancelled = true; };
   }, []);
   useEffect(() => {
     if (settings?.source !== "settings") { setSelected(""); return; }
-    const match = c.profiles.find((item) => item.provider === settings.provider && item.model === settings.model && (item.base_url || "") === (settings.base_url || ""));
-    if (match) setSelected(match.id);
-  }, [settings, c.profiles]);
-  const profile = c.profiles.find((item) => item.id === selected);
+    const match = models.find((item) => item.provider === settings.provider && item.model === settings.model && (item.base_url || "") === (settings.base_url || ""));
+    setSelected(match?.name ?? "");
+  }, [settings, models]);
+  if (!personal) return null;
   const current = settings?.source === "settings"
     ? `${settings.provider} · ${settings.model}`
     : `${t("系统 DeepSeek")} · ${settings?.model || "…"}`;
@@ -482,9 +457,7 @@ function MaterialAnalysisDefaultCard() {
     setBusy(true);
     setStatus("");
     try {
-      const next = profile
-        ? await saveMaterialAnalysisSettings({ provider: profile.provider, base_url: profile.base_url, model: profile.model, api_key: profile.api_key })
-        : await resetMaterialAnalysisSettings();
+      const next = selected ? await saveMaterialAnalysisSettings({ catalog_model: selected }) : await resetMaterialAnalysisSettings();
       setSettings(next);
       setStatus(t("已保存。下一次材料分析将使用这个默认模型。"));
     } catch (error) {
@@ -495,87 +468,16 @@ function MaterialAnalysisDefaultCard() {
   }
   return <section className="agent-settings-card" aria-labelledby="material-analysis-default-title">
     <h2 id="material-analysis-default-title">{t("材料分析默认模型")}</h2>
-    <p>{t("AI 材料分析默认使用这里的配置；在材料详情页也可以只针对一次分析临时选择其他模型。")}</p>
+    <p>{t("AI 材料分析默认使用这里选的目录模型；在材料详情页也可以只针对一次分析临时选择其他模型。")}</p>
     <p><strong>{t("当前默认")}：</strong>{current}{settings?.has_api_key ? ` · ${t("API key 已保存")}${settings.api_key_last4 ? `（…${settings.api_key_last4}）` : ""}` : ` · ${t("使用服务端环境变量")}`}</p>
-    <label>{t("默认模型")}<select value={selected} onChange={(event) => { setSelected(event.target.value); setStatus(""); }} disabled={busy || c.loadingProfiles}>
+    <label>{t("默认模型")}<select value={selected} onChange={(event) => { setSelected(event.target.value); setStatus(""); }} disabled={busy}>
       <option value="">{t("系统默认（DeepSeek 环境配置）")}</option>
-      {c.profiles.filter((item) => item.api_key.trim()).map((item) => <option key={item.id} value={item.id}>{item.display_name} · {item.model}</option>)}
+      {models.map((item) => <option key={item.name} value={item.name}>{item.display_name || item.name} · {item.model}</option>)}
     </select></label>
     <div className="chat-archive-tools">
-      <button type="button" className="primary-action" disabled={busy || c.loadingProfiles} onClick={() => void apply()}>{busy ? t("正在保存…") : profile ? t("设为默认") : t("恢复系统默认")}</button>
+      <button type="button" className="primary-action" disabled={busy} onClick={() => void apply()}>{busy ? t("正在保存…") : selected ? t("设为默认") : t("恢复系统默认")}</button>
     </div>
-    {c.profiles.filter((item) => item.api_key.trim()).length === 0 && <small>{t("还没有带 API key 的模型配置；请先在上方添加并测试一个模型。")}</small>}
-    {status && <p role="status">{status}</p>}
-  </section>;
-}
-
-function BackgroundModelCard() {
-  const { t } = useLocale();
-  const c = useChat();
-  const [bm, setBm] = useState<BackgroundModel | null>(null);
-  const [selected, setSelected] = useState("");
-  const [status, setStatus] = useState("");
-  const [busy, setBusy] = useState(false);
-  useEffect(() => {
-    let cancelled = false;
-    getBackgroundModel()
-      .then((value) => { if (!cancelled) setBm(value); })
-      .catch((error: unknown) => { if (!cancelled) setStatus(error instanceof Error ? error.message : t("后台模型设置暂时无法读取。")); });
-    return () => { cancelled = true; };
-  }, []);
-  useEffect(() => {
-    if (bm?.configured && bm.has_key && bm.provider) {
-      const match = c.profiles.find((item) => item.provider === bm.provider && item.model === bm.model && (item.base_url || "") === (bm.base_url || ""));
-      if (match) setSelected(match.id);
-      else setSelected("");
-    }
-  }, [bm, c.profiles]);
-  const profile = c.profiles.find((item) => item.id === selected);
-  if (getChatMode() !== "personal") return null;
-  async function apply() {
-    if (!profile) return;
-    setBusy(true);
-    setStatus("");
-    try {
-      const next = await saveBackgroundModel({ provider: profile.provider, model: profile.model, base_url: profile.base_url || null, api_key: profile.api_key });
-      setBm(next);
-      setStatus(t("已保存。定时任务将使用这个模型。"));
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : t("保存失败，请重试。"));
-    } finally {
-      setBusy(false);
-    }
-  }
-  async function revoke() {
-    if (!window.confirm(t("撤销后，定时任务在你重新保存前不会运行。确定撤销？"))) return;
-    setBusy(true);
-    setStatus("");
-    try {
-      const next = await revokeBackgroundKey();
-      setBm(next);
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : t("撤销失败，请重试。"));
-    } finally {
-      setBusy(false);
-    }
-  }
-  let summary = "";
-  if (bm?.configured && bm.has_key) summary = `${bm.provider}${bm.model ? ` · ${bm.model}` : ""}${t("（已保存 key）")}`;
-  else if (bm?.configured && !bm.has_key) summary = `${t("key 已撤销")}${bm.revoked_at ? ` ${new Date(bm.revoked_at).toLocaleString()}` : ""}`;
-  else summary = t("尚未设置");
-  return <section className="agent-settings-card" aria-labelledby="background-model-title">
-    <h2 id="background-model-title">{t("后台任务模型")}</h2>
-    <p>{t("定时任务没有人在线，用这里保存的模型运行。key 加密保存在本机服务器，页面不会再显示它；可以随时撤销，撤销后任务显示「未运行：缺少模型」。")}</p>
-    <p><strong>{t("当前默认")}：</strong>{summary}</p>
-    <label>{t("默认模型")}<select value={selected} onChange={(event) => { setSelected(event.target.value); setStatus(""); }} disabled={busy || c.loadingProfiles}>
-      <option value="">{t("尚未设置")}</option>
-      {c.profiles.filter((item) => item.api_key.trim()).map((item) => <option key={item.id} value={item.id}>{item.display_name} · {item.model}</option>)}
-    </select></label>
-    <div className="chat-archive-tools">
-      <button type="button" className="primary-action" disabled={busy || c.loadingProfiles || !selected || !c.profiles.find(x => x.id === selected)?.api_key.trim()} onClick={() => void apply()}>{busy ? t("正在保存…") : t("用这个模型")}</button>
-      {bm?.has_key && <button type="button" className="secondary-action" disabled={busy} onClick={() => void revoke()}>{t("撤销 key")}</button>}
-    </div>
-    {c.profiles.filter((item) => item.api_key.trim()).length === 0 && <small>{t("还没有带 API key 的模型配置；请先在上方添加并测试一个模型。")}</small>}
+    {models.length === 0 && <small>{t("模型目录里还没有可用的模型；请先在上方添加并测试一个。")}</small>}
     {status && <p role="status">{status}</p>}
   </section>;
 }
@@ -661,7 +563,7 @@ function TelegramBindCard() {
 }
 
 function friendlyError(message: string, t: (text: string) => string): string {
-  const code = message.replaceAll('"', ""); const labels: Record<string, string> = { model_discovery_invalid_key:"API key 长度应为 8 到 2048 个字符。", model_discovery_auth_required:"请填写此服务商的 API key 后重试。", model_discovery_access_denied:"当前 API key 无权读取模型列表。", model_discovery_rate_limited:"模型目录请求被限流，请稍后重试。", model_discovery_timeout:"获取模型列表超时，请检查服务状态。", model_discovery_redirect_rejected:"服务端点拒绝了目录重定向请求。", model_discovery_response_too_large:"服务商模型目录超过 8 MB 安全上限。", model_discovery_unavailable:"暂时无法读取服务商模型列表。", model_discovery_network_error:"获取模型列表时网络连接失败。", model_discovery_incompatible_response:"服务商返回的模型目录格式不兼容。", model_discovery_capacity_reached:"当前目录请求较多，请稍后重试。", provider_invalid_key: "API key 无效，请检查后重新测试。", provider_model_access_denied: "模型不可用或当前 key 无权访问。", provider_rate_or_quota_error: "额度不足或请求被限流，请稍后检查账户。", provider_timeout: "请求超时，请检查服务状态后重试。", provider_redirect_rejected: "服务端点拒绝了重定向请求。", provider_response_too_large: "服务响应超过 1 MB 安全上限。", provider_error: "模型服务暂不可用，请稍后重试。", provider_network_error: "网络连接失败，请稍后重试。", provider_incompatible_response: "服务返回格式不兼容。", provider_empty_or_invalid_answer: "服务未返回有效回答。", provider_model_unavailable_or_invalid_request: "模型不可用或请求参数不受支持。", chat_capacity_reached: "当前对话请求较多，请稍后重试。" };
+  const code = message.replaceAll('"', ""); const labels: Record<string, string> = { model_not_configured:"模型目录是空的：先在设置里添加一个模型。", model_key_missing:"服务器上没有找到这个 key：检查环境变量名，或重新填写 key。", model_not_found:"模型不存在。", model_discovery_invalid_key:"API key 长度应为 8 到 2048 个字符。", model_discovery_auth_required:"请填写此服务商的 API key 后重试。", model_discovery_access_denied:"当前 API key 无权读取模型列表。", model_discovery_rate_limited:"模型目录请求被限流，请稍后重试。", model_discovery_timeout:"获取模型列表超时，请检查服务状态。", model_discovery_redirect_rejected:"服务端点拒绝了目录重定向请求。", model_discovery_response_too_large:"服务商模型目录超过 8 MB 安全上限。", model_discovery_unavailable:"暂时无法读取服务商模型列表。", model_discovery_network_error:"获取模型列表时网络连接失败。", model_discovery_incompatible_response:"服务商返回的模型目录格式不兼容。", model_discovery_capacity_reached:"当前目录请求较多，请稍后重试。", provider_invalid_key: "API key 无效，请检查后重新测试。", provider_model_access_denied: "模型不可用或当前 key 无权访问。", provider_rate_or_quota_error: "额度不足或请求被限流，请稍后检查账户。", provider_timeout: "请求超时，请检查服务状态后重试。", provider_redirect_rejected: "服务端点拒绝了重定向请求。", provider_response_too_large: "服务响应超过 1 MB 安全上限。", provider_error: "模型服务暂不可用，请稍后重试。", provider_network_error: "网络连接失败，请稍后重试。", provider_incompatible_response: "服务返回格式不兼容。", provider_empty_or_invalid_answer: "服务未返回有效回答。", provider_model_unavailable_or_invalid_request: "模型不可用或请求参数不受支持。", chat_capacity_reached: "当前对话请求较多，请稍后重试。" };
   return t(labels[code] ?? message);
 }
 

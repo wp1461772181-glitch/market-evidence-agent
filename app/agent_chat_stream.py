@@ -243,6 +243,9 @@ class StreamRequest(BaseModel):
  # browser, and conversation_id, when sent, must be that bot's.  Without bot_id the browser sends all three.
  provider:str|None=Field(default=None,pattern="^(deepseek|kimi|minimax|qwen|zhipu|doubao|hunyuan|baidu|siliconflow|openrouter|custom)$"); base_url:str|None=Field(default=None,max_length=2048); model:str|None=Field(default=None,min_length=1,max_length=160,pattern=r"^[A-Za-z0-9._:/-]+$"); api_key:SecretStr|None=None; message:str=Field(min_length=1,max_length=4000); conversation_id:str|None=None; pending_request_id:str|None=Field(default=None,max_length=36); display_message:str|None=Field(default=None,max_length=120)
  bot_id:str|None=Field(default=None,max_length=36)
+ # The owner's turn outside a bot (an older conversation): a catalog entry's name, "" for the catalog's default.
+ # Like a bot's turn, no key comes from the browser (UX batch 3: the browser model profiles are gone).
+ catalog_model:str|None=Field(default=None,max_length=40)
  @field_validator("base_url")
  @classmethod
  def valid_endpoint(cls,value):
@@ -255,7 +258,7 @@ class StreamRequest(BaseModel):
   return _validated_base_url(value)
  @model_validator(mode="after")
  def custom_has_endpoint(self):
-  if self.bot_id is None and (self.provider is None or self.model is None or self.api_key is None):raise ValueError("model settings required")
+  if self.bot_id is None and self.catalog_model is None and (self.provider is None or self.model is None or self.api_key is None):raise ValueError("model settings required")
   if self.provider=="custom" and not self.base_url:raise ValueError("custom endpoint required")
   return self
  @field_validator("api_key")
@@ -338,6 +341,11 @@ def _bot_turn(payload,credential):
  try:resolved=catalog.resolve(settings["model"])
  except catalog.CatalogError as exc:raise HTTPException(409,str(exc)) from None
  return settings,resolved
+def _catalog_turn(name,credential):
+ from . import agent_model_catalog as catalog
+ if not _is_owner(credential):raise HTTPException(403,"owner_only")
+ try:return catalog.resolve(name or None)
+ except catalog.CatalogError as exc:raise HTTPException(409,str(exc)) from None
 class _Model:
  """The provider settings of one turn, from the browser or from the catalog.  Its repr has no key."""
  def __init__(self,provider,model,api_key,base_url):self.provider=provider;self.model=model;self.base_url=base_url;self._key=api_key
@@ -351,6 +359,9 @@ async def stream_chat(payload:StreamRequest,request:Request,x_chat_session:str|N
   bot,resolved=await asyncio.to_thread(_bot_turn,payload,x_chat_session)
   chosen=_Model(resolved["provider"],resolved["model"],resolved["api_key"],resolved["base_url"])
   payload.conversation_id=bot["conversation_id"]
+ elif payload.catalog_model is not None:
+  resolved=await asyncio.to_thread(_catalog_turn,payload.catalog_model,x_chat_session)
+  chosen=_Model(resolved["provider"],resolved["model"],resolved["api_key"],resolved["base_url"])
  else:
   if payload.api_key is None or len(payload.api_key.get_secret_value())<8: raise HTTPException(422,"invalid_agent_chat_request")
   chosen=_Model(payload.provider,payload.model,payload.api_key.get_secret_value(),payload.base_url)

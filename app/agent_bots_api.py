@@ -57,6 +57,16 @@ class ModelEntryBody(BaseModel):
     is_default: bool | None = None
 
 
+class ModelProbeBody(BaseModel):
+    """测试 / 服务商可用模型 on the settings page.  ``name`` borrows an existing entry's stored key."""
+    name: str | None = Field(default=None, max_length=40)
+    provider: str = Field(min_length=1, max_length=32)
+    model: str | None = Field(default=None, max_length=160)
+    base_url: str | None = Field(default=None, max_length=2048)
+    api_key: SecretStr | None = None
+    key_env: str | None = Field(default=None, max_length=64)
+
+
 class DefaultModelBody(BaseModel):
     name: str = Field(min_length=1, max_length=40)
 
@@ -162,6 +172,47 @@ async def add_model_endpoint(body: ModelEntryBody, x_chat_session: str | None = 
         return {"model": await asyncio.to_thread(_save, body.name or "", body, True)}
     except catalog.CatalogError as exc:
         raise _catalog_error(exc)
+
+
+def _probe_key(body: ModelProbeBody) -> str | None:
+    try:
+        return catalog.probe_key(provider=body.provider, base_url=body.base_url, name=body.name, key_env=body.key_env,
+                                 api_key=body.api_key.get_secret_value() if body.api_key else None)
+    except catalog.CatalogError as exc:
+        raise _catalog_error(exc)
+
+
+@router.post("/model-catalog/test")
+async def test_model_endpoint(body: ModelProbeBody, x_chat_session: str | None = Header(default=None)):
+    """测试并保存, first half: one short request with this provider, endpoint, model and key (typed, an
+    environment variable, or the entry's stored one).  Nothing is saved; the reply carries no key."""
+    from pydantic import ValidationError
+    from .agent_chat_api import ChatRequest, _limited_call
+    _owner_only(x_chat_session)
+    key = await asyncio.to_thread(_probe_key, body)
+    if key is None:
+        raise HTTPException(422, "key_required")
+    try:
+        request = ChatRequest(provider=body.provider, base_url=body.base_url or None, model=(body.model or "").strip(),
+                              api_key=key, messages=[])
+    except ValidationError:
+        raise HTTPException(422, "invalid_model_request") from None
+    reply = await _limited_call(request, [{"role": "user", "content": "hello. Reply briefly."}], 64)
+    return {"ok": True, "model": reply.model}
+
+
+@router.post("/model-catalog/models")
+async def discover_catalog_models_endpoint(body: ModelProbeBody, x_chat_session: str | None = Header(default=None)):
+    """服务商可用模型 for the catalog form, with the same keys as the test above."""
+    from pydantic import ValidationError
+    from .agent_chat_api import ModelDiscoveryRequest, discover_models
+    _owner_only(x_chat_session)
+    key = await asyncio.to_thread(_probe_key, body)
+    try:
+        request = ModelDiscoveryRequest(provider=body.provider, base_url=body.base_url or None, api_key=key)
+    except ValidationError:
+        raise HTTPException(422, "model_discovery_auth_required") from None
+    return await discover_models(request)
 
 
 @router.patch("/model-catalog/{name}")

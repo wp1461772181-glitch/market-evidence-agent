@@ -458,6 +458,8 @@
 .catalog-key.is-ready { background: var(--c-tint); color: var(--c-accent); }
 .catalog-key.is-missing { background: rgba(200, 120, 40, .12); color: var(--c-warn); }
 .catalog-actions { grid-column: 1 / -1; display: flex; gap: 12px; }
+.catalog-card { cursor: default; }
+.catalog-card .catalog-actions { margin-top: auto; flex-wrap: wrap; }
 
 @media (max-width: 860px) {
   .agent-layout.is-bot { grid-template-columns: minmax(0, 1fr); }
