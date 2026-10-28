@@ -294,3 +294,24 @@ Commits `4d44afd` (backend), `3413deb` (frontend). Deploy after Stage D.
    - Import a .md whose tools include `curl`. The preview refuses it (unknown_tool).
    - A skill that allows `add_to_research_queue` still shows a confirmation card.
 4. The skills page, the 「/」 menu and the bot's 常用技能 are frontend, so they go live only with a push (needs the owner's OK).
+
+## 2026-10-28 fixes — Telegram consent, chat-text replies, 预测 nav, UI
+
+Commits `91b648f` (Telegram), `6ec2351`, `98b01cd`, `788ba47`, `9aa6477` (frontend). No migrations.
+
+1. Tests on the Mac: `.venv/bin/python -m pytest -q tests/test_telegram_consent_write.py tests/test_telegram_bridge*.py
+   tests/test_agent_notify.py`, then `python scripts/live_check_telegram.py` (expect RESULT: PASS; step 6 now
+   expects the replay, not a ConsentError).
+2. `deploy.py --backend-only`, then **restart the Telegram bridge** (the LaunchAgent, or kickstart it). The
+   bridge script changed, and cards shown before the restart cannot be pressed (their short ids lived in the
+   old process).
+3. **Live check (real model):**
+   - In Telegram, ask 「特斯拉股价多少」. The reply is plain text: no [n], no 来源 list, no —— footer.
+     Links the answer itself contains stay.
+   - Ask a bot to save a page or material to 资料库, and press 同意 on the card. The bot replies with what
+     it saved. 资料库 shows it, and the source sync indexes it within a few ticks (RAG_INDEXING_ENABLED).
+     取消 on another card saves nothing.
+   - A notify_telegram or alert message is now 【bot】 plus text only. The earlier note in Stage D's step 4
+     about 「来源：[1] title https://…」 no longer applies.
+4. Frontend (预测 sidebar entry, 工作区 预测工作台 links, the rail toggle, one-step new bot, dark Grok-like
+   skin) goes live only with a push to main (Pages), which needs the owner's OK.
