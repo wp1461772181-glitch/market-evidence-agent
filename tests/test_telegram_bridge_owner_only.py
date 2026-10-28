@@ -33,7 +33,7 @@ def _fake_io(monkeypatch):
     async def send_text(client, bot_token, chat_id, text, inline_keyboard=None):
         sent.append((chat_id, text))
 
-    async def answer_callback(client, bot_token, callback_id):
+    async def answer_callback(client, bot_token, callback_id, text=None):
         pass
 
     async def ask_agent(client, credential, bot_id, text, **press):
@@ -83,8 +83,8 @@ def test_the_owner_runs_a_card_once(monkeypatch):
     _handle_press(_press(OWNER_ID, "private", OWNER_ID), pending, OWNER_ID, None)
     _handle_press(_press(OWNER_ID, "private", OWNER_ID), pending, OWNER_ID, None)
     assert executed == ["t-1"]
-    assert sent[0] == (OWNER_ID, "【助理】\n已保存到资料库。")
-    assert sent[1][1].startswith("这张确认卡已经过期")
+    # The second press is answered on the button (「已经处理过了」), not with a chat message.
+    assert sent == [(OWNER_ID, "【助理】\n已保存到资料库。")]
 
 
 def _watch_turns(monkeypatch):

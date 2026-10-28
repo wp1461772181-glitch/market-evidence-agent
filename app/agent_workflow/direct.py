@@ -2040,6 +2040,10 @@ class Turn:
                 claim_quote_gate_mode, claim_quote_min_chars, legacy_prose_guards_enabled,
             )
             gate_mode=claim_quote_gate_mode()
+            # The server's own words (a confirmed write's report, a consent reply) carry no claims and
+            # cite nothing: enforcing would replace 「已保存《…营收增长 8%…》」 with 「无法与来源核实」 after the
+            # write ran.  The legacy guard already leaves them unchecked; the gate only records them.
+            if generated and gate_mode=='enforce':gate_mode='shadow'
             application=None
             if gate_mode!='off':
                 from .claim_review import apply_claim_gate

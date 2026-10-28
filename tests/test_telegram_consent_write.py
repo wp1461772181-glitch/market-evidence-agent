@@ -113,9 +113,10 @@ def test_agree_on_telegram_saves_the_material_into_the_library(owner, monkeypatc
     assert sent[-1][1].startswith("【助理】") and "特斯拉三季度交付" in sent[-1][1]
     assert telegram.replies and telegram.replies[-1][0] == "b-1"
 
-    # Both buttons of the card are used up; a second press runs nothing.
+    # Both buttons of the card are used up; a second press runs nothing and adds no chat message.
+    before = len(sent)
     asyncio.run(bridge._handle_callback(None, press, pending, OWNER_HASH, owner, OWNER_ID, OWNER_ID, telegram))
-    assert len(asked) == 1 and sent[-1][1].startswith("这张确认卡已经过期")
+    assert len(asked) == 1 and len(sent) == before
     assert pending == {}
 
 

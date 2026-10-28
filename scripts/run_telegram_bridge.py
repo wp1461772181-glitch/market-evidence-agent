@@ -45,6 +45,9 @@ LONG_POLL_TIMEOUT = 60
 OUTBOX_CHECK_INTERVAL = 30
 MESSAGE_MAX_CHARS = 4000
 ANSWER_MAX_CHARS = 3800
+# Short ids of cards already pressed, so a second tap is told the card was handled, not that it expired.
+USED_CARDS_KEPT = 256
+_USED_CARDS: dict[str, None] = {}
 # httpx puts the request URL, and with it /bot<token>/, into its error text.
 BOT_TOKEN_PATTERN = re.compile(r"\d{5,}:[A-Za-z0-9_-]{30,}")
 
@@ -362,17 +365,29 @@ async def _handle_callback(client, callback: dict, pending: dict, owner: str, cr
     if tg is None:
         from app import agent_telegram as tg
     bot_token = _bot_token_for_send(owner, tg)
-    await _answer_callback(client, bot_token, cb_id)
 
     kind, _, short_id = data.partition(":")
     if kind not in {"ok", "no"}:
+        await _answer_callback(client, bot_token, cb_id)
         return
     entry = pending.pop(short_id, None)
     if not entry:
+        if short_id in _USED_CARDS:
+            # A second tap while the first one runs (the agent turn takes seconds, live 2026-10-28) is not a
+            # stale card: say so on the button, not with a chat message under the answer still on its way.
+            await _answer_callback(client, bot_token, cb_id, "这张确认卡已经处理过了，结果见上面的回复。")
+            return
+        await _answer_callback(client, bot_token, cb_id)
         await _send_text(client, bot_token, chat_id, "这张确认卡已经过期了（每张卡只能用一次）。")
         return
-    for other in entry.get("group") or []:
+    for other in entry.get("group") or [short_id]:
         pending.pop(other, None)
+        _USED_CARDS[other] = None
+    while len(_USED_CARDS) > USED_CARDS_KEPT:
+        _USED_CARDS.pop(next(iter(_USED_CARDS)))
+    await _answer_callback(client, bot_token, cb_id, "正在执行……" if kind == "ok" else "正在取消……")
+    # The card's buttons go at once, so the card cannot be pressed again while its turn runs.
+    await _clear_keyboard(client, bot_token, chat_id, message.get("message_id"))
     if not entry.get("bot_id"):
         await _send_text(client, bot_token, chat_id, "这张确认卡已经过期了，请在网页里重新确认。")
         return
@@ -451,13 +466,26 @@ def _plain(text: str) -> str:
     return re.sub(r"\\([\[\]*_`])", r"\1", text)
 
 
-async def _answer_callback(client, bot_token: str, callback_id: str) -> None:
+async def _answer_callback(client, bot_token: str, callback_id: str, text: str | None = None) -> None:
     import httpx
+    body = {"callback_query_id": callback_id}
+    if text:
+        body["text"] = text
     try:
-        await client.post(f"{TELEGRAM_API}/bot{bot_token}/answerCallbackQuery",
-                          json={"callback_query_id": callback_id})
+        await client.post(f"{TELEGRAM_API}/bot{bot_token}/answerCallbackQuery", json=body)
     except httpx.HTTPError:
         pass
+
+
+async def _clear_keyboard(client, bot_token: str, chat_id: int, message_id) -> None:
+    """Take the buttons off a card message.  Best effort: a failed edit must not stop the press itself."""
+    if not bot_token or not isinstance(message_id, int):
+        return
+    try:
+        await client.post(f"{TELEGRAM_API}/bot{bot_token}/editMessageReplyMarkup",
+                          json={"chat_id": chat_id, "message_id": message_id, "reply_markup": {"inline_keyboard": []}})
+    except Exception as exc:
+        print(f"Telegram editMessageReplyMarkup failed: {_redact(exc)}", file=sys.stderr)
 
 
 if __name__ == "__main__":
