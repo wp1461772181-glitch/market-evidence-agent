@@ -130,7 +130,7 @@ def test_conditional_web_save_compares_frozen_dates_before_card(owned,newer):
 
 def test_confirmed_web_save_persists_once_and_is_searchable(owned,monkeypatch):
     p=page('Oracle',1,n=uuid.uuid4().hex)
-    r,_,_,ctx=run('搜索 Oracle 新闻然后导入资料库',owner=True,grants=['ingest_web_source'],scope={'company':'Oracle','symbol':'ORCL'},steps=[call('web_research',query='Oracle news',company='Oracle'),call('ingest_web_source',url=p['url'])],answers={'web_research':{'ok':True,'data':[p]}})
+    r,_,_,ctx=run('搜索 Oracle 新闻然后导入资料库',owner=True,grants=['ingest_web_source'],scope={'company':'Oracle'},steps=[call('web_research',query='Oracle news',company='Oracle'),call('ingest_web_source',url=p['url'],knowledge_only=True)],answers={'web_research':{'ok':True,'data':[p]}})
     assert r['status']=='waiting_for_input';card=r['pending_request']
     with SessionLocal() as db:assert not db.scalar(select(AgentWebSource).where(AgentWebSource.source_url==p['url']))
     from app.agent_workflow import web_sources
@@ -217,7 +217,7 @@ def test_reference_still_rejects_a_url_not_in_the_catalogue(owned):
 def test_parallel_web_proposals_freeze_every_requested_target_in_one_card(owned,monkeypatch):
     rows=[page('Apple',n=1),page('Apple',n=2)]
     state={'result_sets':[{'id':'saved','owner':owner_hash('owner'),'conversation':'c','rows':rows,'scope':{'company':'Apple'},'tool':'web_research'}]}
-    parallel={'tool_calls':[call('ingest_web_source',url=p['url'])['tool_calls'][0] for p in rows]}
+    parallel={'tool_calls':[call('ingest_web_source',url=p['url'],knowledge_only=True)['tool_calls'][0] for p in rows]}
     r,_,_,ctx=run('导入刚才那两条',route='D',owner=True,grants=['ingest_web_source'],state=state,resolver=lambda _:{'relationship':'new'},steps=[parallel])
     saved=consent.lookup(ctx.identity_credential,ctx.conversation_id,r['pending_request']['id'])
     assert [op['arguments']['url'] for op in saved['operations']]==[p['url'] for p in rows]
@@ -233,7 +233,7 @@ def test_parallel_web_proposals_freeze_every_requested_target_in_one_card(owned,
 def test_parallel_proposal_shows_only_valid_targets_with_partial_warning(owned):
     p=page('Apple')
     state={'result_sets':[{'id':'saved','owner':owner_hash('owner'),'conversation':'c','rows':[p],'scope':{'company':'Apple'},'tool':'web_research'}]}
-    parallel={'tool_calls':[call('ingest_web_source',url=url)['tool_calls'][0] for url in (p['url'],'https://other.example.org/not-returned')]}
+    parallel={'tool_calls':[call('ingest_web_source',url=url,knowledge_only=True)['tool_calls'][0] for url in (p['url'],'https://other.example.org/not-returned')]}
     r,_,_,_=run('导入刚才那两条',route='D',owner=True,grants=['ingest_web_source'],state=state,resolver=lambda _:{'relationship':'new'},steps=[parallel,{'content':'资料数量不完整，请重新选择。'}])
     assert r['pending_request']['display']['partial'] and r['pending_request']['display']['available_count']==1
     assert len(r['pending_request']['display']['targets'])==1
@@ -243,7 +243,7 @@ def test_single_web_proposal_is_explicitly_partial_for_a_two_target_request(owne
     rows=[page('Apple',n=1),page('Apple',n=2)]
     state={'result_sets':[{'id':'saved','owner':owner_hash('owner'),'conversation':'c','rows':rows,'scope':{'company':'Apple'},'tool':'web_research'}]}
     r,_,_,_=run('导入刚才那两条',route='D',owner=True,grants=['ingest_web_source'],state=state,resolver=lambda _:{'relationship':'new'},
-        steps=[call('ingest_web_source',url=rows[0]['url']),{'content':'目标数量不完整。'}])
+        steps=[call('ingest_web_source',url=rows[0]['url'],knowledge_only=True),{'content':'目标数量不完整。'}])
     assert r['pending_request']['display']['requested_count']==2
     assert r['pending_request']['display']['available_count']==1 and r['pending_request']['display']['partial']
 
@@ -308,7 +308,7 @@ def test_failed_body_is_excluded_from_final_model_context():
 
 def test_web_consent_saves_the_exact_reviewed_snapshot_without_refetch(owned,monkeypatch):
     original=page('SnapshotCo',1,n=uuid.uuid4().hex)
-    r,_,_,ctx=run('搜索 SnapshotCo 新闻然后保存',owner=True,grants=['ingest_web_source'],scope={'company':'SnapshotCo'},steps=[call('web_research',query='SnapshotCo news',company='SnapshotCo'),call('ingest_web_source',url=original['url'])],answers={'web_research':{'ok':True,'data':[original]}})
+    r,_,_,ctx=run('搜索 SnapshotCo 新闻然后保存',owner=True,grants=['ingest_web_source'],scope={'company':'SnapshotCo'},steps=[call('web_research',query='SnapshotCo news',company='SnapshotCo'),call('ingest_web_source',url=original['url'],knowledge_only=True)],answers={'web_research':{'ok':True,'data':[original]}})
     card=r['pending_request'];assert card
     from app.agent_workflow import web_sources
     async def changed_page(*_,**__):return {**original,'title':'Changed after confirmation','excerpt':'SnapshotCo completely changed content.'}

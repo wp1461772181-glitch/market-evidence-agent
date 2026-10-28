@@ -257,7 +257,7 @@ def test_agree_on_telegram_files_a_web_page_into_the_library(owner, monkeypatch)
     monkeypatch.setenv("FINBOT_WEB_URL", "https://finbot.example/")
     conversation = "tg-web-" + uuid.uuid4().hex[:8]
     url = "https://example.org/tsla/" + uuid.uuid4().hex
-    page = {"url": url, "title": "特斯拉 Robotaxi 进展", "excerpt": "特斯拉在奥斯汀扩大 Robotaxi 服务。" + uuid.uuid4().hex,
+    page = {"url": url, "title": "特斯拉 Robotaxi 进展", "excerpt": "特斯拉（Tesla）在奥斯汀扩大 Robotaxi 服务。" + uuid.uuid4().hex,
             "published_at": "2026-10-21T00:00:00+00:00", "fetched_at": datetime.now(UTC).isoformat(),
             "body_provenance": "public_page_fetch"}
     operation = {"name": "ingest_web_source", "arguments": {"url": url, "symbol": "TSLA", "company": "Tesla"},
