@@ -1593,5 +1593,7 @@
   "至少选一个工具。": "Pick at least one tool.",
   "技能太多了（最多 60 个）。": "Too many skills (at most 60).",
   "预测、修订与回放": "Forecasts, revisions and replay",
-  "关注公司": "Focus companies"
+  "关注公司": "Focus companies",
+  "收起工作区": "Hide workspace",
+  "打开工作区": "Show workspace"
 }

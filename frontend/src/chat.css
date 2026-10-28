@@ -417,6 +417,9 @@
 .bot-title { color: var(--c-muted); font-size: 12px; }
 
 .agent-layout.is-bot { grid-template-columns: minmax(0, 1fr) minmax(280px, 340px); }
+/* The rail stays mounted when folded, so a half-edited 档案 form survives a collapse. */
+.agent-layout.is-bot.is-side-closed { grid-template-columns: minmax(0, 1fr); }
+.agent-layout.is-side-closed > .bot-side { display: none; }
 .bot-side { display: flex; flex-direction: column; gap: 12px; min-width: 0; min-height: 0; overflow-y: auto; padding: 2px 0 8px 14px; border-left: 1px solid var(--c-line); scrollbar-width: thin; }
 .bot-side .section-tabs { margin: 0; }
 .bot-workspace, .bot-profile { display: grid; gap: 12px; color: var(--c-ink); font-size: 13px; }
@@ -473,3 +476,8 @@
 .bot-skills { display: grid; gap: 6px; }
 .bot-skills h3 { margin: 0; font-size: 12px; }
 .bot-tool-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+
+/* Fix 4: the bot page's 工作区 toggle in the header. */
+.side-toggle { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 10px; border: 1px solid var(--c-line); border-radius: 8px; background: transparent; color: inherit; font: inherit; font-size: 12px; cursor: pointer; }
+.side-toggle.is-open { background: var(--c-soft, rgba(127, 127, 127, .12)); }
+.side-toggle:focus-visible { outline: 2px solid var(--c-accent, #7aa2ff); outline-offset: 2px; }

@@ -287,6 +287,8 @@ export function useOpenConversation() { return useChat().openConversation; }
 /** Open a bot's line (its turns then carry only bot_id), or leave every bot's line with null. */
 export function useSelectBot() { return useChat().selectBot; }
 
+const SIDE_OPEN_KEY="market-evidence-agent:bot-side-open:v1";
+function PanelIcon(){return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M15 4v16"/></svg>}
 export function AgentChatPanel({ onSettings,onModeChange,bot,side,onTurnSettled }: { onSettings: () => void; onModeChange:(mode:"guest"|"personal")=>void; bot?: Bot | null; side?: ReactNode; onTurnSettled?: () => void }) {
   const { t } = useLocale(), c = useChat(), transcriptRef = useRef<HTMLElement>(null);
   // A finished turn changes the bot's last line (and gives a new bot its conversation): tell the list.
@@ -299,6 +301,9 @@ export function AgentChatPanel({ onSettings,onModeChange,bot,side,onTurnSettled 
   const [copied,setCopied]=useState<number|null>(null),[copyStatus,setCopyStatus]=useState(""),[,setFeedbackTick]=useState(0),[citationDetails,setCitationDetails]=useState<Record<string,KnowledgeCitationDetail>>({});
   const [openCitationTurn,setOpenCitationTurn]=useState<number|null>(null);
   const [historyOpen,setHistoryOpen]=useState(false);
+  // A bot's right rail (工作区 / 档案) folds away so the thread can use the full width; the choice is kept.
+  const [sideOpen,setSideOpen]=useState(()=>{try{return localStorage.getItem(SIDE_OPEN_KEY)!=="0"}catch{return true}});
+  const toggleSide=()=>setSideOpen(open=>{const next=!open;try{localStorage.setItem(SIDE_OPEN_KEY,next?"1":"0")}catch{/* optional preference */}return next});
   // On a narrow screen the history drawer covers the header toggle, so Esc and a tap outside close it.
   useEffect(()=>{if(!historyOpen)return;const onKey=(e:KeyboardEvent)=>{if(e.key==="Escape")setHistoryOpen(false)};window.addEventListener("keydown",onKey);return()=>window.removeEventListener("keydown",onKey)},[historyOpen]);
   const [loginOpen,setLoginOpen]=useState(false),[loginCode,setLoginCode]=useState(""),[loginError,setLoginError]=useState("");
@@ -364,10 +369,10 @@ export function AgentChatPanel({ onSettings,onModeChange,bot,side,onTurnSettled 
     <header className="workspace-heading agent-page-heading">
       {bot?<div className="agent-title-row"><span className="bot-avatar" aria-hidden="true">{bot.avatar||bot.name.slice(0,1)}</span><h1 id="agent-chat-title">{bot.name}</h1>{bot.title&&<small className="bot-title">{bot.title}</small>}</div>
         :<div className="agent-title-row"><button type="button" className="mobile-history-toggle secondary-action" aria-expanded={historyOpen} onClick={()=>setHistoryOpen(x=>!x)}>{t("历史对话")}</button><h1 id="agent-chat-title">模型对话</h1></div>}
-      <div className="agent-header-actions"><span>{mode==="personal"?t("个人模式"):t("访客模式")}</span><button className="secondary-action" onClick={switchMode} type="button">{t("切换模式")}</button><button className="secondary-action" onClick={onSettings} type="button">{t("设置")}</button></div>
+      <div className="agent-header-actions">{side&&<button type="button" className={`side-toggle${sideOpen?" is-open":""}`} aria-expanded={sideOpen} aria-controls="bot-side" aria-label={sideOpen?t("收起工作区"):t("打开工作区")} title={sideOpen?t("收起工作区"):t("打开工作区")} onClick={toggleSide}><PanelIcon /><span>{t("工作区")}</span></button>}<span>{mode==="personal"?t("个人模式"):t("访客模式")}</span><button className="secondary-action" onClick={switchMode} type="button">{t("切换模式")}</button><button className="secondary-action" onClick={onSettings} type="button">{t("设置")}</button></div>
     </header>
     {loginOpen&&<div className="personal-login-panel"><label>{t("个人聊天登录码")}<input type="password" value={loginCode} onChange={e=>setLoginCode(e.target.value)} autoComplete="current-password" maxLength={256}/></label><button className="primary-action" onClick={()=>void submitPersonalLogin()} disabled={!loginCode}>{t("登录个人聊天")}</button><button className="secondary-action" onClick={()=>setLoginOpen(false)}>{t("取消")}</button>{loginError&&<p role="alert">{loginError}</p>}</div>}
-    <div className={`agent-layout${bot?" is-bot":""}`}>
+    <div className={`agent-layout${bot?" is-bot":""}${side&&!sideOpen?" is-side-closed":""}`}>
       {!bot&&<>{historyOpen&&<div className="agent-history-scrim" aria-hidden="true" onClick={()=>setHistoryOpen(false)}/>}
       <aside className={`agent-history${historyOpen?" is-open":""}`} aria-label={t("历史对话")}>
         <button className="primary-action" type="button" onClick={()=>{c.clear();setHistoryOpen(false)}}>＋ {t("新建对话")}</button>

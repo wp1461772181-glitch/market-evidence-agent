@@ -211,7 +211,7 @@ function BotWorkspaceTab({ bot, symbol, onOpenCompany }: { bot: Bot; symbol: str
 export function BotSide({ bot, symbol, onOpenCompany, onChanged, onDeleted }: { bot: Bot; symbol: string; onOpenCompany: OpenCompany; onChanged: (bot: Bot) => void; onDeleted: () => void }) {
   const { t } = useLocale();
   const [tab, setTab] = useState<"workspace" | "profile">("workspace");
-  return <aside className="bot-side" aria-label={`${bot.name} · ${t("档案")}`}>
+  return <aside id="bot-side" className="bot-side" aria-label={`${bot.name} · ${t("工作区")}`}>
     <div className="section-tabs" role="tablist">
       <button type="button" role="tab" aria-selected={tab === "workspace"} aria-current={tab === "workspace" ? "page" : undefined} onClick={() => setTab("workspace")}>{t("工作区")}</button>
       <button type="button" role="tab" aria-selected={tab === "profile"} aria-current={tab === "profile" ? "page" : undefined} onClick={() => setTab("profile")}>{t("档案")}</button>
