@@ -1,5 +1,5 @@
 // FinBot orb avatars (UX batch 2, P2).  A bot's avatar string is either `orb:<colour>` (the round orb with
-// eyes), `orb:finbot` (the brand orb, with the small rising-bars mark), or any older emoji/text (shown as is).
+// eyes), `orb:finbot` (the brand orb: brows, a sideways smile and a rising-arrow tuft), or any older emoji/text (shown as is).
 export const ORB_COLORS = ["black", "brown", "red", "orange", "yellow", "green", "teal", "blue", "purple", "pink", "gray"];
 export const BRAND = "finbot";
 
