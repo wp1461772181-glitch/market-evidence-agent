@@ -103,6 +103,18 @@ def serialize(bot: AgentBot, last: dict | None = None, counts: dict | None = Non
 
 # --- validation ---------------------------------------------------------------------------------------
 
+# The FinBot orb (UX batch 2): ``orb:<colour>`` names a palette colour (frontend orb.mjs); anything else is an
+# emoji or a character, as before.
+ORB_COLORS = frozenset({"finbot", "black", "brown", "red", "orange", "yellow", "green", "teal", "blue", "purple", "pink", "gray"})
+
+
+def _avatar(value) -> str:
+    avatar = _text(value, 16, "invalid_avatar")
+    if avatar.startswith("orb:") and avatar[4:] not in ORB_COLORS:
+        raise BotError("invalid_avatar")
+    return avatar
+
+
 def _text(value, limit: int, code: str, *, required: bool = False) -> str:
     if value is None:
         value = ""
@@ -176,7 +188,7 @@ def _apply(bot: AgentBot, fields: dict) -> None:
     if "model" in fields:
         bot.model = _model(fields["model"])
     if "avatar" in fields:
-        bot.avatar = _text(fields["avatar"], 16, "invalid_avatar")
+        bot.avatar = _avatar(fields["avatar"])
     if "group" in fields:
         bot.group_name = _text(fields["group"], 40, "invalid_group")
     if "pinned" in fields:
@@ -233,7 +245,7 @@ def ensure_default_bot(owner_hash: str) -> AgentBot:
             if _name_taken(db, owner_hash, name):
                 name = f"{DEFAULT_NAME}（默认）"
             bot = AgentBot(owner_hash=owner_hash, name=name, title=DEFAULT_TITLE, description=DEFAULT_DESCRIPTION,
-                           focus={"companies": [], "theme": None}, tool_scope=None, model=None, avatar="★",
+                           focus={"companies": [], "theme": None}, tool_scope=None, model=None, avatar="orb:finbot",
                            group_name="", pinned=True, hidden=False, is_default=True, template="blank",
                            daily_notify_cap=5)
             db.add(bot)

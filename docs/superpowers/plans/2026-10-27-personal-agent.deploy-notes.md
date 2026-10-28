@@ -367,3 +367,15 @@ User-Agent contact string are unchanged. New self-drawn logo (`frontend/public/l
   from `logo.svg` at 180×180 on the Mac (e.g. `rsvg-convert -w 180 -h 180 frontend/public/logo.svg -o frontend/public/apple-touch-icon.png`) if wanted.
 - Tests on the Mac: `tests/test_agent_redesign_behaviors.py` (the out-of-scope reply now names FinBot).
 - Backend restart picks up the prompt text; the frontend goes live with the Pages push.
+
+## 2026-10-28 UX batch 2 — P2 FinBot orb avatars
+
+No migration (the avatar column is reused: `orb:<colour>` strings, ≤16 chars). New installs' default bot gets
+`orb:finbot`; an existing default bot's `★` is drawn as the FinBot orb.
+1. Tests on the Mac: `.venv/bin/python -m pytest -q tests/test_agent_bots.py` (new: an unknown orb colour is
+   refused, emoji still accepted). Frontend: `npm run test:i18n` (new `scripts/orb.test.mjs`), `npm run build`.
+2. Backend restart (validation); frontend with the Pages push.
+3. **Check by hand:** 新建 bot shows a large FinBot orb whose pupils follow the pointer and 12 swatches
+   (FinBot + 11 colours) that recolour it at once; the sidebar's current bot and the hovered row look around,
+   the others stay still; the chat header shows the same orb; 档案 › 头像 switches 圆球 / 自定义 emoji; old
+   emoji avatars still show; macOS 减少动态效果 → pupils centred, no blinking.

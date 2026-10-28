@@ -10,6 +10,8 @@ import { toggleUsual, usableSkills } from "./skill-items.mjs";
 import { toolLabel } from "./agent-tool-labels.mjs";
 import { TaskManager } from "./BotRoutines";
 import { CATALOG } from "./model-profiles.mjs";
+import { BotOrb } from "./BotOrb";
+import { BRAND, ORB_COLORS, orbAvatar, parseAvatar } from "./orb.mjs";
 
 const message = (error: unknown, fallback: string) => translatePhrase(error instanceof Error ? error.message : fallback);
 
@@ -39,14 +41,44 @@ function useBotOptions() {
   return { catalog, tools, templates, error };
 }
 
-function BotAvatar({ bot }: { bot: Pick<Bot, "avatar" | "name"> }) { return <span className="bot-avatar" aria-hidden="true">{bot.avatar || bot.name.slice(0, 1) || "·"}</span>; }
+function BotAvatar({ bot, track = false }: { bot: Pick<Bot, "avatar" | "name">; track?: boolean }) { return <BotOrb avatar={bot.avatar} name={bot.name} track={track} />; }
+
+const ORB_LABELS: Record<string, string> = { finbot: "FinBot", black: "黑", brown: "棕", red: "红", orange: "橙", yellow: "黄", green: "绿", teal: "青", blue: "蓝", purple: "紫", pink: "粉", gray: "灰" };
+
+/** The orb colour swatches: FinBot's own first, then the eleven colours. */
+function OrbSwatches({ value, onPick, disabled }: { value: string; onPick: (avatar: string) => void; disabled?: boolean }) {
+  const { t } = useLocale();
+  const current = parseAvatar(value);
+  return <fieldset className="orb-swatches" disabled={disabled}><legend>{t("圆球颜色")}</legend>
+    {[BRAND, ...ORB_COLORS].map(color => <button key={color} type="button" className="orb-swatch" style={{ ["--sw" as string]: `var(--orb-${color})` }}
+      aria-pressed={current.kind === "orb" && current.color === color} aria-label={t(ORB_LABELS[color])} title={t(ORB_LABELS[color])} onClick={() => onPick(orbAvatar(color))} />)}
+  </fieldset>;
+}
+
+/** 档案's avatar: an orb colour, or a custom emoji / character as before. */
+function AvatarPicker({ value, name, onChange, disabled }: { value: string; name: string; onChange: (avatar: string) => void; disabled: boolean }) {
+  const { t } = useLocale();
+  const isOrb = parseAvatar(value, name).kind === "orb";
+  return <div className="avatar-picker"><span>{t("头像")}</span>
+    <div className="avatar-picker-modes">
+      <label className="bot-check"><input type="radio" checked={isOrb} disabled={disabled} onChange={() => onChange(orbAvatar(BRAND))} />{t("圆球")}</label>
+      <label className="bot-check"><input type="radio" checked={!isOrb} disabled={disabled} onChange={() => onChange("")} />{t("自定义 emoji")}</label>
+      <BotOrb avatar={value} name={name || "·"} size={32} track />
+    </div>
+    {isOrb ? <OrbSwatches value={value} onPick={onChange} disabled={disabled} />
+      : <input value={value} maxLength={16} disabled={disabled} onChange={e => onChange(e.target.value)} placeholder="📈" aria-label={t("头像")} />}
+  </div>;
+}
 
 export function BotRailList({ bots, error, activeBotId, confirmActive, onConfirm, onOpen, onNew }: { bots: Bot[]; error: string; activeBotId: string | null; confirmActive: boolean; onConfirm: () => void; onOpen: (bot: Bot) => void; onNew: () => void }) {
   const { t } = useLocale();
   const { top, groups } = botSections(bots);
   const pending = bots.reduce((sum, b) => sum + (b.pending || 0), 0);
-  const row = (bot: Bot) => <li key={bot.id}><button type="button" className={`bot-row${bot.id === activeBotId ? " is-active" : ""}`} aria-current={bot.id === activeBotId ? "page" : undefined} onClick={() => onOpen(bot)}>
-    <BotAvatar bot={bot} /><span className="bot-row-text"><strong>{bot.name}{bot.is_default && bot.avatar !== "★" && <span className="bot-star" aria-label={t("默认")}> ★</span>}</strong><small>{bot.last_message || bot.title || t("还没有消息")}</small></span>
+  // Only the current bot and the row under the pointer look around; the rest of the list stays still.
+  const [hovered, setHovered] = useState<string | null>(null);
+  const row = (bot: Bot) => <li key={bot.id}><button type="button" className={`bot-row${bot.id === activeBotId ? " is-active" : ""}`} aria-current={bot.id === activeBotId ? "page" : undefined} onClick={() => onOpen(bot)}
+    onPointerEnter={() => setHovered(bot.id)} onPointerLeave={() => setHovered(h => h === bot.id ? null : h)}>
+    <BotAvatar bot={bot} track={bot.id === activeBotId || bot.id === hovered} /><span className="bot-row-text"><strong>{bot.name}{bot.is_default && bot.avatar !== "★" && <span className="bot-star" aria-label={t("默认")}> ★</span>}</strong><small>{bot.last_message || bot.title || t("还没有消息")}</small></span>
     {bot.pending > 0 && <span className="bot-pending-dot" role="img" aria-label={t("有待你确认的建议")} title={t("有待你确认的建议")} />}
     {bot.unread > 0 && <span className="bot-unread" aria-label={`${bot.unread} ${t("条未读")}`}>{bot.unread > 99 ? "99+" : bot.unread}</span>}
   </button></li>;
@@ -89,10 +121,10 @@ function BotForm({ draft, setDraft, tools, catalog, isDefault, disabled }: { dra
       <small>{t("提问、引用、计算等基础工具总是开着。范围外的工具这个 bot 调不到。")}</small>
     </fieldset>
     <div className="bot-form-row">
-      <label>{t("头像")}<input value={draft.avatar ?? ""} maxLength={16} disabled={disabled} onChange={e => update({ avatar: e.target.value })} placeholder="📈" /></label>
       <label>{t("分组")}<input value={draft.group ?? ""} maxLength={40} disabled={disabled} onChange={e => update({ group: e.target.value })} placeholder={t("例如：公司")} /></label>
       <label>{t("每日通知上限")}<input type="number" min={0} max={50} value={draft.daily_notify_cap ?? 5} disabled={disabled} onChange={e => update({ daily_notify_cap: Math.max(0, Math.min(50, Number(e.target.value) || 0)) })} /></label>
     </div>
+    <AvatarPicker value={draft.avatar ?? ""} name={draft.name} disabled={disabled} onChange={avatar => update({ avatar })} />
     <div className="bot-form-row">
       <label className="bot-check"><input type="checkbox" checked={Boolean(draft.pinned)} disabled={disabled} onChange={e => update({ pinned: e.target.checked })} />{t("置顶")}</label>
       {!isDefault && <label className="bot-check"><input type="checkbox" checked={Boolean(draft.hidden)} disabled={disabled} onChange={e => update({ hidden: e.target.checked })} />{t("在侧栏隐藏")}</label>}
@@ -116,6 +148,8 @@ export function NewBotDialog({ onClose, onCreated }: { onClose: () => void; onCr
   const { t } = useLocale();
   const [templates, setTemplates] = useState<BotTemplate[]>([]), [tools, setTools] = useState<BotTool[]>([]);
   const [name, setName] = useState(""), [picked, setPicked] = useState<BotTemplate | null>(null);
+  // A new bot is a FinBot orb unless another colour is picked.
+  const [avatar, setAvatar] = useState(orbAvatar(BRAND));
   const [busy, setBusy] = useState(false), [status, setStatus] = useState("");
   const dialog = useRef<HTMLElement>(null), nameBox = useRef<HTMLInputElement>(null);
   useEffect(() => { nameBox.current?.focus(); const key = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); }; document.addEventListener("keydown", key); return () => document.removeEventListener("keydown", key); }, [onClose]);
@@ -125,7 +159,7 @@ export function NewBotDialog({ onClose, onCreated }: { onClose: () => void; onCr
     getBotTemplates(controller.signal).then(v => { setTemplates(v.templates.filter(x => x.id !== "blank")); setTools(v.tools); }).catch(() => { /* create works without them */ });
     return () => controller.abort();
   }, []);
-  const fields = newBotFields(name, picked, tools);
+  const fields = { ...newBotFields(name, picked, tools), avatar };
   async function save(event?: React.FormEvent) {
     event?.preventDefault();
     if (!fields.name || busy) return;
@@ -137,6 +171,8 @@ export function NewBotDialog({ onClose, onCreated }: { onClose: () => void; onCr
       <button className="profile-close" onClick={onClose} aria-label={t("关闭")} disabled={busy}>×</button>
       <h2 id="new-bot-title">{t("新建 bot")}</h2>
       <form className="bot-create" onSubmit={e => void save(e)}>
+        <div className="bot-orb-hero"><BotOrb avatar={avatar} name={name || "FinBot"} size={96} track /><small>{avatar === orbAvatar(BRAND) ? "FinBot" : name || t("新 bot")}</small></div>
+        <OrbSwatches value={avatar} onPick={setAvatar} disabled={busy} />
         <label>{t("名字")}<input ref={nameBox} value={name} maxLength={40} disabled={busy} onChange={e => setName(e.target.value)} placeholder={picked?.name || t("例如：读财报")} /></label>
         {templates.length > 0 && <fieldset className="bot-template-chips" disabled={busy}><legend>{t("模板（可选）")}</legend>
           {templates.map(tpl => <button key={tpl.id} type="button" className="bot-chip" aria-pressed={picked?.id === tpl.id} title={tpl.description ? t(tpl.description) : undefined} onClick={() => setPicked(picked?.id === tpl.id ? null : tpl)}>{t(tpl.label)}</button>)}

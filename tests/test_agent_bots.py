@@ -403,3 +403,14 @@ def test_bot_turn_with_a_missing_key_fails_with_a_code(owner, client, monkeypatc
     bot = bots.create_bot(OWNER_HASH, {"name": "缺 key", "model": "nokey"})
     response = client.post("/agent-chat/stream", headers=H, json={"message": "hi", "bot_id": bot["id"]})
     assert response.status_code == 409 and response.json()["detail"] == "model_key_missing"
+
+
+def test_an_orb_avatar_must_name_a_palette_colour_and_emoji_still_work(owner):
+    """UX batch 2 (P2): ``orb:<colour>`` is the FinBot orb; an unknown colour is refused, an emoji is kept."""
+    identity = OWNER_HASH
+    made = bots.create_bot(identity, {"name": "圆球-" + uuid.uuid4().hex[:6], "avatar": "orb:pink"})
+    assert made["avatar"] == "orb:pink"
+    with pytest.raises(bots.BotError):
+        bots.update_bot(identity, made["id"], {"avatar": "orb:neon"})
+    assert bots.update_bot(identity, made["id"], {"avatar": "📈"})["avatar"] == "📈"
+    assert bots.update_bot(identity, made["id"], {"avatar": "orb:finbot"})["avatar"] == "orb:finbot"
