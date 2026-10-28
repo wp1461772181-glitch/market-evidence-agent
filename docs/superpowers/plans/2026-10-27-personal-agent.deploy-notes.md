@@ -395,3 +395,29 @@ Frontend only; no backend change, no migration. Layout and each bot's current st
 4. Known limits: the 行情 card draws a 3-month close line, not the full candlestick chart (that component needs
    the forecast desk's inspection state); 官方申报 links to 资料库 for scanning instead of minting a scan card
    there; 待你确认 offers 去确认 (opens the card in its conversation) and 忽略.
+
+## 2026-10-28 UX batch 2 — P4 每个 bot 接自己的 Telegram (optional, no limit)
+
+Backend + bridge + frontend. Migrations on API start: new table `agent_telegram_bots` (create_all);
+`agent_telegram_bind.bind_code_expires_at`, `agent_telegram_messages.telegram_bot_row_id`
+(`ADD COLUMN IF NOT EXISTS`, in `agent_telegram.ensure_columns`). **No data migration**: the existing shared
+Telegram bot stays in `agent_telegram_bind` and keeps working unchanged for 助理 and every bot without its own.
+1. **Tests on the Mac:** `.venv/bin/python -m pytest -q tests/test_telegram_multi_bot.py tests/test_agent_notify.py
+   tests/test_telegram_*.py tests/test_agent_bots.py`, then `python scripts/live_check_telegram.py` (shared bot;
+   it is not yet multi-token aware). Frontend `npm run test:i18n && npm run build`.
+2. `deploy.py --backend-only`, restart the API, then **restart the Telegram bridge** (one LaunchAgent as before).
+   The bridge now takes `data/telegram-bridge.lock`; a second copy exits with a message (409 guard).
+   The bridge still needs the shared token to start (unchanged).
+3. **Check by hand:**
+   - Nothing to do for the existing setup: the shared bot answers as before, 助理 › 档案 › Telegram says it
+     uses the shared bot.
+   - Another bot › 档案 › Telegram: paste a new BotFather token → shows @username and …last4 (never the token);
+     生成绑定码 → 在 Telegram 打开并发送 → within ~60 s 「已绑定 · 运行中」 (the bridge picks new tokens up each
+     poll round, ≤ 60 s).
+   - Message that Telegram bot directly: the answer comes from that bot, no 「@名字」, no 「【名字】」.
+   - Its notify_telegram / alerts arrive there; a bot without its own still arrives via the shared bot with 「【名字】」.
+   - Same token on a second bot → 「已经用在别的 bot 上」; a bind code older than 30 min → 「绑定码已过期」
+     (now also on the shared bot); a stranger gets nothing; restart the bridge → no replay (offset is stored).
+   - Delete the bot → its Telegram row is gone (revoke the token in BotFather).
+4. Not done this round: the settings-page overview of every bot's Telegram, persistent Telegram cards across
+   restarts (`agent_telegram_cards`), `live_check_telegram.py` multi-token mode.

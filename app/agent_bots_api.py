@@ -190,3 +190,54 @@ async def default_model_endpoint(body: DefaultModelBody, x_chat_session: str | N
         return {"model": await asyncio.to_thread(catalog.set_default, body.name)}
     except catalog.CatalogError as exc:
         raise _catalog_error(exc)
+
+
+# --- a bot's own Telegram bot (UX batch 2, P4); owner only.  The default bot's is the shared one
+# (/agent-chat/telegram/*, the settings page).  No response carries the token, only @username and its last four.
+
+class BotTelegramTokenBody(BaseModel):
+    bot_token: SecretStr = Field(min_length=8, max_length=256)
+
+
+def _telegram_error(exc) -> HTTPException:
+    code = str(exc)
+    return HTTPException(404 if code == "unknown_bot" else 409 if code == "token_in_use" else 422, code)
+
+
+async def _bot_telegram(call, x_chat_session, *args):
+    from .agent_telegram import TelegramError
+    credential = _owner_only(x_chat_session)
+    try:
+        return await asyncio.to_thread(call, owner_hash(credential), *args)
+    except TelegramError as exc:
+        raise _telegram_error(exc)
+
+
+@router.get("/bots/{bot_id}/telegram")
+async def bot_telegram_status(bot_id: str, x_chat_session: str | None = Header(default=None)):
+    from . import agent_telegram_bots as own
+    return await _bot_telegram(own.status, x_chat_session, bot_id)
+
+
+@router.post("/bots/{bot_id}/telegram/token")
+async def bot_telegram_token(bot_id: str, body: BotTelegramTokenBody, x_chat_session: str | None = Header(default=None)):
+    from . import agent_telegram_bots as own
+    return await _bot_telegram(own.save_token, x_chat_session, bot_id, body.bot_token.get_secret_value())
+
+
+@router.post("/bots/{bot_id}/telegram/bind")
+async def bot_telegram_bind(bot_id: str, x_chat_session: str | None = Header(default=None)):
+    from . import agent_telegram_bots as own
+    return await _bot_telegram(own.start_bind, x_chat_session, bot_id)
+
+
+@router.post("/bots/{bot_id}/telegram/unbind")
+async def bot_telegram_unbind(bot_id: str, x_chat_session: str | None = Header(default=None)):
+    from . import agent_telegram_bots as own
+    return await _bot_telegram(own.unbind, x_chat_session, bot_id)
+
+
+@router.delete("/bots/{bot_id}/telegram")
+async def bot_telegram_delete(bot_id: str, x_chat_session: str | None = Header(default=None)):
+    from . import agent_telegram_bots as own
+    return await _bot_telegram(own.delete_token, x_chat_session, bot_id)

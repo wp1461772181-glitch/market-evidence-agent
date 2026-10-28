@@ -366,6 +366,9 @@ def delete_bot(owner_hash: str, bot_id) -> bool:
         # (their run conversations are archived with the bot's line).
         db.query(AgentTask).filter(AgentTask.owner_hash == owner_hash, AgentTask.bot_id == bot.id).delete(
             synchronize_session=False)
+        # Its own Telegram bot, if it had one, goes too (the owner should also revoke it in BotFather).
+        from .agent_telegram_bots import delete_for_bot as delete_telegram
+        delete_telegram(db, owner_hash, bot.id)
         db.query(AgentInboxItem).filter(AgentInboxItem.owner_hash == owner_hash, AgentInboxItem.bot_id == bot.id,
                                         AgentInboxItem.section == "brief", AgentInboxItem.status == "unread").update(
             {"status": "read"}, synchronize_session=False)

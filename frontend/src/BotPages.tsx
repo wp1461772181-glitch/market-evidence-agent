@@ -2,6 +2,7 @@
 // server model catalog card in settings.  A bot never holds a key: it names a catalog model, and the catalog says
 // only configured / missing.
 import { useCallback, useEffect, useRef, useState } from "react";
+import { deleteBotTelegram, getBotTelegram, saveBotTelegramToken, startBotTelegramBind, unbindBotTelegram, type BotTelegramStatus } from "./api";
 import { addCatalogModel, createBot, deleteBot, deleteCatalogModel, getBotTemplates, getChatMode, getModelCatalog, listBots, listSkills, setDefaultCatalogModel, updateBot, updateCatalogModel,
   type Skill, type Bot, type BotFields, type BotTemplate, type BotTool, type CatalogEntryInput, type CatalogModel, type ModelCatalog } from "./api";
 import { translatePhrase, useLocale } from "./i18n";
@@ -232,9 +233,44 @@ function BotProfileTab({ bot, onChanged, onDeleted }: { bot: Bot; onChanged: (bo
       {!bot.is_default && <button type="button" className="secondary-action" disabled={busy} onClick={() => void remove()}>{t("删除这个 bot")}</button>}</div>
     {bot.is_default && <small>{t("默认 bot 可以改名和说明，不能删除。没指明给谁的消息进它。")}</small>}
     <section className="bot-placeholder"><h3>{t("它的记忆")}</h3><p>{t("这个 bot 自己的记忆在下一阶段加入；现在全局记忆在「记忆」页。")}</p></section>
+    <BotTelegram bot={bot} />
     <TaskManager botId={bot.id} />
     <BotSkills bot={bot} onChanged={onChanged} />
   </div>;
+}
+
+/** A bot's own Telegram bot (UX batch 2, P4): optional.  Without one, its messages go through the shared bot
+ * (设置 › Telegram) with 「【名字】」 in front.  The token is never shown again: only @username and its last four. */
+function BotTelegram({ bot }: { bot: Bot }) {
+  const { t } = useLocale();
+  const [state, setState] = useState<BotTelegramStatus | null>(null), [token, setToken] = useState(""), [busy, setBusy] = useState(false);
+  const [note, setNote] = useState(""), [bind, setBind] = useState<{ code: string; link?: string | null } | null>(null);
+  const load = useCallback(async () => { try { setState(await getBotTelegram(bot.id)); } catch (err) { setNote(message(err, t("Telegram 设置暂时无法读取。"))); } }, [bot.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { if (!bind || state?.bound) return; const timer = window.setInterval(() => void load(), 5000); return () => window.clearInterval(timer); }, [bind, state?.bound, load]);
+  const act = async (run: () => Promise<unknown>) => { setBusy(true); setNote(""); try { await run(); await load(); } catch (err) { setNote(message(err, t("操作失败，请重试。"))); } finally { setBusy(false); } };
+  if (bot.is_default) return <section className="bot-telegram"><h3>Telegram</h3><p className="fine-print">{t("默认 bot 用设置页里的共用 Telegram bot；没接自己 Telegram 的 bot 也经它收发，消息前带「【名字】」。")}</p></section>;
+  const label = state?.status === "running" ? t("已绑定 · 运行中") : state?.status === "invalid" ? t("token 失效") : state?.status === "conflict" ? t("冲突：token 正在别处使用") : state?.has_token ? t("未绑定") : t("未接入");
+  return <section className="bot-telegram"><h3>Telegram · {label}</h3>
+    {!state?.has_token ? <>
+      <p className="fine-print">{t("可选：在 BotFather 新建一个 Telegram bot，把 token 贴进来，这个 bot 就有自己的 Telegram。不接也行，消息走共用 bot。")}</p>
+      <div className="bot-telegram-row"><input type="password" value={token} autoComplete="off" placeholder="123456:ABC…" aria-label="Bot token" onChange={e => setToken(e.target.value)} disabled={busy} />
+        <button type="button" className="primary-action" disabled={busy || token.trim().length < 8} onClick={() => void act(async () => { await saveBotTelegramToken(bot.id, token.trim()); setToken(""); })}>{t("保存 token")}</button></div>
+    </> : <>
+      <p>{state.bot_username ? `@${state.bot_username}` : t("（用户名稍后显示）")} · token …{state.token_tail ?? "????"}</p>
+      {state.last_error && <p className="bot-warn">{state.last_error}</p>}
+      {!state.bound && <div className="bot-telegram-row">
+        <button type="button" className="secondary-action" disabled={busy} onClick={() => void act(async () => setBind(await startBotTelegramBind(bot.id)))}>{t("生成绑定码")}</button>
+        {bind && (bind.link ? <a className="primary-action" href={bind.link} target="_blank" rel="noreferrer">{t("在 Telegram 打开并发送")}</a> : <code>/start {bind.code}</code>)}
+      </div>}
+      {bind && !state.bound && <small className="fine-print">{t("绑定码 30 分钟内有效。发送后最多 30 秒，这里会变成「已绑定 · 运行中」。")}</small>}
+      <div className="bot-telegram-row">
+        {state.bound && <button type="button" className="secondary-action" disabled={busy} onClick={() => void act(() => unbindBotTelegram(bot.id))}>{t("解绑")}</button>}
+        <button type="button" className="secondary-action" disabled={busy} onClick={() => { if (window.confirm(t("删除这个 bot 的 Telegram token？之后它的消息走共用 bot。也请到 BotFather 撤销这个 token。"))) void act(() => deleteBotTelegram(bot.id)); }}>{t("换 token / 删除")}</button>
+      </div>
+    </>}
+    {note && <p role="alert">{note}</p>}
+  </section>;
 }
 
 type OpenCompany = (ticker: string, section?: "overview" | "forecast") => void;

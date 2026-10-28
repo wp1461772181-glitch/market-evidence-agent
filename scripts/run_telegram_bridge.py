@@ -99,9 +99,16 @@ async def main(dry_run: bool = False) -> int:
         print(f"Local API: {LOCAL_API}")
         return 0
 
+    lock = _single_instance_lock()
+    if lock is None:
+        print("Telegram bridge: another bridge is already running (data/telegram-bridge.lock).", file=sys.stderr)
+        return 1
+
     pending_cards: dict[str, dict] = {}
     last_outbox_check = 0.0
     offset = 0
+    # UX batch 2 (P4): bots with their own Telegram bot, one polling task each, reconciled every round.
+    own_tasks: dict[str, tuple[str, asyncio.Task]] = {}
 
     print(f"Telegram bridge started.  Chat: {bound_chat or 'none yet, waiting for /bind'}, API: {LOCAL_API}")
 
@@ -120,6 +127,8 @@ async def main(dry_run: bool = False) -> int:
                 bind = await asyncio.to_thread(tg.load_bind, owner) or {}
                 bound_chat, bound_user = bind.get("chat_id"), bind.get("user_id")
                 del bind
+
+                await _reconcile_own_channels(client, credential, owner, own_tasks, tg)
 
                 now = time.time()
                 if bound_chat is not None and now - last_outbox_check >= OUTBOX_CHECK_INTERVAL:
@@ -215,21 +224,25 @@ async def _handle_message(client, credential: str, owner: str, message: dict,
 
 
 async def _bot_turn(client, credential: str, owner: str, bound_chat: int, pending_cards: dict, tg,
-                    bot_id: str, bot_name: str, text: str, **press):
+                    bot_id: str, bot_name: str, text: str, channel: dict | None = None, **press):
     """One turn of a bot, sent back as its chat message(s); ``press`` carries a card press (its conversation,
-    card id and the button's label)."""
-    bot_token = _bot_token_for_send(owner, tg)
+    card id and the button's label).  ``channel`` is the bot's own Telegram bot (UX batch 2, P4): the answer goes
+    out through it, without the name in front, since that chat is the bot's alone."""
+    bot_token = channel["token"] if channel else _bot_token_for_send(owner, tg)
     answer, cards, cid = await _ask_agent(client, credential, bot_id, text, **press)
     keyboard = _make_keyboard(cards, pending_cards, cid, credential, bot_id, bot_name) if cid else None
     if cards and not keyboard:
         answer = answer.strip() + "\n\n（这一步需要在网页里选择后确认。）"
-    answer = f"【{bot_name}】\n" + (answer.strip() or ("完成。" if keyboard else "（这条回复没有内容。）"))
+    answer = ("" if channel else f"【{bot_name}】\n") + (answer.strip() or ("完成。" if keyboard else "（这条回复没有内容。）"))
     chunks = [answer[i:i+ANSWER_MAX_CHARS] for i in range(0, len(answer), ANSWER_MAX_CHARS)]
     for i, chunk in enumerate(chunks):
         kb = keyboard if i == len(chunks) - 1 else None
         sent = await _send_text(client, bot_token, bound_chat, chunk, inline_keyboard=kb)
         # Each part is remembered with its bot, so replying to any of them continues with that bot.
-        await asyncio.to_thread(tg.record_reply, owner, bot_id, chunk, sent)
+        if channel:
+            await asyncio.to_thread(tg.record_reply, owner, bot_id, chunk, sent, channel["row_id"])
+        else:
+            await asyncio.to_thread(tg.record_reply, owner, bot_id, chunk, sent)
 
 
 async def _handle_bind_command(client, chat: dict, sender: dict | None, owner: str, code: str, tg):
@@ -350,7 +363,7 @@ def _make_short_id() -> str:
 
 
 async def _handle_callback(client, callback: dict, pending: dict, owner: str, credential: str,
-                           bound_chat: int, bound_user: int | None, tg=None):
+                           bound_chat: int, bound_user: int | None, tg=None, channel: dict | None = None):
     cb_id = callback.get("id")
     message = callback.get("message") or {}
     chat = message.get("chat") or {}
@@ -364,7 +377,7 @@ async def _handle_callback(client, callback: dict, pending: dict, owner: str, cr
 
     if tg is None:
         from app import agent_telegram as tg
-    bot_token = _bot_token_for_send(owner, tg)
+    bot_token = channel["token"] if channel else _bot_token_for_send(owner, tg)
 
     kind, _, short_id = data.partition(":")
     if kind not in {"ok", "no"}:
@@ -396,18 +409,21 @@ async def _handle_callback(client, callback: dict, pending: dict, owner: str, cr
     # bot reports what was saved.  Calling consent.execute from here could not: the bridge holds neither
     # the operations (the payload digest) nor the turn context the handler needs.
     await _bot_turn(client, entry.get("credential") or credential, owner, bound_chat, pending, tg,
-                    entry["bot_id"], entry.get("bot_name") or "", entry["value"],
+                    entry["bot_id"], entry.get("bot_name") or "", entry["value"], channel=channel,
                     conversation_id=entry.get("conversation_id"), pending_request_id=entry["card_id"],
                     display_message=entry.get("label"))
 
 
-async def _deliver_outbox(client, owner: str, bound_chat: int, tg) -> None:
+async def _deliver_outbox(client, owner: str, bound_chat: int, tg, channel: dict | None = None) -> None:
     """Send what the bots queued (notify_telegram, alerts) to the bound chat, the only recipient there is.
-    Each sent message keeps its Telegram id, so a reply to it goes back to its bot."""
-    bot_token = _bot_token_for_send(owner, tg)
+    Each sent message keeps its Telegram id, so a reply to it goes back to its bot.  With ``channel`` only the
+    messages queued for that bot's own Telegram bot, through it."""
+    bot_token = channel["token"] if channel else _bot_token_for_send(owner, tg)
     if not bot_token:
         return
-    for item in await asyncio.to_thread(tg.pending_messages, owner):
+    queued = (await asyncio.to_thread(tg.pending_messages, owner, 20, channel["row_id"]) if channel
+              else await asyncio.to_thread(tg.pending_messages, owner))
+    for item in queued:
         sent = await _send_text(client, bot_token, bound_chat, item["text"], markdown=False)
         if sent is None:
             await asyncio.to_thread(tg.mark_failed, item["id"])
@@ -486,6 +502,149 @@ async def _clear_keyboard(client, bot_token: str, chat_id: int, message_id) -> N
                           json={"chat_id": chat_id, "message_id": message_id, "reply_markup": {"inline_keyboard": []}})
     except Exception as exc:
         print(f"Telegram editMessageReplyMarkup failed: {_redact(exc)}", file=sys.stderr)
+
+
+
+# --- bots with their own Telegram bot (UX batch 2, P4) ---------------------------------------------------
+# The shared bot above keeps working exactly as before.  Each bot that saved its own token gets one polling
+# task here: whatever that Telegram bot receives from the owner goes to that bot's line (no 「@名字」), its
+# answers and its queued messages go out through it, and its offset is kept in the database.  A 401 stops
+# that task only (status invalid), a 409 (the token polled elsewhere) marks it conflict.  No limit on how many.
+
+def _single_instance_lock():
+    """An exclusive lock on data/telegram-bridge.lock for the life of the process; None when another bridge
+    holds it (two pollers of one token make Telegram answer 409)."""
+    import fcntl
+    path = PROJECT_ROOT / "data" / "telegram-bridge.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(path, "a")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        return None
+    return handle
+
+
+async def _reconcile_own_channels(client, credential: str, owner: str, tasks: dict, tg) -> None:
+    """Start a task for each new own token, stop the ones removed or replaced, leave the rest running."""
+    from app import agent_telegram_bots as own
+    wanted = {c["row_id"]: c for c in await asyncio.to_thread(own.channels, owner)}
+    for row_id, (fingerprint, task) in list(tasks.items()):
+        current = wanted.get(row_id)
+        if current is None or current["fingerprint"] != fingerprint or task.done():
+            task.cancel()
+            tasks.pop(row_id, None)
+    for row_id, channel in wanted.items():
+        if row_id not in tasks:
+            tasks[row_id] = (channel["fingerprint"], asyncio.create_task(_own_channel_loop(client, credential, owner, channel, tg)))
+
+
+async def _poll_own(client, token: str, offset: int) -> tuple[list | None, int | None]:
+    """getUpdates for an own token: (updates, None), or (None, HTTP status) when Telegram refused."""
+    import httpx
+    try:
+        response = await client.get(f"{TELEGRAM_API}/bot{token}/getUpdates",
+                                    params={"offset": offset, "timeout": LONG_POLL_TIMEOUT,
+                                            "allowed_updates": ["message", "callback_query"]})
+    except httpx.TimeoutException:
+        return [], None
+    except httpx.HTTPError as exc:
+        print(f"Telegram API error: {_redact(exc)}", file=sys.stderr)
+        return None, 0
+    if response.status_code in (401, 404, 409):
+        return None, response.status_code
+    try:
+        data = response.json()
+    except ValueError:
+        return None, 0
+    return (data.get("result") or [], None) if data.get("ok") else (None, response.status_code)
+
+
+async def _own_channel_loop(client, credential: str, owner: str, channel: dict, tg) -> None:
+    from app import agent_telegram_bots as own
+    pending: dict[str, dict] = {}
+    last_outbox = 0.0
+    name = channel.get("bot_username") or channel["bot_name"]
+    print(f"Telegram bridge: own bot @{name} for 「{channel['bot_name']}」 started.")
+    await asyncio.to_thread(own.mark, channel["row_id"], "running")
+    while True:
+        try:
+            state = await asyncio.to_thread(own.channel, channel["row_id"])
+            if state is None:
+                return
+            channel = {**channel, "chat_id": state["chat_id"], "user_id": state["user_id"]}
+            offset = max(int(state["offset"]), int(channel.get("offset") or 0))
+            now = time.time()
+            if channel["chat_id"] is not None and now - last_outbox >= OUTBOX_CHECK_INTERVAL:
+                await _deliver_outbox(client, owner, channel["chat_id"], tg, channel)
+                last_outbox = now
+            updates, refused = await _poll_own(client, channel["token"], offset)
+            if refused in (401, 404):
+                await asyncio.to_thread(own.mark, channel["row_id"], "invalid", "Telegram 拒绝了这个 token（401）。请在 BotFather 检查后换一个。")
+                print(f"Telegram bridge: own bot @{name}: token refused, stopped.", file=sys.stderr)
+                return
+            if refused == 409:
+                await asyncio.to_thread(own.mark, channel["row_id"], "conflict", "这个 token 正在被别处轮询（409）。")
+                await asyncio.sleep(30)
+                continue
+            if updates is None:
+                await asyncio.sleep(5)
+                continue
+            for update in updates:
+                if not isinstance(update, dict):
+                    continue
+                if isinstance(update.get("update_id"), int):
+                    offset = update["update_id"] + 1
+                    channel["offset"] = offset
+                if isinstance(update.get("message"), dict):
+                    await _handle_own_message(client, credential, owner, update["message"], channel, pending, tg)
+                elif isinstance(update.get("callback_query"), dict) and channel["chat_id"] is not None:
+                    await _handle_callback(client, update["callback_query"], pending, owner, credential,
+                                           channel["chat_id"], channel["user_id"], tg, channel)
+            if updates:
+                await asyncio.to_thread(own.save_offset, channel["row_id"], offset)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print(f"Bridge error (own bot @{name}): {_redact(exc)}", file=sys.stderr)
+            await asyncio.sleep(10)
+
+
+async def _handle_own_message(client, credential: str, owner: str, message: dict, channel: dict, pending: dict, tg):
+    """A message to a bot's own Telegram bot: /start <code> binds it; the owner's text goes to that bot."""
+    chat = message.get("chat") or {}
+    text = str(message.get("text") or message.get("caption") or "").strip()
+    command = text.split(maxsplit=1)[0] if text.startswith("/") else ""
+    if command.split("@", 1)[0] in {"/start", "/bind"}:
+        if channel["chat_id"] is None or _from_owner(chat, message.get("from"), channel["chat_id"], channel["user_id"]):
+            await _handle_own_bind(client, chat, message.get("from"), channel, text[len(command):].strip())
+        return
+    if channel["chat_id"] is None or not _from_owner(chat, message.get("from"), channel["chat_id"], channel["user_id"]):
+        return
+    if command or not text:
+        return
+    await _bot_turn(client, credential, owner, channel["chat_id"], pending, tg, channel["bot_id"], channel["bot_name"],
+                    text, channel=channel)
+
+
+async def _handle_own_bind(client, chat: dict, sender: dict | None, channel: dict, code: str):
+    from app import agent_telegram_bots as own
+    from app.agent_telegram import TelegramError
+    chat_id = chat.get("id")
+    if chat.get("type") != "private":
+        await _send_text(client, channel["token"], chat_id, "请在和 bot 的私聊里绑定。", markdown=False)
+        return
+    if not code:
+        await _send_text(client, channel["token"], chat_id, f"请在「{channel['bot_name']}」的档案页生成绑定码，再点那里的链接。", markdown=False)
+        return
+    try:
+        await asyncio.to_thread(own.confirm_bind, channel["row_id"], code, chat_id, (sender or {}).get("id"))
+        channel["chat_id"], channel["user_id"] = chat_id, (sender or {}).get("id")
+        await _send_text(client, channel["token"], chat_id, f"绑定成功！这里的消息都会交给「{channel['bot_name']}」。", markdown=False)
+    except TelegramError as exc:
+        reason = {"bind_code_expired": "绑定码已过期（30 分钟），请重新生成。", "bind_code_mismatch": "绑定码不对，请重新生成。"}.get(str(exc), "绑定码无效或已过期，请在档案页重新生成。")
+        await _send_text(client, channel["token"], chat_id, reason, markdown=False)
 
 
 if __name__ == "__main__":

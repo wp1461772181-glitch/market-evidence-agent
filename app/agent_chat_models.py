@@ -266,8 +266,35 @@ class AgentTelegramBind(Base):
     chat_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     bind_code_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # UX batch 2 (P4): a bind code is good for 30 minutes (older tables get the column from ensure_columns).
+    bind_code_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     conversation_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
     bound_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class AgentTelegramBot(Base):
+    """A bot's own Telegram bot (UX batch 2, P4).  Optional: a bot without one keeps using the shared bot of
+    ``agent_telegram_bind`` (the default bot's), with 「[名字]」 in front.  The token is encrypted with secret_box
+    and never returned; ``token_fingerprint`` keeps one token on one bot (two pollers of one token get 409).
+    The bound chat is the owner's own, checked per Telegram bot.  ``update_offset`` survives a bridge restart."""
+    __tablename__ = "agent_telegram_bots"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    owner_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    bot_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, unique=True)
+    token_cipher: Mapped[str] = mapped_column(Text, nullable=False)
+    token_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    tg_bot_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    bot_username: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    chat_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    bind_code_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    bind_code_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    update_offset: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="unbound")  # unbound | running | invalid | conflict
+    last_error: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    bound_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
 
@@ -288,6 +315,9 @@ class AgentTelegramMessage(Base):
     status: Mapped[str] = mapped_column(String(10), nullable=False, default="pending")  # pending | sent | failed
     telegram_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
     inbox_item_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    # The bot's own Telegram bot (agent_telegram_bots.id) it went through; NULL is the shared bot.  Telegram
+    # message ids are per chat, so a reply is matched within one Telegram bot.
+    telegram_bot_row_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True, index=True)
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

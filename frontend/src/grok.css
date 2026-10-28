@@ -211,3 +211,10 @@ body { -webkit-font-smoothing: antialiased; }
 .ws-new { font-size: 10px; color: var(--me-accent); background: var(--me-accent-soft); border-radius: 999px; padding: 0 6px; }
 .ws-chips { display: flex; flex-wrap: wrap; gap: 6px; }
 @media (max-width: 760px) { .agent-layout.is-bot[data-side-width] { grid-template-columns: minmax(0, 1fr); } .agent-layout.is-bot[data-side-width="full"] > :not(.bot-side) { display: block; } }
+
+/* --- a bot's own Telegram (UX batch 2, P4) -------------------------------------------------------- */
+.bot-telegram { border-top: 1px solid var(--me-line); padding-top: 12px; margin-top: 12px; display: grid; gap: 8px; }
+.bot-telegram h3 { margin: 0; font-size: 14px; }
+.bot-telegram p { margin: 0; }
+.bot-telegram-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.bot-telegram-row input { flex: 1 1 12em; min-width: 0; }

@@ -4,7 +4,6 @@ Regression (UX batch 2, 问题 3): ``ingest_web_source`` wrote only ``agent_web_
 document, so Levi's 「存进资料库」 never showed in 资料库 › 材料库.  It now writes ``uploaded_evidence`` with
 ``create_uploaded_evidence`` (as 上传媒体 does), and search keeps one copy: the 资料库 one.
 """
-import asyncio
 import uuid
 from datetime import UTC, datetime
 
@@ -12,7 +11,7 @@ import pytest
 from sqlalchemy import func, select
 
 from app.agent_workflow import consent, direct, tools
-from app.agent_workflow.models import AgentConsent, AgentWebSource
+from app.agent_workflow.models import AgentWebSource
 from app.agent_workflow.state import AgentRuntimeContext
 from app.agent_workflow.web_sources import freeze_snapshot, save_snapshot
 from app.database import Base, SessionLocal, engine
