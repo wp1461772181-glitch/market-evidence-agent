@@ -182,7 +182,7 @@ def _merge_delta(message, calls, delta):
 
 async def _post(provider,key,body,base_url=None):
     headers={'Authorization':f'Bearer {key}','Content-Type':'application/json'}
-    if provider=='openrouter':headers['X-Title']='Market Evidence Agent'
+    if provider=='openrouter':headers['X-Title']='FinBot'
     try:
         async with progress_watchdog(PROVIDER_REQUEST_SECONDS):
           async with _decision_client(base_url) as client:
@@ -233,7 +233,7 @@ async def stream_answer(provider,model,api_key,messages,reasoning_collector=None
     if provider=='minimax':body['reasoning_split']=True
     body.update(reasoning_options(provider))
     headers={'Authorization':f'Bearer {api_key}','Content-Type':'application/json'}
-    if provider=='openrouter':headers['X-Title']='Market Evidence Agent'
+    if provider=='openrouter':headers['X-Title']='FinBot'
     try:
         async with progress_watchdog(PROVIDER_STREAM_SECONDS):
           async with _decision_client(base_url) as client:

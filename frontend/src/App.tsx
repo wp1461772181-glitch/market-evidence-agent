@@ -58,7 +58,7 @@ function AppEntry(){
   const [mode,setMode]=useState(()=>localStorage.getItem("market-evidence-agent:chat-mode:v1")?getChatMode():null),[code,setCode]=useState(""),[error,setError]=useState("");
   async function login(){try{const credential=await personalChatLogin(code);setChatMode("personal",credential);window.location.hash="agent";setMode("personal")}catch{setError("个人登录暂不可用，请检查登录码后重试。")}}
   if(mode)return <AgentChatProviderRoot key={chatSessionKey(mode,localStorage.getItem(mode==="personal"?"market-evidence-agent:personal-chat-session:v1":"market-evidence-agent:chat-session:v1"))}><WorkspaceApp key={mode} onModeChange={setMode}/></AgentChatProviderRoot>;
-  return <main className="entry-choice"><p className="eyebrow">Market Evidence Agent</p><h1>{t("选择聊天模式")}</h1><p>{t("访客与个人聊天记录保存在服务端 PostgreSQL。登录个人账户后即可进行站点操作。")}</p><div><button className="primary-action" onClick={()=>{setChatMode("guest");window.location.hash="agent";setMode("guest")}}>{t("继续访客聊天")}</button><label>{t("个人聊天登录码")}<input type="password" value={code} maxLength={256} autoComplete="current-password" onChange={e=>setCode(e.target.value)}/></label><button className="secondary-action" disabled={!code} onClick={()=>void login()}>{t("登录个人聊天")}</button>{error&&<p role="alert">{error}</p>}</div></main>;
+  return <main className="entry-choice"><p className="eyebrow">FinBot</p><h1>{t("选择聊天模式")}</h1><p>{t("访客与个人聊天记录保存在服务端 PostgreSQL。登录个人账户后即可进行站点操作。")}</p><div><button className="primary-action" onClick={()=>{setChatMode("guest");window.location.hash="agent";setMode("guest")}}>{t("继续访客聊天")}</button><label>{t("个人聊天登录码")}<input type="password" value={code} maxLength={256} autoComplete="current-password" onChange={e=>setCode(e.target.value)}/></label><button className="secondary-action" disabled={!code} onClick={()=>void login()}>{t("登录个人聊天")}</button>{error&&<p role="alert">{error}</p>}</div></main>;
 }
 
 function WorkspaceApp({onModeChange}:{onModeChange:(mode:"guest"|"personal")=>void}) {
@@ -449,7 +449,7 @@ function Shell({ activeSection, navigate, symbol, symbols, onSelectStock, watchI
       {isNarrow&&menuOpen&&<div className="nav-scrim" aria-hidden="true" onClick={()=>setMenuOpen(false)}/>}
       <aside id="workspace-navigation" className={`app-rail ${menuOpen||effectivePinned?"is-open":""}`} aria-label={t("主要导航")}>
         <button className="rail-nav-close" type="button" aria-label={t("收起导航")} aria-controls="workspace-navigation" onClick={closeNavDrawer}><span aria-hidden="true">×</span></button>
-      <a className="workspace-brand" href="#agent" onClick={() => navigate("agent")} aria-label={`Market Evidence Agent · ${t("对话")}`}><img className="brand-logo" src={`${import.meta.env.BASE_URL}logo.svg`} width="32" height="32" alt="" /><span>market<br /><em>evidence</em></span></a>
+      <a className="workspace-brand" href="#agent" onClick={() => navigate("agent")} aria-label={`FinBot · ${t("对话")}`}><img className="brand-logo" src={`${import.meta.env.BASE_URL}logo.svg`} width="32" height="32" alt="" /><span>FinBot<br /><em>{t("研究助理")}</em></span></a>
       <div className="rail-context"><span>{!research ? t("工作区") : <Tx text={"当前股票"} />}</span><strong>{!research ? t("Agent") : symbol}</strong><small>{<Tx text={"Agent 研究工作台"} />}</small></div>
       {botRail?.(() => { if (isNarrow || !pinned) setMenuOpen(false); })}
       <nav ref={navRef} className={`workspace-nav${botRail ? " is-bottom" : ""}`}>
@@ -493,7 +493,7 @@ function Shell({ activeSection, navigate, symbol, symbols, onSelectStock, watchI
       {children}
       {overlay}
       {ownerDialog&&<div className="owner-auth-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)setOwnerDialog(false)}}><section ref={ownerDialogRef} className="owner-auth-dialog" role="dialog" aria-modal="true" aria-labelledby="owner-auth-title"><button className="owner-auth-close" type="button" aria-label={t("关闭")} onClick={()=>setOwnerDialog(false)}>×</button><p className="eyebrow">{t("站点写入操作")}</p><h2 id="owner-auth-title">{t("请登录个人账户")}</h2><p>{t("登录后可继续进行站点操作。登录完成后，请手动重试刚才未完成的操作。")}</p><label>{t("个人登录密码或口令")}<input ref={ownerInputRef} type="password" value={ownerInput} autoComplete="current-password" onChange={e=>setOwnerInput(e.target.value)}/></label>{ownerError&&<p role="alert">{ownerError}</p>}<div><button className="primary-action" disabled={!ownerInput||ownerBusy} onClick={()=>{setOwnerBusy(true);void personalChatLogin(ownerInput).then(credential=>{completePersonalLogin(credential,setChatMode,onModeChange);setOwnerDialog(false);setOwnerInput("")}).catch(error=>setOwnerError(error instanceof Error?error.message:t("登录暂不可用。"))).finally(()=>setOwnerBusy(false))}}>{ownerBusy?t("正在登录…"):t("登录并授权")}</button><button className="secondary-action" onClick={()=>setOwnerDialog(false)}>{t("稍后")}</button></div></section></div>}
-      <footer>{<Tx text={"Market Evidence Agent · 本地研究记录 · 研究判断可追溯到原始来源"} />}</footer>
+      <footer>{<Tx text={"FinBot · 本地研究记录 · 研究判断可追溯到原始来源"} />}</footer>
       <nav className="mobile-tabbar" aria-label={t("主要导航")}>
         {mobileTabs.map(tab => <button key={tab.id} type="button" aria-current={tab.active ? "page" : undefined} onClick={() => navigate(tab.id)}><span aria-hidden="true">{tab.icon}</span>{tab.label}</button>)}
       </nav>

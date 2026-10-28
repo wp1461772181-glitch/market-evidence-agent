@@ -200,7 +200,7 @@ class PinnedPublicTransport(httpx.AsyncBaseTransport):
 async def _call(payload: ChatRequest, messages: list[dict[str, str]], max_tokens: int) -> ChatResponse:
     headers = {"Authorization": f"Bearer {payload.api_key.get_secret_value()}", "Content-Type": "application/json"}
     if payload.provider == "openrouter":
-        headers["X-Title"] = "Market Evidence Agent"
+        headers["X-Title"] = "FinBot"
     body = {"model": payload.model, "messages": [{"role": "system", "content": SYSTEM_PROMPT}, *messages], "max_tokens": max_tokens}
     if payload.provider == "minimax": body["reasoning_split"] = True
     try:
@@ -357,7 +357,7 @@ async def discover_models(payload: ModelDiscoveryRequest):
     headers = {"Accept": "application/json"}
     if payload.api_key is not None:
         headers["Authorization"] = f"Bearer {payload.api_key.get_secret_value()}"
-    if payload.provider == "openrouter": headers["X-Title"] = "Market Evidence Agent"
+    if payload.provider == "openrouter": headers["X-Title"] = "FinBot"
     try:
         await asyncio.wait_for(REQUEST_SLOTS.acquire(), timeout=2.0)
     except TimeoutError as exc:

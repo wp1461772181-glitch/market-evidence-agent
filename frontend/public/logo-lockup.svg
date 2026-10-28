@@ -1,10 +1,22 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 304 64" role="img" aria-labelledby="mea-lockup-title">
-  <title id="mea-lockup-title">Market Evidence Agent</title>
-  <rect x="0.75" y="0.75" width="62.5" height="62.5" rx="14" fill="#174C3D" stroke="#80CFC2" stroke-width="1.5"/>
-  <path d="M19 9.5H38.5L50 21V50.5A3.5 3.5 0 0 1 46.5 54H19A3.5 3.5 0 0 1 15.5 50.5V13A3.5 3.5 0 0 1 19 9.5Z" fill="none" stroke="#F5F2E9" stroke-width="2" stroke-linejoin="round"/>
-  <path d="M38.5 9.5V18A3 3 0 0 0 41.5 21H50Z" fill="#80CFC2"/>
-  <path d="M21 41L27.5 34L33 38L43.5 26.5" fill="none" stroke="#80CFC2" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M35.5 46.5L39.5 50.5L47.5 40.5" fill="none" stroke="#F5F2E9" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
-  <text x="82" y="37" fill="#174C3D" font-family="'Avenir Next','Helvetica Neue',Arial,sans-serif" font-size="17" font-weight="600" letter-spacing="2.6">MARKET EVIDENCE</text>
-  <rect x="83" y="45" width="86" height="3" rx="1.5" fill="#80CFC2"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 64" role="img" aria-labelledby="finbot-lockup-title">
+  <title id="finbot-lockup-title">FinBot</title>
+  <defs>
+    <radialGradient id="finbot-lockup-shine" cx="34%" cy="28%" r="70%">
+      <stop offset="0" stop-color="#fff" stop-opacity=".38"/>
+      <stop offset=".55" stop-color="#fff" stop-opacity="0"/>
+      <stop offset="1" stop-color="#000" stop-opacity=".16"/>
+    </radialGradient>
+  </defs>
+  <circle cx="32" cy="32" r="30" fill="#12A374"/>
+  <circle cx="32" cy="32" r="30" fill="url(#finbot-lockup-shine)"/>
+  <ellipse cx="23.5" cy="27" rx="5.6" ry="8.2" fill="#fff"/>
+  <ellipse cx="40.5" cy="27" rx="5.6" ry="8.2" fill="#fff"/>
+  <circle cx="24.5" cy="27" r="3" fill="#111"/>
+  <circle cx="41.5" cy="27" r="3" fill="#111"/>
+  <g fill="#fff" fill-opacity=".92">
+    <rect x="25" y="44" width="3.6" height="5" rx="1"/>
+    <rect x="30.2" y="41" width="3.6" height="8" rx="1"/>
+    <rect x="35.4" y="38" width="3.6" height="11" rx="1"/>
+  </g>
+  <text x="76" y="42" fill="#0D0D0D" font-family="Inter,'Helvetica Neue',Arial,sans-serif" font-size="28" font-weight="650" letter-spacing="-0.5">FinBot</text>
 </svg>

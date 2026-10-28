@@ -1,7 +1,20 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Market Evidence Agent">
-  <rect width="64" height="64" rx="13" fill="#174C3D"/>
-  <path d="M17.5 7.5H38L51 20.5V51.5A4 4 0 0 1 47 55.5H17.5A4 4 0 0 1 13.5 51.5V11.5A4 4 0 0 1 17.5 7.5Z" fill="none" stroke="#F5F2E9" stroke-width="2.4" stroke-linejoin="round"/>
-  <path d="M38 7.5V17A3.5 3.5 0 0 0 41.5 20.5H51Z" fill="#80CFC2"/>
-  <path d="M19.5 42.5L27 34.5L32.5 38.5L44 25.5" fill="none" stroke="#80CFC2" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M34.5 47L39 51.5L48 40.5" fill="none" stroke="#F5F2E9" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="FinBot">
+  <defs>
+    <radialGradient id="finbot-shine" cx="34%" cy="28%" r="70%">
+      <stop offset="0" stop-color="#fff" stop-opacity=".38"/>
+      <stop offset=".55" stop-color="#fff" stop-opacity="0"/>
+      <stop offset="1" stop-color="#000" stop-opacity=".16"/>
+    </radialGradient>
+  </defs>
+  <circle cx="32" cy="32" r="30" fill="#12A374"/>
+  <circle cx="32" cy="32" r="30" fill="url(#finbot-shine)"/>
+  <ellipse cx="23.5" cy="27" rx="5.6" ry="8.2" fill="#fff"/>
+  <ellipse cx="40.5" cy="27" rx="5.6" ry="8.2" fill="#fff"/>
+  <circle cx="24.5" cy="27" r="3" fill="#111"/>
+  <circle cx="41.5" cy="27" r="3" fill="#111"/>
+  <g fill="#fff" fill-opacity=".92">
+    <rect x="25" y="44" width="3.6" height="5" rx="1"/>
+    <rect x="30.2" y="41" width="3.6" height="8" rx="1"/>
+    <rect x="35.4" y="38" width="3.6" height="11" rx="1"/>
+  </g>
 </svg>

@@ -1,6 +1,6 @@
 <div align="center">
 
-# 📈 Market Evidence Agent
+# 📈 FinBot
 
 ### 先找证据，再形成判断。  
 ### Evidence first. Decisions you can revisit.
@@ -46,7 +46,7 @@ flowchart LR
 
 ## 🌱 项目简介
 
-Market Evidence Agent 是一个**金融市场证据研究与版本化判断原型**。你可以用自然语言查询已保存的行情、SEC 文件和研究材料，也可以单独进行公开网页研究。系统整理可核对的来源，汇总材料分析，并将实验性三分类判断绑定到明确的证据版本和固定目标。
+FinBot 是一个**金融市场证据研究与版本化判断原型**。你可以用自然语言查询已保存的行情、SEC 文件和研究材料，也可以单独进行公开网页研究。系统整理可核对的来源，汇总材料分析，并将实验性三分类判断绑定到明确的证据版本和固定目标。
 
 它让研究过程更容易回看：**当时看到了什么、依据来自哪里、后来新增了什么、判断如何变化。**
 
@@ -163,7 +163,7 @@ npm run build
 
 ## 🌱 What it is
 
-Market Evidence Agent is a **market-research and versioned-judgment prototype**. Ask natural-language questions about saved price history, SEC filings, and research materials, or run public-web research as a separate read capability. It gathers source-backed results, can synthesize material analyses, and links experimental three-class judgments to a specific evidence version and fixed target.
+FinBot is a **market-research and versioned-judgment prototype**. Ask natural-language questions about saved price history, SEC filings, and research materials, or run public-web research as a separate read capability. It gathers source-backed results, can synthesize material analyses, and links experimental three-class judgments to a specific evidence version and fixed target.
 
 The research trail stays easier to revisit: **what was available then, where a claim came from, what changed later, and how the judgment evolved.**
 

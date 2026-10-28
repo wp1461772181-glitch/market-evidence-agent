@@ -1,10 +1,10 @@
-# Market Evidence Agent
+# FinBot
 
 [中文](README.md) | [English](README.en.md)
 
 **Demo:** [Open the research workspace](https://wp1461772181-glitch.github.io/market-evidence-agent/) · **Repository:** [wp1461772181-glitch/market-evidence-agent](https://github.com/wp1461772181-glitch/market-evidence-agent)
 
-Market Evidence Agent is a research workspace for individual US stock researchers. It brings saved market data, SEC filings, research materials, and versioned analyses together, with bounded Agent chat over saved evidence. Researchers can find leads in materials, inspect sources, save analyses, and review forecast versions and later revisions.
+FinBot is a research workspace for individual US stock researchers. It brings saved market data, SEC filings, research materials, and versioned analyses together, with bounded Agent chat over saved evidence. Researchers can find leads in materials, inspect sources, save analyses, and review forecast versions and later revisions.
 
 The product focuses on an inspectable research process, traceable evidence, and conclusions that can be revised when new material arrives. It does not promise accurate stock forecasts and is neither a trading system nor a live-quote service.
 

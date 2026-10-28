@@ -355,3 +355,15 @@ Backend + frontend. Migration: `agent_web_sources.uploaded_evidence_id UUID` (`A
    资料库 has 股票 (当前 / 全部股票) and 排序 (发布时间 / 最近存入) selects.
 6. **Live check:** Telegram 「把这篇 <网址> 存进 AAPL 的资料库」 → 同意 → reply has the link → web 资料库 › AAPL
    lists it first under 最近存入 as 上传材料 → ask about it in chat, it is cited → save it again: no second row.
+
+## 2026-10-28 UX batch 2 — FinBot name and logo
+
+Display strings only; no migrations. The product is called **FinBot** in the page title, the rail brand, the
+entry page, settings eyebrows, the footer, the agent's own prompts and out-of-scope reply, the OpenRouter
+X-Title and the README headings. Repo, package paths, Python modules, localStorage keys and the SEC
+User-Agent contact string are unchanged. New self-drawn logo (`frontend/public/logo.svg`, `favicon.svg`,
+`logo-lockup.svg`): a green orb, two eyes, a small rising-bars mouth.
+- `frontend/public/apple-touch-icon.png` is still the old mark (no rasteriser on the Linux box): regenerate it
+  from `logo.svg` at 180×180 on the Mac (e.g. `rsvg-convert -w 180 -h 180 frontend/public/logo.svg -o frontend/public/apple-touch-icon.png`) if wanted.
+- Tests on the Mac: `tests/test_agent_redesign_behaviors.py` (the out-of-scope reply now names FinBot).
+- Backend restart picks up the prompt text; the frontend goes live with the Pages push.

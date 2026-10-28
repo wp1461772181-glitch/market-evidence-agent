@@ -78,8 +78,8 @@ def test_time_window_excludes_old_pages(days,accepted):
 
 @pytest.mark.parametrize('question,phrase',[
     ('给我写一个冒泡排序','功能范围'),          # the refusal is server-owned, in the question's language
-    ('tell me a joke','outside what Market Evidence Agent does'),
-    ('write a shell script','outside what Market Evidence Agent does'),
+    ('tell me a joke','outside what FinBot does'),
+    ('write a shell script','outside what FinBot does'),
 ])
 def test_outside_product_uses_fixed_script_without_tools(question,phrase):
     """The scope sentence stays in code; the model may only add what the product can do instead."""

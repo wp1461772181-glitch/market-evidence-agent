@@ -97,7 +97,7 @@ from .agent_chat_middleware import AgentChatBodyLimitMiddleware, create_agent_ch
 PUBLIC_API_MODE = os.getenv("PUBLIC_API_MODE", "false").strip().lower() in {"1", "true", "yes"}
 APP_API_ACCESS_KEY = os.getenv("APP_API_ACCESS_KEY", "")
 
-app = FastAPI(title="Market Evidence Agent", version="0.1.0")
+app = FastAPI(title="FinBot", version="0.1.0")
 
 @app.exception_handler(RequestValidationError)
 async def safe_agent_chat_validation(request: Request, exc: RequestValidationError):

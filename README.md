@@ -1,8 +1,8 @@
 <div align="center">
 
-<img src="frontend/public/logo.svg" width="96" alt="Market Evidence Agent logo" />
+<img src="frontend/public/logo.svg" width="96" alt="FinBot logo" />
 
-# 📈 Market Evidence Agent
+# 📈 FinBot
 
 ### 先找证据，再形成判断。
 ### Evidence first. Decisions you can revisit.
@@ -65,7 +65,7 @@ flowchart LR
 
 ## 🌱 项目简介
 
-Market Evidence Agent 是一个面向股票研究的**证据工作台**。它把公开资料、已保存行情、SEC 文件、研究材料和 AI 分析放在同一条可追溯链路上：你可以用自然语言提问，查看每条结论引用了哪段原文，保存不可变的预测版本，并在新材料出现时看到哪些内容可以修订、为什么可以修订。
+FinBot 是一个面向股票研究的**证据工作台**。它把公开资料、已保存行情、SEC 文件、研究材料和 AI 分析放在同一条可追溯链路上：你可以用自然语言提问，查看每条结论引用了哪段原文，保存不可变的预测版本，并在新材料出现时看到哪些内容可以修订、为什么可以修订。
 
 它不是只给答案的聊天框，而是让研究过程更容易回看：**当时看到了什么、依据来自哪里、后来新增了什么、判断如何变化。**
 
@@ -224,7 +224,7 @@ npm run build
 
 ## 🌱 What it is
 
-Market Evidence Agent is an **evidence workbench for equity research**. It keeps public sources, saved price history, SEC filings, research materials, and AI analysis on one traceable path: ask a natural-language question, inspect which source passage supports a claim, save an immutable forecast version, and see which materials can revise it — and why.
+FinBot is an **evidence workbench for equity research**. It keeps public sources, saved price history, SEC filings, research materials, and AI analysis on one traceable path: ask a natural-language question, inspect which source passage supports a claim, save an immutable forecast version, and see which materials can revise it — and why.
 
 It is not just an answer box. The research trail stays easier to revisit: **what was available then, where a claim came from, what changed later, and how the judgment evolved.**
 
