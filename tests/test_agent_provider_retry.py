@@ -33,11 +33,11 @@ def test_a_rejected_key_is_not_retried(monkeypatch):
     with pytest.raises(HTTPException):asyncio.run(turn.model([{'role':'user','content':'q'}],[],protocol_retries=0))
     assert calls==[1]
 
-def test_reasoning_of_a_few_dozen_kilobytes_is_accepted():
+def test_a_long_chinese_reasoning_is_accepted_up_to_the_memory_guard():
     message={'role':'assistant','content':''};calls={}
-    _merge_delta(message,calls,{'reasoning_content':'想'*9000})
-    assert len(message['reasoning_content'])==9000
-    with pytest.raises(HTTPException):_merge_delta(message,calls,{'reasoning_content':'想'*30000})
+    _merge_delta(message,calls,{'reasoning_content':'想'*100_000})
+    assert len(message['reasoning_content'])==100_000
+    with pytest.raises(HTTPException):_merge_delta(message,calls,{'reasoning_content':'想'*600_000})
 
 def test_a_failed_repair_records_the_provider_reason():
     from app.agent_workflow import direct as d
@@ -52,6 +52,6 @@ def test_a_failed_repair_records_the_provider_reason():
 def test_a_large_tool_result_keeps_the_rows_that_fit():
     from app.agent_chat_stream import bounded_tool_result
     # Rows sized so the kept rows fill the limit to within the result's own extra keys.
-    rows=[{'id':str(i),'excerpt':'x'*768} for i in range(11)]
+    rows=[{'id':str(i),'excerpt':'x'*6144} for i in range(11)]
     bounded=bounded_tool_result({'ok':True,'data':rows,'source':'saved'})
     assert bounded['ok'] and bounded['data'] and bounded['truncated']

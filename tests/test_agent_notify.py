@@ -146,8 +146,8 @@ def test_a_news_bot_message_carries_its_name_as_plain_chat_and_goes_to_the_bound
 
 def test_figures_need_this_turns_evidence_and_a_bound_chat(owner):
     news = _news()
-    for text, ids, code in (("订单超过 100 亿美元。", [], "unsupported_number"),
-                            ("订单超过 100 亿美元 [2]。", [2], "unknown_evidence"),
+    # An evidence number this turn does not have blocks; a bare figure only warns (below).
+    for text, ids, code in (("订单超过 100 亿美元 [2]。", [2], "unknown_evidence"),
                             ("有一条重要新闻 [1]。", [3], "unknown_evidence")):
         with pytest.raises(tg.NotifyError, match=code):
             tg.notify(OWNER_HASH, news["id"], text, ids, NEWS)
@@ -157,6 +157,8 @@ def test_figures_need_this_turns_evidence_and_a_bound_chat(owner):
     # Words with no figure need no source; a page's text cannot reach another chat: there is no recipient.
     assert tg.notify(OWNER_HASH, news["id"], "有一条重要新闻，请看对话。", [], [])["status"] == "queued_for_telegram"
     assert _outbox()[0].text == "【抓新闻】\n有一条重要新闻，请看对话。"
+    sent = tg.notify(OWNER_HASH, news["id"], "订单超过 100 亿美元。", [], NEWS)
+    assert sent["status"] == "queued_for_telegram" and sent["warning"] == "unsupported_number"
     # Another owner's bot is refused.
     with SessionLocal() as db:
         stranger = AgentBot(owner_hash=OTHER_HASH, name="别人的", focus={}, is_default=False, daily_notify_cap=5)

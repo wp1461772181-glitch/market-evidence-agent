@@ -3,7 +3,7 @@ import asyncio
 import pytest
 
 
-@pytest.mark.parametrize(('tool_name','budget'), [('query_materials',30.0),('query_research_faq',30.0),('search_material_analysis',30.0),('query_stock_prices',5.0)])
+@pytest.mark.parametrize(('tool_name','budget'), [('query_materials',60.0),('query_research_faq',60.0),('search_material_analysis',60.0),('query_stock_prices',5.0)])
 def test_tool_executor_applies_knowledge_timeout_only(monkeypatch,tool_name,budget):
     import app.agent_tool_executor as executor
     from types import SimpleNamespace

@@ -12,11 +12,11 @@ async def execute_tool(name: str, arguments: dict) -> dict:
     except Exception:
         return {"ok":False,"data":None,"error_code":"invalid_arguments","source":None,"as_of":None}
     try:
-        # Cold BGE loading and cross-encoder swapping can take tens of seconds.
-        # Keep market/ordinary tools on their existing short budget.
+        # Cold BGE loading and cross-encoder swapping can take tens of seconds; a web search that
+        # fetches several pages can take minutes. Market/ordinary tools keep their short budget.
         is_knowledge = name in {"query_research_faq", "query_materials", "search_material_analysis"}
-        timeout = (max(1.0, float(os.getenv("KNOWLEDGE_RETRIEVAL_TIMEOUT_SECONDS", "30"))) if is_knowledge
-                   else max(5.0, min(45.0, float(os.getenv("WEB_RESEARCH_TIMEOUT_SECONDS", "42")))) if name == "web_research"
+        timeout = (max(1.0, float(os.getenv("KNOWLEDGE_RETRIEVAL_TIMEOUT_SECONDS", "60"))) if is_knowledge
+                   else max(5.0, min(300.0, float(os.getenv("WEB_RESEARCH_TIMEOUT_SECONDS", "120")))) if name == "web_research"
                    else 5.0)
         async with asyncio.timeout(timeout):
             for attempt in range(2):

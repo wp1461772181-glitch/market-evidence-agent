@@ -280,16 +280,18 @@ def enqueue(db, owner_hash: str, bot_id, text: str, *, source: str, now: datetim
 
 
 def check_evidence(text: str, evidence_ids: list[int], ordinals: set[int]) -> list[int]:
-    """The evidence numbers a notification uses, after the rules: each [n] in the text and each listed id
-    is one of this turn's evidence numbers, and every sentence with a figure in it carries a [n]."""
+    """The evidence numbers a notification uses: each [n] in the text and each listed id must be one of this
+    turn's evidence numbers."""
     used = [int(n) for n in _MARKER.findall(text)]
     wanted = list(dict.fromkeys([*evidence_ids, *used]))
     if any(n not in ordinals for n in wanted):
         raise NotifyError("unknown_evidence")
-    for segment in _SEGMENT.findall(text):
-        if _DIGIT.search(_MARKER.sub("", segment)) and not _MARKER.search(segment):
-            raise NotifyError("unsupported_number")
     return wanted
+
+
+def uncited_figure(text: str) -> bool:
+    """A sentence with a figure but no [n].  A warning only (Levi 2026-10-28): it no longer stops the send."""
+    return any(_DIGIT.search(_MARKER.sub("", segment)) and not _MARKER.search(segment) for segment in _SEGMENT.findall(text))
 
 
 # Telegram is a chat: what goes out reads like a message, never a paper.  The [n] evidence markers and any
@@ -349,7 +351,8 @@ def notify(owner_hash: str, bot_id, text: str, evidence_ids: list[int], citation
         left = enqueue(db, owner_hash, bot.id, render(bot.name, text, citations, used), source="notify", now=now)
         db.commit()
     return {"status": "queued_for_telegram", "remaining_today": left,
-            "note": "已排队发到你绑定的 Telegram；收件人由服务端决定。"}
+            "note": "已排队发到你绑定的 Telegram；收件人由服务端决定。",
+            **({"warning": "unsupported_number"} if uncited_figure(text) else {})}
 
 
 def pending_messages(owner_hash: str, limit: int = 20, telegram_bot_row_id=None) -> list[dict]:

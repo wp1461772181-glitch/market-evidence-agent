@@ -508,3 +508,37 @@ Frontend only, no migration, no backend restart.  Hard-refresh (favicon may need
 
 Mac check: `cd frontend && npm run test:i18n && npm run build`; watch the sidebar logo change pose, check the tab
 icon is 偷瞄笑, and pick a few of the 16 faces in a bot's 档案.
+
+## 放宽 Agent token / 时间限制 — 只留真故障兜底 (Levi 2026-10-28)
+
+Backend only, no migration.  Restart the API.  Soft budgets are gone or far out of reach; what still stops a turn
+is a real fault: no progress (model/tool silent), network error, invalid key, broken protocol, content_filter, the
+same call replayed past `MAX_REPLAYED_CALLS`, or a scheduled task's own `token_budget`.
+
+| Where | Before | Now |
+|---|---|---|
+| `decision_request` / `stream_answer` `max_tokens` (thinking counts against it) | 4096 with tools / 8192 | 32768 (`MAX_OUTPUT_TOKENS`) |
+| `finish_reason=length` | turn failed (`provider_incomplete_response`) | text so far is delivered; only a cut tool call or empty text still fails |
+| SSE total / line / reasoning size (**the NewsBot 19:04/09/12 truncations**: Chinese thinking as `\u` escapes) | 1 MB / 64 KB / 64 KB | 20 MB / 4 MB / 4 MB (memory guards) |
+| `AGENT_PROVIDER_TIMEOUT_SECONDS` / `_STREAM_SECONDS` default (max) | 35 (90) / 90 (180) | 180 (600) / 600 (1200) |
+| `SOFT_TURN_SECONDS` / `HARD_TURN_SECONDS` / `SOFT_TURN_TOKENS` | 90 / 150 / 150 k | 600 / 1200 / 1 M |
+| `IDLE_SECONDS` / `TOOL_IDLE_SECONDS` (inactivity, not wall clock) | 120 / 45 | 300 / 180 |
+| `WEB_RESEARCH_TIMEOUT_SECONDS` (and web_research's own inner cap, was 40) / knowledge retrieval | 42 / 30 | 120 / 60 |
+| tool result in the model protocol (`bounded_tool_result`) | 8 KB | 64 KB (`TOOL_RESULT_BYTES`); the turn's protocol trim follows to half of `RUNNING_REQUEST_BYTES` (128 KB by default) |
+| `notify_telegram`: a sentence with a figure and no [n] | refused (`unsupported_number`) | sent, result carries `warning: unsupported_number` |
+| claim gate in enforce, route D (product/how-to) answer with no citations | lines dropped as `claims_missing` | recorded only (as shadow) |
+| `news_monitor` template `tool_scope` | 9 read tools | `None` (all tools) |
+
+Unchanged on purpose: write tools still need the confirmation card; `progress_watchdog` still stops a silent turn.
+
+**Owner action (not automated):** the template change only affects new bots.  An existing NewsBot keeps its stored
+scope — in 档案 set its 工具范围 to 「不限制」 (Levi's NewsBot `ca3c9be3…` is already `null`).
+
+**Mac `.env`:** `CLAIM_QUOTE_GATE` / `CLAIM_JEV_SUPPORT` are `enforce` there although the comment says shadow;
+CodeBot is switching them to `shadow` and restarting.  If `AGENT_PROVIDER_TIMEOUT_SECONDS` / `_STREAM_SECONDS` /
+`WEB_RESEARCH_TIMEOUT_SECONDS` are set in `.env`, delete them or raise them to the new defaults — an old value wins.
+
+Mac check: `pytest -q tests/test_agent_progress_v5.py tests/test_agent_g4.py tests/test_agent_chat_provider.py
+tests/test_agent_prompt_contract.py tests/test_agent_provider_retry.py tests/test_agent_chat_stream.py
+tests/test_agent_tool_executor_timeout.py tests/test_agent_notify.py tests/test_claim_gate_direct_shadow.py`, then ask
+NewsBot a question that needs two or three web searches and check the answer arrives whole.

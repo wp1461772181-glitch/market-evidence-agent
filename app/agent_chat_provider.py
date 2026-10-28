@@ -39,11 +39,14 @@ def _bounded_seconds(name: str, default: float, low: float, high: float) -> floa
         return default
 
 
-# One request to the model service (a stage of the workflow, a tool decision): slow "thinking" models
-# need more than the old 25 s, and a request that runs out is retried once inside the stage limit.
-PROVIDER_REQUEST_SECONDS = _bounded_seconds("AGENT_PROVIDER_TIMEOUT_SECONDS", 35.0, 10.0, 90.0)
+# One request to the model service (a stage of the workflow, a tool decision). These only catch a hung
+# provider: a thinking model on a busy route can legitimately take minutes, so the defaults are generous.
+PROVIDER_REQUEST_SECONDS = _bounded_seconds("AGENT_PROVIDER_TIMEOUT_SECONDS", 180.0, 10.0, 600.0)
 # Maximum inactivity of a streamed answer, renewed only by semantic model deltas.
-PROVIDER_STREAM_SECONDS = _bounded_seconds("AGENT_PROVIDER_STREAM_SECONDS", 90.0, 30.0, 180.0)
+PROVIDER_STREAM_SECONDS = _bounded_seconds("AGENT_PROVIDER_STREAM_SECONDS", 600.0, 30.0, 1200.0)
+# Thinking output counts against max_tokens, so a small cap can run out before any visible text or
+# tool call; one generous cap for every call keeps a long think from ending as a truncated response.
+MAX_OUTPUT_TOKENS = 32768
 
 # A reasoning model thinks before it answers: hundreds to thousands of hidden tokens, a minute or two on a busy
 # route.  One turn of this workflow makes several calls one after the other, and a stage of it (a JSON
@@ -101,9 +104,7 @@ def endpoint(provider, base_url=None):
     base=base_url.rstrip("/")
     return base if base.endswith("/chat/completions") else base+"/chat/completions"
 async def decision_request(provider, model, api_key, messages, schemas, base_url=None):
-    # Thinking output counts against max_tokens; a 1200-token JSON classifier
-    # can exhaust its budget before producing any visible JSON.
-    body={"model":model,"messages":messages,"max_tokens":8192 if not schemas else 4096,"stream":True}
+    body={"model":model,"messages":messages,"max_tokens":MAX_OUTPUT_TOKENS,"stream":True}
     if schemas: body.update(tools=schemas,tool_choice="auto")
     if provider=="minimax":body["reasoning_split"]=True
     body.update(reasoning_options(provider))
@@ -116,17 +117,24 @@ def _semantic_delta(delta):
                    for c in (delta.get('tool_calls') or [])))
 
 
+# Memory guards only: a long think in Chinese (every character a six-byte \u escape) easily passes 1 MB
+# well before max_tokens, so these sit far above any real response and only stop a runaway stream.
+MAX_RESPONSE_BYTES=20_000_000
+MAX_LINE_BYTES=4_000_000
+MAX_REASONING_BYTES=4_000_000
+
+
 async def _events(response):
     """Bounded SSE parser. Transport keepalives never renew the progress clock."""
     buffer=b''; total=0; done=False
     async for chunk in response.aiter_bytes():
         total+=len(chunk)
-        if total>1_000_000:raise HTTPException(502,'provider_response_too_large')
+        if total>MAX_RESPONSE_BYTES:raise HTTPException(502,'provider_response_too_large')
         buffer+=chunk
-        if len(buffer)>65536 and b'\n' not in buffer:raise HTTPException(502,'provider_response_too_large')
+        if len(buffer)>MAX_LINE_BYTES and b'\n' not in buffer:raise HTTPException(502,'provider_response_too_large')
         while b'\n' in buffer:
             line,buffer=buffer.split(b'\n',1)
-            if len(line)>65536:raise HTTPException(502,'provider_response_too_large')
+            if len(line)>MAX_LINE_BYTES:raise HTTPException(502,'provider_response_too_large')
             try:line=line.rstrip(b'\r').decode('utf-8')
             except UnicodeDecodeError as exc:raise HTTPException(502,'provider_incompatible_response') from exc
             if not line or not line.startswith('data:'):continue
@@ -160,9 +168,8 @@ def _merge_delta(message, calls, delta):
     if details is not None:
         if not isinstance(details,list):raise HTTPException(502,'provider_incompatible_response')
         message.setdefault('reasoning_details',[]).extend(details)
-    # Measured with JSON escapes, so a Chinese reasoning trace counts six bytes a character: 16 KB was
-    # about 2,700 characters, which a classifier's reasoning on a long conversation could exceed.
-    if len(json.dumps({k:v for k,v in message.items() if k.startswith('reasoning_')}).encode())>64000:
+    # Measured with JSON escapes (six bytes a Chinese character); a memory guard, not a thinking budget.
+    if len(json.dumps({k:v for k,v in message.items() if k.startswith('reasoning_')}).encode())>MAX_REASONING_BYTES:
         raise HTTPException(502,'provider_protocol_too_large')
     parts=delta.get('tool_calls',[])
     if not isinstance(parts,list):raise HTTPException(502,'provider_incompatible_response')
@@ -199,9 +206,11 @@ async def _post(provider,key,body,base_url=None):
                         _merge_delta(message,calls,choice['delta'])
                         reason=choice.get('finish_reason')
                         if reason is not None:
-                            if reason not in {'stop','tool_calls'}:raise HTTPException(502,'provider_incomplete_response')
+                            if reason not in {'stop','tool_calls','length'}:raise HTTPException(502,'provider_incomplete_response')
                             finish=reason
                     if finish is None:raise HTTPException(502,'provider_incomplete_stream')
+                    # Out of output tokens: the text written so far is still an answer, a cut tool call is not.
+                    if finish=='length' and (calls or not str(message.get('content') or '').strip()):raise HTTPException(502,'provider_incomplete_response')
                     if calls:
                         if finish!='tool_calls' or sorted(calls)!=list(range(len(calls))):raise HTTPException(502,'provider_incomplete_stream')
                         message['tool_calls']=[calls[i] for i in sorted(calls)]
@@ -215,13 +224,14 @@ async def _post(provider,key,body,base_url=None):
                     chunks=[];total=0
                     async for chunk in r.aiter_bytes():
                         total+=len(chunk)
-                        if total>1_000_000:raise HTTPException(502,'provider_response_too_large')
+                        if total>MAX_RESPONSE_BYTES:raise HTTPException(502,'provider_response_too_large')
                         chunks.append(chunk)
                     try:
                         data=json.loads(b''.join(chunks));choice=data['choices'][0];message=choice['message']
                     except (ValueError,KeyError,IndexError,TypeError) as exc:raise HTTPException(502,'provider_incompatible_response') from exc
-                    if choice.get('finish_reason') in {'length','content_filter'}:raise HTTPException(502,'provider_incomplete_response')
                     if not isinstance(message,dict):raise HTTPException(502,'provider_incompatible_response')
+                    if choice.get('finish_reason')=='content_filter' or (choice.get('finish_reason')=='length' and (message.get('tool_calls') or not str(message.get('content') or '').strip())):
+                        raise HTTPException(502,'provider_incomplete_response')
                 mark_progress()
                 return data,message
     except HTTPException:raise
@@ -229,7 +239,7 @@ async def _post(provider,key,body,base_url=None):
     except httpx.HTTPError as exc:raise HTTPException(502,'provider_network_error') from exc
 
 async def stream_answer(provider,model,api_key,messages,reasoning_collector=None,base_url=None):
-    body={'model':model,'messages':messages,'max_tokens':8192,'stream':True}
+    body={'model':model,'messages':messages,'max_tokens':MAX_OUTPUT_TOKENS,'stream':True}
     if provider=='minimax':body['reasoning_split']=True
     body.update(reasoning_options(provider))
     headers={'Authorization':f'Bearer {api_key}','Content-Type':'application/json'}
@@ -247,7 +257,7 @@ async def stream_answer(provider,model,api_key,messages,reasoning_collector=None
                     choice=event['choices'][0];delta=choice['delta'];reason=choice.get('finish_reason')
                     if finished and _semantic_delta(delta):raise HTTPException(502,'provider_incompatible_response')
                     if reason is not None:
-                        if reason!='stop':raise HTTPException(502,'provider_incomplete_stream')
+                        if reason not in {'stop','length'}:raise HTTPException(502,'provider_incomplete_stream')
                         finished=True
                     if delta.get('tool_calls'):raise HTTPException(502,'provider_incomplete_stream')
                     _merge_delta(message,calls,delta)

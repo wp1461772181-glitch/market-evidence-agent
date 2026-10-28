@@ -591,7 +591,8 @@ async def _research(query_or_url: str, days_back: int | None = None, max_results
 async def web_research(query: str = "", days_back: int | None = None, max_results: int = 5, company: str | None = None, query_or_url: str | None = None) -> dict:
     """Search public web sources or read a public HTTPS page. ALWAYS set days_back for news freshness: recent/latest=7, half a month=15; preserve the interpreted request window. Supply company as named in page text. Search snippets are leads, not evidence."""
     try:
-        async with asyncio.timeout(40):
+        # Just inside the executor's WEB_RESEARCH_TIMEOUT_SECONDS, so a slow search ends with its own error code.
+        async with asyncio.timeout(max(5.0, min(300.0, float(os.getenv("WEB_RESEARCH_TIMEOUT_SECONDS", "120")))) - 3):
             return await _research(query or query_or_url or "", days_back=days_back, max_results=max_results,company=company)
     except asyncio.CancelledError:
         raise

@@ -17,23 +17,25 @@ from .references import Referent,validate_referents,bounded_stage,normalized,ass
 from .trace import TurnTrace,classifier_output,decision_output,resolver_output,verify_output
 
 MAX_RETRIES=2
-IDLE_SECONDS=120
-TOOL_IDLE_SECONDS=45
+# Inactivity watchdogs, not wall clocks: they only stop a turn whose model or tool has gone silent.
+IDLE_SECONDS=300
+TOOL_IDLE_SECONDS=180
 # The ceiling on model decisions in one turn, and on distinct calls the server refused. Inactivity
 # and repeated identical work stop a turn earlier; these only keep a model that keeps inventing new
 # invalid calls from running forever (each decision is a paid provider request). Spend, elapsed time
 # and the number of successful tool calls never stop a healthy turn.
 MAX_DECISION_STEPS=30
 MAX_INVALID_CALLS=6
-# A person waiting on an answer: past this the loop answers from the evidence it already holds.
-SOFT_TURN_SECONDS=90
-SOFT_TURN_TOKENS=150_000
+# Last-resort ceilings for a turn that never converges, far above a healthy multi-tool turn; past them
+# the loop answers from the evidence it already holds.  A task's own token_budget still applies.
+SOFT_TURN_SECONDS=600
+SOFT_TURN_TOKENS=1_000_000
 # A scheduled task stops gathering at its per-run cap; past this multiple of it no model call starts at all.
 TASK_HARD_CAP_FACTOR=1.5
 UNATTENDED_NOTE=('当前是所有者设定的定时任务，无人值守：只能用读取工具，本轮没有任何可直接执行或提出确认卡的写操作。'
     '确有必要的写操作（抓取、导入、分析等）用 request_action 建议一次，它会放进收件箱「待你确认」，由所有者以后决定，本轮不会执行。'
     '没有人能回答追问：不要用 ask_user，按任务说明尽力完成，缺的资料直接说明。')
-HARD_TURN_SECONDS=150
+HARD_TURN_SECONDS=1200
 # A model that keeps asking the same question gets the same answer back a few times; past this it
 # is looping, not working, so the turn stops with no_progress.
 MAX_REPLAYED_CALLS=3
@@ -1102,7 +1104,9 @@ class Turn:
         # orphan tool result, and never let cumulative work exhaust context.
         starts=[i for i,m in enumerate(self.protocol) if m.get('role')=='assistant']
         if len(starts)>6:self.protocol=self.protocol[starts[-6]:]
-        while len(json.dumps(self.protocol,ensure_ascii=False).encode())>64000:
+        # Half the running-request guard: two full-size tool results (TOOL_RESULT_BYTES) stay side by side.
+        # shortcut: a turn already carrying a full history can still pass the guard; trim by measured room if that shows up.
+        while len(json.dumps(self.protocol,ensure_ascii=False).encode())>layers.RUNNING_REQUEST_BYTES//2:
             starts=[i for i,m in enumerate(self.protocol) if m.get('role')=='assistant']
             if len(starts)<2:break
             self.protocol=self.protocol[starts[1]:]
@@ -2118,7 +2122,9 @@ class Turn:
             # The server's own words (a confirmed write's report, a consent reply) carry no claims and
             # cite nothing: enforcing would replace 「已保存《…营收增长 8%…》」 with 「无法与来源核实」 after the
             # write ran.  The legacy guard already leaves them unchecked; the gate only records them.
-            if generated and gate_mode=='enforce':gate_mode='shadow'
+            # A product/how-to answer (route D) that fetched nothing cites nothing either; dropping its lines as
+            # claims_missing leaves the owner with no answer, so it is only recorded, like the server's own words.
+            if (generated or (self.route=='D' and not self.citations)) and gate_mode=='enforce':gate_mode='shadow'
             application=None
             if gate_mode!='off':
                 from .claim_review import apply_claim_gate

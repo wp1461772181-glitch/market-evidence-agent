@@ -56,8 +56,7 @@ TEMPLATES = {
         "label": "新闻监控", "name": "抓新闻", "title": "新闻监控",
         "description": ("盯关注范围里公司和主题的新闻：找新消息、说清楚来源和发布时间，只把重要的告诉我。"
                         "新闻线索没有核实前要标明未核实。"),
-        "tool_scope": ["web_research", "search_knowledge", "query_materials", "query_research_queue",
-                       "ingest_web_source", "save_material_evidence", "recall_conversations", "remember", "forget"]},
+        "tool_scope": None},
     "earnings_reader": {
         "label": "财报解读", "name": "读财报", "title": "财报解读",
         "description": ("读财报和 SEC 申报：营收、利润、现金流和管理层表述，和上一期对比，"

@@ -105,9 +105,10 @@ def test_legacy_watchlist_is_ignored():
 
 def test_bounded_tool_output_stays_valid_json():
     from app.agent_chat_stream import bounded_tool_result
+    from app.agent_chat_stream import TOOL_RESULT_BYTES
     value=bounded_tool_result({'ok':True,'data':[{'excerpt':'中'*20000} for _ in range(30)]})
     assert isinstance(json.loads(json.dumps(value)),dict)
-    assert len(json.dumps(value,ensure_ascii=False).encode())<=12000
+    assert 8000<len(json.dumps(value,ensure_ascii=False).encode())<=TOOL_RESULT_BYTES+4000
 
 
 def test_provider_protocol_metadata_is_not_browser_text(stream_fixture):

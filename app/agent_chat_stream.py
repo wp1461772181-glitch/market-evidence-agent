@@ -19,8 +19,10 @@ LOCKS={}
 MAX_PROTOCOL_BYTES=32000
 MAX_TOOL_CALLS=5
 MAX_DECISION_STEPS=6
-MAX_TURN_TOKENS=32000
-MAX_TURN_SECONDS=120
+MAX_TURN_TOKENS=1_000_000
+MAX_TURN_SECONDS=1200
+# Per tool result in the model protocol; several of these still fit layers.RUNNING_REQUEST_BYTES.
+TOOL_RESULT_BYTES=64_000
 TOOL_REGISTRY_NAMES={"query_stock_prices","query_latest_forecast","query_materials","query_sec_filings","query_research_faq","query_material_analysis","search_material_analysis","web_research"}
 def _legacy_clarification_choices(reason):
  from .agent_workflow.request_resolution import ACTION_CHOICES
@@ -274,7 +276,7 @@ class StreamRequest(BaseModel):
 
 def frame(event,data): return f"event: {event}\ndata: {json.dumps(data,ensure_ascii=False,separators=(',',':'))}\n\n"
 
-def bounded_tool_result(value, limit=8000):
+def bounded_tool_result(value, limit=TOOL_RESULT_BYTES):
  if len(json.dumps(value,ensure_ascii=False,separators=(",",":")).encode("utf-8"))<=limit:return value
  data=value.get("data") if isinstance(value,dict) else None
  kept=[]

@@ -83,3 +83,13 @@ def test_enforce_drops_a_claim_the_resolved_span_does_not_support(monkeypatch):
     gate = result["audit"]["claim_gate"]
     assert "unsupported_numeric" in gate["drop_reasons"]
     assert result["reason"] == "unsupported_numeric"
+
+
+def test_enforce_only_records_a_product_answer_that_cites_nothing(monkeypatch):
+    monkeypatch.setenv("CLAIM_QUOTE_GATE", "enforce")
+    turn = direct.Turn("你能做什么？", AgentRuntimeContext("custom", "test", "dummy"), lambda *_: None, [], {})
+    turn.route = "D"
+    answer = "我负责盯关注范围里公司和主题的新闻，只把重要的告诉你。"
+    result = turn.finish(answer)
+    assert result["answer"].startswith(answer)
+    assert "claim_gate" not in result["audit"] and "claim_gate_shadow" in result["audit"]

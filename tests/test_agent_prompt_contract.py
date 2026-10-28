@@ -34,7 +34,7 @@ def test_turn_soft_cap_answers_from_the_evidence_already_gathered():
     calls=[];closings=[]
     def decide(messages,tools):
         calls.append(1)
-        turn.started=time.monotonic()-100
+        turn.started=time.monotonic()-direct.SOFT_TURN_SECONDS-10
         return {'tool_calls':[{'id':str(len(calls)),'function':{'name':'query_stock_prices','arguments':json.dumps({'symbol':'AMD','limit':len(calls)})}}]}
     def answer(messages):closings.append(1);return 'AMD 已保存收盘价 100 美元 [1]。'
     ctx=AgentRuntimeContext('custom','test','dummy',classifier=lambda _:'D',decider=decide,answerer=answer,
@@ -47,7 +47,7 @@ def test_turn_soft_cap_answers_from_the_evidence_already_gathered():
 
 def test_a_turn_stopped_by_the_time_cap_never_shows_its_internal_code():
     def decide(messages,tools):
-        turn.started=time.monotonic()-100
+        turn.started=time.monotonic()-direct.SOFT_TURN_SECONDS-10
         return {'tool_calls':[{'id':'1','function':{'name':'query_stock_prices','arguments':json.dumps({'symbol':'AMD'})}}]}
     ctx=AgentRuntimeContext('custom','test','dummy',classifier=lambda _:'D',decider=decide,answerer=lambda messages:'AMD 收盘价为 999 美元 [1]。',
         executor=lambda *_:{'ok':True,'data':[{'id':'p','symbol':'AMD','close':100}]})
@@ -70,7 +70,7 @@ def test_a_capped_turn_still_repairs_its_closing_answer():
     steps=iter([{'tool_calls':[{'id':'1','function':{'name':'query_stock_prices','arguments':json.dumps({'symbol':'AMD'})}}]},
                 {'content':'AMD 已保存收盘价 100 美元 [1]。'}])
     def decide(messages,tools):
-        turn.started=time.monotonic()-100
+        turn.started=time.monotonic()-direct.SOFT_TURN_SECONDS-10
         return next(steps)
     ctx=AgentRuntimeContext('custom','test','dummy',classifier=lambda _:'D',decider=decide,answerer=lambda messages:'AMD 已保存收盘价 999 美元 [1]。',
         executor=lambda *_:{'ok':True,'data':[{'id':'p','symbol':'AMD','close':100}]})

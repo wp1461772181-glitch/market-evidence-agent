@@ -22,12 +22,12 @@ def test_a_failure_is_told_in_words_without_an_internal_code(code, fragment):
 def test_the_provider_timeouts_are_longer_and_bounded(monkeypatch):
     import importlib
     import app.agent_chat_provider as provider
-    assert provider.PROVIDER_REQUEST_SECONDS >= 30 and provider.PROVIDER_STREAM_SECONDS >= 60
+    assert provider.PROVIDER_REQUEST_SECONDS >= 180 and provider.PROVIDER_STREAM_SECONDS >= 600
     monkeypatch.setenv("AGENT_PROVIDER_TIMEOUT_SECONDS", "9999")
     monkeypatch.setenv("AGENT_PROVIDER_STREAM_SECONDS", "1")
     reloaded = importlib.reload(provider)
     try:
-        assert reloaded.PROVIDER_REQUEST_SECONDS == 90 and reloaded.PROVIDER_STREAM_SECONDS == 30
+        assert reloaded.PROVIDER_REQUEST_SECONDS == 600 and reloaded.PROVIDER_STREAM_SECONDS == 30
     finally:
         monkeypatch.undo()
         importlib.reload(provider)

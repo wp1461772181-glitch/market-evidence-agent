@@ -46,7 +46,6 @@ def test_final_stream_collects_openrouter_reasoning_details(monkeypatch):
 
 
 @pytest.mark.parametrize("event",[
-    b'data: {"choices":[{"delta":{"content":"partial"},"finish_reason":"length"}]}\n\ndata: [DONE]\n\n',
     b'data: {"choices":[{"delta":{"content":"partial"},"finish_reason":"tool_calls"}]}\n\ndata: [DONE]\n\n',
     b'data: not-json\n\n',
     b'data: {"choices":[{"delta":{"content":"partial"}}]}\n\ndata: [DONE]\n\n',
@@ -203,3 +202,29 @@ def test_concurrent_turn_transport_scopes_close_independently(monkeypatch):
     async def exercise():await asyncio.gather(turn(),turn(True))
     asyncio.run(exercise())
     assert len(created)==2 and all(c.is_closed for c in created)
+
+
+def test_an_answer_cut_by_the_output_limit_is_still_delivered(monkeypatch):
+    text,_=collect([b'data: {"choices":[{"delta":{"content":"partial"},"finish_reason":"length"}]}\n\ndata: [DONE]\n\n'],monkeypatch)
+    assert text=="partial"
+
+
+def test_a_decision_cut_by_the_output_limit_keeps_text_but_not_a_cut_tool_call(monkeypatch):
+    text=b'data: {"choices":[{"delta":{"content":"done"},"finish_reason":"length"}]}\n\ndata: [DONE]\n\n'
+    transport(monkeypatch,httpx.Response(200,headers={"content-type":"text/event-stream"},stream=Chunks([text])))
+    _,message=asyncio.run(provider._post("deepseek","test-key",{"stream":True}))
+    assert message["content"]=="done"
+    cut=(b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"a","function":{"name":"web_research","arguments":"{\\"q"}}]},'
+         b'"finish_reason":"length"}]}\n\ndata: [DONE]\n\n')
+    transport(monkeypatch,httpx.Response(200,headers={"content-type":"text/event-stream"},stream=Chunks([cut])))
+    with pytest.raises(HTTPException) as error: asyncio.run(provider._post("deepseek","test-key",{"stream":True}))
+    assert error.value.detail=="provider_incomplete_response"
+
+
+def test_a_long_chinese_think_past_one_megabyte_is_not_too_large(monkeypatch):
+    # The NewsBot failure: thinking in \u escapes passed the old 1 MB / 64 KB caps long before max_tokens.
+    think=json.dumps({"choices":[{"delta":{"reasoning_content":"想"*20000}}]}).encode()
+    chunks=[b"data: "+think+b"\n\n"]*10+[b'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n']
+    assert sum(map(len,chunks))>1_000_000
+    text,_=collect(chunks,monkeypatch)
+    assert text=="ok"
