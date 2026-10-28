@@ -188,20 +188,27 @@ function BotProfileTab({ bot, onChanged, onDeleted }: { bot: Bot; onChanged: (bo
   </div>;
 }
 
-/** The 工作区 tab: where the line's work points — its focus companies and the research pages they open. */
-function BotWorkspaceTab({ bot, symbol, onOpenCompany }: { bot: Bot; symbol: string; onOpenCompany: (ticker: string) => void }) {
+type OpenCompany = (ticker: string, section?: "overview" | "forecast") => void;
+
+/** The 工作区 tab: where the line's work points — its focus companies and the research pages they open.  预测
+ * (forecast, revision, maturity review, replay) lives on the company pages, never as price talk in the line. */
+function BotWorkspaceTab({ bot, symbol, onOpenCompany }: { bot: Bot; symbol: string; onOpenCompany: OpenCompany }) {
   const { t } = useLocale();
   const companies = bot.focus.companies;
+  const links = (ticker: string, name?: string | null) => <li key={ticker} className="bot-focus-item"><span className="bot-focus-name">{ticker}{name ? ` · ${name}` : ""}</span>
+    <span className="bot-focus-links"><button type="button" className="text-button" onClick={() => onOpenCompany(ticker)}>{t("总览")} →</button>
+      <button type="button" className="text-button" onClick={() => onOpenCompany(ticker, "forecast")}>{t("预测工作台")} →</button></span></li>;
   return <div className="bot-workspace">
-    <p className="fine-print">{t("当前股票")}：<strong>{symbol}</strong></p>
-    {companies.length ? <ul className="bot-focus-list">{companies.map(c => <li key={c.symbol}><button type="button" className="secondary-action" onClick={() => onOpenCompany(c.symbol)}>{c.symbol}{c.name ? ` · ${c.name}` : ""} →</button></li>)}</ul>
-      : <p>{t("这个 bot 没有关注公司；任何公司都能问。")}</p>}
+    <h3>{t("当前股票")}</h3>
+    <ul className="bot-focus-list">{links(symbol)}</ul>
+    {companies.length ? <><h3>{t("关注公司")}</h3><ul className="bot-focus-list">{companies.filter(c => c.symbol !== symbol).map(c => links(c.symbol, c.name))}</ul></>
+      : <p className="fine-print">{t("这个 bot 没有关注公司；任何公司都能问。")}</p>}
     {bot.focus.theme && <p>{t("关注主题")}：{bot.focus.theme}</p>}
     <p className="fine-print">{t("隔离的是记忆和注意力，不是数据：任何 bot 都能查所有公司的数据，工具范围限定的除外。")}</p>
   </div>;
 }
 
-export function BotSide({ bot, symbol, onOpenCompany, onChanged, onDeleted }: { bot: Bot; symbol: string; onOpenCompany: (ticker: string) => void; onChanged: (bot: Bot) => void; onDeleted: () => void }) {
+export function BotSide({ bot, symbol, onOpenCompany, onChanged, onDeleted }: { bot: Bot; symbol: string; onOpenCompany: OpenCompany; onChanged: (bot: Bot) => void; onDeleted: () => void }) {
   const { t } = useLocale();
   const [tab, setTab] = useState<"workspace" | "profile">("workspace");
   return <aside className="bot-side" aria-label={`${bot.name} · ${t("档案")}`}>

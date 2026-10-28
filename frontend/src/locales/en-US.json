@@ -1591,5 +1591,7 @@
   "请写一句话说明什么时候用（最多 120 字）。": "Write one line on when to use it (at most 120 characters).",
   "请写步骤（最多 6000 字）。": "Write the steps (at most 6000 characters).",
   "至少选一个工具。": "Pick at least one tool.",
-  "技能太多了（最多 60 个）。": "Too many skills (at most 60)."
+  "技能太多了（最多 60 个）。": "Too many skills (at most 60).",
+  "预测、修订与回放": "Forecasts, revisions and replay",
+  "关注公司": "Focus companies"
 }

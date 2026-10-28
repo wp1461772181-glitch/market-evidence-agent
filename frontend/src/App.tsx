@@ -26,10 +26,11 @@ type SupportedSymbol = string;
 type FilingState = { kind: "idle" } | { kind: "loading" } | { kind: "ready"; data: FilingInventory } | { kind: "error"; message: string };
 type WorkspaceSection = "overview" | "forecast" | "evidence" | "materials" | "revisions" | "evaluation" | "replay" | "agent" | "bot" | "admin" | "briefs" | "skills" | "memory" | "me";
 type ResearchSection = Exclude<WorkspaceSection, "agent" | "bot" | "admin" | "briefs" | "skills" | "memory" | "me">;
-// The personal-agent navigation groups the older sections: 公司 holds 总览 and the 预测 tab (预测, 修订,
-// 到期评估, 历史回放); 资料库 holds 材料库 and 证据.  The older hashes stay the addresses, so links inside
+// The personal-agent navigation groups the older sections: 公司 holds 总览; 预测 (its own sidebar entry since
+// the bot-first sidebar buried it two clicks deep under 公司) holds 预测工作台, 修订, 到期评估 and 历史回放;
+// 资料库 holds 材料库 and 证据.  The older hashes stay the addresses, so links inside
 // the older pages (#materials, #evidence/<id>/…) and the agent's open_page keep working unchanged.
-type NavGroup = "chat" | "briefs" | "company" | "library" | "skills" | "memory" | "settings";
+type NavGroup = "chat" | "briefs" | "company" | "forecast" | "library" | "skills" | "memory" | "settings";
 const FORECAST_TABS = ["forecast", "revisions", "evaluation", "replay"] as const;
 const LIBRARY_TABS = ["materials", "evidence"] as const;
 const HASH_ALIASES: Record<string, WorkspaceSection> = { chat: "agent", company: "overview", library: "materials", settings: "admin" };
@@ -39,9 +40,10 @@ function navGroup(section: WorkspaceSection): NavGroup {
   if (section === "briefs" || section === "skills" || section === "memory") return section;
   if (section === "me") return "memory";
   if ((LIBRARY_TABS as readonly string[]).includes(section)) return "library";
+  if ((FORECAST_TABS as readonly string[]).includes(section)) return "forecast";
   return "company";
 }
-function isResearchSection(section: WorkspaceSection): section is ResearchSection { const group = navGroup(section); return group === "company" || group === "library"; }
+function isResearchSection(section: WorkspaceSection): section is ResearchSection { const group = navGroup(section); return group === "company" || group === "forecast" || group === "library"; }
 const WORKSPACE_SECTION_TITLE: Record<ResearchSection, string> = {
   overview: "研究总览", forecast: "预测工作台", evidence: "证据中心", materials: "材料库", revisions: "预测修订", evaluation: "到期评估", replay: "历史回放",
 };
@@ -168,10 +170,10 @@ function WorkspaceApp({onModeChange}:{onModeChange:(mode:"guest"|"personal")=>vo
     setActiveSection(section);
   }
 
-  function openStock(ticker: SupportedSymbol) {
+  function openStock(ticker: SupportedSymbol, section: WorkspaceSection = "overview") {
     if (ticker === requestedSymbol) setRetryKey((value) => value + 1);
     else setRequestedSymbol(ticker);
-    navigate("overview");
+    navigate(section);
   }
 
   useEffect(() => {
@@ -198,7 +200,7 @@ function WorkspaceApp({onModeChange}:{onModeChange:(mode:"guest"|"personal")=>vo
   const botRail = personal ? (close: () => void) => <BotRailList bots={botList.bots} confirmActive={activeSection === "briefs"} onConfirm={() => { close(); navigate("briefs"); }} error={botList.error} activeBotId={activeBot?.id ?? null} onOpen={bot => { close(); openBot(bot); }} onNew={() => { close(); setNewBotOpen(true); }} /> : undefined;
   const newBotDialog = newBotOpen && <NewBotDialog onClose={() => setNewBotOpen(false)} onCreated={bot => { setNewBotOpen(false); void botList.reload().then(() => openBot(bot)); }} />;
   const shellProps = { activeSection, navigate, symbol: requestedSymbol, symbols, onSelectStock: openStock, watchInput, setWatchInput, addWatchSymbol, watchError, setWatchError, onModeChange, botRail, overlay: newBotDialog };
-  if (activeBot) return <Shell {...shellProps}><BotPage bot={activeBot} symbol={requestedSymbol} onOpenCompany={ticker => { const clean = normalizeTicker(ticker); if (clean) { if (!symbols.includes(clean) && symbols.length < MAX_WATCHLIST) setSymbols(items => [...items, clean]); openStock(clean); } }} onChanged={() => void botList.reload()} onDeleted={() => { void botList.reload(); navigate("agent"); }} onSettings={() => navigate("admin")} onModeChange={onModeChange} /></Shell>;
+  if (activeBot) return <Shell {...shellProps}><BotPage bot={activeBot} symbol={requestedSymbol} onOpenCompany={(ticker, section) => { const clean = normalizeTicker(ticker); if (clean) { if (!symbols.includes(clean) && symbols.length < MAX_WATCHLIST) setSymbols(items => [...items, clean]); openStock(clean, section === "forecast" ? "forecast" : "overview"); } }} onChanged={() => void botList.reload()} onDeleted={() => { void botList.reload(); navigate("agent"); }} onSettings={() => navigate("admin")} onModeChange={onModeChange} /></Shell>;
   if (personal && activeSection === "agent" && !pastConversation && !botList.loaded) return <Shell {...shellProps}><main className="workspace"><p role="status">{translatePhrase("正在读取…")}</p></main></Shell>;
   if (activeSection === "bot") return <Shell {...shellProps}><main className="workspace"><p role="status">{botList.loaded ? translatePhrase("bot 不存在或已删除。") : translatePhrase("正在读取…")}</p></main></Shell>;
   if (activeSection === "agent") return <Shell {...shellProps}><AgentChatPanel onSettings={() => navigate("admin")} onModeChange={onModeChange} /></Shell>;
@@ -240,7 +242,7 @@ function WorkspaceApp({onModeChange}:{onModeChange:(mode:"guest"|"personal")=>vo
 }
 
 /** A bot's page: its one line in the middle, 工作区 / 档案 on the right.  Its turns go out with only its id. */
-function BotPage({ bot, symbol, onOpenCompany, onChanged, onDeleted, onSettings, onModeChange }: { bot: Bot; symbol: string; onOpenCompany: (ticker: string) => void; onChanged: () => void; onDeleted: () => void; onSettings: () => void; onModeChange: (mode: "guest" | "personal") => void }) {
+function BotPage({ bot, symbol, onOpenCompany, onChanged, onDeleted, onSettings, onModeChange }: { bot: Bot; symbol: string; onOpenCompany: (ticker: string, section?: "overview" | "forecast") => void; onChanged: () => void; onDeleted: () => void; onSettings: () => void; onModeChange: (mode: "guest" | "personal") => void }) {
   const selectBot = useSelectBot();
   useEffect(() => { void selectBot(bot); }, [bot]); // eslint-disable-line react-hooks/exhaustive-deps
   return <AgentChatPanel bot={bot} onSettings={onSettings} onModeChange={onModeChange} onTurnSettled={onChanged} side={<BotSide key={bot.id} bot={bot} symbol={symbol} onOpenCompany={onOpenCompany} onChanged={onChanged} onDeleted={onDeleted} />} />;
@@ -416,7 +418,8 @@ function Shell({ activeSection, navigate, symbol, symbols, onSelectStock, watchI
   }, [activeSection]);
   const nav: Array<{ id: WorkspaceSection; group: NavGroup; label: string; hint: string; icon: string }> = [
     { id: "agent", group: "chat", label: t("对话"), hint: t("首页"), icon: "✳" },
-    { id: "overview", group: "company", label: t("公司"), hint: t("总览与预测"), icon: "◌" },
+    { id: "overview", group: "company", label: t("公司"), hint: t("研究总览"), icon: "◌" },
+    { id: "forecast", group: "forecast", label: t("预测"), hint: t("预测、修订与回放"), icon: "◔" },
     { id: "materials", group: "library", label: t("资料库"), hint: t("证据与材料"), icon: "▤" },
     { id: "skills", group: "skills", label: t("技能"), hint: t("做事的步骤"), icon: "⌁" },
     { id: "memory", group: "memory", label: t("记忆"), hint: t("画像和往事"), icon: "◇" },
@@ -425,7 +428,7 @@ function Shell({ activeSection, navigate, symbol, symbols, onSelectStock, watchI
   const mobileTabs: Array<{ id: WorkspaceSection; label: string; icon: string; active: boolean }> = [
     { id: "agent", label: t("对话"), icon: "✳", active: activeSection === "agent" },
     { id: "briefs", label: t("待你确认"), icon: "✉", active: activeSection === "briefs" },
-    { id: "overview", label: t("公司"), icon: "◌", active: navGroup(activeSection) === "company" },
+    { id: "overview", label: t("公司"), icon: "◌", active: navGroup(activeSection) === "company" || navGroup(activeSection) === "forecast" },
     { id: "me", label: t("我"), icon: "☺", active: ["me", "memory", "skills", "admin", "materials", "evidence"].includes(activeSection) },
   ];
   const research = isResearchSection(activeSection);
@@ -499,7 +502,7 @@ function SectionTabs({ section, navigate }: { section: WorkspaceSection; navigat
   const labels: Record<string, string> = { overview: "总览", forecast: "预测", revisions: "预测修订", evaluation: "到期评估", replay: "历史回放", materials: "材料库", evidence: "证据" };
   const tab = (id: WorkspaceSection, active: boolean, label = labels[id]) => <button key={id} type="button" aria-current={active ? "page" : undefined} onClick={() => navigate(id)}>{t(label)}</button>;
   if (group === "library") return <nav className="section-tabs" aria-label={t("资料库")}>{LIBRARY_TABS.map(id => tab(id, section === id))}</nav>;
-  if (group !== "company") return null;
+  if (group !== "company" && group !== "forecast") return null;
   return <>
     <nav className="section-tabs" aria-label={t("公司")}>{tab("overview", section === "overview")}{tab("forecast", forecastTab)}</nav>
     {forecastTab && <nav className="section-tabs is-secondary" aria-label={t("预测")}>{FORECAST_TABS.map(id => tab(id, section === id, id === "forecast" ? "预测工作台" : labels[id]))}</nav>}
