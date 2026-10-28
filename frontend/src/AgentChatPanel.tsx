@@ -628,7 +628,7 @@ function TelegramBindCard() {
 
   return <section className="agent-settings-card" aria-labelledby="telegram-bind-title">
     <h2 id="telegram-bind-title">{t("Telegram 随身入口")}</h2>
-    <p>{t("绑定 Telegram 账号后，手机上发的消息走同一个 Agent 接口，进「手机」对话。确认卡变成按钮。简报和提醒都推送到这里。")}</p>
+    <p>{t("绑定 Telegram 账号后：直接发的消息进默认 bot「助理」的那条线，回复哪个 bot 的消息就进哪个 bot，也可以用「@名字」点名。bot 按自己的说明调用「发 Telegram 通知」，每个 bot 每天有上限（在 bot 档案里设）。确认卡变成按钮。")}</p>
     <p><strong>{t("状态")}：</strong>{summary}</p>
     {(!tg?.configured || !tg.has_token) && <><label>{t("Bot Token（从 @BotFather 获取）")}<input type="password" value={token} maxLength={256} placeholder="1234567890:AA..." onChange={e => setToken(e.target.value)} /></label>
     <div className="chat-archive-tools"><button type="button" className="primary-action" disabled={busy || !token.trim()} onClick={() => void saveToken()}>{busy ? t("正在保存…") : t("保存 Token")}</button></div></>}

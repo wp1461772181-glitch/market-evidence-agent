@@ -189,6 +189,12 @@ def create_tables() -> None:
     # Stage C: tasks and inbox entries belong to a bot; NULL (every existing row) is adopted by the default bot.
     from .agent_tasks import ensure_bot_columns as ensure_task_bot_columns
     ensure_task_bot_columns()
+    # Stage D: Telegram ids are BIGINT; brief tasks that pushed every run now leave it to notify_telegram.
+    from .agent_telegram import ensure_columns as ensure_telegram_columns
+    from .agent_recall import safe_hook as _safe_hook
+    from .agent_tasks import migrate_brief_channels
+    ensure_telegram_columns()
+    _safe_hook(migrate_brief_channels)
     # Bots (second edition): the conversation's bot column, the earlier model settings folded into the
     # catalog once, and a line per catalog model saying whether it can be used (never a key).
     from . import agent_model_catalog as model_catalog

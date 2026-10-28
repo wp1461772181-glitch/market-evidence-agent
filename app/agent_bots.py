@@ -37,9 +37,10 @@ _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 
 # Not data tools: asking the user, choosing from a result, arithmetic on cited figures, re-reading an old
 # citation, moving the browser, and suggesting a write (whose target is still checked against the scope).
-# They stay in every bot, so a narrow scope never leaves a bot unable to ask or to cite.
+# They stay in every bot, so a narrow scope never leaves a bot unable to ask or to cite.  notify_telegram too:
+# whether a bot notifies is its instruction's call, and its daily cap (0: never) is the switch.
 ALWAYS_ON = frozenset({"ask_user", "use_result_set", "calculate", "read_history_citation", "select_stock",
-                       "open_page", "request_action"})
+                       "open_page", "request_action", "notify_telegram"})
 
 TEMPLATES = {
     "blank": {"label": "空白", "name": "", "title": "", "description": "", "tool_scope": None},

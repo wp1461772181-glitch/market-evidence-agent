@@ -243,6 +243,10 @@ def _apply(task: AgentTask, fields: dict, now: datetime) -> None:
     channel = fields.get("channel", task.channel or "inbox")
     if channel not in CHANNELS:
         raise TaskError("invalid_channel")
+    if kind == "brief":
+        # Whether a brief notifies is its bot's call (notify_telegram, per the instruction); only alerts,
+        # which run no model, keep the 也发 Telegram switch.
+        channel = "inbox"
     run_cap = int(fields.get("run_token_cap", task.run_token_cap or DEFAULT_RUN_TOKENS))
     daily_cap = int(fields.get("daily_token_cap", task.daily_token_cap or DEFAULT_DAILY_TOKENS))
     if not RUN_TOKENS_RANGE[0] <= run_cap <= RUN_TOKENS_RANGE[1] or not run_cap <= daily_cap <= DAILY_TOKENS_MAX:
@@ -266,6 +270,24 @@ def ensure_bot_columns() -> None:
         for table in ("agent_tasks", "agent_inbox_items"):
             connection.execute(sql(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS bot_id UUID"))
             connection.execute(sql(f"CREATE INDEX IF NOT EXISTS ix_{table}_bot_id ON {table} (bot_id)"))
+
+
+BRIEF_TELEGRAM_NOTE = ("（迁移说明：这个任务以前每次运行都推送到 Telegram。现在由 bot 判断：有值得告诉我的新结论时，"
+                       "用 notify_telegram 发给我。）")
+
+
+def migrate_brief_channels() -> int:
+    """Stage D: a brief task that pushed every run to Telegram gets that said in its instruction (the bot now
+    decides, with notify_telegram) and keeps only the conversation channel.  Idempotent."""
+    with SessionLocal() as db:
+        rows = db.scalars(select(AgentTask).where(AgentTask.kind == "brief", AgentTask.channel == "telegram")).all()
+        for task in rows:
+            instruction = (task.instruction or "").strip()
+            if BRIEF_TELEGRAM_NOTE not in instruction:
+                instruction = (instruction + "\n" + BRIEF_TELEGRAM_NOTE).strip()[:INSTRUCTION_MAX_CHARS + len(BRIEF_TELEGRAM_NOTE)]
+            task.instruction, task.channel = instruction, "inbox"
+        db.commit()
+        return len(rows)
 
 
 def _task_bot(db, owner_hash: str, bot_id) -> uuid.UUID:
@@ -462,10 +484,12 @@ def serialize_item(row: AgentInboxItem) -> dict:
 
 def add_item(owner_hash: str, *, section: str, kind: str, title: str, body: str = "", sources: list | None = None,
              payload: dict | None = None, task_id=None, conversation_id=None, dedupe_key: str | None = None, db=None,
-             bot_id=None, post: dict | None = None, now: datetime | None = None) -> bool:
+             bot_id=None, post: dict | None = None, now: datetime | None = None, telegram: bool = False) -> bool:
     """Store one inbox entry; False when an entry with the same ``dedupe_key`` exists (alerts run again
     and again over the same window).  ``post`` (a brief of a bot's task: ``{"head", "citations"}``) also
-    posts it in the bot's line, now or, while the owner's turn there is unfinished, at the next flush."""
+    posts it in the bot's line, now or, while the owner's turn there is unfinished, at the next flush.
+    ``telegram`` (an alerts task with 也发 Telegram) also queues it for the bound chat through the same send
+    path as notify_telegram, within the bot's daily cap; a full cap or no bound chat only skips the message."""
     if section not in SECTIONS:
         raise TaskError("invalid_section")
     payload = dict(payload or {})
@@ -487,6 +511,16 @@ def add_item(owner_hash: str, *, section: str, kind: str, title: str, body: str 
             return False
         if payload.get("post_pending"):
             post_to_line(session, session.get(AgentInboxItem, identity), now or datetime.now(UTC))
+        if telegram and bot_id:
+            from . import agent_telegram as telegram_out
+            bot = session.get(AgentBot, uuid.UUID(str(bot_id)))
+            cited = [s.get("ordinal") for s in sources or [] if isinstance(s, dict) and type(s.get("ordinal")) is int]
+            text = telegram_out.render(bot.name if bot else "", f"{title}\n{body}", list(sources or []), cited)
+            try:
+                with session.begin_nested():
+                    telegram_out.enqueue(session, owner_hash, bot_id, text, source="alert", now=now, inbox_item_id=identity)
+            except telegram_out.NotifyError:
+                pass
         return True
     if db is not None:
         return store(db)

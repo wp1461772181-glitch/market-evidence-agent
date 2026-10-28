@@ -216,7 +216,7 @@ def _post(task: AgentTask | None, now: datetime, sources: list[dict]) -> dict:
     """What add_item needs to post an alert in the task's bot line: its head row and its one source."""
     if task is None or task.bot_id is None:
         return {}
-    return {"bot_id": task.bot_id, "now": now,
+    return {"bot_id": task.bot_id, "now": now, "telegram": task.channel == "telegram",
             "post": {"head": tasks.post_head(task.name, now, task.timezone), "citations": sources}}
 
 
@@ -244,7 +244,7 @@ def filing_alerts(db, owner: str, task_id, symbols: list[str], since: datetime, 
 def _alert_payload(task: AgentTask | None) -> dict:
     if task is None:
         return {}
-    return {"task_name": task.name, **({"channel_pending": "telegram"} if task.channel == "telegram" else {})}
+    return {"task_name": task.name}
 
 
 def news_alerts(db, owner: str, task_id, symbols: list[str], *, sources=None, now: datetime | None = None,
@@ -428,7 +428,7 @@ async def run_brief(task_id, credential: str, *, now: datetime, missed: int = 1)
             break
     del model
     conversation = result["conversation_id"]
-    payload = {"task_name": name, **({"channel_pending": "telegram"} if channel == "telegram" else {}),
+    payload = {"task_name": name,
                **({"missed_slots": missed} if missed > 1 else {})}
     for action in result["actions"]:
         title = str((action.get("display") or {}).get("title") or "Agent 建议的操作")

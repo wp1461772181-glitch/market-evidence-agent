@@ -1,6 +1,6 @@
 import uuid
 from datetime import date, datetime
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint, Uuid, func
+from sqlalchemy import BigInteger, Boolean, Date, DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint, Uuid, func
 from sqlalchemy.orm import Mapped, mapped_column
 from .database import Base
 
@@ -259,9 +259,32 @@ class AgentTelegramBind(Base):
     owner_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
     bot_token_cipher: Mapped[str | None] = mapped_column(Text, nullable=True)
     bot_username: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    chat_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Telegram ids pass 2**31 (BIGINT; older tables are widened by agent_telegram.ensure_columns).
+    chat_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     bind_code_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     conversation_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
     bound_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class AgentTelegramMessage(Base):
+    """One message to or from the owner's Telegram chat, by bot (second edition, stage D).
+
+    ``source`` notify (a bot called notify_telegram) and alert (an alerts task with 也发 Telegram) are queued
+    here by the API or the runner and sent by the bridge, which alone holds the bot token; they count
+    against the bot's daily cap.  ``source`` reply is an answer the bridge sent.  ``telegram_message_id``
+    lets a reply to the message find its bot again.  The recipient is never stored per message: the
+    bridge sends only to the bound chat."""
+    __tablename__ = "agent_telegram_messages"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    owner_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    bot_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True, index=True)
+    source: Mapped[str] = mapped_column(String(10), nullable=False)          # notify | alert | reply
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(10), nullable=False, default="pending")  # pending | sent | failed
+    telegram_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
+    inbox_item_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

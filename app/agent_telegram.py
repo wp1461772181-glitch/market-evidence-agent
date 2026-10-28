@@ -3,16 +3,27 @@
 The bot token is encrypted with secret_box and never returned by any endpoint.  A one-time bind code,
 stored as a hash, lets the owner prove they control a Telegram account; once confirmed, the bridge
 only handles messages from that chat.  Strangers are ignored.
+
+Second edition, stage D: sending is a tool.  A bot calls ``notify_telegram`` (``notify`` here): the text
+starts with the bot's name, every figure carries one of this turn's evidence numbers, the sources become
+links, and the bot's daily cap holds.  The recipient is the bound chat, decided by the bridge, never by the
+model: the tool has no recipient argument and nothing here stores one.  Alerts with 也发 Telegram use the
+same queue (``enqueue``).  ``route`` finds the bot a message from the owner is for: the bot whose message
+it replies to, else an ``@名字`` prefix, else the default bot.
 """
 from __future__ import annotations
 
 import hashlib
+import json
+import re
 import secrets
-from datetime import UTC, datetime
+import uuid
+from datetime import UTC, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import func, select, text as sql
 
-from .agent_chat_models import AgentTelegramBind
+from .agent_chat_models import AgentBot, AgentTelegramBind, AgentTelegramMessage
 from .database import SessionLocal
 from .secret_box import CredentialEncryptionError, decrypt_secret, encrypt_secret
 
@@ -181,3 +192,192 @@ def check_bind_code(owner_hash: str, code: str) -> bool:
         if row is None or not row.bind_code_hash:
             return False
         return secrets.compare_digest(row.bind_code_hash, _make_code_hash(code))
+
+# --- stage D: notify_telegram, the outbox and routing ---------------------------------------------------
+
+NOTIFY_MAX_CHARS = 1500
+MESSAGE_MAX_CHARS = 3800
+CAP_TIMEZONE = "Asia/Shanghai"
+SEND_ATTEMPTS = 3
+COUNTED = ("notify", "alert")
+_MARKER = re.compile(r"\[(\d{1,3})\]")
+_SEGMENT = re.compile(r"[^。！？!?；;\n]+")
+_DIGIT = re.compile(r"\d")
+
+
+class NotifyError(ValueError):
+    """A refused notification; the message is a short code the model and the audit see."""
+
+
+def ensure_columns() -> None:
+    """Widen the bound chat and user ids of a table made with 32-bit columns (Telegram ids pass 2**31)."""
+    from .database import engine
+    with engine.begin() as connection:
+        for column in ("chat_id", "user_id"):
+            connection.execute(sql(f"ALTER TABLE agent_telegram_bind ALTER COLUMN {column} TYPE BIGINT"))
+
+
+def _day_start(now: datetime) -> datetime:
+    zone = ZoneInfo(CAP_TIMEZONE)
+    local = now.astimezone(zone)
+    return datetime.combine(local.date(), time(0, 0), tzinfo=zone).astimezone(UTC)
+
+
+def sent_today(db, owner_hash: str, bot_id, now: datetime) -> int:
+    return int(db.scalar(select(func.count()).select_from(AgentTelegramMessage).where(
+        AgentTelegramMessage.owner_hash == owner_hash, AgentTelegramMessage.bot_id == bot_id,
+        AgentTelegramMessage.source.in_(COUNTED), AgentTelegramMessage.created_at >= _day_start(now))) or 0)
+
+
+def _bound(db, owner_hash: str) -> bool:
+    row = db.get(AgentTelegramBind, owner_hash)
+    return bool(row is not None and row.bot_token_cipher and row.chat_id)
+
+
+def enqueue(db, owner_hash: str, bot_id, text: str, *, source: str, now: datetime | None = None,
+            inbox_item_id=None) -> int:
+    """Queue one message of a bot for the bound chat (the one send path of notify and alerts).  Returns how
+    many it may still send today.  Raises NotifyError telegram_not_bound or notify_daily_cap."""
+    now = now or datetime.now(UTC)
+    bot = db.get(AgentBot, uuid.UUID(str(bot_id))) if bot_id else None
+    if bot is None or bot.owner_hash != owner_hash:
+        raise NotifyError("unknown_bot")
+    if not _bound(db, owner_hash):
+        raise NotifyError("telegram_not_bound")
+    used = sent_today(db, owner_hash, bot.id, now)
+    if used >= bot.daily_notify_cap:
+        raise NotifyError("notify_daily_cap")
+    db.add(AgentTelegramMessage(owner_hash=owner_hash, bot_id=bot.id, source=source, text=text[:MESSAGE_MAX_CHARS],
+                                status="pending", created_at=now,
+                                inbox_item_id=uuid.UUID(str(inbox_item_id)) if inbox_item_id else None))
+    db.flush()
+    return bot.daily_notify_cap - used - 1
+
+
+def check_evidence(text: str, evidence_ids: list[int], ordinals: set[int]) -> list[int]:
+    """The evidence numbers a notification uses, after the rules: each [n] in the text and each listed id
+    is one of this turn's evidence numbers, and every sentence with a figure in it carries a [n]."""
+    used = [int(n) for n in _MARKER.findall(text)]
+    wanted = list(dict.fromkeys([*evidence_ids, *used]))
+    if any(n not in ordinals for n in wanted):
+        raise NotifyError("unknown_evidence")
+    for segment in _SEGMENT.findall(text):
+        if _DIGIT.search(_MARKER.sub("", segment)) and not _MARKER.search(segment):
+            raise NotifyError("unsupported_number")
+    return wanted
+
+
+def render(bot_name: str, text: str, citations: list[dict], used: list[int]) -> str:
+    """The message as sent: the bot's name first, the owner-facing text, then each used source with its link."""
+    lines = [f"【{bot_name}】", text.strip()]
+    sources = []
+    by_ordinal = {c.get("ordinal"): c for c in citations if isinstance(c, dict)}
+    for ordinal in sorted(used):
+        item = by_ordinal.get(ordinal) or {}
+        title = " ".join(str(item.get("title") or item.get("source_title") or "").split())[:120] or "来源"
+        link = item.get("source_url") or item.get("url")
+        sources.append(f"[{ordinal}] {title}" + (f" {link}" if isinstance(link, str) and link.startswith("http") else ""))
+    if sources:
+        lines += ["", "来源：", *sources]
+    return "\n".join(lines)
+
+
+def notify(owner_hash: str, bot_id, text: str, evidence_ids: list[int], citations: list[dict], *,
+           now: datetime | None = None) -> dict:
+    """The notify_telegram tool: queue the bot's message for the owner's bound chat.  ``citations`` are this
+    turn's numbered evidence; nothing else can be cited."""
+    text = str(text or "").strip()
+    if not text or len(text) > NOTIFY_MAX_CHARS:
+        raise NotifyError("invalid_text")
+    ordinals = {c["ordinal"] for c in citations if isinstance(c, dict) and type(c.get("ordinal")) is int}
+    used = check_evidence(text, [int(n) for n in evidence_ids or []], ordinals)
+    with SessionLocal() as db:
+        if not bot_id:
+            from .agent_bots import ensure_default_bot
+            bot_id = ensure_default_bot(owner_hash).id
+        bot = db.get(AgentBot, uuid.UUID(str(bot_id)))
+        if bot is None or bot.owner_hash != owner_hash:
+            raise NotifyError("unknown_bot")
+        left = enqueue(db, owner_hash, bot.id, render(bot.name, text, citations, used), source="notify", now=now)
+        db.commit()
+    return {"status": "queued_for_telegram", "remaining_today": left,
+            "note": "已排队发到你绑定的 Telegram；收件人由服务端决定。"}
+
+
+def pending_messages(owner_hash: str, limit: int = 20) -> list[dict]:
+    with SessionLocal() as db:
+        rows = db.scalars(select(AgentTelegramMessage).where(AgentTelegramMessage.owner_hash == owner_hash,
+                                                             AgentTelegramMessage.status == "pending")
+                          .order_by(AgentTelegramMessage.created_at).limit(limit)).all()
+        return [{"id": str(r.id), "bot_id": str(r.bot_id) if r.bot_id else None, "text": r.text} for r in rows]
+
+
+def mark_sent(message_id, telegram_message_id: int | None) -> None:
+    with SessionLocal() as db:
+        row = db.get(AgentTelegramMessage, uuid.UUID(str(message_id)))
+        if row is not None:
+            row.status, row.sent_at, row.telegram_message_id = "sent", datetime.now(UTC), telegram_message_id
+            db.commit()
+
+
+def mark_failed(message_id) -> None:
+    """One more failed attempt; after SEND_ATTEMPTS it stops being retried."""
+    with SessionLocal() as db:
+        row = db.get(AgentTelegramMessage, uuid.UUID(str(message_id)))
+        if row is not None:
+            row.attempts += 1
+            if row.attempts >= SEND_ATTEMPTS:
+                row.status = "failed"
+            db.commit()
+
+
+def record_reply(owner_hash: str, bot_id, text: str, telegram_message_id: int | None) -> None:
+    """An answer the bridge sent for a bot, so a reply to it goes back to that bot.  Not counted in the cap."""
+    with SessionLocal() as db:
+        db.add(AgentTelegramMessage(owner_hash=owner_hash, bot_id=uuid.UUID(str(bot_id)) if bot_id else None,
+                                    source="reply", text=str(text)[:MESSAGE_MAX_CHARS], status="sent",
+                                    telegram_message_id=telegram_message_id, sent_at=datetime.now(UTC)))
+        db.commit()
+
+
+def route(owner_hash: str, text: str, reply_to_message_id: int | None = None) -> dict:
+    """Which bot an owner's Telegram message is for: the bot whose message it replies to; else a leading
+    ``@名字`` naming one of the owner's bots (removed from the text); else the default bot."""
+    from .agent_bots import ensure_default_bot
+    default = ensure_default_bot(owner_hash)
+    text = str(text or "").strip()
+    with SessionLocal() as db:
+        if reply_to_message_id is not None:
+            row = db.scalars(select(AgentTelegramMessage).where(
+                AgentTelegramMessage.owner_hash == owner_hash,
+                AgentTelegramMessage.telegram_message_id == int(reply_to_message_id))
+                .order_by(AgentTelegramMessage.created_at.desc()).limit(1)).first()
+            bot = db.get(AgentBot, row.bot_id) if row is not None and row.bot_id else None
+            if bot is not None and bot.owner_hash == owner_hash:
+                return {"bot_id": str(bot.id), "bot_name": bot.name, "text": text, "via": "reply"}
+        if text.startswith(("@", "＠")):
+            names = sorted(((b.name, b) for b in db.scalars(select(AgentBot).where(AgentBot.owner_hash == owner_hash))),
+                           key=lambda pair: -len(pair[0]))
+            for name, bot in names:
+                if text[1:].startswith(name):
+                    rest = text[1 + len(name):].lstrip(" ：:，,")
+                    return {"bot_id": str(bot.id), "bot_name": bot.name, "text": rest, "via": "mention"}
+    return {"bot_id": str(default.id), "bot_name": default.name, "text": text, "via": "default"}
+
+
+def sse_events(stream_text: str) -> list[tuple[str, dict]]:
+    """The (event, data) pairs of an agent-chat stream: the event name is on its own ``event:`` line."""
+    events = []
+    for block in stream_text.split("\n\n"):
+        name, data = None, []
+        for line in block.split("\n"):
+            if line.startswith("event:"):
+                name = line[6:].strip()
+            elif line.startswith("data:"):
+                data.append(line[5:].strip())
+        if name and data:
+            try:
+                events.append((name, json.loads("\n".join(data))))
+            except json.JSONDecodeError:
+                continue
+    return events

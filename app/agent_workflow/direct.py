@@ -1475,6 +1475,20 @@ class Turn:
                 f'修订在后台计算，通常一两分钟完成，结果会生成新版本，{version} 保留不变。'
                 f'稍后问我「修订好了吗」，我会读出新版本的概率，并和 {version} 对比。')
 
+    async def notify(self,args):
+        """notify_telegram: queue a message of this bot for the owner's bound chat.  Its facts must be this turn's
+        numbered evidence; the recipient, the bot name and the daily cap are the server's (agent_telegram.notify)."""
+        if not self.owner:return tools.error('owner_login_required')
+        from .. import agent_telegram as telegram
+        try:
+            data=await asyncio.to_thread(telegram.notify,self.context.owner_hash,getattr(self.context,'bot_id',None),
+                                         args['text'],args.get('evidence_ids') or [],copy.deepcopy(self.citations))
+        except telegram.NotifyError as exc:
+            self.audit['telegram']='refused:'+str(exc)
+            return tools.error(str(exc))
+        self.audit['telegram']='queued';self.audit['telegram_sent']=self.audit.get('telegram_sent',0)+1
+        return {'ok':True,'data':[data]}
+
     async def request_action(self,args):
         if not self.owner:return tools.error('owner_login_required')
         if self.suggestion_used:return tools.error('suggestion_limit')
@@ -2312,6 +2326,9 @@ class Turn:
                     if not outcome.get('ok'):batch_failed=True
                 elif name=='request_action':
                     self.audit['tool_calls']+=1;outcome=await self.request_action(args);self.feedback.append(outcome)
+                    await self.publish_result(name,outcome)
+                elif name=='notify_telegram':
+                    self.audit['tool_calls']+=1;outcome=await self.notify(args);self.feedback.append(outcome)
                     await self.publish_result(name,outcome)
                 else:
                     outcome=await self.execute_read(name,args);self.replays[signature]=outcome

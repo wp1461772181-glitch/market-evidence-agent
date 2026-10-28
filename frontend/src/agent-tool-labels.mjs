@@ -48,6 +48,7 @@ export const TOOL_LABELS = {
   remember: "记住偏好",
   forget: "忘掉偏好",
   recall_conversations: "回想往事",
+  notify_telegram: "发 Telegram 通知",
 };
 
 /** The display name of a tool, falling back to its identifier when unknown. */

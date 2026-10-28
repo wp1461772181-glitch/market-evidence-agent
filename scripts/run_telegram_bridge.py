@@ -2,18 +2,22 @@
 
 Long-polls the Telegram Bot API with getUpdates (no webhook).  Only handles messages and button presses
 from the bound account in the bound chat; strangers are ignored.  Until a chat is bound it answers
-only /bind <code> (or /start <code>) in a private chat.  Owner text is forwarded to the agent chat API (a fixed conversation named
-「手机」).  Consent cards become inline keyboard buttons with a short id (the real token stays server-side);
-callback_query runs consent.execute once and sends a receipt.  Inbox briefs with channel=telegram are
-delivered to this chat.
+only /bind <code> (or /start <code>) in a private chat.  Owner text goes to a bot's line through the agent
+chat API (second edition, stage D): a reply to a bot's message goes to that bot, a message starting with
+「@名字」 to the bot of that name, anything else to the default bot 「助理」 (whose line the old 「手机」
+conversation was folded into).  Each answer starts with the bot's name and is remembered by its Telegram
+message id, so replying to it continues with that bot.  Consent cards become inline keyboard buttons with
+a short id (the real token stays server-side); callback_query runs consent.execute once and sends a receipt.
+Messages the bots queued (notify_telegram, alerts with 也发 Telegram) are sent from the outbox to the
+bound chat only.
 
     python scripts/run_telegram_bridge.py            # long-poll forever
     python scripts/run_telegram_bridge.py --dry-run  # validate config and exit
 
 The bridge reads the bot token and binding from the database (encrypted), the owner credential from
-data/personal-chat-login.json, and the background model (the LLM key) from the database.  It calls the
-local agent-chat stream endpoint via HTTP, so the API server must be running.  Fails closed when the
-token is missing; with no chat bound yet it waits for /bind.
+data/personal-chat-login.json.  It calls the local agent-chat stream endpoint via HTTP with a bot id only,
+so the model (and its key) comes from the server's catalog for that bot; the API server must be running.
+Fails closed when the token is missing; with no chat bound yet it waits for /bind.
 """
 from __future__ import annotations
 
@@ -35,7 +39,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 TELEGRAM_API = "https://api.telegram.org"
 LOCAL_API = os.environ.get("TELEGRAM_BRIDGE_API_URL", "http://127.0.0.1:8000")
 LONG_POLL_TIMEOUT = 60
-INBOX_CHECK_INTERVAL = 120
+OUTBOX_CHECK_INTERVAL = 30
 MESSAGE_MAX_CHARS = 4000
 ANSWER_MAX_CHARS = 3800
 # httpx puts the request URL, and with it /bot<token>/, into its error text.
@@ -69,7 +73,6 @@ async def main(dry_run: bool = False) -> int:
     credential = _owner_credential()
     from app.agent_chat_store import engine as store_engine, owner_hash
     from app import agent_telegram as tg
-    from app.agent_tasks import load_background_model, add_item
     owner = owner_hash(credential)
 
     bot_token = await asyncio.to_thread(tg.load_bot_token, owner)
@@ -77,44 +80,21 @@ async def main(dry_run: bool = False) -> int:
         print("Telegram bridge: no bot token saved.  Save one in the settings page first.")
         return 0 if dry_run else 1
 
-    model = await asyncio.to_thread(load_background_model, owner)
-    if not model:
-        print("Telegram bridge: no background model configured.  The bridge cannot chat without a model.")
-        return 0 if dry_run else 1
-
     # No chat bound yet is fine: the bridge has to be running to receive the /bind that binds one.
     bind = await asyncio.to_thread(tg.load_bind, owner) or {}
     bound_chat = bind.get("chat_id")
     bound_user = bind.get("user_id")
-    conversation_id = bind.get("conversation_id")
     del bind  # the decrypted token stays in bot_token only
 
     if dry_run:
         print("Bot token: ****" + bot_token[-4:])
         print(f"Bound chat: {bound_chat or '(none yet; send /bind <code> to the bot in a private chat)'}")
-        print(f"Conversation: {conversation_id or '(will create 「手机」 on first message)'}")
-        print(f"Model: {model['provider']} / {model['model']}")
+        print("Model: each bot's model from the server catalog")
         print(f"Local API: {LOCAL_API}")
         return 0
 
     pending_cards: dict[str, dict] = {}
-
-    async def _ensure_conversation() -> str:
-        nonlocal conversation_id
-        if conversation_id:
-            cid = conversation_id
-            try:
-                from app.agent_chat_store import verify_conversation
-                if await verify_conversation(cid, credential):
-                    return cid
-            except Exception:
-                pass
-        cid = await _store_create_conversation(credential)
-        conversation_id = cid
-        await asyncio.to_thread(tg.set_conversation, owner, cid)
-        return cid
-
-    last_inbox_check = 0.0
+    last_outbox_check = 0.0
     offset = 0
 
     print(f"Telegram bridge started.  Chat: {bound_chat or 'none yet, waiting for /bind'}, API: {LOCAL_API}")
@@ -136,9 +116,9 @@ async def main(dry_run: bool = False) -> int:
                 del bind
 
                 now = time.time()
-                if bound_chat is not None and now - last_inbox_check >= INBOX_CHECK_INTERVAL:
-                    await _deliver_inbox(client, credential, owner, bound_chat, tg)
-                    last_inbox_check = now
+                if bound_chat is not None and now - last_outbox_check >= OUTBOX_CHECK_INTERVAL:
+                    await _deliver_outbox(client, owner, bound_chat, tg)
+                    last_outbox_check = now
 
                 updates = await _get_updates(client, bot_token, offset, LONG_POLL_TIMEOUT)
                 if updates is None:
@@ -154,9 +134,8 @@ async def main(dry_run: bool = False) -> int:
                     callback = update.get("callback_query")
 
                     if isinstance(message, dict):
-                        await _handle_message(client, credential, owner, model, message,
-                                              bound_chat, bound_user, pending_cards, tg,
-                                              lambda: _ensure_conversation())
+                        await _handle_message(client, credential, owner, message,
+                                              bound_chat, bound_user, pending_cards, tg)
                     elif isinstance(callback, dict):
                         await _handle_callback(client, callback, pending_cards, owner, credential,
                                                bound_chat, bound_user)
@@ -194,8 +173,8 @@ def _from_owner(chat: dict, sender: dict | None, bound_chat: int, bound_user: in
     return owner_id is not None and isinstance(sender, dict) and sender.get("id") == owner_id
 
 
-async def _handle_message(client, credential: str, owner: str, model: dict, message: dict,
-                          bound_chat: int | None, bound_user: int | None, pending_cards: dict, tg, ensure_conv):
+async def _handle_message(client, credential: str, owner: str, message: dict,
+                          bound_chat: int | None, bound_user: int | None, pending_cards: dict, tg):
     chat = message.get("chat", {})
     text = str(message.get("text") or message.get("caption") or "").strip()
     entities = message.get("entities") or []
@@ -222,18 +201,19 @@ async def _handle_message(client, credential: str, owner: str, model: dict, mess
     if not text:
         return
     bot_token = _bot_token_for_send(owner, tg)
-    cid = await ensure_conv()
-    answer, cards = await _ask_agent(client, credential, owner, model, text, cid)
-    keyboard = _make_keyboard(cards, pending_cards, cid, credential)
-    if answer:
-        chunks = [answer[i:i+ANSWER_MAX_CHARS] for i in range(0, len(answer), ANSWER_MAX_CHARS)]
-        for i, chunk in enumerate(chunks):
-            kb = keyboard if i == len(chunks) - 1 else None
-            await _send_text(client, bot_token, bound_chat, chunk, inline_keyboard=kb)
-    elif keyboard:
-        await _send_text(client, bot_token, bound_chat, "完成。", inline_keyboard=keyboard)
-    else:
-        await _send_text(client, bot_token, bound_chat, "（这条回复没有内容。）")
+    reply_to = (message.get("reply_to_message") or {}).get("message_id")
+    target = await asyncio.to_thread(tg.route, owner, text, reply_to if isinstance(reply_to, int) else None)
+    if not target["text"]:
+        return
+    answer, cards, cid = await _ask_agent(client, credential, target["bot_id"], target["text"])
+    keyboard = _make_keyboard(cards, pending_cards, cid, credential) if cid else None
+    answer = f"【{target['bot_name']}】\n" + (answer.strip() or ("完成。" if keyboard else "（这条回复没有内容。）"))
+    chunks = [answer[i:i+ANSWER_MAX_CHARS] for i in range(0, len(answer), ANSWER_MAX_CHARS)]
+    for i, chunk in enumerate(chunks):
+        kb = keyboard if i == len(chunks) - 1 else None
+        sent = await _send_text(client, bot_token, bound_chat, chunk, inline_keyboard=kb)
+        # Each part is remembered with its bot, so replying to any of them continues with that bot.
+        await asyncio.to_thread(tg.record_reply, owner, target["bot_id"], chunk, sent)
 
 
 async def _handle_bind_command(client, chat: dict, sender: dict | None, owner: str, code: str, tg):
@@ -264,24 +244,14 @@ def _bot_token_for_send(owner: str, tg) -> str:
     return agent_telegram.load_bot_token(owner) or ""
 
 
-async def _ask_agent(client, credential: str, owner: str, model: dict, text: str, conversation_id: str):
-    """Call the local agent-chat stream API and return the answer and any cards."""
+async def _ask_agent(client, credential: str, bot_id: str, text: str):
+    """One turn of the bot (its line, its model from the server catalog).  Returns the answer with its
+    sources listed, any cards, and the conversation id the turn ran in."""
     import httpx
+    from app.agent_telegram import sse_events
 
-    body = {
-        "provider": model["provider"],
-        "model": model["model"],
-        "api_key": model["api_key"],
-        "message": text[:MESSAGE_MAX_CHARS],
-        "conversation_id": conversation_id,
-    }
-    if model.get("base_url"):
-        body["base_url"] = model["base_url"]
-
-    answer_parts: list[str] = []
-    cards: list[dict] = []
-    citations: list[dict] = []
-
+    body = {"bot_id": bot_id, "message": text[:MESSAGE_MAX_CHARS]}
+    raw = ""
     try:
         async with client.stream(
             "POST",
@@ -291,34 +261,28 @@ async def _ask_agent(client, credential: str, owner: str, model: dict, text: str
             timeout=httpx.Timeout(300),
         ) as response:
             response.raise_for_status()
-            buffer = ""
             async for chunk in response.aiter_bytes():
-                buffer += chunk.decode("utf-8", errors="replace")
-                while "\n\n" in buffer:
-                    raw, buffer = buffer.split("\n\n", 1)
-                    for line_str in raw.split("\n"):
-                        line = line_str.strip()
-                        if not line.startswith("data:"):
-                            continue
-                        data_str = line[5:].strip()
-                        if not data_str:
-                            continue
-                        try:
-                            event = json.loads(data_str)
-                        except json.JSONDecodeError:
-                            continue
-                        kind = event.get("event")
-                        if kind == "delta":
-                            answer_parts.append(str(event.get("data", {}).get("text", "")))
-                        elif kind == "citations":
-                            citations = event.get("data", {}).get("items", [])
-                        elif kind == "clarification":
-                            cards.append(event.get("data", {}))
-                        elif kind == "done":
-                            pass
+                raw += chunk.decode("utf-8", errors="replace")
     except Exception as exc:
-        answer_parts.append(f"\n\n（Agent 回答出错：{_redact(exc)}）")
+        raw += "\n\n" + "event: delta\ndata: " + json.dumps({"text": f"\n\n（Agent 回答出错：{_redact(exc)}）"}, ensure_ascii=False) + "\n\n"
+    return format_turn(sse_events(raw))
 
+
+def format_turn(events: list[tuple[str, dict]]):
+    """The answer (with its sources listed), the cards and the conversation id of a parsed stream."""
+    answer_parts: list[str] = []
+    cards: list[dict] = []
+    citations: list[dict] = []
+    conversation_id = None
+    for kind, data in events:
+        if kind == "conversation":
+            conversation_id = data.get("conversation_id")
+        elif kind == "delta":
+            answer_parts.append(str(data.get("text", "")))
+        elif kind == "citations":
+            citations = data.get("items", [])
+        elif kind == "clarification":
+            cards.append(data)
     answer = "".join(answer_parts)
     if citations:
         cite_lines = []
@@ -332,7 +296,7 @@ async def _ask_agent(client, credential: str, owner: str, model: dict, text: str
         if cite_lines:
             answer = answer.strip() + "\n\n——\n" + "\n".join(cite_lines)
 
-    return answer, cards
+    return answer, cards, conversation_id
 
 
 def _make_keyboard(cards: list[dict], pending: dict, cid: str, credential: str) -> list | None:
@@ -412,71 +376,64 @@ async def _handle_callback(client, callback: dict, pending: dict, owner: str, cr
         await _send_text(client, bot_token, chat_id, f"执行出错：{_redact(exc)}")
 
 
-async def _deliver_inbox(client, credential: str, owner: str, bound_chat: int, tg) -> None:
-    """Deliver inbox briefs with channel_pending=telegram, then clear the flag."""
-    from app.agent_tasks import list_inbox, set_item_status
+async def _deliver_outbox(client, owner: str, bound_chat: int, tg) -> None:
+    """Send what the bots queued (notify_telegram, alerts) to the bound chat, the only recipient there is.
+    Each sent message keeps its Telegram id, so a reply to it goes back to its bot."""
     bot_token = _bot_token_for_send(owner, tg)
     if not bot_token:
         return
-    items = list_inbox(owner, section="brief", limit=10)
-    for item in items:
-        payload = item.get("payload") or {}
-        if payload.get("channel_pending") != "telegram":
-            continue
-        title = item.get("title", "")
-        body = item.get("body", "")
-        sources = item.get("sources") or []
-        text = f"*{title}*\n\n{body}"
-        if sources:
-            source_lines = []
-            for s in sources[:10]:
-                ordinal = s.get("ordinal")
-                s_title = str(s.get("title") or "")[:80]
-                if ordinal:
-                    source_lines.append(f"  \\[{ordinal}\\] {s_title}")
-            if source_lines:
-                text += "\n\n——\n" + "\n".join(source_lines)
-        # Remove the channel_pending flag so we don't deliver it again
-        try:
-            set_item_status(owner, item["id"], "read")
-        except Exception:
-            pass
-        try:
-            await _send_text(client, bot_token, bound_chat, text[:ANSWER_MAX_CHARS])
-        except Exception:
-            pass
+    for item in await asyncio.to_thread(tg.pending_messages, owner):
+        sent = await _send_text(client, bot_token, bound_chat, item["text"], markdown=False)
+        if sent is None:
+            await asyncio.to_thread(tg.mark_failed, item["id"])
+        else:
+            await asyncio.to_thread(tg.mark_sent, item["id"], sent)
+
+
+def _message_id(response) -> int | None:
+    try:
+        value = response.json().get("result", {}).get("message_id")
+    except Exception:
+        return None
+    return value if isinstance(value, int) else None
 
 
 async def _send_text(client, bot_token: str, chat_id: int, text: str,
-                     inline_keyboard: list | None = None) -> None:
+                     inline_keyboard: list | None = None, *, markdown: bool = True) -> int | None:
+    """Send one message; returns its Telegram message id, or None when it was not sent."""
     import httpx
     if not bot_token:
-        return
+        return None
     url = f"{TELEGRAM_API}/bot{bot_token}/sendMessage"
-    body: dict = {"chat_id": chat_id, "text": text[:ANSWER_MAX_CHARS],
-                  "parse_mode": "Markdown", "disable_web_page_preview": True}
+    body: dict = {"chat_id": chat_id, "text": text[:ANSWER_MAX_CHARS], "disable_web_page_preview": True}
+    if markdown:
+        body["parse_mode"] = "Markdown"
     if inline_keyboard:
         body["reply_markup"] = {"inline_keyboard": inline_keyboard}
     try:
         response = await client.post(url, json=body)
     except httpx.HTTPError:
         response = None
-    if response is not None and response.status_code != 400:
-        if response.status_code > 400:
+    if response is not None and (response.status_code != 400 or not markdown):
+        if response.status_code >= 400:
             print(f"Telegram sendMessage failed: {response.status_code} {_redact(response.text[:200])}",
                   file=sys.stderr)
-        return
+            return None
+        return _message_id(response)
     # Telegram answers 400, without raising, when it cannot parse the Markdown (one stray * or _ is enough).
     # Send the same words as plain text; deleting characters instead would turn -14.93% into 1493%.
     body["text"] = _plain(body["text"])
-    del body["parse_mode"]
+    body.pop("parse_mode", None)
     try:
         response = await client.post(url, json=body)
         if response.status_code >= 400:
             print(f"Telegram sendMessage failed: {response.status_code} {_redact(response.text[:200])}",
                   file=sys.stderr)
+            return None
+        return _message_id(response)
     except httpx.HTTPError as exc:
         print(f"Telegram sendMessage failed: {_redact(exc)}", file=sys.stderr)
+        return None
 
 
 def _plain(text: str) -> str:
@@ -491,13 +448,6 @@ async def _answer_callback(client, bot_token: str, callback_id: str) -> None:
                           json={"callback_query_id": callback_id})
     except httpx.HTTPError:
         pass
-
-
-async def _store_create_conversation(credential: str) -> str:
-    from app.agent_chat_store import create_conversation, set_conversation_title
-    cid = await create_conversation(credential)
-    await set_conversation_title(credential, cid, "手机")
-    return cid
 
 
 if __name__ == "__main__":
