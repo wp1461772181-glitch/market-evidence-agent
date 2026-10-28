@@ -451,7 +451,6 @@ function Shell({ activeSection, navigate, symbol, symbols, onSelectStock, watchI
       <aside id="workspace-navigation" className={`app-rail ${menuOpen||effectivePinned?"is-open":""}`} aria-label={t("主要导航")}>
         <button className="rail-nav-close" type="button" aria-label={t("收起导航")} aria-controls="workspace-navigation" onClick={closeNavDrawer}><span aria-hidden="true">×</span></button>
       <a className="workspace-brand" href="#agent" onClick={() => navigate("agent")} aria-label={`FinBot · ${t("对话")}`}><BrandLogo /><span>FinBot<br /><em>{t("研究助理")}</em></span></a>
-      <div className="rail-context"><span>{!research ? t("工作区") : <Tx text={"当前股票"} />}</span><strong>{!research ? t("Agent") : symbol}</strong><small>{<Tx text={"Agent 研究工作台"} />}</small></div>
       {botRail?.(() => { if (isNarrow || !pinned) setMenuOpen(false); })}
       <nav ref={navRef} className={`workspace-nav${botRail ? " is-bottom" : ""}`}>
         {nav.filter(item => !botRail || item.id !== "agent").map((item) => <button key={item.id} type="button" className={navGroup(activeSection) === item.group ? "active" : ""} aria-current={navGroup(activeSection) === item.group ? "page" : undefined} onClick={() => drawerNavigate(item.id)}><span aria-hidden="true">{item.icon}</span><span><strong>{item.label}</strong><small>{item.hint}</small></span></button>)}

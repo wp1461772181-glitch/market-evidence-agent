@@ -14,7 +14,7 @@ import { toolLabel } from "./agent-tool-labels.mjs";
 import { TaskManager } from "./BotRoutines";
 import { CATALOG } from "./model-profiles.mjs";
 import { BotFace, BotOrb } from "./BotOrb";
-import { BOT_MOODS, BOT_STYLES, botAvatar, DEFAULT_AVATAR, parseAvatar } from "./orb.mjs";
+import { BOT_MOODS, BOT_STYLES, botAvatar, DEFAULT_AVATAR, parseAvatar, type BotMood, type BotStyle } from "./orb.mjs";
 import { WorkspaceCard } from "./WorkspaceCards";
 import { CARDS, addCard, botSymbol, loadLayout, moveCard, pinCardSymbol, removeCard, resetLayout, resizeCard, saveLayout, storeBotSymbol, symbolChoices, type CardId, type LayoutItem } from "./workspace-cards.mjs";
 
@@ -46,22 +46,22 @@ function useBotOptions() {
   return { catalog, tools, templates, error };
 }
 
-function BotAvatar({ bot, track = false }: { bot: Pick<Bot, "avatar" | "name">; track?: boolean }) { return <BotOrb avatar={bot.avatar} name={bot.name} track={track} />; }
+function BotAvatar({ bot, track = false }: { bot: Pick<Bot, "avatar" | "name">; track?: boolean }) { return <BotOrb avatar={bot.avatar} name={bot.name} size={40} track={track} />; }
 
 const STYLE_LABELS: Record<string, string> = { kline: "K线胶囊", pure: "纯粹圆润", bull: "极简牛耳", square: "方糖终端" };
 const MOOD_LABELS: Record<string, string> = { idle: "翡翠绿", focus: "研报蓝", bull: "金牛黄", mono: "极客白" };
 
-/** The 16 faces: one row per silhouette, one column per eye colour. */
+/** A face is a silhouette and an eye colour, picked separately: 4 + 4 buttons rather than all 16 faces. */
 function OrbSwatches({ value, onPick, disabled }: { value: string; onPick: (avatar: string) => void; disabled?: boolean }) {
   const { t } = useLocale();
   const current = parseAvatar(value);
-  return <fieldset className="orb-swatches" disabled={disabled}><legend>{t("头像样式")}</legend>
-    {BOT_STYLES.flatMap(style => BOT_MOODS.map(mood => {
-      const label = `${t(STYLE_LABELS[style])} · ${t(MOOD_LABELS[mood])}`;
-      return <button key={`${style}-${mood}`} type="button" className="orb-swatch" aria-pressed={current.kind === "bot" && current.style === style && current.mood === mood}
-        aria-label={label} title={label} onClick={() => onPick(botAvatar(style, mood))}><BotFace style={style} mood={mood} /></button>;
-    }))}
-  </fieldset>;
+  const style: BotStyle = current.kind === "bot" ? current.style : "kline", mood: BotMood = current.kind === "bot" ? current.mood : "idle";
+  const swatch = (s: BotStyle, m: BotMood, pressed: boolean, label: string) =>
+    <button key={`${s}-${m}`} type="button" className="orb-swatch" aria-pressed={pressed} onClick={() => onPick(botAvatar(s, m))}><BotFace style={s} mood={m} /><span>{label}</span></button>;
+  return <div className="orb-swatches">
+    <fieldset disabled={disabled}><legend>{t("轮廓")}</legend>{BOT_STYLES.map(s => swatch(s, mood, s === style, t(STYLE_LABELS[s])))}</fieldset>
+    <fieldset disabled={disabled}><legend>{t("配色")}</legend>{BOT_MOODS.map(m => swatch(style, m, m === mood, t(MOOD_LABELS[m])))}</fieldset>
+  </div>;
 }
 
 /** 档案's avatar: one of the 16 faces, or a custom emoji / character as before. */

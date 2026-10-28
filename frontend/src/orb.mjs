@@ -25,12 +25,6 @@ export function botAvatar(style, mood) {
   return BOT_STYLES.includes(style) && BOT_MOODS.includes(mood) ? `bot:${style}-${mood}` : DEFAULT_AVATAR;
 }
 
-/** The brand logo's next pose: any of the `count` poses except `current`, so the order never settles into a loop. */
-export function nextPose(current, count, random = Math.random) {
-  const step = 1 + Math.floor(random() * (count - 1));
-  return (current + step) % count;
-}
-
 /** Pupil offset (px, in the orb's own units) toward the pointer: angle kept, length min(distance/k, max). */
 export function gazeOffset(center, pointer, { max = 3, k = 60 } = {}) {
   if (!pointer) return { x: 0, y: 0 };

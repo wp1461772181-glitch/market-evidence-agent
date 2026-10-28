@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { BOT_MOODS, BOT_STYLES, botAvatar, createGazeHub, DEFAULT_AVATAR, gazeOffset, MOOD_COLORS, nextPose, parseAvatar } from "../src/orb.mjs";
+import { BOT_MOODS, BOT_STYLES, botAvatar, createGazeHub, DEFAULT_AVATAR, gazeOffset, MOOD_COLORS, parseAvatar } from "../src/orb.mjs";
 
 test("avatars: the 16 faces round-trip and fit the server's 16-character cap", () => {
   assert.equal(BOT_STYLES.length * BOT_MOODS.length, 16);
@@ -27,14 +27,6 @@ test("avatars: older orb colours, the old ★, emoji and blanks", () => {
   assert.deepEqual(parseAvatar("orb:constructor", "Apple"), { kind: "text", text: "orb:constructor" });
   assert.deepEqual(parseAvatar("📈"), { kind: "text", text: "📈" });
   assert.deepEqual(parseAvatar("", "Apple"), { kind: "text", text: "A" });
-});
-
-test("brand poses: the next pose is never the current one and every pose is reachable", () => {
-  for (let current = 0; current < 3; current++) {
-    const seen = new Set([0, 0.4, 0.6, 0.999].map((r) => nextPose(current, 3, () => r)));
-    assert.ok(!seen.has(current));
-    assert.equal(seen.size, 2);
-  }
 });
 
 test("gaze points toward the pointer and is capped", () => {
