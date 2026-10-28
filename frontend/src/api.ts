@@ -123,10 +123,10 @@ export async function listRecall(query="",signal?:AbortSignal,botId?:string|null
 export type InboxSource = { ordinal:number; title:string; url:string|null; source_type:string|null; published_at?:string|null };
 export type InboxItem = { id:string; section:"brief"|"confirm"; kind:"task_brief"|"filing"|"news"|"price"|"action"; title:string; body:string; sources:InboxSource[];
   payload:{ task_name?:string; channel_pending?:string; missed_slots?:number; display?:{ title?:string; targets?:unknown[]; alternative?:string } };
-  task_id:string|null; conversation_id:string|null; status:"unread"|"read"|"done"|"dismissed"; created_at:string|null };
+  task_id:string|null; bot_id:string|null; posted:boolean; conversation_id:string|null; status:"unread"|"read"|"done"|"dismissed"; created_at:string|null };
 export type PriceLine = { symbol:string; above?:number; below?:number };
 export type AgentTask = { id:string; name:string; kind:"brief"|"alerts"; schedule_kind:"daily"|"weekdays"|"hourly"; schedule_time:string; timezone:string;
-  instruction:string|null; scope:"research_queue"|"symbols"; symbols:string[]; channel:"inbox"|"telegram";
+  bot_id:string|null; instruction:string|null; scope:"research_queue"|"symbols"; symbols:string[]; channel:"inbox"|"telegram";
   config:{ filings?:boolean; news?:boolean; price_lines?:PriceLine[] }; enabled:boolean; run_token_cap:number; daily_token_cap:number; tokens_today:number;
   last_run_at:string|null; next_run_at:string|null; last_status:string|null; last_status_label:string|null; last_conversation_id:string|null };
 export type AgentTaskInput = Partial<Omit<AgentTask,"id"|"tokens_today"|"last_run_at"|"next_run_at"|"last_status"|"last_status_label"|"last_conversation_id">>;
@@ -146,13 +146,17 @@ const TASK_ERRORS:Record<string,string>={invalid_schedule:"时间格式应为 HH
   invalid_endpoint:"接口地址无效：须为 HTTPS，自定义服务必须填写。",credential_key_missing:"服务器没有配置加密密钥，无法保存 key。",invalid_agent_chat_request:"填写的内容无效。",
   invalid_bot_token:"Bot Token 格式无效：应从 BotFather 获取。",no_bot_token:"请先保存 Bot Token。",
   no_active_bind:"没有正在进行的绑定。",bind_code_mismatch:"绑定码不匹配。",bind_already_confirmed:"已绑定，请勿重复确认。",
-  not_bound:"尚未绑定任何 Telegram 账号。",invalid_bind_code:"绑定码格式无效。",invalid_chat_id:"Chat ID 无效。"};
-export async function listAgentTasks(signal?:AbortSignal):Promise<AgentTask[]>{ return (await ownerJson<{tasks:AgentTask[]}>("tasks",{signal},"任务暂时无法读取。")).tasks; }
+  not_bound:"尚未绑定任何 Telegram 账号。",invalid_bind_code:"绑定码格式无效。",invalid_chat_id:"Chat ID 无效。",unknown_bot:"这个 bot 不存在或不是你的。"};
+export async function listAgentTasks(signal?:AbortSignal,botId?:string):Promise<AgentTask[]>{ return (await ownerJson<{tasks:AgentTask[]}>(botId?`tasks?bot_id=${encodeURIComponent(botId)}`:"tasks",{signal},"任务暂时无法读取。")).tasks; }
+export type TaskRun = { id:string; task_id:string; task_name:string; status:string; status_label:string; posted:number; tokens:number; conversation_id:string|null; created_at:string|null };
+export async function listTaskRuns(botId:string,signal?:AbortSignal):Promise<TaskRun[]>{ return (await ownerJson<{runs:TaskRun[]}>(`tasks/runs?bot_id=${encodeURIComponent(botId)}&limit=20`,{signal},"最近运行暂时无法读取。")).runs; }
+export async function markBotRead(botId:string):Promise<number>{ return (await ownerJson<{read:number}>(`bots/${encodeURIComponent(botId)}/read`,{method:"POST"},"操作失败，请重试。")).read; }
 export async function createAgentTask(task:AgentTaskInput):Promise<AgentTask>{ return (await ownerJson<{task:AgentTask}>("tasks",{method:"POST",body:task},"保存任务失败。")).task; }
 export async function updateAgentTask(id:string,task:AgentTaskInput):Promise<AgentTask>{ return (await ownerJson<{task:AgentTask}>(`tasks/${encodeURIComponent(id)}`,{method:"PATCH",body:task},"保存任务失败。")).task; }
 export async function deleteAgentTask(id:string):Promise<void>{ await ownerJson(`tasks/${encodeURIComponent(id)}`,{method:"DELETE"},"删除任务失败。"); }
-export async function listInbox(section?:"brief"|"confirm",signal?:AbortSignal):Promise<InboxItem[]>{
-  return (await ownerJson<{items:InboxItem[]}>(section?`inbox?section=${section}`:"inbox",{signal},"简报暂时无法读取。")).items;
+export async function listInbox(section?:"brief"|"confirm",signal?:AbortSignal,botId?:string):Promise<InboxItem[]>{
+  const query=[section&&`section=${section}`,botId&&`bot_id=${encodeURIComponent(botId)}`].filter(Boolean).join("&");
+  return (await ownerJson<{items:InboxItem[]}>(query?`inbox?${query}`:"inbox",{signal},"简报暂时无法读取。")).items;
 }
 export async function setInboxStatus(id:string,status:InboxItem["status"]):Promise<InboxItem>{
   return (await ownerJson<{item:InboxItem}>(`inbox/${encodeURIComponent(id)}/status`,{method:"POST",body:{status}},"操作失败，请重试。")).item;
@@ -614,7 +618,7 @@ export async function getKnowledgeCitation(chunkId:string):Promise<KnowledgeCita
 export type BotFocus = { companies: Array<{ symbol: string; name?: string | null }>; theme: string | null };
 export type Bot = { id: string; name: string; title: string; description: string; focus: BotFocus; tool_scope: string[] | null; model: string | null;
   avatar: string; group: string; pinned: boolean; hidden: boolean; is_default: boolean; template: string; conversation_id: string | null;
-  daily_notify_cap: number; default_company: { symbol: string; company: string | null } | null; last_message: string | null; last_at: string | null;
+  daily_notify_cap: number; default_company: { symbol: string; company: string | null } | null; last_message: string | null; last_at: string | null; unread: number; pending: number;
   created_at?: string | null; updated_at?: string | null };
 export type BotTemplate = { id: string; label: string; name: string; title: string; description: string; tool_scope: string[] | null };
 export type BotTool = { name: string; level: string; owner_only: boolean };

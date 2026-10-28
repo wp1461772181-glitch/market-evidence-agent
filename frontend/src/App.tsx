@@ -3,7 +3,7 @@ import { BotRailList, BotSide, NewBotDialog, useBots } from "./BotPages";
 import { botFromHash } from "./bot-items.mjs";
 import { Tx, formatDateTime as formatLocalizedDateTime, getLocalePreference, translatePhrase, useLocale } from "./i18n";
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ApiError, type Bot, getFilingInventory, getJevLearningStatus, getMaterialLibrary, getV2Evaluations, getV2ForecastRoots, getV2MonitorStatus, getV2Prices, getV2Workspace, initializeMarketData, scanOfficialFilings } from "./api";
+import { ApiError, markBotRead, type Bot, getFilingInventory, getJevLearningStatus, getMaterialLibrary, getV2Evaluations, getV2ForecastRoots, getV2MonitorStatus, getV2Prices, getV2Workspace, initializeMarketData, scanOfficialFilings } from "./api";
 import type { FilingInventory, JevLearningStatus, PriceHistory } from "./types";
 import { V2ForecastWorkspace } from "./V2ForecastWorkspace";
 import { EvidenceCenter } from "./EvidenceCenter";
@@ -153,6 +153,9 @@ function WorkspaceApp({onModeChange}:{onModeChange:(mode:"guest"|"personal")=>vo
   const [newBotOpen, setNewBotOpen] = useState(false);
   useEffect(() => { const read = () => setBotId(botFromHash(window.location.hash)); window.addEventListener("hashchange", read); return () => window.removeEventListener("hashchange", read); }, []);
   const activeBot: Bot | null = !personal ? null : activeSection === "bot" ? botList.bots.find(b => b.id === botId) ?? null : activeSection === "agent" && !pastConversation ? botList.defaultBot : null;
+  // Opening a bot's line marks its posted briefs read once, then the list refreshes so the badge clears.
+  const openedBotId = activeBot?.id ?? null, reloadBots = botList.reload;
+  useEffect(() => { if (openedBotId) void markBotRead(openedBotId).then(() => reloadBots()).catch(() => { /* the badge stays until the next refresh */ }); }, [openedBotId, reloadBots]);
   function openBot(bot: Bot) { setPastConversation(false); if (bot.is_default) navigate("agent"); else { window.location.hash = `bot/${bot.id}`; setActiveSection("bot"); setBotId(bot.id); } }
 
   function navigate(section: WorkspaceSection) {
@@ -192,7 +195,7 @@ function WorkspaceApp({onModeChange}:{onModeChange:(mode:"guest"|"personal")=>vo
 
   function addWatchSymbol() { const ticker = normalizeTicker(watchInput); if (!ticker) { setWatchError("请输入有效的美股代码，例如 AMD 或 BRK.B。"); return; } if (symbols.includes(ticker)) { setWatchError("该代码已在关注列表中。"); return; } if (symbols.length >= MAX_WATCHLIST) { setWatchError("关注列表最多保存 30 个代码。"); return; } setSymbols(items => [...items, ticker]); setWatchInput(""); setWatchError(""); openStock(ticker); }
   function removeWatchSymbol(ticker: string) { const remaining = symbols.filter(item => item !== ticker); setSymbols(remaining); setRequestedSymbol(current => selectionForWatchlist(current, remaining)); }
-  const botRail = personal ? (close: () => void) => <BotRailList bots={botList.bots} error={botList.error} activeBotId={activeBot?.id ?? null} onOpen={bot => { close(); openBot(bot); }} onNew={() => { close(); setNewBotOpen(true); }} /> : undefined;
+  const botRail = personal ? (close: () => void) => <BotRailList bots={botList.bots} confirmActive={activeSection === "briefs"} onConfirm={() => { close(); navigate("briefs"); }} error={botList.error} activeBotId={activeBot?.id ?? null} onOpen={bot => { close(); openBot(bot); }} onNew={() => { close(); setNewBotOpen(true); }} /> : undefined;
   const newBotDialog = newBotOpen && <NewBotDialog onClose={() => setNewBotOpen(false)} onCreated={bot => { setNewBotOpen(false); void botList.reload().then(() => openBot(bot)); }} />;
   const shellProps = { activeSection, navigate, symbol: requestedSymbol, symbols, onSelectStock: openStock, watchInput, setWatchInput, addWatchSymbol, watchError, setWatchError, onModeChange, botRail, overlay: newBotDialog };
   if (activeBot) return <Shell {...shellProps}><BotPage bot={activeBot} symbol={requestedSymbol} onOpenCompany={ticker => { const clean = normalizeTicker(ticker); if (clean) { if (!symbols.includes(clean) && symbols.length < MAX_WATCHLIST) setSymbols(items => [...items, clean]); openStock(clean); } }} onChanged={() => void botList.reload()} onDeleted={() => { void botList.reload(); navigate("agent"); }} onSettings={() => navigate("admin")} onModeChange={onModeChange} /></Shell>;
@@ -200,7 +203,7 @@ function WorkspaceApp({onModeChange}:{onModeChange:(mode:"guest"|"personal")=>vo
   if (activeSection === "bot") return <Shell {...shellProps}><main className="workspace"><p role="status">{botList.loaded ? translatePhrase("bot 不存在或已删除。") : translatePhrase("正在读取…")}</p></main></Shell>;
   if (activeSection === "agent") return <Shell {...shellProps}><AgentChatPanel onSettings={() => navigate("admin")} onModeChange={onModeChange} /></Shell>;
   if (activeSection === "admin") return <Shell {...shellProps}><AgentAdminPage onBack={() => navigate("agent")} /></Shell>;
-  if (activeSection === "briefs") return <Shell {...shellProps}><BriefsPage onNavigate={navigate} /></Shell>;
+  if (activeSection === "briefs") return <Shell {...shellProps}><BriefsPage onNavigate={navigate} onChanged={() => void botList.reload()} /></Shell>;
   if (activeSection === "skills") return <Shell {...shellProps}><SkillsPage /></Shell>;
   if (activeSection === "memory") return <Shell {...shellProps}><MemoryPage onNavigate={navigate} /></Shell>;
   if (activeSection === "me") return <Shell {...shellProps}><MePage onNavigate={navigate} /></Shell>;
@@ -413,7 +416,6 @@ function Shell({ activeSection, navigate, symbol, symbols, onSelectStock, watchI
   }, [activeSection]);
   const nav: Array<{ id: WorkspaceSection; group: NavGroup; label: string; hint: string; icon: string }> = [
     { id: "agent", group: "chat", label: t("对话"), hint: t("首页"), icon: "✳" },
-    { id: "briefs", group: "briefs", label: t("简报"), hint: t("收件箱"), icon: "✉" },
     { id: "overview", group: "company", label: t("公司"), hint: t("总览与预测"), icon: "◌" },
     { id: "materials", group: "library", label: t("资料库"), hint: t("证据与材料"), icon: "▤" },
     { id: "skills", group: "skills", label: t("技能"), hint: t("做事的步骤"), icon: "⌁" },
@@ -422,7 +424,7 @@ function Shell({ activeSection, navigate, symbol, symbols, onSelectStock, watchI
   ];
   const mobileTabs: Array<{ id: WorkspaceSection; label: string; icon: string; active: boolean }> = [
     { id: "agent", label: t("对话"), icon: "✳", active: activeSection === "agent" },
-    { id: "briefs", label: t("简报"), icon: "✉", active: activeSection === "briefs" },
+    { id: "briefs", label: t("待你确认"), icon: "✉", active: activeSection === "briefs" },
     { id: "overview", label: t("公司"), icon: "◌", active: navGroup(activeSection) === "company" },
     { id: "me", label: t("我"), icon: "☺", active: ["me", "memory", "skills", "admin", "materials", "evidence"].includes(activeSection) },
   ];

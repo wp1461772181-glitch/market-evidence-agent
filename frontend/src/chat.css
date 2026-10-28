@@ -456,3 +456,13 @@
   .agent-layout.is-bot { grid-template-columns: minmax(0, 1fr); }
   .bot-side { border-left: 0; border-top: 1px solid var(--c-line); padding: 12px 0 0; max-height: none; }
 }
+
+.bot-confirm { margin-bottom: 6px; }
+.bot-unread { margin-left: auto; min-width: 18px; padding: 1px 6px; border-radius: 999px; background: #76b8ae; color: #08201e; font-size: 10px; font-weight: 700; text-align: center; }
+.bot-pending-badge { margin-left: auto; min-width: 18px; padding: 1px 6px; border-radius: 999px; background: #e0b24f; color: #2a1d00; font-size: 10px; font-weight: 700; text-align: center; }
+.bot-pending-dot { margin-left: auto; width: 7px; height: 7px; border-radius: 50%; background: #e0b24f; flex: none; }
+.bot-pending-dot + .bot-unread { margin-left: 6px; }
+.task-post-head { margin: 0; color: var(--c-muted); font-size: 12px; }
+.bot-routines { display: grid; gap: 10px; }
+.bot-routines h3, .bot-routines h4 { margin: 0; font-size: 12px; }
+.agent-message.is-user.is-task-post { align-self: stretch; max-width: none; padding: 0; border-radius: 0; background: transparent; }

@@ -7,6 +7,7 @@ import { addCatalogModel, createBot, deleteBot, deleteCatalogModel, getBotTempla
 import { translatePhrase, useLocale } from "./i18n";
 import { botDraft, botModelLabel, botSections, focusText, keyStatusLabel, parseFocusSymbols, toggleTool, toolEnabled } from "./bot-items.mjs";
 import { toolLabel } from "./agent-tool-labels.mjs";
+import { TaskManager } from "./BotRoutines";
 import { CATALOG } from "./model-profiles.mjs";
 
 const message = (error: unknown, fallback: string) => translatePhrase(error instanceof Error ? error.message : fallback);
@@ -39,13 +40,20 @@ function useBotOptions() {
 
 function BotAvatar({ bot }: { bot: Pick<Bot, "avatar" | "name"> }) { return <span className="bot-avatar" aria-hidden="true">{bot.avatar || bot.name.slice(0, 1) || "·"}</span>; }
 
-export function BotRailList({ bots, error, activeBotId, onOpen, onNew }: { bots: Bot[]; error: string; activeBotId: string | null; onOpen: (bot: Bot) => void; onNew: () => void }) {
+export function BotRailList({ bots, error, activeBotId, confirmActive, onConfirm, onOpen, onNew }: { bots: Bot[]; error: string; activeBotId: string | null; confirmActive: boolean; onConfirm: () => void; onOpen: (bot: Bot) => void; onNew: () => void }) {
   const { t } = useLocale();
   const { top, groups } = botSections(bots);
+  const pending = bots.reduce((sum, b) => sum + (b.pending || 0), 0);
   const row = (bot: Bot) => <li key={bot.id}><button type="button" className={`bot-row${bot.id === activeBotId ? " is-active" : ""}`} aria-current={bot.id === activeBotId ? "page" : undefined} onClick={() => onOpen(bot)}>
     <BotAvatar bot={bot} /><span className="bot-row-text"><strong>{bot.name}{bot.is_default && bot.avatar !== "★" && <span className="bot-star" aria-label={t("默认")}> ★</span>}</strong><small>{bot.last_message || bot.title || t("还没有消息")}</small></span>
+    {bot.pending > 0 && <span className="bot-pending-dot" role="img" aria-label={t("有待你确认的建议")} title={t("有待你确认的建议")} />}
+    {bot.unread > 0 && <span className="bot-unread" aria-label={`${bot.unread} ${t("条未读")}`}>{bot.unread > 99 ? "99+" : bot.unread}</span>}
   </button></li>;
   return <section className="bot-rail" aria-label={t("Bot 列表")}>
+    <button type="button" className={`bot-row bot-confirm${confirmActive ? " is-active" : ""}`} aria-current={confirmActive ? "page" : undefined} onClick={onConfirm}>
+      <span className="bot-avatar" aria-hidden="true">✉</span><span className="bot-row-text"><strong>{t("待你确认")}</strong></span>
+      {pending > 0 && <span className="bot-pending-badge" aria-label={`${pending} ${t("条待确认")}`}>{pending}</span>}
+    </button>
     <div className="bot-rail-head"><span>{t("Bot")}</span><button type="button" className="bot-new" onClick={onNew} aria-label={t("新建 bot")} title={t("新建 bot")}>＋</button></div>
     {error && <p className="bot-rail-error" role="alert">{error}</p>}
     <ul>{top && row(top)}</ul>
@@ -156,7 +164,7 @@ function BotProfileTab({ bot, onChanged, onDeleted }: { bot: Bot; onChanged: (bo
       {!bot.is_default && <button type="button" className="secondary-action" disabled={busy} onClick={() => void remove()}>{t("删除这个 bot")}</button>}</div>
     {bot.is_default && <small>{t("默认 bot 可以改名和说明，不能删除。没指明给谁的消息进它。")}</small>}
     <section className="bot-placeholder"><h3>{t("它的记忆")}</h3><p>{t("这个 bot 自己的记忆在下一阶段加入；现在全局记忆在「记忆」页。")}</p></section>
-    <section className="bot-placeholder"><h3>{t("例行任务和最近运行")}</h3><p>{t("例行任务挂到 bot 上在后续阶段加入。")}</p></section>
+    <TaskManager botId={bot.id} />
     <section className="bot-placeholder"><h3>{t("技能")}</h3><p>{t("给 bot 指定常用技能在后续阶段加入。")}</p></section>
   </div>;
 }

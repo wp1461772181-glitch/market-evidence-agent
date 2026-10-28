@@ -1522,5 +1522,20 @@
   "每个 bot 只回想自己那条线；默认 bot「助理」能回想所有 bot 的。": "Each bot recalls only its own line; the default bot (Assistant) can recall every bot's.",
   "按 bot 筛选": "Filter by bot",
   "全部 bot": "All bots",
-  "未归属": "No bot"
+  "未归属": "No bot",
+  "也发 Telegram": "Also send to Telegram",
+  "例行任务": "Routine task",
+  "已贴进对话": "Posted to the chat",
+  "打开过程": "Open the run",
+  "最近 20 次运行": "Last 20 runs",
+  "最近运行暂时无法读取。": "Recent runs cannot be read right now.",
+  "有待你确认的建议": "Has suggestions waiting for your confirmation",
+  "条待确认": "to confirm",
+  "条未读": "unread",
+  "登录个人聊天后才能查看待你确认的操作。": "Sign in to personal chat to see the actions waiting for your confirmation.",
+  "股票代码无效，或指定公司时没有填代码。": "Invalid ticker, or no ticker given for specific companies.",
+  "要不要通知你，写在 bot 的说明或任务说明里，比如「只有重要程度为高才发 Telegram」。没新东西时不会往对话里发消息。": "Whether to notify you is written in the bot's description or the task instruction, e.g. \"only send to Telegram when importance is high\". Nothing is posted to the chat when there is nothing new.",
+  "请填任务名称（最多 80 字）。": "Enter a task name (up to 80 characters).",
+  "还没有运行记录。": "No runs yet.",
+  "这个 bot 不存在或不是你的。": "This bot does not exist or is not yours."
 }
