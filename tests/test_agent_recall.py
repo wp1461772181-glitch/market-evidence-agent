@@ -181,3 +181,54 @@ def test_recall_api_is_owner_only(owner, client):
     assert [r["conversation_id"] for r in listed] == [a]
     found = client.get("/agent-chat/recall?q=英伟达", headers={"X-Chat-Session": OWNER}).json()["items"]
     assert [r["conversation_id"] for r in found] == [a]
+
+
+# --- reading a found conversation (Levi via TutorBot 2026-10-28: 有目录、无取书) -------------------
+
+ANALYSIS = "英伟达新闻分析：数据中心需求仍强，管理层上调了指引。" + "细节。" * 30
+
+
+def test_read_returns_the_newest_replies_oldest_first_and_only_the_owners(owner):
+    a = _conversation(OWNER, [("英伟达有什么新闻？", ANALYSIS), ("还有呢？", "第二条回复。")])
+    value = recall.read(OWNER_HASH, a, limit=2)
+    assert [m["content"] for m in value["messages"]] == [ANALYSIS, "第二条回复。"]
+    assert {m["role"] for m in value["messages"]} == {"assistant"} and value["link"] == f"#agent/{a}"
+    both = recall.read(OWNER_HASH, a, limit=4, include_user=True)
+    assert [m["role"] for m in both["messages"]] == ["user", "assistant", "user", "assistant"]
+    assert recall.read(STRANGER, a) is None and recall.read(OWNER_HASH, "not-an-id") is None
+
+
+def test_read_past_conversation_is_an_owner_only_read():
+    from app.agent_tool_catalog import OWNER_ONLY, definitions, validate
+    assert definitions()["read_past_conversation"].level == "read" and "read_past_conversation" in OWNER_ONLY
+    with pytest.raises(Exception):
+        validate("read_past_conversation", {"conversation_id": "x", "limit": 3})
+    with pytest.raises(Exception):
+        validate("read_past_conversation", {"conversation_id": "33333333-3333-4333-8333-000000000001", "limit": 11})
+
+
+def test_a_read_conversation_is_memory_and_never_numbered(owner):
+    a = _conversation(OWNER, [("英伟达有什么新闻？", ANALYSIS)], summary="用户问英伟达新闻，回复了一篇分析。")
+    steps = iter([_call("read_past_conversation", {"conversation_id": a}), {"content": "那次的分析说数据中心需求仍强。"}])
+    seen = []
+    def decider(messages, _schemas):
+        seen.append(messages)
+        return next(steps)
+    result = _turn("把上次英伟达那篇新闻分析读给我", _context(intent_recognizer=_route, decider=decider))
+    payload = json.loads(next(m for m in seen[-1] if m.get("role") == "tool")["content"])
+    assert payload["label"] == "往事，不是证据" and payload["data"][0]["messages"][0]["content"] == ANALYSIS
+    evidence = next(m["content"] for m in seen[-1] if str(m.get("content") or "").startswith("Accepted evidence DATA"))
+    assert evidence.endswith("[]") and not result.get("citations")
+    assert "数据中心需求仍强" in result["answer"]
+
+
+def test_a_guest_cannot_read_a_past_conversation(owner):
+    a = _conversation(OWNER, [("英伟达", ANALYSIS)])
+    steps = iter([_call("read_past_conversation", {"conversation_id": a}), {"content": "无法查看。"}])
+    seen = []
+    def decider(messages, _schemas):
+        seen.append(messages)
+        return next(steps)
+    _turn("读一下那次对话", _context(credential=STRANGER, intent_recognizer=_route, decider=decider))
+    replies = [json.loads(m["content"]) for m in seen[-1] if m.get("role") == "tool"]
+    assert replies and replies[0]["ok"] is False and replies[0]["error_code"] == "owner_login_required"

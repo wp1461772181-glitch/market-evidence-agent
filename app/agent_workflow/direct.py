@@ -1261,7 +1261,7 @@ class Turn:
         # Read results reach SSE/history only after the same gate used by the answer.
         policy=definitions()[name]
         if not outcome.get('ok'):safe=outcome if outcome.get('bindable_values') else tools.error(outcome.get('error_code') or 'tool_failed')
-        elif policy.level!='read' or name in {'query_system_status','query_research_queue','recall_conversations'}:safe=outcome
+        elif policy.level!='read' or name in {'query_system_status','query_research_queue','recall_conversations','read_past_conversation'}:safe=outcome
         elif self.last_accepted is not None:safe=self.last_accepted
         else:safe={k:v for k,v in self.feedback[-1].items() if k in {'ok','data','status','error_code','hint'}}
         from ..agent_chat_stream import bounded_tool_result
@@ -1302,6 +1302,11 @@ class Turn:
                    'data':[{k:r.get(k) for k in ('conversation_id','title','date','summary','link')} for r in rows if isinstance(r,dict)]}
             self.recalls.append({'name':name,'kind':'recall','arguments':args,'result':shown,'accepted_evidence':False})
             self.audit['recalled_conversations']=self.audit.get('recalled_conversations',0)+len(shown['data'])
+            self.feedback.append({'name':name,'result':shown});return
+        if name=='read_past_conversation':
+            # The same memory as a recall row, only longer: never evidence, never numbered.
+            shown={'ok':True,'label':outcome.get('label'),'note':outcome.get('note'),'data':rows}
+            self.recalls.append({'name':name,'kind':'recall','arguments':args,'result':shown,'accepted_evidence':False})
             self.feedback.append({'name':name,'result':shown});return
         if policy.level!='read' or name in {'query_system_status','query_research_queue'}:
             self.feedback.append({'name':name,'result':outcome});return

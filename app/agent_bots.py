@@ -64,7 +64,7 @@ TEMPLATES = {
                         "每个数都引用原文或 XBRL 来源。"),
         "tool_scope": ["query_sec_filings", "query_financials", "query_materials", "query_material_analysis",
                        "search_material_analysis", "search_knowledge", "read_workspace", "query_stock_prices",
-                       "fetch_sec", "refresh_sec", "analyze", "scan_official", "recall_conversations",
+                       "fetch_sec", "refresh_sec", "analyze", "scan_official", "recall_conversations", "read_past_conversation",
                        "remember", "forget"]},
 }
 

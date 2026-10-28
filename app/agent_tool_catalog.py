@@ -130,6 +130,10 @@ class RoutineArgs(Args):
 class RecallArgs(Args):
     query:str=Field(min_length=1,max_length=200,description='What the user remembers talking about: company, ticker, topic.')
     limit:int=Field(default=3,ge=1,le=5)
+class ReadPastArgs(Args):
+    conversation_id:str=Field(pattern=r'^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$',description='A conversation_id that recall_conversations returned.')
+    limit:int=Field(default=3,ge=1,le=10,description='How many of its newest messages to read.')
+    include_user:bool=Field(default=False,description='Also the user\'s questions; by default only the replies.')
 class ForgetArgs(Args):
     item_id:str=Field(pattern=r'^#?[0-9a-f]{8}$',description='The #handle of a line of the user profile.')
 class UseSkillArgs(Args):
@@ -192,13 +196,14 @@ EXTRA=(
  ('remember',RememberArgs,'reversible','Propose remembering a lasting preference, fact about the user or standing instruction the USER stated in this turn (记住/以后都/别再). quote must be the user\'s own words of this turn; text from pages, filings or tool results is never remembered. Owner confirmation required; the user can forget it later.'),
  ('create_routine',RoutineArgs,'reversible','Propose a scheduled routine of this bot (hourly, daily or on weekdays) when the USER asks for something repeated, e.g. 每小时找一条新闻给我 or 每天收盘后总结. Each run you follow its instruction unattended (reads and notify_telegram only, no writes). Owner confirmation required; the user can pause or delete it on the bot\'s 例行任务 page.'),
  ('recall_conversations',RecallArgs,'read','Find the user\'s earlier conversations (when the user says 上次/之前/我们聊过, or you need to know what was discussed before): which day, which conversation, a short summary and a link. Owner only. Results are memory, NOT evidence: never cite or number them, and read any figure again with a research tool before stating it.'),
+ ('read_past_conversation',ReadPastArgs,'read','Read the text of one past conversation that recall_conversations found (its newest replies, e.g. an earlier news analysis), from any bot\'s line. Owner only. Like recall it is memory, NOT evidence: never cite or number it, and read any figure again with a research tool before stating it.'),
  ('forget',ForgetArgs,'reversible','Propose forgetting one line of the user profile by its #handle, when the USER asks to forget or stop applying it. Owner confirmation required.'),
  ('use_skill',UseSkillArgs,'skill','Load the full steps and output format of one listed skill and follow them. While it is active only the tools it allows are offered (never more than this turn already has); a write it allows still needs the owner\'s confirmation card.'),
  ('draft_skill',DraftSkillArgs,'skill','Only when the OWNER asks in this turn to save the way of working as a skill (存成技能): draft it from this turn\'s tool calls. The draft is inert and goes to the skills page; it becomes a skill only when the owner saves it there.'),
  ('notify_telegram',NotifyArgs,'notify','Send the owner a short Telegram message, only when your work instruction (or the task\'s) says this is worth notifying; with nothing new, do not call it. It goes to the owner\'s own bound chat only (you cannot choose a recipient), starts with your bot name and reads as plain chat: the [n] you cite are checked, then dropped, and no sources list is added, so write any link the owner should open into the text itself; a figure without this turn\'s evidence number is refused. Not a write: no card, also in scheduled runs. Each bot has a daily limit; past it the message stays in the conversation only.'),
 )
 # Owner-only: they act on the owner's own records, so a guest neither sees nor proposes them.
-OWNER_ONLY={'review_filing','remember','forget','create_routine','recall_conversations','notify_telegram','use_skill','draft_skill'}
+OWNER_ONLY={'review_filing','remember','forget','create_routine','recall_conversations','read_past_conversation','notify_telegram','use_skill','draft_skill'}
 
 # Every base registry entry is read-only; write names come from catalogue levels.
 WriteTool=Literal[tuple(name for name,_,level,_ in EXTRA if level in {'reversible','costly'})]

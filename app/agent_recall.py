@@ -34,6 +34,8 @@ LABEL = "往事，不是证据"
 NOTE = ("这些是以前对话的摘要和用户当时的提问，只用来知道聊过什么、在哪个对话。它们不是证据，不编号，不能引用；"
         "回答里的数字和事实仍要在本轮重新读取并引用本轮的 [n]。")
 MAX_LIMIT = 5
+READ_MAX_MESSAGES = 10
+READ_MESSAGE_CHARS = 12000
 QUESTIONS_MAX_CHARS = 1200
 SUMMARY_SHOWN_CHARS = 400
 SCAN_ROWS = 600            # the owner's newest index rows that one search scores
@@ -230,6 +232,28 @@ def recent(owner: str, limit: int = 20, *, exclude: str | None = None, bot_ids=N
                     break
                 seen[cid] = _item(row, updated_at, bot_id, bot_name)
     return list(seen.values())
+
+
+def read(owner: str, conversation_id: str, *, limit: int = 3, include_user: bool = False) -> dict | None:
+    """The newest ``limit`` messages of one of the owner's conversations, oldest first (any bot's line, as
+    found by ``search``).  Assistant replies only unless ``include_user``.  None: not this owner's."""
+    try:
+        cid = uuid.UUID(str(conversation_id))
+    except ValueError:
+        return None
+    roles = ("user", "assistant") if include_user else ("assistant",)
+    with SessionLocal() as db:
+        conversation = db.get(AgentConversation, cid)
+        if conversation is None or conversation.owner_hash != owner:
+            return None
+        rows = db.scalars(select(AgentMessage).where(AgentMessage.conversation_id == cid, AgentMessage.role.in_(roles),
+                                                     AgentMessage.content != "")
+                          .order_by(AgentMessage.sequence.desc()).limit(max(1, min(READ_MAX_MESSAGES, int(limit))))).all()
+        title = _title(db, cid)
+    messages = [{"role": m.role, "date": m.created_at.date().isoformat() if m.created_at else None,
+                 "content": m.content[:READ_MESSAGE_CHARS], "truncated": len(m.content) > READ_MESSAGE_CHARS}
+                for m in reversed(rows)]
+    return {"conversation_id": str(cid), "title": title, "link": f"#agent/{cid}", "messages": messages}
 
 
 def safe_hook(fn, *args) -> None:

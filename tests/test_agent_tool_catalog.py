@@ -38,6 +38,7 @@ WRITE_ARGUMENTS={
  'withdraw_knowledge_document':{'document_id':'11111111-1111-4111-8111-111111111111'},
  'remember':{'kind':'preference','topic':'currency_unit','text':'金额用亿美元','quote':'以后金额用亿美元'},
  'forget':{'item_id':'#1a2b3c4d'},
+ 'create_routine':{'name':'每小时新闻','instruction':'找一条新闻','schedule_kind':'hourly'},
 }
 
 
