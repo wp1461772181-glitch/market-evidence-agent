@@ -195,37 +195,13 @@ class TestStrangerIgnored:
 
 
 class TestReplyCitations:
-    """The reply path can carry citations (mock the chat stream response)."""
+    """Telegram answers are chat text: the citations event is the web page's and is not listed."""
 
-    def test_citation_formatting(self, owner):
-        citations = [
-            {"ordinal": 1, "title": "NVDA 10-K 2025", "source_type": "official_filing"},
-            {"ordinal": 2, "title": "Reuters: NVIDIA announces new chip", "source_type": "news_lead"},
-        ]
-        lines = []
-        for c in citations:
-            ordinal = c.get("ordinal")
-            title = str(c.get("title") or "")[:80]
-            if ordinal:
-                lines.append(f"  [{ordinal}] {title}")
-        result = "\n".join(lines)
-        assert "[1] NVDA 10-K 2025" in result
-        assert "[2] Reuters: NVIDIA announces new chip" in result
-
-    def test_answer_with_inline_sources(self, owner):
-        answer = "NVDA reported strong earnings this quarter."
-        sources = [
-            {"ordinal": 1, "title": "NVDA Q3 2025 Earnings", "source_type": "official_filing"},
-        ]
-        cite_lines = []
-        for c in sources:
-            ordinal = c.get("ordinal")
-            title = str(c.get("title") or "")[:80]
-            if ordinal:
-                cite_lines.append(f"  [{ordinal}] {title}")
-        result = answer + "\n\n——\n" + "\n".join(cite_lines)
-        assert "[1] NVDA Q3 2025 Earnings" in result
-        assert "strong earnings" in result
+    def test_citations_are_not_appended(self, owner):
+        from scripts.run_telegram_bridge import format_turn
+        answer, _, _ = format_turn([("delta", {"text": "NVDA reported strong earnings [1]."}),
+                                    ("citations", {"items": [{"ordinal": 1, "title": "NVDA 10-K 2025"}]})])
+        assert answer == "NVDA reported strong earnings."
 
 
 class TestUnboundFailsClosed:

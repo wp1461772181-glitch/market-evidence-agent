@@ -6,8 +6,11 @@ only /bind <code> (or /start <code>) in a private chat.  Owner text goes to a bo
 chat API (second edition, stage D): a reply to a bot's message goes to that bot, a message starting with
 「@名字」 to the bot of that name, anything else to the default bot 「助理」 (whose line the old 「手机」
 conversation was folded into).  Each answer starts with the bot's name and is remembered by its Telegram
-message id, so replying to it continues with that bot.  Consent cards become inline keyboard buttons with
-a short id (the real token stays server-side); callback_query runs consent.execute once and sends a receipt.
+message id, so replying to it continues with that bot.  Answers go out as plain chat text: no [n] markers
+and no sources list (agent_telegram.chat_text); links written in the answer stay.  Consent cards become
+inline keyboard buttons with a short id (the real token stays in this process); pressing one sends the
+card's own button value to that bot's line, exactly as the web page does, so the write runs through the
+same confirmed handler (save to 资料库, index, ...) and the receipt is the bot's own report.
 Messages the bots queued (notify_telegram, alerts with 也发 Telegram) are sent from the outbox to the
 bound chat only.
 
@@ -138,7 +141,7 @@ async def main(dry_run: bool = False) -> int:
                                               bound_chat, bound_user, pending_cards, tg)
                     elif isinstance(callback, dict):
                         await _handle_callback(client, callback, pending_cards, owner, credential,
-                                               bound_chat, bound_user)
+                                               bound_chat, bound_user, tg)
             except Exception as exc:
                 print(f"Bridge error: {_redact(exc)}", file=sys.stderr)
                 await asyncio.sleep(10)
@@ -200,20 +203,30 @@ async def _handle_message(client, credential: str, owner: str, message: dict,
 
     if not text:
         return
-    bot_token = _bot_token_for_send(owner, tg)
     reply_to = (message.get("reply_to_message") or {}).get("message_id")
     target = await asyncio.to_thread(tg.route, owner, text, reply_to if isinstance(reply_to, int) else None)
     if not target["text"]:
         return
-    answer, cards, cid = await _ask_agent(client, credential, target["bot_id"], target["text"])
-    keyboard = _make_keyboard(cards, pending_cards, cid, credential) if cid else None
-    answer = f"【{target['bot_name']}】\n" + (answer.strip() or ("完成。" if keyboard else "（这条回复没有内容。）"))
+    await _bot_turn(client, credential, owner, bound_chat, pending_cards, tg, target["bot_id"], target["bot_name"],
+                    target["text"])
+
+
+async def _bot_turn(client, credential: str, owner: str, bound_chat: int, pending_cards: dict, tg,
+                    bot_id: str, bot_name: str, text: str, **press):
+    """One turn of a bot, sent back as its chat message(s); ``press`` carries a card press (its conversation,
+    card id and the button's label)."""
+    bot_token = _bot_token_for_send(owner, tg)
+    answer, cards, cid = await _ask_agent(client, credential, bot_id, text, **press)
+    keyboard = _make_keyboard(cards, pending_cards, cid, credential, bot_id, bot_name) if cid else None
+    if cards and not keyboard:
+        answer = answer.strip() + "\n\n（这一步需要在网页里选择后确认。）"
+    answer = f"【{bot_name}】\n" + (answer.strip() or ("完成。" if keyboard else "（这条回复没有内容。）"))
     chunks = [answer[i:i+ANSWER_MAX_CHARS] for i in range(0, len(answer), ANSWER_MAX_CHARS)]
     for i, chunk in enumerate(chunks):
         kb = keyboard if i == len(chunks) - 1 else None
         sent = await _send_text(client, bot_token, bound_chat, chunk, inline_keyboard=kb)
         # Each part is remembered with its bot, so replying to any of them continues with that bot.
-        await asyncio.to_thread(tg.record_reply, owner, target["bot_id"], chunk, sent)
+        await asyncio.to_thread(tg.record_reply, owner, bot_id, chunk, sent)
 
 
 async def _handle_bind_command(client, chat: dict, sender: dict | None, owner: str, code: str, tg):
@@ -244,13 +257,21 @@ def _bot_token_for_send(owner: str, tg) -> str:
     return agent_telegram.load_bot_token(owner) or ""
 
 
-async def _ask_agent(client, credential: str, bot_id: str, text: str):
-    """One turn of the bot (its line, its model from the server catalog).  Returns the answer with its
-    sources listed, any cards, and the conversation id the turn ran in."""
+async def _ask_agent(client, credential: str, bot_id: str, text: str, *, conversation_id: str | None = None,
+                     pending_request_id: str | None = None, display_message: str | None = None):
+    """One turn of the bot (its line, its model from the server catalog).  Returns the answer as chat text,
+    any cards, and the conversation id the turn ran in.  A card press sends the button's value with the
+    card id, as the web page does."""
     import httpx
     from app.agent_telegram import sse_events
 
     body = {"bot_id": bot_id, "message": text[:MESSAGE_MAX_CHARS]}
+    if conversation_id:
+        body["conversation_id"] = conversation_id
+    if pending_request_id:
+        body["pending_request_id"] = pending_request_id
+        if display_message:
+            body["display_message"] = display_message[:120]
     raw = ""
     try:
         async with client.stream(
@@ -269,59 +290,48 @@ async def _ask_agent(client, credential: str, bot_id: str, text: str):
 
 
 def format_turn(events: list[tuple[str, dict]]):
-    """The answer (with its sources listed), the cards and the conversation id of a parsed stream."""
+    """The answer as Telegram chat text (no [n] markers, no sources list), the cards and the conversation id
+    of a parsed stream.  The citations event is the web page's; Telegram does not list it."""
+    from app.agent_telegram import chat_text
     answer_parts: list[str] = []
     cards: list[dict] = []
-    citations: list[dict] = []
     conversation_id = None
     for kind, data in events:
         if kind == "conversation":
             conversation_id = data.get("conversation_id")
         elif kind == "delta":
             answer_parts.append(str(data.get("text", "")))
-        elif kind == "citations":
-            citations = data.get("items", [])
         elif kind == "clarification":
             cards.append(data)
-    answer = "".join(answer_parts)
-    if citations:
-        cite_lines = []
-        for c in citations[:10]:
-            if not isinstance(c, dict):
-                continue
-            ordinal = c.get("ordinal")
-            title = str(c.get("title") or c.get("source_title") or "")[:80]
-            if ordinal:
-                cite_lines.append(f"  [{ordinal}] {title}")
-        if cite_lines:
-            answer = answer.strip() + "\n\n——\n" + "\n".join(cite_lines)
-
-    return answer, cards, conversation_id
+    return chat_text("".join(answer_parts)), cards, conversation_id
 
 
-def _make_keyboard(cards: list[dict], pending: dict, cid: str, credential: str) -> list | None:
-    if not cards:
-        return None
+def _make_keyboard(cards: list[dict], pending: dict, cid: str, credential: str, bot_id: str | None = None,
+                   bot_name: str = "") -> list | None:
+    """Inline buttons for the write cards: 同意 and 取消.  A card that needs ticking (forecast revision
+    sources) has no Telegram form and gets no buttons."""
     buttons = []
     for card in cards:
-        if not isinstance(card, dict):
+        if not isinstance(card, dict) or not card.get("id") or card.get("options"):
             continue
-        choices = card.get("choices") or []
-        for choice in choices:
-            if not isinstance(choice, dict):
+        row = []
+        for choice in card.get("choices") or []:
+            value = str((choice or {}).get("value", "")) if isinstance(choice, dict) else ""
+            kind = "ok" if value.startswith("confirm:") else "no" if value.startswith("cancel:") else None
+            if not kind:
                 continue
-            value = choice.get("value", "")
-            if value.startswith("confirm:"):
-                token = value[len("confirm:"):]
-                short_id = _make_short_id()
-                pending[short_id] = {"token": token, "operations": [], "conversation_id": cid, "credential": credential}
-                label = str(choice.get("label", "同意"))[:20]
-                buttons.append([{"text": label, "callback_data": f"ok:{short_id}"}])
-    if not buttons:
-        msg = cards[0].get("original_question") or (cards[0].get("display") or {}).get("title") or ""
-        msg = str(msg)[:200]
-        return buttons
-    return buttons if buttons else None
+            short_id = _make_short_id()
+            label = str(choice.get("label") or ("同意" if kind == "ok" else "取消"))[:20]
+            pending[short_id] = {"value": value, "card_id": str(card["id"]), "conversation_id": cid,
+                                 "credential": credential, "bot_id": bot_id, "bot_name": bot_name, "label": label, "group": []}
+            row.append({"text": label, "callback_data": f"{kind}:{short_id}"})
+        # Either button of a card uses the card up, so pressing one forgets the other.
+        group = [b["callback_data"].split(":", 1)[1] for b in row]
+        for short_id in group:
+            pending[short_id]["group"] = group
+        if row:
+            buttons.append(row)
+    return buttons or None
 
 
 def _make_short_id() -> str:
@@ -330,7 +340,7 @@ def _make_short_id() -> str:
 
 
 async def _handle_callback(client, callback: dict, pending: dict, owner: str, credential: str,
-                           bound_chat: int, bound_user: int | None):
+                           bound_chat: int, bound_user: int | None, tg=None):
     cb_id = callback.get("id")
     message = callback.get("message") or {}
     chat = message.get("chat") or {}
@@ -342,38 +352,31 @@ async def _handle_callback(client, callback: dict, pending: dict, owner: str, cr
     if not _from_owner(chat, callback.get("from"), bound_chat, bound_user):
         return
 
-    bot_token = _bot_token_for_send(owner, None)
+    if tg is None:
+        from app import agent_telegram as tg
+    bot_token = _bot_token_for_send(owner, tg)
     await _answer_callback(client, bot_token, cb_id)
 
-    if not data.startswith("ok:"):
+    kind, _, short_id = data.partition(":")
+    if kind not in {"ok", "no"}:
         return
-
-    short_id = data[len("ok:"):]
     entry = pending.pop(short_id, None)
     if not entry:
         await _send_text(client, bot_token, chat_id, "这张确认卡已经过期了（每张卡只能用一次）。")
         return
-
-    token = entry["token"]
-    ops = entry["operations"]
-    cid = entry["conversation_id"]
-    cred = entry.get("credential") or credential
-
-    try:
-        from app.agent_workflow.consent import execute, ConsentError
-        from app.agent_workflow.tools import execute_reversible
-        result = await asyncio.to_thread(execute, cred, cid, token, ops, execute_reversible)
-        ok = result.get("ok") if isinstance(result, dict) else False
-        if ok:
-            await _send_text(client, bot_token, chat_id, "已执行。")
-        else:
-            data_items = result.get("data", []) if isinstance(result, dict) else []
-            errors = [str(d.get("error_code", "failed")) for d in data_items if isinstance(d, dict) and not d.get("ok")]
-            await _send_text(client, bot_token, chat_id, f"未能执行：{', '.join(errors) or 'unknown'}")
-    except ConsentError as exc:
-        await _send_text(client, bot_token, chat_id, f"未能执行：{_redact(exc)}")
-    except Exception as exc:
-        await _send_text(client, bot_token, chat_id, f"执行出错：{_redact(exc)}")
+    for other in entry.get("group") or []:
+        pending.pop(other, None)
+    if not entry.get("bot_id"):
+        await _send_text(client, bot_token, chat_id, "这张确认卡已经过期了，请在网页里重新确认。")
+        return
+    # The press goes to the bot's line as the button's own value, like a press on the web page: the server
+    # finds the card, runs consent.execute with the operations it saved and the confirmed handler, and the
+    # bot reports what was saved.  Calling consent.execute from here could not: the bridge holds neither
+    # the operations (the payload digest) nor the turn context the handler needs.
+    await _bot_turn(client, entry.get("credential") or credential, owner, bound_chat, pending, tg,
+                    entry["bot_id"], entry.get("bot_name") or "", entry["value"],
+                    conversation_id=entry.get("conversation_id"), pending_request_id=entry["card_id"],
+                    display_message=entry.get("label"))
 
 
 async def _deliver_outbox(client, owner: str, bound_chat: int, tg) -> None:

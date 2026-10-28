@@ -1,7 +1,7 @@
 """Telegram as a tool (personal agent plan, second edition, stage D).
 
 * ``notify_telegram(text, evidence_ids)``: offered to every bot (also unattended, no card); the message
-  starts with the bot's name and its [n] become source links; a figure without this turn's evidence number
+  starts with the bot's name and goes out as plain chat text (no [n], no sources list); a figure without this turn's evidence number
   is refused; the recipient is the bound chat only (the tool has no recipient, extra arguments are refused);
   each bot has a daily cap, past it nothing more is queued;
 * alerts with 也发 Telegram use the same queue and cap; brief tasks that pushed every run now leave it to
@@ -109,7 +109,7 @@ def test_the_tool_has_no_recipient_and_is_offered_to_every_bot_without_a_card(ow
     assert "notify_telegram" in names and "fetch_sec" not in names  # unattended: still no write tool
 
 
-def test_a_news_bot_message_carries_its_name_and_source_links_and_goes_to_the_bound_chat(owner):
+def test_a_news_bot_message_carries_its_name_as_plain_chat_and_goes_to_the_bound_chat(owner):
     _bind()
     news = _news()
     direct, context, quiet = _turn(news["id"])
@@ -119,8 +119,8 @@ def test_a_news_bot_message_carries_its_name_and_source_links_and_goes_to_the_bo
     assert outcome["ok"] and outcome["data"][0]["status"] == "queued_for_telegram"
     assert turn.audit["telegram"] == "queued"
     [row] = _outbox()
-    assert row.text.startswith("【抓新闻】\n") and "订单超过 100 亿美元 [1]" in row.text
-    assert "[1] Reuters: NVIDIA unveils new chip https://news.example/nvda" in row.text
+    assert row.text == "【抓新闻】\n高重要度：英伟达发布新芯片，订单超过 100 亿美元。"
+    assert "Reuters" not in row.text and "来源" not in row.text
     assert row.source == "notify" and str(row.bot_id) == news["id"] and row.status == "pending"
 
     # The bridge sends it to the bound chat (the only recipient there is) and keeps the Telegram id.
@@ -231,7 +231,7 @@ def test_alerts_with_telegram_use_the_same_queue_and_cap(owner):
     rows = _outbox()
     assert len(rows) == 1  # the cap of 1 held; the second alert is still in the bot's line and inbox
     assert rows[0].source == "alert" and rows[0].text.startswith("【抓新闻】\nNVDA 新申报 a1")
-    assert "[1] NVDA 10-Q https://www.sec.gov/nvda.htm" in rows[0].text
+    assert "[1]" not in rows[0].text and "来源" not in rows[0].text
     assert len(tasks.list_inbox(OWNER_HASH, section="brief")) == 2
     assert not any("channel_pending" in i["payload"] for i in tasks.list_inbox(OWNER_HASH))
 
@@ -303,7 +303,7 @@ def test_a_turn_from_telegram_sends_only_the_bot_id_and_reads_the_stream(owner):
             return Stream()
     answer, cards, conversation = asyncio.run(bridge._ask_agent(Client(), OWNER, "bot-1", "去年营收多少"))
     assert bodies == [{"bot_id": "bot-1", "message": "去年营收多少"}]  # no provider, model or key
-    assert answer.startswith("营收 [1]") and "[1] 10-K" in answer
+    assert answer == "营收"  # chat text: no [n], no sources list
     assert cards == [{"request_id": "r", "choices": []}] and conversation == "line-1"
 
 

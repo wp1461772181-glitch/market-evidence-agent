@@ -2,7 +2,8 @@
 
 1. Saves a bot token, generates a bind code, and confirms the bind (in-process).
 2. Asserts that a stranger's message is ignored (random chat_id, not bound).
-3. Asserts that a consent button executes once (in-process consent, no real handler).
+3. Asserts that a consent button executes once: a second press replays the stored result and never runs
+   the handler again (in-process consent, no real handler).
 4. Without a token or binding, the bridge refuses to start.
 5. Never prints tokens.
 
@@ -118,22 +119,29 @@ def run() -> int:
     if not token_value:
         failures.append("no_token_in_card")
 
+    calls = []
+
     def _noop(op, key):
+        calls.append(key)
         return {"ok": True}
 
-    result1 = consent.execute(owner_cred, cid, token_value,
-                              [{"name": "remember", "kind": "remember", "text": "test", "quote": "test"}], _noop)
+    operations = [{"name": "remember", "kind": "remember", "text": "test", "quote": "test"}]
+    result1 = consent.execute(owner_cred, cid, token_value, operations, _noop)
     print("   first execute:", result1.get("ok"))
     if not result1.get("ok"):
         failures.append("execute_failed")
 
+    # Consent is idempotent by design: a completed card replays its stored result (a double tap, a retried
+    # callback) and the handler does not run again.  The old check expected a ConsentError here, which a
+    # completed card never raises, so it failed every run as double_execute.
     try:
-        consent.execute(owner_cred, cid, token_value,
-                        [{"name": "remember", "kind": "remember", "text": "test", "quote": "test"}], _noop)
-        print("   second execute: should have failed")
-        failures.append("double_execute")
-    except consent.ConsentError:
-        print("   second execute: ConsentError (expected)")
+        result2 = consent.execute(owner_cred, cid, token_value, operations, _noop)
+        print("   second execute: replayed", result2 == result1, "handler runs:", len(calls))
+        if len(calls) != 1 or result2 != result1:
+            failures.append("double_execute")
+    except consent.ConsentError as exc:
+        print("   second execute: unexpected ConsentError", exc)
+        failures.append("second_press_refused")
 
     print("7 · unbind")
     tg.unbind(owner)

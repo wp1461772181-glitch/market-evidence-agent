@@ -5,9 +5,9 @@ stored as a hash, lets the owner prove they control a Telegram account; once con
 only handles messages from that chat.  Strangers are ignored.
 
 Second edition, stage D: sending is a tool.  A bot calls ``notify_telegram`` (``notify`` here): the text
-starts with the bot's name, every figure carries one of this turn's evidence numbers, the sources become
-links, and the bot's daily cap holds.  The recipient is the bound chat, decided by the bridge, never by the
-model: the tool has no recipient argument and nothing here stores one.  Alerts with 也发 Telegram use the
+starts with the bot's name, every figure carries one of this turn's evidence numbers (checked, then dropped:
+Telegram gets plain chat text with no sources list, see ``chat_text``), and the bot's daily cap holds.
+The recipient is the bound chat, decided by the bridge, never by the model: the tool has no recipient argument and nothing here stores one.  Alerts with 也发 Telegram use the
 same queue (``enqueue``).  ``route`` finds the bot a message from the owner is for: the bot whose message
 it replies to, else an ``@名字`` prefix, else the default bot.
 """
@@ -267,19 +267,42 @@ def check_evidence(text: str, evidence_ids: list[int], ordinals: set[int]) -> li
     return wanted
 
 
-def render(bot_name: str, text: str, citations: list[dict], used: list[int]) -> str:
-    """The message as sent: the bot's name first, the owner-facing text, then each used source with its link."""
-    lines = [f"【{bot_name}】", text.strip()]
-    sources = []
-    by_ordinal = {c.get("ordinal"): c for c in citations if isinstance(c, dict)}
-    for ordinal in sorted(used):
-        item = by_ordinal.get(ordinal) or {}
-        title = " ".join(str(item.get("title") or item.get("source_title") or "").split())[:120] or "来源"
-        link = item.get("source_url") or item.get("url")
-        sources.append(f"[{ordinal}] {title}" + (f" {link}" if isinstance(link, str) and link.startswith("http") else ""))
-    if sources:
-        lines += ["", "来源：", *sources]
-    return "\n".join(lines)
+# Telegram is a chat: what goes out reads like a message, never a paper.  The [n] evidence markers and any
+# sources appendix stay in the web line (and the notify check still needs them); a link written into the
+# answer itself is kept.
+_INLINE_MARKERS = re.compile(r"[ \t]?\[\d{1,3}(?:\s*[,，、]\s*\d{1,3})*\](?!\()")
+# A heading alone on its line (「来源：」, **参考资料**, ## Sources) or one followed by its list (「来源：路透」).
+_SOURCES_HEADING = re.compile(
+    r"^\s*(?:#{1,6}\s*)?(?:\*\*|__)?\s*(?:来源|资料来源|資料來源|参考来源|参考资料|引用来源|引用|出处|"
+    r"sources?|references?|citations?)\s*(?:\*\*|__)?\s*(?:[:：].*)?$", re.I)
+_SOURCE_LINE = re.compile(r"^\s*(?:[-*•]\s*)?\[\d{1,3}\]")
+_RULE = re.compile(r"^\s*(?:—+|-{3,}|_{3,}|\*{3,})\s*$")
+
+
+def chat_text(text: str) -> str:
+    """The answer as a Telegram chat message: the trailing sources block (a 「来源：」 heading, a rule, a list of
+    [n] lines) is cut and the [n] markers are dropped from the sentences; links in the body stay."""
+    lines = str(text or "").replace("\r\n", "\n").split("\n")
+    # Walk up from the end over the appendix.  A blank line or a rule is cut only above a heading or a [n]
+    # line, so an answer that merely ends with a rule keeps it.
+    cut, found = len(lines), False
+    for index in range(len(lines) - 1, -1, -1):
+        line = lines[index]
+        if _SOURCE_LINE.match(line) or _SOURCES_HEADING.match(line):
+            cut, found = index, True
+        elif not line.strip() or _RULE.match(line):
+            if found:
+                cut = index
+        else:
+            break
+    body = "\n".join(_INLINE_MARKERS.sub("", line).rstrip() for line in lines[:cut])
+    return re.sub(r"\n{3,}", "\n\n", body).strip()
+
+
+def render(bot_name: str, text: str, citations: list[dict] | None = None, used: list[int] | None = None) -> str:
+    """The message as sent: the bot's name first, then the text as plain chat.  ``citations`` and ``used``
+    are accepted for the callers' grounding check and deliberately not listed (no sources appendix)."""
+    return "\n".join([f"【{bot_name}】", chat_text(text)])
 
 
 def notify(owner_hash: str, bot_id, text: str, evidence_ids: list[int], citations: list[dict], *,

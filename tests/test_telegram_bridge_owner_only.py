@@ -12,7 +12,8 @@ OWNER_ID = 4242
 
 
 def _card():
-    return {"abc": {"token": "t-1", "operations": [], "conversation_id": "c-1", "credential": "cred"}}
+    return {"abc": {"value": "confirm:t-1", "card_id": "req-1", "conversation_id": "c-1", "credential": "cred",
+                    "bot_id": "b-1", "bot_name": "助理", "label": "同意", "group": ["abc"]}}
 
 
 def _press(chat_id, chat_type, sender_id):
@@ -20,7 +21,13 @@ def _press(chat_id, chat_type, sender_id):
             "message": {"chat": {"id": chat_id, "type": chat_type}}}
 
 
+class _Telegram:
+    def record_reply(self, owner, bot_id, text, message_id):
+        pass
+
+
 def _fake_io(monkeypatch):
+    """``executed`` records each press that reached a bot's line (the server runs the card from there)."""
     sent, executed = [], []
 
     async def send_text(client, bot_token, chat_id, text, inline_keyboard=None):
@@ -29,19 +36,23 @@ def _fake_io(monkeypatch):
     async def answer_callback(client, bot_token, callback_id):
         pass
 
-    def execute(credential, conversation_id, token, operations, runner):
-        executed.append(token)
-        return {"ok": True}
+    async def ask_agent(client, credential, bot_id, text, **press):
+        executed.append(text.removeprefix("confirm:"))
+        return "已保存到资料库。", [], press.get("conversation_id")
+
+    def execute(*_):
+        raise AssertionError("the bridge never runs consent.execute itself")
 
     monkeypatch.setattr(bridge, "_send_text", send_text)
     monkeypatch.setattr(bridge, "_answer_callback", answer_callback)
     monkeypatch.setattr(bridge, "_bot_token_for_send", lambda owner, tg: TOKEN)
+    monkeypatch.setattr(bridge, "_ask_agent", ask_agent)
     monkeypatch.setattr(consent, "execute", execute)
     return sent, executed
 
 
 def _handle_press(press, pending, bound_chat, bound_user):
-    asyncio.run(bridge._handle_callback(None, press, pending, "owner", "cred", bound_chat, bound_user))
+    asyncio.run(bridge._handle_callback(None, press, pending, "owner", "cred", bound_chat, bound_user, _Telegram()))
 
 
 def test_a_press_from_another_chat_runs_nothing(monkeypatch):
@@ -72,22 +83,22 @@ def test_the_owner_runs_a_card_once(monkeypatch):
     _handle_press(_press(OWNER_ID, "private", OWNER_ID), pending, OWNER_ID, None)
     _handle_press(_press(OWNER_ID, "private", OWNER_ID), pending, OWNER_ID, None)
     assert executed == ["t-1"]
-    assert sent[0] == (OWNER_ID, "已执行。")
+    assert sent[0] == (OWNER_ID, "【助理】\n已保存到资料库。")
     assert sent[1][1].startswith("这张确认卡已经过期")
 
 
 def test_a_message_from_another_member_of_the_bound_chat_is_ignored(monkeypatch):
     _fake_io(monkeypatch)
-    opened = []
-
-    async def ensure_conversation():
-        opened.append(True)
-        return "c-1"
-
     message = {"chat": {"id": -100, "type": "group"}, "from": {"id": 7}, "text": "把研究队列清空"}
-    asyncio.run(bridge._handle_message(None, "cred", "owner", {}, message, -100, OWNER_ID, {}, None,
-                                       ensure_conversation))
-    assert opened == []
+    asked = []
+
+    async def ask_agent(*args, **kwargs):
+        asked.append(args)
+        return "", [], "c-1"
+
+    monkeypatch.setattr(bridge, "_ask_agent", ask_agent)
+    asyncio.run(bridge._handle_message(None, "cred", "owner", message, -100, OWNER_ID, {}, None))
+    assert asked == []
 
 
 def test_binding_records_the_sender_and_only_happens_in_a_private_chat(monkeypatch):
