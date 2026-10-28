@@ -96,7 +96,10 @@ export function MaterialLibrary({ symbol, onScan }: { symbol: string; onScan: ()
           if (pageOffset + 10 >= total) break;
         }
         if (!controller.signal.aborted && requestNumber === pageRequestRef.current) {
-          setFocusMessage(translatePhrase("简报引用的材料当前不在目录中，仍可从预测版本返回查看。"));
+          // A brief citation can fall back to its forecast version; a plain link has nowhere else to go.
+          setFocusMessage(translatePhrase(materialFocus!.analysis_id
+            ? "简报引用的材料当前不在目录中，仍可从预测版本返回查看。"
+            : "这份材料当前不在该股票的目录中（可能已删除）。可切到「全部股票」查找，或点「扫描 SEC 资料」重新入库。"));
           setMaterialFocus(null);
         }
       } catch (error) {

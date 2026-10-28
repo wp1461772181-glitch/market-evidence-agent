@@ -6,6 +6,9 @@ test("a save reply's link names the stock and the row", () => {
   assert.deepEqual(materialLinkFromHash("#materials?symbol=aapl&focus=6f1c2d3e-0000-4000-8000-000000000001"),
     { symbol: "AAPL", source_type: "uploaded_media", source_id: "6f1c2d3e-0000-4000-8000-000000000001" });
   assert.deepEqual(materialLinkFromHash("#materials?symbol=BRK.B"), { symbol: "BRK.B", source_type: "uploaded_media", source_id: null });
+  assert.deepEqual(materialLinkFromHash("#materials?symbol=AAPL&focus=6f1c2d3e-0000-4000-8000-000000000002&type=official_filing"),
+    { symbol: "AAPL", source_type: "official_filing", source_id: "6f1c2d3e-0000-4000-8000-000000000002" });
+  assert.equal(materialLinkFromHash("#materials?symbol=AAPL&focus=6f1c2d3e-0000-4000-8000-000000000002&type=web").source_type, "uploaded_media");
   assert.equal(materialLinkFromHash("#materials"), null);
   assert.equal(materialLinkFromHash("#materials?symbol=<script>"), null);
   assert.equal(materialLinkFromHash("#agent"), null);

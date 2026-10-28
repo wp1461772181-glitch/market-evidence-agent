@@ -80,7 +80,7 @@ function MaterialsCard({ symbol }: { symbol: string }) {
   const fresh = (value: string | null) => Boolean(value && Date.now() - new Date(value).valueOf() < 24 * 3600 * 1000);
   return <>
     <Body state={state} empty={v => !v.items.length}>{v => <ul className="ws-list">{v.items.map(item =>
-      <li key={`${item.source_type}:${item.source_id}`}><a href={`#materials?symbol=${encodeURIComponent(symbol)}&focus=${item.source_id}`}>{item.title}</a>
+      <li key={`${item.source_type}:${item.source_id}`}><a href={`#materials?symbol=${encodeURIComponent(symbol)}&focus=${item.source_id}&type=${item.source_type}`}>{item.title}</a>
         {fresh(item.observed_at) && <span className="ws-new">{t("新")}</span>}<small className="ws-muted"> {day(item.published_at)}</small></li>)}</ul>}</Body>
     <a className="text-button" href={`#materials?symbol=${encodeURIComponent(symbol)}`}>{t("打开资料库")} →</a>
   </>;

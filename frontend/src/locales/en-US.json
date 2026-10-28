@@ -1693,5 +1693,6 @@
   "金牛黄": "Bull gold",
   "极客白": "Geek white",
   "轮廓": "Shape",
-  "配色": "Color"
+  "配色": "Color",
+  "这份材料当前不在该股票的目录中（可能已删除）。可切到「全部股票」查找，或点「扫描 SEC 资料」重新入库。": "This material is not in this stock's catalog right now (it may have been deleted). Switch to All stocks to look for it, or click Scan SEC filings to add it again."
 }

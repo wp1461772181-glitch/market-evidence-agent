@@ -1,11 +1,12 @@
 // 资料库 links and scope (UX batch 2, P1).  A confirmed agent save replies with
 // #materials?symbol=AAPL&focus=<uploaded_media id>; opening it lands on that row.
+// The workspace card also links SEC filings, so it adds &type=official_filing.
 export const MATERIAL_FOCUS_KEY = "market-evidence-agent:material-analysis-focus";
 
 const TICKER = /^[A-Z]{1,5}(?:[.-][A-Z]{1,2})?$/;
 const ID = /^[0-9a-f-]{8,64}$/i;
 
-/** {symbol, source_type, source_id} from a #materials?symbol=&focus= hash, or null. */
+/** {symbol, source_type, source_id} from a #materials?symbol=&focus=[&type=] hash, or null. */
 export function materialLinkFromHash(hash) {
   const value = String(hash || "").replace(/^#/, "");
   if (!value.startsWith("materials?")) return null;
@@ -13,7 +14,8 @@ export function materialLinkFromHash(hash) {
   const symbol = String(params.get("symbol") || "").trim().toUpperCase();
   const focus = String(params.get("focus") || "").trim();
   if (!TICKER.test(symbol)) return null;
-  return { symbol, source_type: "uploaded_media", source_id: ID.test(focus) ? focus : null };
+  const source_type = params.get("type") === "official_filing" ? "official_filing" : "uploaded_media";
+  return { symbol, source_type, source_id: ID.test(focus) ? focus : null };
 }
 
 /** The symbol the library request filters on: none for 全部股票. */
