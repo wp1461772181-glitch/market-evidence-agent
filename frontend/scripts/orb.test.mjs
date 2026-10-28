@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createGazeHub, gazeOffset, orbAvatar, parseAvatar, randomOrbColor, ORB_COLORS } from "../src/orb.mjs";
+import { BRAND, createGazeHub, gazeOffset, orbAvatar, parseAvatar, ORB_COLORS } from "../src/orb.mjs";
 
 test("avatars: orb colours, the brand orb, and older emoji kept as text", () => {
   assert.deepEqual(parseAvatar("orb:pink"), { kind: "orb", color: "pink", brand: false });
@@ -12,8 +12,7 @@ test("avatars: orb colours, the brand orb, and older emoji kept as text", () => 
   assert.equal(ORB_COLORS.length, 11);
   assert.ok(ORB_COLORS.every((c) => orbAvatar(c).length <= 16));
   assert.equal(orbAvatar("neon"), "orb:finbot");
-  assert.equal(randomOrbColor(() => 0.999), "gray");
-  assert.equal(randomOrbColor(() => 0), "black");
+  assert.equal(orbAvatar(BRAND), "orb:finbot");
 });
 
 test("gaze points toward the pointer and is capped", () => {

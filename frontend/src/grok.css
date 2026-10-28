@@ -151,12 +151,12 @@ body { -webkit-font-smoothing: antialiased; }
 
 /* --- FinBot orb avatars (UX batch 2, P2) ------------------------------------------------------- */
 :root {
-  --orb-finbot: #12a374; --orb-black: #1c1c1c; --orb-brown: #a2653a; --orb-red: #e53935; --orb-orange: #f26b1d;
+  --orb-finbot: #1c1c1c; --orb-black: #1c1c1c; --orb-brown: #a2653a; --orb-red: #e53935; --orb-orange: #f26b1d;
   --orb-yellow: #f2a516; --orb-green: #22b45f; --orb-teal: #14a89a; --orb-blue: #2f7cf6; --orb-purple: #8f5cf2;
   --orb-pink: #f0388f; --orb-gray: #8a8a8a;
 }
 :root[data-theme="dark"] {
-  --orb-finbot: #22c28a; --orb-black: #3a3a3a; --orb-brown: #c07d4c; --orb-red: #f25a56; --orb-orange: #ff8540;
+  --orb-finbot: #3a3a3a; --orb-black: #3a3a3a; --orb-brown: #c07d4c; --orb-red: #f25a56; --orb-orange: #ff8540;
   --orb-yellow: #ffbd3d; --orb-green: #3fcd7b; --orb-teal: #2cc4b5; --orb-blue: #5b9bff; --orb-purple: #a77dff;
   --orb-pink: #ff5aa8; --orb-gray: #a3a3a3;
 }
@@ -164,10 +164,8 @@ body { -webkit-font-smoothing: antialiased; }
 .bot-orb svg { width: 100%; height: 100%; display: block; overflow: visible; }
 .orb-pupils { transition: transform .12s ease-out; }
 .orb-eyes { transform-box: fill-box; transform-origin: center; animation: orb-blink 5.5s infinite; animation-delay: var(--blink-delay, 0s); }
-.orb-sparkle { transform-box: fill-box; transform-origin: center; animation: orb-twinkle 3.2s ease-in-out infinite; }
-@keyframes orb-twinkle { 0%, 70%, 100% { transform: scale(1); opacity: 1; } 82% { transform: scale(.55) rotate(45deg); opacity: .7; } }
 @keyframes orb-blink { 0%, 94%, 100% { transform: scaleY(1); } 96.5% { transform: scaleY(.12); } }
-@media (prefers-reduced-motion: reduce) { .orb-eyes, .orb-sparkle { animation: none; } .orb-pupils { transition: none; transform: none !important; } }
+@media (prefers-reduced-motion: reduce) { .orb-eyes { animation: none; } .orb-pupils { transition: none; transform: none !important; } }
 .agent-title-row .bot-orb { width: 30px; height: 30px; }
 .bot-orb-hero { display: grid; justify-items: center; gap: 6px; margin: 4px 0 14px; }
 .bot-orb-hero small { color: var(--me-muted); font-size: 12px; }

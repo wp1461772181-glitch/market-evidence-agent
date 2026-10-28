@@ -1,5 +1,5 @@
-// FinBot orb avatars (UX batch 2, P2).  A bot's avatar string is either `orb:<colour>` (the round orb with
-// eyes), `orb:finbot` (the brand orb: brows, a sideways smile and a rising-arrow tuft), or any older emoji/text (shown as is).
+// FinBot orb avatars.  A bot's avatar string is either `orb:<colour>` (the round face with white `$` eyes in that
+// colour), `orb:finbot` (the same face in black: the brand mark and every new bot's default), or any older emoji/text (shown as is).
 export const ORB_COLORS = ["black", "brown", "red", "orange", "yellow", "green", "teal", "blue", "purple", "pink", "gray"];
 export const BRAND = "finbot";
 
@@ -15,11 +15,6 @@ export function parseAvatar(avatar, name = "") {
 
 export function orbAvatar(color) {
   return color === BRAND || ORB_COLORS.includes(color) ? `orb:${color}` : `orb:${BRAND}`;
-}
-
-/** A colour for a new bot: random, but never the brand (the default bot keeps that). */
-export function randomOrbColor(random = Math.random) {
-  return ORB_COLORS[Math.min(ORB_COLORS.length - 1, Math.floor(random() * ORB_COLORS.length))];
 }
 
 /** Pupil offset (px, in the orb's own units) toward the pointer: angle kept, length min(distance/k, max). */

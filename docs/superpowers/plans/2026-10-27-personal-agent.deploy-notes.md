@@ -474,3 +474,21 @@ Five stage commits on `worktree-personal-agent` (not pushed): `1340187` memory b
 5. Not done: ponytail on the box CLIs is CodeBot's (no AGENTS.md in this repo, nothing added).  The old
    `model-profiles.mjs` storage code and `/agent-chat/local-model-profiles` stay for now (only its provider list is
    still used); remove in a later cleanup.
+
+## UX batch 3 hotfix — 添加模型 clickable again; black `$` face for the logo and every orb
+
+Frontend only, no migration, no backend restart.  Hard-refresh the browser (favicon may need a tab reopen).
+
+1. **「＋ 添加模型」 was unclickable.**  The dialog's backdrop sits inside the settings card, which is a direct
+   child of `main.agent-admin`; opening the dialog marked every `main` child `inert` except `.profile-backdrop`,
+   so the card holding the dialog went inert too.  Now every child is inerted except the one that contains the
+   dialog (`siblingsToInert` in `catalog-form.mjs`).  Escape / Tab trap / focus restore / click-outside unchanged.
+2. **Logo + orbs.**  One face for everything: a round body with two white `$` eyes that follow the pointer
+   (centred under 减少动态效果).  `orb:finbot` (and the old `★`) is that face in black — the brand mark,
+   `logo.svg`, `favicon.svg`, `logo-lockup.svg`, `apple-touch-icon.png` (180×180, headless Chrome).
+   `orb:<colour>` is the same face in that colour.  New bots already default to `orb:finbot`, i.e. black `$`
+   (the unused `randomOrbColor` is gone).  No DB rewrite: existing orb avatars pick up the new face on render;
+   bots with emoji/text avatars are unchanged — owners can switch to 圆球 in 档案.
+
+Mac check: `cd frontend && npm run test:i18n && npm run build`, then open 设置 → 模型 → ＋ 添加模型 and type into
+the fields; check the header logo, favicon and a bot avatar show the black `$` face.
