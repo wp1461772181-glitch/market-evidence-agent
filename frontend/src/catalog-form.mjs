@@ -46,3 +46,8 @@ export function entryProblem(entry) {
   if (!probeFor(entry)) return entryMoved(entry) ? "换了服务或接口地址，需要重新填写 key。" : "请填写 API key 或环境变量名。";
   return "";
 }
+
+/** The children of `main` to mark inert while the modal is open: every one except the one holding the modal (inert ancestors block clicks). */
+export function siblingsToInert(main, modal) {
+  return main ? [...main.children].filter((child) => !child.contains(modal)) : [];
+}

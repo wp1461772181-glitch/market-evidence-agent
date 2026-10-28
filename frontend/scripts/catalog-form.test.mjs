@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { catalogName, entryMoved, entryProblem, probeFor, saveBody } from "../src/catalog-form.mjs";
+import { catalogName, entryMoved, entryProblem, probeFor, saveBody, siblingsToInert } from "../src/catalog-form.mjs";
 
 const blank = (patch = {}) => ({ name: "main", display_name: "", provider: "deepseek", model: "deepseek-chat", base_url: "https://api.deepseek.com",
   key_mode: "vault", api_key: "", key_env: "", is_default: false, editing: null, ...patch });
@@ -36,4 +36,10 @@ test("a catalog name is derived from what was typed and never collides", () => {
   assert.equal(catalogName("deepseek/deepseek-v3.2:free"), "deepseek-deepseek-v3.2-free");
   assert.equal(catalogName("财报助手"), "model");
   assert.equal(catalogName("main", ["main", "main-2"]), "main-3");
+});
+
+test("the modal's own ancestor is never made inert", () => {
+  const modal = {}, nav = { contains: (x) => x === nav }, card = { contains: (x) => x === card || x === modal };
+  assert.deepEqual(siblingsToInert({ children: [nav, card] }, modal), [nav]);
+  assert.deepEqual(siblingsToInert(null, modal), []);
 });

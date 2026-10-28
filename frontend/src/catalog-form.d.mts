@@ -5,3 +5,4 @@ export function probeFor(entry: CatalogEntryDraft | null, options?: { forDiscove
 export function catalogName(source: string, taken?: string[]): string;
 export function saveBody(entry: CatalogEntryDraft): CatalogEntryInput;
 export function entryProblem(entry: CatalogEntryDraft | null): string;
+export function siblingsToInert(main: Element | null | undefined, modal: Element | null | undefined): Element[];

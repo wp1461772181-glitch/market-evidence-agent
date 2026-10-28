@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { deleteBotTelegram, getBotTelegram, saveBotTelegramToken, startBotTelegramBind, unbindBotTelegram, type BotTelegramStatus } from "./api";
 import { addCatalogModel, createBot, deleteBot, deleteCatalogModel, discoverCatalogModels, getBotTemplates, getChatMode, getModelCatalog, listBots, listSkills, setDefaultCatalogModel, testCatalogModel, updateBot, updateCatalogModel,
   type Skill, type Bot, type BotFields, type BotTemplate, type BotTool, type ModelCatalog } from "./api";
-import { catalogName, entryMoved, entryProblem, probeFor, saveBody, type CatalogEntryDraft } from "./catalog-form.mjs";
+import { catalogName, entryMoved, entryProblem, probeFor, saveBody, siblingsToInert, type CatalogEntryDraft } from "./catalog-form.mjs";
 import { createModelDiscoveryScheduler } from "./model-discovery.mjs";
 import { translatePhrase, useLocale } from "./i18n";
 import { botDraft, botModelLabel, botSections, newBotFields, focusText, keyStatusLabel, parseFocusSymbols, toggleTool, toolEnabled } from "./bot-items.mjs";
@@ -409,7 +409,7 @@ export function ModelCatalogCard() {
   useEffect(() => {
     if (!entry) return;
     const el = modal.current, main = el?.closest("main.agent-admin");
-    const inerted = main ? [...main.children].filter(x => !x.classList.contains("profile-backdrop")) : [];
+    const inerted = siblingsToInert(main, el);
     inerted.forEach(x => x.setAttribute("inert", ""));
     el?.querySelector<HTMLElement>("input")?.focus();
     const key = (e: KeyboardEvent) => {
