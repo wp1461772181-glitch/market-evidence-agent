@@ -342,6 +342,12 @@ def _owned_task(db, owner_hash: str, task_id) -> AgentTask | None:
     return task if task is not None and task.owner_hash == owner_hash else None
 
 
+def get_task(owner_hash: str, task_id) -> dict | None:
+    with SessionLocal() as db:
+        task = _owned_task(db, owner_hash, task_id)
+        return serialize_task(task, datetime.now(UTC)) if task is not None else None
+
+
 def update_task(owner_hash: str, task_id, fields: dict, *, now: datetime | None = None) -> dict | None:
     now = now or datetime.now(UTC)
     with SessionLocal() as db:

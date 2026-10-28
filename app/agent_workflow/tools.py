@@ -215,6 +215,33 @@ async def _dispatch(name,args,context,is_owner,emit):
             if not row:return error('source_not_found')
             review_inventory_filing(symbol=row.symbol,accession_number=row.accession_number,decision=args['decision'],note=args['note'],db=db)
             db.commit();return result([{'source_id':args['source_id'],'decision':args['decision']}],'relevance review')
+    if name=='list_routines':
+        # A bot lists its own routines; all_bots (or the default bot) lists every bot's, each with its bot.
+        from .. import agent_tasks as tasks
+        from .. import agent_bots as bots
+        if not is_owner:return error('owner_login_required')
+        bot=getattr(context,'bot_id',None)
+        every=args['all_bots'] or not bot or getattr(context,'bot_is_default',False)
+        rows=await asyncio.to_thread(tasks.list_tasks,context.owner_hash,None if every else bot)
+        names={b['id']:b['name'] for b in await asyncio.to_thread(bots.list_bots,context.owner_hash)}
+        return result([{'id':t['id'],'name':t['name'],'bot':names.get(t['bot_id']) or '','kind':t['kind'],
+                        'schedule_kind':t['schedule_kind'],'schedule_time':t['schedule_time'],'enabled':t['enabled'],
+                        'instruction':(t['instruction'] or '')[:300],'symbols':t['symbols'],'next_run_at':t['next_run_at'],
+                        'last_status':t['last_status_label']} for t in rows],'routines')
+    if name in {'update_routine','delete_routine'}:
+        # Only reached through execute_reversible: the owner pressed the card naming this routine.
+        from .. import agent_tasks as tasks
+        if not is_owner:return error('owner_login_required')
+        if name=='delete_routine':
+            done=await asyncio.to_thread(tasks.delete_task,context.owner_hash,args['routine_id'])
+            return result([{'status':'deleted','routine_id':args['routine_id']}],'bot routine') if done else error('routine_not_found')
+        fields={k:args[k] for k in ('name','instruction','schedule_kind','schedule_time','enabled') if args.get(k) is not None}
+        if args.get('symbols') is not None:fields.update(symbols=args['symbols'],scope='symbols' if args['symbols'] else 'research_queue')
+        try:task=await asyncio.to_thread(tasks.update_task,context.owner_hash,args['routine_id'],fields)
+        except tasks.TaskError as exc:return error(str(exc))
+        if task is None:return error('routine_not_found')
+        return result([{'status':'updated','name':task['name'],'schedule_kind':task['schedule_kind'],'enabled':task['enabled'],
+                        'next_run_at':task.get('next_run_at')}],'bot routine')
     if name=='create_routine':
         # Only reached through execute_reversible; the bot is the proposing turn's, frozen in the operation.
         from .. import agent_tasks as tasks

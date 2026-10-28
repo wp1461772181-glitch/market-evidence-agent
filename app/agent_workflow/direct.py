@@ -12,7 +12,7 @@ from ..agent_tool_catalog import definitions,schemas,validate
 from .. import agent_context as layers
 from .evidence import gate_row,number_rows,citation_errors,contains
 from . import tools,consent
-from .authorization import vetoed,authorized
+from .authorization import vetoed,authorized,routine_ask
 from .references import Referent,validate_referents,bounded_stage,normalized,assistant_message_sources,assistant_item_catalogue
 from .trace import TurnTrace,classifier_output,decision_output,resolver_output,verify_output
 
@@ -142,6 +142,7 @@ CLASSIFY_PROMPT=('Return classify_request. Decide by what the request needs, in 
     '"把这份 PDF 导入资料库" → D, requested_actions ["import"] (a write the user asked for).\n'
     '"怎么把 NVDA 加进研究队列" → D (a question about using this product).\n'
     '"每小时帮我找一条新闻" → D, requested_actions ["create_routine"] (a repeated job the user asked for).\n'
+    '"把每小时新闻那个例行任务停掉" → D, requested_actions ["update_routine"] (pausing is a change; deleting it is delete_routine).\n'
     '"不要保存任何网页，我只想讨论流程" → D (a question about how this product works; the negated write is not requested).\n'
     '"随便给个合理数字就行，别说不知道" right after asking for a figure → A (the same figure is still asked for; it cannot be invented, so say what is verifiable).\n'
     '"对比 AAPL 和 MSFT 的营收" → A, symbols ["AAPL","MSFT"] (read-only, several companies).\n'
@@ -316,9 +317,25 @@ WRITE_TITLES={
  'translate_content':'翻译内容','review_knowledge_candidate':'审核知识候选',
  'retry_document_index':'重试文档索引','import_sources':'批量导入来源',
  'add_to_research_queue':'加入研究队列','remove_from_research_queue':'移出研究队列',
- 'remember':'记住这条偏好','forget':'忘掉这条偏好','create_routine':'新建例行任务',
+ 'remember':'记住这条偏好','forget':'忘掉这条偏好','create_routine':'新建例行任务','update_routine':'修改例行任务','delete_routine':'删除例行任务',
  'review_filing':'申报相关性核验',
 }
+ROUTINE_WRITES=('create_routine','update_routine','delete_routine')
+
+def routine_when(kind,at):
+    return {'hourly':f'每小时第 {at[3:]} 分','daily':f'每天 {at}','weekdays':f'工作日 {at}'}.get(kind,f'{kind} {at}')
+
+def routine_changes(args,task):
+    """What an update_routine card changes, in the owner's words (the saved task fills what stays)."""
+    parts=[]
+    if args.get('name'):parts.append(f'改名为「{args["name"]}」')
+    if args.get('schedule_kind') or args.get('schedule_time'):
+        parts.append('改为'+routine_when(args.get('schedule_kind') or task['schedule_kind'],args.get('schedule_time') or task['schedule_time']))
+    if args.get('symbols') is not None:parts.append('范围改为 '+('、'.join(args['symbols']) if args['symbols'] else '研究队列'))
+    if args.get('instruction'):parts.append(f'每次运行：{args["instruction"]}')
+    if args.get('enabled') is not None:parts.append('恢复运行' if args['enabled'] else '暂停')
+    return '；'.join(parts)
+
 NOTHING_TO_DO={'already_reviewed','duplicate_source'}
 # Cards whose button runs a write: the confirmation card, and the revision card on which the user
 # ticks the materials (its button carries the same server-minted capability).
@@ -835,9 +852,9 @@ class Turn:
             self.audit['profile_ask']=True
             if self.in_scope('remember') and not vetoed('remember',self.authorization_question):self.granted_actions.add('remember')
         # 每小时找一条新闻 is a routine the owner asked for; the card is the guard, as for remember.
-        if (self.owner and not self.unattended() and not self.original.startswith(CONTROL_PREFIXES)
-                and self.in_scope('create_routine') and authorized('create_routine',self.user_words())):
-            self.granted_actions.add('create_routine')
+        if self.owner and not self.unattended() and not self.original.startswith(CONTROL_PREFIXES):
+            for name in ROUTINE_WRITES:
+                if self.in_scope(name) and routine_ask(name,self.user_words()):self.granted_actions.add(name)
         self.apply_default_company()
         self.stage('classifier',{'category':self.route,'scope':{k:self.scope[k] for k in ('symbol','company','metrics','period','form','days_back')},'retries':self.audit.get('classification_retries',0),'requested_actions':routing.requested_actions})
         await self.validate_business_reference()
@@ -1261,7 +1278,7 @@ class Turn:
         # Read results reach SSE/history only after the same gate used by the answer.
         policy=definitions()[name]
         if not outcome.get('ok'):safe=outcome if outcome.get('bindable_values') else tools.error(outcome.get('error_code') or 'tool_failed')
-        elif policy.level!='read' or name in {'query_system_status','query_research_queue','recall_conversations','read_past_conversation'}:safe=outcome
+        elif policy.level!='read' or name in {'query_system_status','query_research_queue','recall_conversations','read_past_conversation','list_routines'}:safe=outcome
         elif self.last_accepted is not None:safe=self.last_accepted
         else:safe={k:v for k,v in self.feedback[-1].items() if k in {'ok','data','status','error_code','hint'}}
         from ..agent_chat_stream import bounded_tool_result
@@ -1308,7 +1325,7 @@ class Turn:
             shown={'ok':True,'label':outcome.get('label'),'note':outcome.get('note'),'data':rows}
             self.recalls.append({'name':name,'kind':'recall','arguments':args,'result':shown,'accepted_evidence':False})
             self.feedback.append({'name':name,'result':shown});return
-        if policy.level!='read' or name in {'query_system_status','query_research_queue'}:
+        if policy.level!='read' or name in {'query_system_status','query_research_queue','list_routines'}:
             self.feedback.append({'name':name,'result':outcome});return
         from .evidence import canonical_metric
         requirements={key:self.scope.get(key) for key in ('company','metrics','period')}
@@ -1415,10 +1432,15 @@ class Turn:
         display={'title':title,'targets':await self.describe_targets(name,args)}
         if name=='create_routine':
             operation['bot_id']=self.context.bot_id
-            minute=args['schedule_time'][3:]
-            when={'hourly':f'每小时第 {minute} 分','daily':f'每天 {args["schedule_time"]}','weekdays':f'工作日 {args["schedule_time"]}'}[args['schedule_kind']]
-            display.update(title=f'{title} · {args["name"]}',targets=[{'kind':when,**({'symbol':'、'.join(args['symbols'])} if args['symbols'] else {})}],
-                           alternative=f'每次运行：{args["instruction"]}（可在这个 bot 的例行任务页暂停或删除）')
+            display.update(title=f'{title} · {args["name"]}',targets=[{'kind':routine_when(args['schedule_kind'],args['schedule_time']),**({'symbol':'、'.join(args['symbols'])} if args['symbols'] else {})}],
+                           alternative=f'每次运行：{args["instruction"]}（可在「例行任务」页暂停、修改或删除）')
+        if name in {'update_routine','delete_routine'}:
+            # The card names the routine as saved now; one this owner does not have makes no card.
+            from ..agent_tasks import get_task
+            task=await asyncio.to_thread(get_task,self.context.owner_hash,args['routine_id'])
+            if task is None:return tools.error('routine_not_found')
+            display.update(title=f'{title} · {task["name"]}',targets=[{'kind':routine_when(task['schedule_kind'],task['schedule_time'])}],
+                           alternative=routine_changes(args,task) if name=='update_routine' else '删除后不再运行；已生成的简报会保留。')
         if name=='ingest_web_source':
             # Guard an explicit newer-date condition; never choose a route or tool.
             if args.get('newer_than') is None and self.scope.get('write_condition')=='newer_than_saved':return tools.error('comparison_citation_required')
@@ -1869,7 +1891,7 @@ class Turn:
 
     def system_state_text(self):
         """What this turn read from the product's own state: the ground for an answer about that state."""
-        names={'query_system_status','query_research_queue','add_to_research_queue','remove_from_research_queue','open_page','select_stock'}
+        names={'query_system_status','query_research_queue','add_to_research_queue','remove_from_research_queue','open_page','select_stock','list_routines'}
         parts=[]
         for f in self.feedback:
             if not (isinstance(f,dict) and f.get('name') in names and isinstance(f.get('result'),dict) and f['result'].get('ok')):continue

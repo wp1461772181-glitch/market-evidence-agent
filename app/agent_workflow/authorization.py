@@ -27,6 +27,8 @@ VERBS={
     'test_retrieval_diagnostics':r'诊断|测试|检索|diagnose|test',
     'remember':r'记住|记下|记得|以后|今后|往后|从现在起|每次都|一律|remember|from now on|always',
     'create_routine':r'每小时|每个小时|每天|每日|每周|工作日|定时|定期|例行|schedule|hourly|daily|every (?:hour|day|morning)',
+    'update_routine':r'改|修改|编辑|调整|换成|暂停|停用|停掉|启用|恢复|update|edit|change|pause|resume',
+    'delete_routine':r'删除|删掉|删了|去掉|撤掉|delete|remove',
     'forget':r'忘掉|忘记|忘了|删掉|删除|去掉|forget|delete',
 }
 # "以后别再用万元" is a standing instruction, not a refusal: for remember these are the request itself.
@@ -34,6 +36,14 @@ _STANDING_INSTRUCTION=re.compile(r'(?:以后|今后|往后|从现在起)?(?:都)
 _REMEMBER_REFUSED=re.compile(r'(?:不要|别|不用|无需|不必)(?:帮我)?(?:记住|记下|记)|do not remember|don.t remember',re.I)
 NEGATION=re.compile(r'(?:不要|别|勿|无需|不用|不能|不想|禁止|切勿|请勿|千万别|do not|don.t|never|without)[^，。；;.!?\n]{0,35}',re.I)
 _POLITE_NON_NEGATION=re.compile(r'不用(?:客气|担心|多说|慌|犹豫|管|急|在意|考虑|理会|查其他|看其他|管其他|确认)|别(?:客气|担心|急|管)|无需(?:向我)?确认|不需确认',re.I)
+
+# 改/删 alone is any edit: a routine change also names what it changes.
+_ROUTINE_NOUN=re.compile(r'例行|任务|定时|每小时|每天|每日|工作日|routine|schedule',re.I)
+
+def routine_ask(name,words):
+    """The owner's own words ask to create, change or delete a routine (the card is still the guard)."""
+    if name=='create_routine':return authorized(name,words)
+    return bool(_ROUTINE_NOUN.search(words)) and authorized(name,words)
 
 def authorized(name,words):
     pattern=VERBS.get(name)

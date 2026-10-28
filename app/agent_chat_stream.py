@@ -820,6 +820,14 @@ async def list_task_runs_endpoint(bot_id: str | None = Query(default=None, max_l
     return {"runs": await asyncio.to_thread(list_runs, owner_hash(credential), bot_id, limit=limit)}
 
 
+@router.get("/tasks/proposals")
+async def list_task_proposals_endpoint(x_chat_session: str | None = Header(default=None)):
+    """Routine cards a bot proposed in chat that are still waiting for the owner's press."""
+    from .agent_workflow.consent import routine_proposals
+    credential = _owner_only(x_chat_session)
+    return {"proposals": await asyncio.to_thread(routine_proposals, owner_hash(credential))}
+
+
 @router.post("/tasks")
 async def create_task_endpoint(body: TaskBody, x_chat_session: str | None = Header(default=None)):
     from .agent_tasks import TaskError, create_task

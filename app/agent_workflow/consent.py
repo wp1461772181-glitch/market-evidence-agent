@@ -147,6 +147,29 @@ def propose(credential,conversation,operations,display,*,question='',now=None,op
                     choices=[{'label':'用所选材料修订','value':'confirm:'+token},{'label':'取消','value':'cancel:'+identity}])
     return card
 
+ROUTINE_TOOLS=('create_routine','update_routine','delete_routine')
+
+def routine_proposals(owner,*,now=None,within=timedelta(days=1)):
+    """Routine cards a bot proposed that the owner has not pressed yet (例行任务 page), newest first, each with
+    the bot whose line it is in; one past its ten minutes is listed as expired, since its press no longer runs."""
+    from ..agent_chat_models import AgentConversation
+    now=now or datetime.now(UTC)
+    with SessionLocal() as db:
+        rows=[r for r in db.scalars(select(AgentConsent).where(AgentConsent.owner_hash==owner,AgentConsent.status=='proposed',
+                                                               AgentConsent.created_at>=now-within)
+                                    .order_by(AgentConsent.created_at.desc()).limit(100)).all()
+              if r.operations and all(isinstance(op,dict) and op.get('name') in ROUTINE_TOOLS for op in r.operations)]
+        ids=set()
+        for r in rows:
+            try:ids.add(uuid.UUID(r.conversation_id))
+            except ValueError:pass
+        bots={str(c.id):(str(c.bot_id) if c.bot_id else None) for c in db.scalars(select(AgentConversation).where(AgentConversation.id.in_(ids),AgentConversation.owner_hash==owner))} if ids else {}
+        return [{'id':str(r.id),'conversation_id':r.conversation_id,'bot_id':bots.get(r.conversation_id),
+                 'tools':[op['name'] for op in r.operations],'title':(r.display or {}).get('title'),
+                 'targets':(r.display or {}).get('targets') or [],'detail':(r.display or {}).get('alternative'),
+                 'expires_at':r.expires_at.isoformat(),'expired':r.expires_at<=now,
+                 'created_at':r.created_at.isoformat() if r.created_at else None} for r in rows]
+
 def lookup(credential,conversation,request_id):
     if not owner_credential_matches(credential):raise ConsentError('owner_login_required')
     try:identity=uuid.UUID(request_id)

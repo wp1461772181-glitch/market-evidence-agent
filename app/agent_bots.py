@@ -41,10 +41,12 @@ _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 # whether a bot notifies is its instruction's call, and its daily cap (0: never) is the switch.  remember and
 # forget too: every bot has its own memory layer and both only ever make a card (2026-10-28: a bot whose
 # scope left them out answered 写记忆失败 while the background extractor stored the item anyway).
-# create_routine too: it only makes a card, and a bot that said 没有对应的工具 to 每小时找一条新闻 had none.
+# create_routine too: it only makes a card, and a bot that said 没有对应的工具 to 每小时找一条新闻 had none;
+# and list/update/delete_routine with it (Levi: 给了新增，怎么没给查看、编辑、删除).
 ALWAYS_ON = frozenset({"ask_user", "use_result_set", "calculate", "read_history_citation", "select_stock",
                        "open_page", "request_action", "notify_telegram", "use_skill", "draft_skill",
-                       "remember", "forget", "create_routine"})
+                       "remember", "forget", "create_routine", "list_routines", "update_routine",
+                       "delete_routine"})
 
 TEMPLATES = {
     "blank": {"label": "空白", "name": "", "title": "", "description": "", "tool_scope": None},
