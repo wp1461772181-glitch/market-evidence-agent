@@ -76,18 +76,49 @@ def test_the_owner_runs_a_card_once(monkeypatch):
     assert sent[1][1].startswith("这张确认卡已经过期")
 
 
+def _watch_turns(monkeypatch):
+    """Record every routing and agent turn a message would start; neither may happen for a stranger."""
+    calls = []
+
+    class Telegram:
+        def route(self, owner, text, reply_to=None):
+            calls.append(("route", text))
+            return {"bot_id": "b-1", "bot_name": "助理", "text": text, "via": "default"}
+
+        def record_reply(self, owner, bot_id, text, telegram_message_id):
+            calls.append(("reply", bot_id))
+
+    async def ask_agent(client, credential, bot_id, text):
+        calls.append(("ask", text))
+        return "ok", [], "c-1"
+
+    monkeypatch.setattr(bridge, "_ask_agent", ask_agent)
+    return calls, Telegram()
+
+
 def test_a_message_from_another_member_of_the_bound_chat_is_ignored(monkeypatch):
-    _fake_io(monkeypatch)
-    opened = []
-
-    async def ensure_conversation():
-        opened.append(True)
-        return "c-1"
-
+    sent, _ = _fake_io(monkeypatch)
+    calls, telegram = _watch_turns(monkeypatch)
     message = {"chat": {"id": -100, "type": "group"}, "from": {"id": 7}, "text": "把研究队列清空"}
-    asyncio.run(bridge._handle_message(None, "cred", "owner", {}, message, -100, OWNER_ID, {}, None,
-                                       ensure_conversation))
-    assert opened == []
+    asyncio.run(bridge._handle_message(None, "cred", "owner", message, -100, OWNER_ID, {}, telegram))
+    assert calls == [] and sent == []
+
+
+def test_a_message_from_a_stranger_in_another_chat_is_ignored(monkeypatch):
+    sent, _ = _fake_io(monkeypatch)
+    calls, telegram = _watch_turns(monkeypatch)
+    message = {"chat": {"id": 999, "type": "private"}, "from": {"id": 999}, "text": "@抓新闻 最新消息"}
+    asyncio.run(bridge._handle_message(None, "cred", "owner", message, OWNER_ID, OWNER_ID, {}, telegram))
+    assert calls == [] and sent == []
+
+
+def test_the_owner_message_is_routed_and_answered(monkeypatch):
+    sent, _ = _fake_io(monkeypatch)
+    calls, telegram = _watch_turns(monkeypatch)
+    message = {"chat": {"id": OWNER_ID, "type": "private"}, "from": {"id": OWNER_ID}, "text": "你好"}
+    asyncio.run(bridge._handle_message(None, "cred", "owner", message, OWNER_ID, OWNER_ID, {}, telegram))
+    assert calls == [("route", "你好"), ("ask", "你好"), ("reply", "b-1")]
+    assert sent == [(OWNER_ID, "【助理】\nok")]
 
 
 def test_binding_records_the_sender_and_only_happens_in_a_private_chat(monkeypatch):
