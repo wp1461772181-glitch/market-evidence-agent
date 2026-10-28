@@ -82,7 +82,7 @@ export async function putResearchQueue(symbols:string[],signal?:AbortSignal): Pr
   const response = await fetch(url,{method:"PUT",signal,cache:"no-store",headers:{Accept:"application/json","Content-Type":"application/json","X-Chat-Session":chatCredential()},body:JSON.stringify({symbols})});
   if(!response.ok) throw new ApiError("研究队列保存失败。",response.status);
 }
-export type ProfileItem = { id:string; handle:string; kind:"preference"|"about_me"|"instruction"; topic:string|null; text:string; origin:"explicit"|"inferred"; quote:string; status:"active"|"archived"; scope:"global"|"bot"; bot_id:string|null; bot_name:string|null; created_at:string|null; updated_at:string|null; last_used_at:string|null };
+export type ProfileItem = { id:string; handle:string; kind:"preference"|"about_me"|"instruction"; topic:string|null; text:string; origin:"explicit"|"inferred"|"manual"; quote:string; status:"active"|"archived"; scope:"global"|"bot"; bot_id:string|null; bot_name:string|null; created_at:string|null; updated_at:string|null; last_used_at:string|null };
 export type ProfileBot = { id:string; name:string; is_default:boolean };
 export type RecallItem = { conversation_id:string; title:string; date:string|null; summary:string; kind:"summary"|"questions"; link:string; bot_id:string|null; bot_name:string|null };
 function agentPath(path:string):string { return agentChatUrl("stream", configuredApiBaseUrl).replace(/stream$/, path); }
@@ -93,6 +93,12 @@ export async function listProfileItems(signal?:AbortSignal): Promise<{items:Prof
   if(!response.ok) throw new ApiError(response.status===403?"登录个人聊天后才能查看记忆。":"画像暂时无法读取。",response.status);
   const data=await response.json().catch(()=>null) as {items?:unknown;bots?:unknown}|null;
   return {items:Array.isArray(data?.items)?data.items as ProfileItem[]:[],bots:Array.isArray(data?.bots)?data.bots as ProfileBot[]:[]};
+}
+/** The owner types an item on the memory page: global (bot_id null) or one bot's own memory. */
+export async function createProfileItem(fields:{kind:ProfileItem["kind"];text:string;bot_id:string|null},signal?:AbortSignal): Promise<ProfileItem> {
+  const response = await fetch(agentPath("profile"),{method:"POST",signal,cache:"no-store",headers:ownerHeaders(true),body:JSON.stringify(fields)});
+  if(!response.ok) throw new ApiError(response.status===409?"已有一条你确认过的同类设定，先编辑或删除它。":response.status===422?"这条没法保存：内容为空、太长，或 bot 已不存在。":"保存失败，请重试。",response.status);
+  return (await response.json() as {item:ProfileItem}).item;
 }
 /** The owner edits an item's text or moves it to another layer (bot_id null: global). */
 export async function updateProfileItem(id:string,fields:{text?:string;bot_id?:string|null},signal?:AbortSignal): Promise<ProfileItem> {

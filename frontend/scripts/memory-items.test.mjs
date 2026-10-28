@@ -52,3 +52,17 @@ test("past conversations are grouped by bot in the order they come", async () =>
   assert.deepEqual(groups.map(g => [g.label, g.items.map(i => i.conversation_id)]),
     [["抓新闻", ["1", "3"]], ["苹果", ["2"]], ["未归属", ["4"]]]);
 });
+
+test("a typed item is checked before it is sent: text, kind and its layer (\"\" is 全局)", async () => {
+  const { manualItemDraft, originLabel: label, profileGroups: groups } = await import("../src/memory-items.mjs");
+  assert.deepEqual(manualItemDraft({ kind: "preference", text: "  金额都用  亿美元 ", layer: "" }),
+    { fields: { kind: "preference", text: "金额都用 亿美元", bot_id: null } });
+  assert.deepEqual(manualItemDraft({ kind: "instruction", text: "先讲服务业务", layer: "apple" }).fields.bot_id, "apple");
+  assert.equal(manualItemDraft({ kind: "preference", text: "   " }).error, "先写下要记住的内容。");
+  assert.equal(manualItemDraft({ kind: "preference", text: "x".repeat(201) }).error, "最多 200 个字。");
+  assert.equal(manualItemDraft({ kind: "wish", text: "x" }).error, "请选择类型。");
+  assert.equal(label("manual"), "你写的");
+  // Typed items rank with the owner's own words, before inferred ones.
+  const ordered = groups([item("i", "inferred", "active", "2026-10-01"), item("m", "manual", "active", "2026-10-02")]);
+  assert.deepEqual(ordered.active.map(i => i.id), ["m", "i"]);
+});

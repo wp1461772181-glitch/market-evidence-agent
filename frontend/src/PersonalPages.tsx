@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { useOpenConversation } from "./AgentChatPanel";
-import { confirmProfileItem, deleteProfileItem, getChatMode, listBots, listInbox, listProfileItems, listRecall, mintInboxCard, setInboxStatus, updateProfileItem, type Bot, type InboxItem, type ProfileBot, type ProfileItem, type RecallItem } from "./api";
+import { confirmProfileItem, createProfileItem, deleteProfileItem, getChatMode, listBots, listInbox, listProfileItems, listRecall, mintInboxCard, setInboxStatus, updateProfileItem, type Bot, type InboxItem, type ProfileBot, type ProfileItem, type RecallItem } from "./api";
 import { useLocale } from "./i18n";
 export { SkillsPage } from "./SkillsPage";
 import { inboxOrder } from "./inbox-items.mjs";
-import { layerLabel, originLabel, profileGroups, profileLayers, recallGroups, recallKindLabel } from "./memory-items.mjs";
+import { layerLabel, manualItemDraft, originLabel, profileGroups, profileLayers, recallGroups, recallKindLabel } from "./memory-items.mjs";
 
 // Pages of the personal agent (the skills page lives in SkillsPage.tsx).  The briefs route (kept for URL
 // compatibility) shows only the 待你确认 suggestions of unattended runs; routines live on each bot's page; the memory
@@ -95,6 +95,7 @@ function ProfilePanel() {
   const { t } = useLocale();
   const [items, setItems] = useState<ProfileItem[] | null>(null), [bots, setBots] = useState<ProfileBot[]>([]), [error, setError] = useState(""), [busy, setBusy] = useState<string | null>(null);
   const [editing, setEditing] = useState<{ id: string; text: string } | null>(null);
+  const [draft, setDraft] = useState<{ kind: ProfileItem["kind"]; text: string; layer: string }>({ kind: "preference", text: "", layer: "" });
   const load = useCallback((signal?: AbortSignal) => listProfileItems(signal).then(data => { setItems(data.items); setBots(data.bots); }).catch(e => { if (!signal?.aborted) setError(e instanceof Error ? e.message : "画像暂时无法读取。"); }), []);
   useEffect(() => { const controller = new AbortController(); void load(controller.signal); return () => controller.abort(); }, [load]);
   async function run(id: string, work: () => Promise<unknown>) {
@@ -112,11 +113,31 @@ function ProfilePanel() {
     const { id, text } = editing;
     void run(id, () => updateProfileItem(id, { text: text.trim() })).then(() => setEditing(null));
   }
+  function add() {
+    const checked = manualItemDraft(draft);
+    if (!checked.fields) { setError(checked.error); return; }
+    const fields = checked.fields;
+    void run("new", () => createProfileItem(fields)).then(() => setDraft(d => ({ ...d, text: "" })));
+  }
   const layers = profileLayers(items ?? [], bots), archived = profileGroups(items ?? []).archived;
   const empty = (items ?? []).every(i => i.status !== "active");
   return <section className="personal-card memory-panel">
-    <p>{t("对 Agent 说「记住……」「以后都……」，确认后它会在之后的每次对话里按你的偏好回答；说「忘掉……」即可撤回。Agent 也会从你自己说的话里推断偏好，标为“推断”，你可以在这里确认或删除。画像只是偏好，不是证据，也不授权任何操作。")}</p>
-    <p className="fine-print">{t("全局的条目每个 bot 都用；某个 bot 的条目只有它和默认 bot「助理」能读。可以在每条的“范围”里改。")}</p>
+    <p>{t("在这里直接写下要 Agent 记住的事，或对 Agent 说「记住……」「以后都……」并在确认卡上点同意；说「忘掉……」即可撤回。Agent 也会从你自己说的话里推断偏好，标为“推断”，你可以在这里确认或删除。画像只是偏好，不是证据，也不授权任何操作。")}</p>
+    <p className="fine-print">{t("全局：每个 bot 都用。本 bot：只有这个 bot 和默认 bot「助理」能读。可以在每条的“范围”里改。")}</p>
+    <form className="memory-add" onSubmit={e => { e.preventDefault(); add(); }}>
+      <label className="memory-scope">{t("范围")}
+        <select value={draft.layer} onChange={e => setDraft(d => ({ ...d, layer: e.target.value }))}>
+          <option value="">{t("全局（所有 bot）")}</option>
+          {bots.map(bot => <option key={bot.id} value={bot.id}>{t("本 bot")} · {bot.name}</option>)}
+        </select></label>
+      <label className="memory-scope">{t("类型")}
+        <select value={draft.kind} onChange={e => setDraft(d => ({ ...d, kind: e.target.value as ProfileItem["kind"] }))}>
+          {(Object.keys(KIND_LABELS) as ProfileItem["kind"][]).map(kind => <option key={kind} value={kind}>{t(KIND_LABELS[kind])}</option>)}
+        </select></label>
+      <input className="memory-edit" value={draft.text} maxLength={200} aria-label={t("要记住的内容")} placeholder={t("例如：金额都用亿美元；我主要看半导体")}
+        onChange={e => setDraft(d => ({ ...d, text: e.target.value }))} />
+      <button type="submit" className="primary-action" disabled={busy === "new" || !draft.text.trim()}>{t("＋ 添加")}</button>
+    </form>
     {error && <p role="alert">{t(error)}</p>}
     {items === null && !error ? <p>{t("正在加载…")}</p> : empty ? <p>{t("还没有画像条目。")}</p> :
       layers.filter(layer => layer.items.length > 0).map(layer => <div key={layer.key} className="memory-layer">

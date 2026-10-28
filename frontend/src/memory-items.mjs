@@ -1,15 +1,16 @@
 // Pure helpers of the memory page (profile items and past conversations), kept apart so node tests read them.
 
-const ORIGIN_LABELS = { explicit: "你说的", inferred: "推断" };
+const ORIGIN_LABELS = { explicit: "你说的", inferred: "推断", manual: "你写的" };
 const RECALL_KIND_LABELS = { summary: "摘要", questions: "你的提问" };
 const CONVERSATION_LINK = /^#agent\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
 
 export function originLabel(origin) { return ORIGIN_LABELS[origin] ?? origin; }
 export function recallKindLabel(kind) { return RECALL_KIND_LABELS[kind] ?? kind; }
 
-/** Active items first (explicit, then inferred; oldest first, the order the model sees), archived apart. */
+/** Active items first (the owner's own — said or typed — then inferred; oldest first, the order the model
+ *  sees), archived apart. */
 export function profileGroups(items) {
-  const rank = item => (item.origin === "explicit" ? 0 : 1);
+  const rank = item => (item.origin === "inferred" ? 1 : 0);
   const byAge = (a, b) => rank(a) - rank(b) || String(a.created_at ?? "").localeCompare(String(b.created_at ?? ""));
   const list = Array.isArray(items) ? items : [];
   return { active: list.filter(i => i.status === "active").sort(byAge), archived: list.filter(i => i.status !== "active").sort(byAge) };
@@ -27,6 +28,15 @@ export function profileLayers(items, bots) {
   const orphans = active.filter(i => i.bot_id && !ids.has(i.bot_id));
   if (orphans.length) layers.push({ key: "gone", label: "已删除的 bot", bot: null, items: orphans });
   return layers;
+}
+
+/** The fields of a typed item (memory page ＋ 添加), or an error phrase.  ``layer`` "" is 全局. */
+export function manualItemDraft({ kind, text, layer } = {}) {
+  const clean = String(text ?? "").split(/\s+/).filter(Boolean).join(" ");
+  if (!clean) return { error: "先写下要记住的内容。" };
+  if (clean.length > 200) return { error: "最多 200 个字。" };
+  if (!["preference", "about_me", "instruction"].includes(kind)) return { error: "请选择类型。" };
+  return { fields: { kind, text: clean, bot_id: layer ? String(layer) : null } };
 }
 
 /** Where an item lives, as a label: 全局 or the bot's name. */
