@@ -154,7 +154,8 @@ REFUSAL_WORDS={'write_tool_not_granted':'这项写入不是你在这句话里明
  'write_service_failed':'执行时服务出错，操作没有完成','page_fetch_blocked':'网页被站点拒绝或没有可用正文','page_without_text':'网页只抓到很少的文字',
  'invalid_published_at':'来源的发布日期无法使用',
  'content_too_large':'内容超过单次保存的大小上限','duplicate_source':'资料库里已有同样的内容','source_changed':'网页内容在确认后发生了变化',
- 'entity_mismatch':'网页正文没有出现这只股票或这家公司','invalid_source_url':'来源链接不是可保存的 HTTPS 链接','invalid_material':'材料没有通过校验'}
+ 'entity_mismatch':'网页正文没有出现这只股票或这家公司','result_position_mismatch':'要保存的那条和你说的第几条对不上，没有生成确认卡',
+ 'invalid_write_targets':'一次最多确认 8 项','write_batch_incomplete':'本轮在生成确认卡前停止了','invalid_source_url':'来源链接不是可保存的 HTTPS 链接','invalid_material':'材料没有通过校验'}
 # A confirmed failure already passed the card, so the only useful next step is about the write
 # itself: never send the user back to a confirmation card they have just pressed.
 FAILURE_NEXT_STEPS={
@@ -497,7 +498,7 @@ class Turn:
         # A skill started for this turn (「/名字」 or a task's), or loaded with use_skill: it narrows the tools.
         self.active_skill=getattr(context,'active_skill',None)
         self.sets=[x for x in self.state.get('result_sets',[]) if x.get('owner')==context.owner_hash and x.get('conversation')==context.conversation_id and isinstance(x.get('rows'),list)][-6:]
-        self.pending=None;self.proposals=[];self.followup=False;self.refinement=False;self.seen=set();self.evidence_signatures=set();self.no_new=0;self.repeated_evidence=0
+        self.pending=None;self.proposals=[];self.proposal_calls={};self.followup=False;self.refinement=False;self.seen=set();self.evidence_signatures=set();self.no_new=0;self.repeated_evidence=0
         self.audit={'tool_calls':0,'distinct_successful_calls':0,'retry_count':0,'decision_steps':0,'model_calls':0,'token_usage':0,'usage_mode':'actual','nodes':[],'stop_reason':None,'stages':{}}
         self.reference_value=None;self.verified_referents=[];self.bound_history_citations=[]
         self.granted_actions=set();self.write_reasons={}
@@ -1602,8 +1603,7 @@ class Turn:
 
     async def confirm_proposals(self):
         operations=[op for batch,_ in self.proposals for op in batch]
-        if len(operations)>8:
-            self.feedback.append(tools.error('invalid_write_targets'));self.proposals=[];return
+        if len(operations)>8:return self.drop_proposals('invalid_write_targets')
         partial=None
         if operations and all(op['name']=='ingest_web_source' for op in operations):
             from .semantic import stated_count,ordinal_positions,requested_result_count
@@ -1611,15 +1611,23 @@ class Turn:
             positions=ordinal_positions(self.original,max((len(s['rows']) for s in self.sets),default=8))
             if positions is not None:
                 requested_set=next((r['source'].split(':',1)[1] for r in self.verified_referents if r['source'].startswith('result_set:')),None)
-                saved=next((s for s in reversed(self.sets) if not requested_set or s['id']==requested_set),None)
-                selected_urls={saved['rows'][p-1].get('url') for p in positions if p<=len(saved['rows'])} if saved else set()
-                if not {op['arguments']['url'] for op in operations}<=selected_urls:
+                candidates=[s for s in reversed(self.sets) if not requested_set or s['id']==requested_set]
+                def named(s):return {s['rows'][p-1].get('url') for p in positions if p<=len(s['rows'])}
+                # 「第三条」 counts in the list the user read.  Unless their words bound one, that is the newest list
+                # holding every target at the named positions, not simply the newest list (often another question's).
+                urls={op['arguments']['url'] for op in operations}
+                saved=next((s for s in candidates if urls<=named(s)),candidates[0] if candidates else None)
+                selected_urls=named(saved) if saved else set()
+                if not urls<=selected_urls:
                     matching_ops=[op for op in operations if op['arguments']['url'] in selected_urls]
                     if matching_ops:
                         operations=matching_ops
                         self.proposals=[p for p in self.proposals if any(op['arguments']['url']==p[0]['arguments']['url'] for op in operations)]
                     else:
-                        self.feedback.append(tools.error('result_position_mismatch'));self.proposals=[];return
+                        targets=[{'result_set_id':s['id'],'position':p,'title':s['rows'][p-1].get('title'),'url':s['rows'][p-1].get('url')}
+                                 for s in candidates[:3] for p in positions if p<=len(s['rows'])]
+                        return self.drop_proposals('result_position_mismatch',expected_positions=positions,expected_targets=targets,
+                            hint='没有生成确认卡：用户的话指向第 '+'、'.join(map(str,positions))+' 项，见 expected_targets；请用其中用户所指那项的 url 重新提出。')
             expected=len(positions) if positions is not None else count
             if expected is not None and len({op['arguments']['url'] for op in operations})!=expected:
                 actual=len({op['arguments']['url'] for op in operations})
@@ -1638,7 +1646,20 @@ class Turn:
         if partial:
             display={**display,**partial,'title':f"仅找到 {partial['available_count']}/{partial['requested_count']} 项，请核对实际目标"}
         self.pending=await asyncio.to_thread(consent.propose,self.context.identity_credential,self.context.conversation_id,operations,display,question=self.request_words())
-        self.proposals=[]
+        self.proposals=[];self.proposal_calls={}
+
+    def drop_proposals(self,code,**detail):
+        """The batch's proposals make no card.  Each call that was answered awaiting_confirmation is answered
+        with the refusal instead, so the model cannot report a card that does not exist (2026-10-28: it wrote
+        「确认卡正在等你处理」 and Telegram had no buttons to show), and the closing notice says nothing ran."""
+        refusal={**tools.error(code),**detail}
+        for name in {op['name'] for batch,_ in self.proposals for op in batch}:self.write_error(name,code)
+        content=json.dumps(refusal,ensure_ascii=False,default=str)
+        for message in self.protocol:
+            if message.get('role')=='tool' and message.get('tool_call_id') in self.proposal_calls:message['content']=content
+        for outcome in self.proposal_calls.values():outcome.clear();outcome.update(refusal)
+        if not self.proposal_calls:self.feedback.append(refusal)
+        self.proposals=[];self.proposal_calls={}
 
     async def previous_results(self,args):
         saved=next((s for s in self.sets if s['id']==args['result_set_id']),None)
@@ -2079,9 +2100,10 @@ class Turn:
         if not self.resuming and not self.pending and self.audit.get('write_outcome')!='executed' and (requested or self.write_reasons):
             code=next(iter(self.write_reasons.values()),'write_not_proposed')
             self.audit['write_outcome']='refused:'+code
-            hints={'scan_official_first':'先请求扫描该股票的 SEC 目录并确认，再拉取具体申报。','comparison_citation_required':'先取得库内申报及网页日期，再请求比较并按条件导入。','comparison_date_unavailable':'补充可核验的库内申报和网页发布日期后再比较。','not_newer':'网页日期没有更新，无需入库。','already_exists':'资料库里已有这条，无需重复保存。','write_negated':'当前请求否定了该操作，保持不执行；需要改变时请明确提出新请求。','write_not_proposed':'请说明要执行的具体操作和目标，以便生成系统确认卡。'}
+            hints={'scan_official_first':'先请求扫描该股票的 SEC 目录并确认，再拉取具体申报。','comparison_citation_required':'先取得库内申报及网页日期，再请求比较并按条件导入。','comparison_date_unavailable':'补充可核验的库内申报和网页发布日期后再比较。','not_newer':'网页日期没有更新，无需入库。','already_exists':'资料库里已有这条，无需重复保存。','write_negated':'当前请求否定了该操作，保持不执行；需要改变时请明确提出新请求。','write_not_proposed':'请说明要执行的具体操作和目标，以便生成系统确认卡。','result_position_mismatch':'请说明要保存哪一条（标题或链接），我会重新生成确认卡。'}
             next_step=hints.get(code,'如需执行，请在确认卡上点击确认；没有出现卡片时，请直接说明要执行的操作和目标。') if self.owner else '请由所有者登录后通过系统确认卡执行。'
-            noted=any(op in answer for op in ('操作未执行','未执行','没有执行','请确认','确认卡','卡片','可在卡片上','需要确认','无法执行','仅所有者','只有所有者'))
+            # Only words saying it did not run count: with no card, 「确认卡正在等你处理」 is the false claim this notice corrects.
+            noted=any(op in answer for op in ('操作未执行','未执行','没有执行','无法执行','仅所有者','只有所有者'))
             # The code stays in audit.write_outcome; the user gets words, never internal vocabulary.
             # A revision with nothing to offer already said why and what to do next.
             if not noted and not self.revision_notice:answer+='\n操作未执行：'+REFUSAL_WORDS.get(code,'这项操作没有执行')+'。下一步：'+next_step
@@ -2346,7 +2368,8 @@ class Turn:
                     self.audit['tool_calls']+=1;outcome=self.write_error(name,'write_negated' if name in self.granted_actions else 'write_tool_not_granted');self.feedback.append(outcome)
                     self.protocol.append({'role':'tool','tool_call_id':call['id'],'content':json.dumps(outcome)});batch_failed=True;continue
                 if policy.level=='costly' or (policy.level=='reversible' and self.owner):
-                    self.audit['tool_calls']+=1;outcome=await self.propose(name,args);self.feedback.append(outcome)
+                    self.audit['tool_calls']+=1;proposed=len(self.proposals);outcome=await self.propose(name,args);self.feedback.append(outcome)
+                    if len(self.proposals)>proposed:self.proposal_calls[call['id']]=outcome
                     self.record_write_result(name,outcome)
                     # A proposal is a result too: without it the client shows the call as pending
                     # for ever and the stored turn restores it as failed.
@@ -2401,7 +2424,7 @@ class Turn:
                     stop='no_progress';break
             if self.proposals:
                 if stop:
-                    self.proposals=[];self.feedback.append(tools.error('write_batch_incomplete'))
+                    self.drop_proposals('write_batch_incomplete')
                 else:await self.confirm_proposals()
                 if self.pending:
                     display=self.pending.get('display',{})
