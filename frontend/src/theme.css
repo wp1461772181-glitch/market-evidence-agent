@@ -320,3 +320,9 @@ body { background: var(--me-bg); color: var(--me-ink); font-family: var(--me-fon
 .task-form { display: grid; gap: 10px; }
 .task-form label { display: grid; gap: 4px; }
 .task-form-row { display: flex; gap: 10px; flex-wrap: wrap; }
+/* Memory layers (stage B): 全局 / each bot. */
+.memory-layer + .memory-layer { margin-top: 14px; }
+.memory-layer-title { margin: 0 0 6px; font-size: 14px; font-weight: 600; color: var(--me-ink); }
+.memory-scope { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--me-muted); }
+.memory-scope select, .memory-search select { font: inherit; font-size: 13px; padding: 4px 8px; border: 1px solid var(--me-line); border-radius: 8px; background: var(--me-surface); color: var(--me-ink); max-width: 12em; }
+.memory-edit { flex: 1; min-width: 0; font: inherit; padding: 4px 8px; border: 1px solid var(--me-line); border-radius: 8px; background: var(--me-surface); color: var(--me-ink); }

@@ -27,3 +27,28 @@ test("a recall link names one conversation; anything else is not one", () => {
   assert.equal(conversationFromHash("#agent/not-an-id"), null);
   assert.equal(conversationFromHash(`#memory/${id}`), null);
 });
+
+test("profile items are grouped 全局 first, then each bot (default first), then deleted bots", async () => {
+  const { profileLayers, layerLabel } = await import("../src/memory-items.mjs");
+  const bots = [{ id: "apple", name: "苹果", is_default: false }, { id: "main", name: "助理", is_default: true }];
+  const layers = profileLayers([
+    { ...item("g", "explicit", "active", "2026-10-01"), bot_id: null },
+    { ...item("a", "inferred", "active", "2026-10-02"), bot_id: "apple", bot_name: "苹果" },
+    { ...item("x", "explicit", "active", "2026-10-03"), bot_id: "gone-bot", bot_name: null },
+    { ...item("old", "explicit", "archived", "2026-09-01"), bot_id: "apple" },
+  ], bots);
+  assert.deepEqual(layers.map(l => [l.label, l.items.map(i => i.id)]),
+    [["全局", ["g"]], ["助理", []], ["苹果", ["a"]], ["已删除的 bot", ["x"]]]);
+  assert.equal(layerLabel({ bot_id: null }), "全局");
+  assert.equal(layerLabel({ bot_id: "apple", bot_name: "苹果" }), "苹果");
+});
+
+test("past conversations are grouped by bot in the order they come", async () => {
+  const { recallGroups } = await import("../src/memory-items.mjs");
+  const groups = recallGroups([
+    { conversation_id: "1", bot_id: "news", bot_name: "抓新闻" }, { conversation_id: "2", bot_id: "apple", bot_name: "苹果" },
+    { conversation_id: "3", bot_id: "news", bot_name: "抓新闻" }, { conversation_id: "4", bot_id: null, bot_name: null },
+  ]);
+  assert.deepEqual(groups.map(g => [g.label, g.items.map(i => i.conversation_id)]),
+    [["抓新闻", ["1", "3"]], ["苹果", ["2"]], ["未归属", ["4"]]]);
+});

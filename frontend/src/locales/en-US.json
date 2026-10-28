@@ -1515,5 +1515,12 @@
   "空白": "Blank",
   "公司研究员": "Company researcher",
   "新闻监控": "News monitor",
-  "财报解读": "Earnings analysis"
+  "财报解读": "Earnings analysis",
+  "全局": "Global",
+  "已删除的 bot": "Deleted bot",
+  "全局的条目每个 bot 都用；某个 bot 的条目只有它和默认 bot「助理」能读。可以在每条的“范围”里改。": "Global items apply in every bot; a bot's own items are read only by that bot and the default bot (Assistant). Change it under Scope on each item.",
+  "每个 bot 只回想自己那条线；默认 bot「助理」能回想所有 bot 的。": "Each bot recalls only its own line; the default bot (Assistant) can recall every bot's.",
+  "按 bot 筛选": "Filter by bot",
+  "全部 bot": "All bots",
+  "未归属": "No bot"
 }
