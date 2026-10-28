@@ -47,6 +47,7 @@ export const TOOL_LABELS = {
   review_knowledge_candidate: "审核知识候选",
   remember: "记住偏好",
   forget: "忘掉偏好",
+  create_routine: "新建例行任务",
   recall_conversations: "回想往事",
   notify_telegram: "发 Telegram 通知",
   use_skill: "使用技能",

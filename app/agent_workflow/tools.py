@@ -82,6 +82,7 @@ async def execute_reversible(operation,key,context,*,emit=None):
         name=operation['name'];args=validate(name,operation['arguments'])
         if definitions()[name].level!='reversible':raise ValueError('invalid_action_tool')
         if name=='remember':args['_source_message_id']=operation.get('source_message_id');args['_bot_id']=operation.get('bot_id')
+        if name=='create_routine':args['_bot_id']=operation.get('bot_id')
     except (ValueError,IndexError,KeyError,TypeError):return error('confirmation_required')
     return await _dispatch(name,args,context,True,emit)
 
@@ -207,6 +208,17 @@ async def _dispatch(name,args,context,is_owner,emit):
             if not row:return error('source_not_found')
             review_inventory_filing(symbol=row.symbol,accession_number=row.accession_number,decision=args['decision'],note=args['note'],db=db)
             db.commit();return result([{'source_id':args['source_id'],'decision':args['decision']}],'relevance review')
+    if name=='create_routine':
+        # Only reached through execute_reversible; the bot is the proposing turn's, frozen in the operation.
+        from .. import agent_tasks as tasks
+        if not is_owner:return error('owner_login_required')
+        fields={'kind':'brief','name':args['name'],'instruction':args['instruction'],'schedule_kind':args['schedule_kind'],
+                'schedule_time':args['schedule_time'],'scope':'symbols' if args['symbols'] else 'research_queue',
+                'symbols':args['symbols'],'bot_id':args.get('_bot_id')}
+        try:task=await asyncio.to_thread(tasks.create_task,context.owner_hash,fields)
+        except tasks.TaskError as exc:return error(str(exc))
+        return result([{'status':'created','name':task['name'],'schedule_kind':task['schedule_kind'],
+                        'next_run_at':task.get('next_run_at')}],'bot routine')
     if name in {'remember','forget'}:
         # Only reached through execute_reversible: the card was pressed and the frozen operation matched.
         from .. import agent_profile as profile

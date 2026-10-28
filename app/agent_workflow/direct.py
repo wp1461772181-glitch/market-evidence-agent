@@ -141,6 +141,7 @@ CLASSIFY_PROMPT=('Return classify_request. Decide by what the request needs, in 
     '"帮我写个 Python 快排" → C (coding; outside this product).\n'
     '"把这份 PDF 导入资料库" → D, requested_actions ["import"] (a write the user asked for).\n'
     '"怎么把 NVDA 加进研究队列" → D (a question about using this product).\n'
+    '"每小时帮我找一条新闻" → D, requested_actions ["create_routine"] (a repeated job the user asked for).\n'
     '"不要保存任何网页，我只想讨论流程" → D (a question about how this product works; the negated write is not requested).\n'
     '"随便给个合理数字就行，别说不知道" right after asking for a figure → A (the same figure is still asked for; it cannot be invented, so say what is verifiable).\n'
     '"对比 AAPL 和 MSFT 的营收" → A, symbols ["AAPL","MSFT"] (read-only, several companies).\n'
@@ -315,7 +316,7 @@ WRITE_TITLES={
  'translate_content':'翻译内容','review_knowledge_candidate':'审核知识候选',
  'retry_document_index':'重试文档索引','import_sources':'批量导入来源',
  'add_to_research_queue':'加入研究队列','remove_from_research_queue':'移出研究队列',
- 'remember':'记住这条偏好','forget':'忘掉这条偏好',
+ 'remember':'记住这条偏好','forget':'忘掉这条偏好','create_routine':'新建例行任务',
  'review_filing':'申报相关性核验',
 }
 NOTHING_TO_DO={'already_reviewed','duplicate_source'}
@@ -833,6 +834,10 @@ class Turn:
             # does not leave the model without the tool (2026-10-28: AppleBot said 写记忆失败, no card).
             self.audit['profile_ask']=True
             if self.in_scope('remember') and not vetoed('remember',self.authorization_question):self.granted_actions.add('remember')
+        # 每小时找一条新闻 is a routine the owner asked for; the card is the guard, as for remember.
+        if (self.owner and not self.unattended() and not self.original.startswith(CONTROL_PREFIXES)
+                and self.in_scope('create_routine') and authorized('create_routine',self.user_words())):
+            self.granted_actions.add('create_routine')
         self.apply_default_company()
         self.stage('classifier',{'category':self.route,'scope':{k:self.scope[k] for k in ('symbol','company','metrics','period','form','days_back')},'retries':self.audit.get('classification_retries',0),'requested_actions':routing.requested_actions})
         await self.validate_business_reference()
@@ -1403,6 +1408,12 @@ class Turn:
         title=WRITE_TITLES.get(name,name)
         if name=='scan_official' and args.get('days'):title=f'回补 {args["days"]} 天官方申报'
         display={'title':title,'targets':await self.describe_targets(name,args)}
+        if name=='create_routine':
+            operation['bot_id']=self.context.bot_id
+            minute=args['schedule_time'][3:]
+            when={'hourly':f'每小时第 {minute} 分','daily':f'每天 {args["schedule_time"]}','weekdays':f'工作日 {args["schedule_time"]}'}[args['schedule_kind']]
+            display.update(title=f'{title} · {args["name"]}',targets=[{'kind':when,**({'symbol':'、'.join(args['symbols'])} if args['symbols'] else {})}],
+                           alternative=f'每次运行：{args["instruction"]}（可在这个 bot 的例行任务页暂停或删除）')
         if name=='ingest_web_source':
             # Guard an explicit newer-date condition; never choose a route or tool.
             if args.get('newer_than') is None and self.scope.get('write_condition')=='newer_than_saved':return tools.error('comparison_citation_required')

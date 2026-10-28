@@ -26,6 +26,7 @@ VERBS={
     'withdraw_knowledge_document':r'撤回|删除|撤销|withdraw|delete',
     'test_retrieval_diagnostics':r'诊断|测试|检索|diagnose|test',
     'remember':r'记住|记下|记得|以后|今后|往后|从现在起|每次都|一律|remember|from now on|always',
+    'create_routine':r'每小时|每个小时|每天|每日|每周|工作日|定时|定期|例行|schedule|hourly|daily|every (?:hour|day|morning)',
     'forget':r'忘掉|忘记|忘了|删掉|删除|去掉|forget|delete',
 }
 # "以后别再用万元" is a standing instruction, not a refusal: for remember these are the request itself.
