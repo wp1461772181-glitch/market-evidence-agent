@@ -1,9 +1,9 @@
-// Light, dark or follow the system; dark until the owner picks (the Grok-like chat skin, grok.css).  Both themes use the same CSS variable names (theme.css).
+// Light, dark or follow the system; follows the system until the owner picks (the Grok-like chat skin, grok.css).  Both themes use the same CSS variable names (theme.css).
 export const THEME_KEY = "market-evidence-agent:theme:v1";
 export const THEMES = ["light", "dark", "system"];
 
 export function storedTheme(storage = globalThis.localStorage) {
-  try { const value = storage?.getItem(THEME_KEY); return THEMES.includes(value) ? value : "dark"; } catch { return "dark"; }
+  try { const value = storage?.getItem(THEME_KEY); return THEMES.includes(value) ? value : "system"; } catch { return "system"; }
 }
 
 export function resolvedTheme(choice, prefersDark) {

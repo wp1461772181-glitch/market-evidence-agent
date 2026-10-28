@@ -5,6 +5,8 @@ import { applyTheme, resolvedTheme, saveTheme, storedTheme } from "../src/theme.
 test("theme choice is stored and resolved to one of two variable sets", () => {
   const data = new Map();
   const storage = { getItem: (k) => data.get(k) ?? null, setItem: (k, v) => data.set(k, v) };
+  assert.equal(storedTheme(storage), "system");
+  saveTheme("dark", storage);
   assert.equal(storedTheme(storage), "dark");
   saveTheme("system", storage);
   assert.equal(storedTheme(storage), "system");

@@ -315,3 +315,17 @@ Commits `91b648f` (Telegram), `6ec2351`, `98b01cd`, `788ba47`, `9aa6477` (fronte
      about 「来源：[1] title https://…」 no longer applies.
 4. Frontend (预测 sidebar entry, 工作区 预测工作台 links, the rail toggle, one-step new bot, dark Grok-like
    skin) goes live only with a push to main (Pages), which needs the owner's OK.
+
+## 2026-10-28 UX batch 2 — P0 字色 (text colour)
+
+Frontend only, no migrations, no backend restart. Plan: `docs/superpowers/plans/2026-10-28-ux-batch2.zh-CN.md` §3.1.
+
+1. Tests (Linux box or Mac): `cd frontend && npm ci && npm run test:i18n` (includes the new
+   `scripts/theme-contrast.test.mjs`), then `npm run build`.
+2. Goes live only with a push to main (Pages), which needs the owner's OK.
+3. **What changed for the eye:**
+   - A first-time visitor now gets 外观 = 跟随系统 (was dark). A stored choice is kept.
+   - Light theme: 公司 › 总览's top card is a dark card with light text again; every 取消/关闭/次要 button is
+     dark text on a transparent pill; a watchlist card's 打开 link no longer vanishes on hover.
+4. **Check by hand:** 设置 › 外观 浅色, then 深色 — 总览 top card, any dialog's 取消, a watchlist card hover,
+   chat consent/clarification inputs. Take the 9 screenshots (§3.1 step 6) per theme for the notes.

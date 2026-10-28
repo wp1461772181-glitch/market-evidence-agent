@@ -40,8 +40,10 @@
   --accent-soft: var(--me-accent-soft);
   --rust: var(--me-down);
   --warning: var(--me-warn);
-  --navy: var(--me-rail);
-  --navy-2: var(--me-rail-2);
+  /* --navy is the dark brand surface the older sheets write white text on, in both themes (not the rail,
+     which is light in the light skin). */
+  --navy: var(--me-hero);
+  --navy-2: var(--me-hero);
   --sans: var(--me-font);
   --serif: var(--me-font);
   --mono: var(--me-mono);
@@ -260,7 +262,6 @@ body { background: var(--me-bg); color: var(--me-ink); font-family: var(--me-fon
 :root[data-theme="dark"] .research-brief,
 :root[data-theme="dark"] .review-decisions button.selected.reject,
 :root[data-theme="dark"] .revision-automation-note,
-:root[data-theme="dark"] .secondary-action,
 :root[data-theme="dark"] .status-blocked_data,
 :root[data-theme="dark"] .status-failed,
 :root[data-theme="dark"] .status-queued,
