@@ -25,10 +25,18 @@ def test_prompt_requests_claims_only_when_the_gate_is_enabled(monkeypatch):
     assert "evidence_quote" in _turn().tool_messages(closing=True)[0]["content"]
 
 
-def test_enforce_without_claims_drops_the_factual_sentence(monkeypatch):
+def test_enforce_without_claims_keeps_a_sourced_sentence_and_records_it(monkeypatch):
+    # Levi 2026-10-28: a missing claims block is a rewording, not an error; the figure is in the source.
     monkeypatch.setenv("CLAIM_QUOTE_GATE", "enforce")
     result = _turn().finish("Revenue was 16,128 [1].")
-    assert result["reason"] == "claims_missing"
-    assert "16,128" not in result["answer"]
+    assert result["status"] == "succeeded" and result["answer"] == "Revenue was 16,128 [1]."
     assert result["audit"]["claim_gate"]["claims_missing"] is True
+    assert result["audit"]["claim_gate"]["warned_lines"] == [{"line": "Revenue was 16,128 [1].", "reason": "claims_missing"}]
+
+
+def test_enforce_still_drops_a_figure_no_evidence_holds(monkeypatch):
+    monkeypatch.setenv("CLAIM_QUOTE_GATE", "enforce")
+    result = _turn().finish("Revenue was 16,128 [1].\nOperating income was 99,999 [1].")
+    assert "16,128" in result["answer"] and "99,999" not in result["answer"]
+    assert result["reason"] == "unsupported_numeric" and result["status"] == "partially_succeeded"
     assert "待核对" not in result["answer"]

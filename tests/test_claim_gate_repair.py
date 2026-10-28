@@ -7,7 +7,8 @@ from app.agent_workflow.state import AgentRuntimeContext
 SOURCE = "Apple Inc. Total net sales were 16,128 for fiscal 2024. Operating income follows."
 
 
-def test_repair_asks_for_a_verbatim_quote_and_calculate(monkeypatch):
+def test_a_quote_that_does_not_match_word_for_word_is_delivered_without_a_repair(monkeypatch):
+    # Levi 2026-10-28: 换个说法对不上 is not a model error; the figure is in the source, so nothing is cut.
     monkeypatch.setenv("CLAIM_QUOTE_GATE", "enforce")
     seen = []
 
@@ -40,12 +41,8 @@ def test_repair_asks_for_a_verbatim_quote_and_calculate(monkeypatch):
         }]
     }
     result = asyncio.run(turn.finish_answer("Revenue was 16,128 [1].\n" + json.dumps(bad)))
-    assert seen, "enforce bind failure should ask for a repair"
-    blob = json.dumps(seen[0], ensure_ascii=False)
-    assert "quote_not_found" in blob
-    assert "连续出现的原文" in blob
-    assert "calculate" in blob
-    assert "不要写成待核对" in blob
+    assert seen == []
     assert result["status"] == "succeeded"
-    assert "16,128" in result["answer"]
-    assert "待核对" not in result["answer"]
+    assert result["answer"] == "Revenue was 16,128 [1]."
+    assert result["audit"]["claim_gate"]["drop_reasons"] == ["quote_not_found"]
+    assert result["audit"]["claim_gate"]["warned_lines"][0]["reason"] == "quote_not_found"

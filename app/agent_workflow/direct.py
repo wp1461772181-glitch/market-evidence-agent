@@ -2160,7 +2160,7 @@ class Turn:
                     self.audit['legacy_guard_warnings']=list(legacy_issues)
                     notes=application.audit['answer_quality_notes']
                     notes['legacy_issue_count']=len(legacy_issues)
-                    notes['claim_drop_count']=len(application.issues)
+                    notes['claim_drop_count']=len(application.dropped_lines)
                     notes['legacy_disagreement']=bool(legacy_issues)!=bool(application.issues)
             else:
                 kept,issues=reviewed_answer(answer,self.citations,require_citations=require_citations,check_claims=check_claims)

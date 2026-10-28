@@ -11,6 +11,9 @@ from .evidence import _citation_material, factual_claim, reviewed_claims
 
 _BODY_KEYS = ("content", "text", "body", "excerpt", "summary", "answer")
 _CITATION_MARKER = re.compile(r"\[\d+\]")
+# What enforce removes: a figure no evidence of this turn holds, and a claim Jev says the source contradicts.
+# A quote that does not match word for word, or a missing claims block, is a rewording, not an error.
+DROP_REASONS = frozenset({"unsupported_numeric", "does_not_support"})
 
 
 @dataclass
@@ -75,8 +78,10 @@ def apply_claim_gate(
 ) -> ClaimGateApplication:
     """Parse claims, bind them, and (in enforce) decide which prose lines remain.
 
-    Shadow keeps the stripped prose for the legacy guard. Enforce drops lines
-    that belong to a rejected claim. Neither mode turns a miss into 待核对.
+    Shadow keeps the stripped prose for the legacy guard. Enforce drops only the
+    lines of DROP_REASONS; a claim that is reworded or unquoted stays and is
+    recorded as a warning (Levi 2026-10-28: 换个说法对不上不是错误). Neither mode
+    turns a miss into 待核对.
     """
     started = time.monotonic()
     payload, prose = extract_claims_payload(answer or "")
@@ -115,9 +120,9 @@ def apply_claim_gate(
         "source_body_fallback": [],
     }
     if mode == "enforce":
-        kept, display, dropped = _enforce_lines(prose, accepted, issues, citations, bodies, claims_missing=claims_missing)
+        kept, display, dropped, warned = _enforce_lines(prose, accepted, issues, citations, bodies, claims_missing=claims_missing)
     else:
-        kept, display, dropped = prose, [], []
+        kept, display, dropped, warned = prose, [], [], []
     elapsed = max(0, int((time.monotonic() - started) * 1000))
     audit = {
         **review_audit,
@@ -131,12 +136,13 @@ def apply_claim_gate(
         "jev_skipped_reasons": support_audit["jev_skipped_reasons"],
         "semantic_unchecked": support_audit["semantic_unchecked"],
         "jev_choices": support_audit["jev_choices"],
+        "warned_lines": [{"line": line[:200], "reason": reason} for line, reason in warned[:5]],
         "answer_quality_notes": {
             "prose_chars": len(prose),
             "claims_chars": max(0, len(answer or "") - len(prose)),
             "claims_missing": claims_missing,
             "latency_ms": elapsed,
-            "claim_drop_count": len(issues),
+            "claim_drop_count": len(dropped),
         },
     }
     return ClaimGateApplication(prose, kept, issues, display, dropped, audit)
@@ -227,42 +233,45 @@ def _enforce_lines(prose, accepted, issues, citations, bodies, *, claims_missing
     for claim in accepted:
         citation = indexed.get(claim.citation_ordinal, {})
         if isinstance(claim.evidence, QuoteEvidence):
-            spans.append(claim.evidence.evidence_quote)
             source = bodies.get(claim.citation_ordinal) or str(citation.get("quote") or "")
             start = source.find(claim.evidence.evidence_quote)
             headers.append(header_context(source, start if start >= 0 else None))
-        elif isinstance(claim.evidence, FieldEvidence):
-            spans.append(_citation_material(citation))
+    # A figure counts as grounded when any evidence of this turn holds it, not only a span a claim quoted.
+    spans.extend(bodies.values())
+    spans.extend(_citation_material(citation) for citation in indexed.values())
     allowed = "\n".join(spans)
     header = "\n".join(headers)
     reasons_for = {issue.get("statement"): issue.get("reason") for issue in issues if issue.get("statement")}
     kept_lines: list[str] = []
     dropped: list[tuple[str, str]] = []
+    warned: list[tuple[str, str]] = []
     display: list[str] = []
     for line in (prose or "").splitlines():
         stripped = line.strip()
         if not stripped:
             kept_lines.append(line)
             continue
-        reason = _line_reason(stripped, allowed, header, reasons_for, claims_missing=claims_missing, accepted=accepted)
-        if reason:
+        reason = _line_warning(stripped, reasons_for, claims_missing=claims_missing, accepted=accepted)
+        if numbers_supported(_CITATION_MARKER.sub(" ", stripped), allowed, header_context=header):
+            reason = "unsupported_numeric"
+        if reason in DROP_REASONS:
             dropped.append((stripped, reason))
             if reason not in display:
                 display.append(reason)
             continue
+        if reason:
+            warned.append((stripped, reason))
         kept_lines.append(line)
-    return "\n".join(kept_lines).strip(), display, dropped
+    return "\n".join(kept_lines).strip(), display, dropped, warned
 
 
-def _line_reason(stripped, allowed, header, reasons_for, *, claims_missing: bool, accepted):
+def _line_warning(stripped, reasons_for, *, claims_missing: bool, accepted):
+    """Why a line could not be bound to a quote; only DROP_REASONS remove it."""
     if claims_missing and factual_claim(stripped):
         return "claims_missing"
     for statement, reason in reasons_for.items():
         if _statement_in_line(statement, stripped):
             return reason or "quote_not_found"
-    body = _CITATION_MARKER.sub(" ", stripped)
-    if numbers_supported(body, allowed, header_context=header):
-        return "unsupported_numeric"
     if not accepted and reasons_for and factual_claim(stripped):
         return next(iter(reasons_for.values())) or "quote_not_found"
     return None
