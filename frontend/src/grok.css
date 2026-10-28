@@ -1,0 +1,144 @@
+/* Chat skin (fix 3, 2026-10-28): a Grok-like, near-monochrome dark chat.  Loaded last, after theme.css.
+   Visual reference only, nothing vendored:
+     - assistant-ui's Grok example (MIT): https://github.com/assistant-ui/assistant-ui/blob/main/apps/docs/components/pages/examples/grok.tsx
+       (#141414 page, #212121 composer, #2a2a2a ring, pill composer, round inverted send button)
+     - LobeChat (agents listed in the sidebar, thread in the middle): https://github.com/lobehub/lobe-chat
+   It retunes theme.css's tokens, then restyles the shell rail, the bot list, the thread, the bubbles, the
+   composer and the right rail.  Our IA (bots / 工作区 / 档案, 公司, 预测, 资料库) and Chinese copy are unchanged. */
+
+:root {
+  --me-bg: #fdfdfd;
+  --me-surface: #ffffff;
+  --me-surface-2: #f4f4f4;
+  --me-ink: #0d0d0d;
+  --me-muted: #5f5f5f;
+  --me-faint: #9a9a9a;
+  --me-line: #e5e5e5;
+  --me-line-strong: #d4d4d4;
+  --me-accent: #2563eb;
+  --me-accent-hover: #1d4ed8;
+  --me-accent-soft: #eef2ff;
+  --me-rail: #f7f7f7;
+  --me-rail-2: #f7f7f7;
+  --me-rail-ink: #0d0d0d;
+  --me-rail-muted: #6b6b6b;
+  --me-rail-hover: #ececec;
+  --me-invert: #0d0d0d;
+  --me-invert-ink: #ffffff;
+  --me-font: "Inter", "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+:root[data-theme="dark"] {
+  --me-bg: #141414;
+  --me-surface: #1a1a1a;
+  --me-surface-2: #212121;
+  --me-ink: #f5f5f5;
+  --me-muted: #a3a3a3;
+  --me-faint: #6b6b6b;
+  --me-line: #2a2a2a;
+  --me-line-strong: #3a3a3a;
+  --me-accent: #7ab0ff;
+  --me-accent-hover: #a3c8ff;
+  --me-accent-soft: #1f2a3a;
+  --me-rail: #0f0f0f;
+  --me-rail-2: #0f0f0f;
+  --me-rail-ink: #ececec;
+  --me-rail-muted: #8a8a8a;
+  --me-rail-hover: #1f1f1f;
+  --me-invert: #f5f5f5;
+  --me-invert-ink: #0d0d0d;
+}
+
+/* The chat surfaces: user bubbles are a neutral fill, not a tinted accent. */
+.agent-page { --c-user: var(--me-surface-2); --c-surface: var(--me-bg); }
+body { -webkit-font-smoothing: antialiased; }
+
+/* --- shell rail: flat, same family as the page ----------------------------------------------- */
+.app-rail { background: var(--me-rail); color: var(--me-rail-ink); border-right: 1px solid var(--me-line); padding: 16px 10px 14px; }
+.workspace-brand { color: var(--me-rail-ink); font-family: var(--me-font); letter-spacing: 0; }
+.workspace-brand em { color: var(--me-rail-muted); }
+.rail-context { margin: 18px 6px 12px; padding: 0; border: 0; }
+.rail-context span, .rail-context small { color: var(--me-rail-muted); }
+.rail-context strong { font: 600 15px/1.2 var(--me-font); letter-spacing: 0; color: var(--me-rail-ink); }
+.workspace-nav button { color: var(--me-rail-muted); border-radius: 10px; padding: 8px 10px; }
+.workspace-nav button > span:first-child { color: var(--me-rail-muted); font-family: var(--me-font); }
+.workspace-nav button small { color: var(--me-rail-muted); opacity: .8; }
+.workspace-nav button:hover, .workspace-nav button:focus-visible { background: var(--me-rail-hover); color: var(--me-rail-ink); }
+.workspace-nav button.active { background: var(--me-rail-hover); color: var(--me-rail-ink); box-shadow: none; }
+.workspace-nav button.active small { color: var(--me-rail-muted); }
+.rail-bottom { color: var(--me-rail-muted); }
+.rail-nav-close, .nav-menu-trigger { border-color: var(--me-line); color: var(--me-rail-muted); background: transparent; border-radius: 10px; }
+.rail-nav-close:hover, .nav-menu-trigger:hover { color: var(--me-rail-ink); background: var(--me-rail-hover); }
+
+/* --- bot list ---------------------------------------------------------------------------------- */
+.bot-rail { border-bottom: 1px solid var(--me-line); }
+.bot-rail-head, .bot-group { color: var(--me-rail-muted); }
+.bot-new { border-color: var(--me-line-strong); color: var(--me-rail-muted); border-radius: 8px; }
+.bot-new:hover, .bot-new:focus-visible { color: var(--me-rail-ink); border-color: var(--me-rail-muted); }
+.bot-row { color: var(--me-rail-ink); border-radius: 10px; padding: 7px 8px; }
+.bot-row:hover, .bot-row:focus-visible { background: var(--me-rail-hover); color: var(--me-rail-ink); }
+.bot-row.is-active { background: var(--me-rail-hover); color: var(--me-rail-ink); font-weight: 600; }
+.bot-row-text strong { font-weight: inherit; }
+.bot-row-text small { color: var(--me-rail-muted); font-size: 11px; font-weight: 400; }
+.bot-avatar { background: var(--me-surface-2); color: var(--me-ink); border: 1px solid var(--me-line); font-size: 13px; }
+.bot-unread { background: var(--me-invert); color: var(--me-invert-ink); }
+
+/* --- page heading: a thin bar, no rule ----------------------------------------------------------- */
+.agent-page { padding-top: 8px; gap: 6px; background: var(--me-bg); }
+.agent-page .agent-page-heading { border-bottom: 0; padding: 4px 0 6px; }
+.agent-page .agent-page-heading h1 { font-size: 16px; font-weight: 600; }
+.agent-title-row .bot-avatar { width: 30px; height: 30px; background: var(--me-surface-2); color: var(--me-ink); }
+.agent-header-actions .secondary-action, .side-toggle { border: 1px solid var(--me-line); background: transparent; color: var(--me-muted); border-radius: 999px; min-height: 32px; padding: 0 12px; }
+.agent-header-actions .secondary-action:hover, .side-toggle:hover { color: var(--me-ink); background: var(--me-surface-2); }
+.side-toggle.is-open { color: var(--me-ink); background: var(--me-surface-2); }
+.agent-capability { background: transparent; border: 0; color: var(--me-faint); font-size: 12px; max-width: 768px; margin: 0 auto; width: 100%; }
+
+/* --- thread: one centred column, assistant as plain text, user as a soft pill -------------------- */
+.agent-thread { max-width: 768px; gap: 26px; }
+.agent-message.is-assistant .markdown-body { font-size: 15px; line-height: 1.7; color: var(--me-ink); }
+.agent-message.is-user { padding: 0; background: transparent; border-radius: 0; max-width: min(80%, 620px); }
+.agent-user-bubble { background: var(--c-user); border-radius: 22px; padding: 10px 16px; }
+.agent-message.is-user p { font-size: 15px; line-height: 1.6; }
+.agent-welcome h2 { font-size: 28px; font-weight: 600; letter-spacing: -.01em; }
+.agent-welcome button { border: 1px solid var(--me-line); background: transparent; border-radius: 999px; color: var(--me-muted); }
+.agent-welcome button:hover { color: var(--me-ink); background: var(--me-surface-2); }
+.agent-action-button { border-radius: 8px; color: var(--me-faint); }
+.agent-action-button:hover { color: var(--me-ink); background: var(--me-surface-2); }
+.citation-drawer { border-color: var(--me-line); border-radius: 12px; background: transparent; }
+.tool-badge { border-radius: 999px; background: var(--me-surface-2); border-color: var(--me-line); color: var(--me-muted); }
+
+/* --- composer: a pill with a thin inset ring and a round inverted send button --------------------- */
+.agent-composer { max-width: 768px; border: 0; border-radius: 28px; background: var(--me-surface-2); box-shadow: inset 0 0 0 1px var(--me-line); margin-bottom: 4px; }
+.agent-composer:focus-within { border: 0; box-shadow: inset 0 0 0 1px var(--me-line-strong), 0 0 0 4px color-mix(in srgb, var(--me-ink) 4%, transparent); }
+.agent-composer textarea { font-size: 15px; padding: 15px 22px 4px; border-radius: 28px 28px 0 0; }
+.agent-composer-bottom { padding: 4px 10px 10px 22px; }
+.agent-send { background: var(--me-invert); color: var(--me-invert-ink); }
+.agent-send:hover:not(:disabled) { background: var(--me-invert); opacity: .86; transform: none; }
+.agent-send:disabled { background: var(--me-line-strong); color: var(--me-faint); }
+.agent-stop { border-radius: 999px; }
+.skill-picker { background: var(--me-surface); border-color: var(--me-line); border-radius: 14px; box-shadow: 0 12px 32px rgba(0, 0, 0, .28); }
+
+/* --- right rail (工作区 / 档案) ------------------------------------------------------------------ */
+.bot-side { border-left: 1px solid var(--me-line); padding-left: 16px; }
+.bot-side .section-tabs { border-bottom: 0; gap: 4px; padding: 0; margin: 0; }
+.bot-side .section-tabs button { border: 0; border-radius: 999px; padding: 6px 14px; color: var(--me-muted); }
+.bot-side .section-tabs button[aria-selected="true"] { background: var(--me-surface-2); color: var(--me-ink); border: 0; }
+.bot-focus-item { border-color: var(--me-line); background: var(--me-surface); border-radius: 12px; }
+.bot-form input, .bot-form select, .bot-form textarea, .bot-create input { background: var(--me-surface-2); border: 1px solid var(--me-line); color: var(--me-ink); border-radius: 10px; }
+
+/* --- buttons: primary is the inverted pill everywhere (--navy now names the near-black rail, which a
+   primary button painted with it would vanish into on the dark page) ------------------------------- */
+.primary-action { background: var(--me-invert); color: var(--me-invert-ink); border: 0; border-radius: 999px; box-shadow: none; }
+.primary-action:hover:not(:disabled) { background: var(--me-invert); opacity: .86; transform: none; }
+.primary-action:disabled { opacity: .45; }
+.secondary-action { border-radius: 999px; }
+.entry-choice { background: var(--me-surface); border-color: var(--me-line); border-radius: 20px; box-shadow: none; }
+.entry-choice h1 { font: 600 28px/1.25 var(--me-font); color: var(--me-ink); }
+.entry-choice p, .entry-choice label { color: var(--me-muted); }
+.bot-dialog { background: var(--me-surface); color: var(--me-ink); border: 1px solid var(--me-line); border-radius: 20px; }
+.bot-chip[aria-pressed="true"] { border-color: var(--me-ink); background: var(--me-surface-2); }
+
+/* The research pages share the surfaces, so they sit on the same neutral background. */
+.topbar { border-bottom: 1px solid var(--me-line); }
+.section-tabs button[aria-current="page"] { color: var(--me-ink); border-bottom-color: var(--me-ink); }
+.section-tabs.is-secondary button[aria-current="page"] { background: var(--me-surface-2); border-color: var(--me-line-strong); }
