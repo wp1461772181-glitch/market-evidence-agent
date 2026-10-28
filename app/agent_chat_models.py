@@ -142,8 +142,28 @@ class AgentTask(Base):
     next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     last_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
     last_conversation_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    # The bot the task belongs to (second edition, stage C): its settings and memory run the task and its
+    # results are posted in that bot's line.  NULL only on a table from before bots, until the default bot
+    # adopts it (agent_bots.ensure_default_bot).  Added to older tables by ``agent_tasks.ensure_bot_columns``.
+    bot_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class AgentTaskRun(Base):
+    """One run of a task (the bot page lists a bot's latest 20).  ``posted``: the run's conclusion went into
+    the bot's line; a quiet run (nothing new) or a failed one posts nothing."""
+    __tablename__ = "agent_task_runs"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    owner_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    task_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
+    bot_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True, index=True)
+    task_name: Mapped[str] = mapped_column(String(80), nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    posted: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
 
 
 class AgentInboxItem(Base):
@@ -164,6 +184,9 @@ class AgentInboxItem(Base):
     conversation_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
     dedupe_key: Mapped[str | None] = mapped_column(String(200), nullable=True)
     status: Mapped[str] = mapped_column(String(12), nullable=False, default="unread")  # unread | read | done | dismissed
+    # The bot whose task made the entry (stage C).  A brief is posted in that bot's line and this row is its
+    # unread mark; a 待你确认 entry is labelled with the bot.  NULL: from before bots, the default bot's.
+    bot_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
 
 

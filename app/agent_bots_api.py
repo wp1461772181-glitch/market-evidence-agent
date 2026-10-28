@@ -75,6 +75,16 @@ async def list_bots_endpoint(x_chat_session: str | None = Header(default=None)):
     return {"bots": items, "default_bot_id": next((b["id"] for b in items if b["is_default"]), None)}
 
 
+@router.post("/bots/{bot_id}/read")
+async def mark_bot_read_endpoint(bot_id: str, x_chat_session: str | None = Header(default=None)):
+    """The owner opened this bot's line: its posted briefs are no longer unread."""
+    from .agent_tasks import mark_bot_read
+    credential = _owner_only(x_chat_session)
+    if await asyncio.to_thread(bots.get_bot, owner_hash(credential), bot_id) is None:
+        raise HTTPException(404, "bot_not_found")
+    return {"read": await asyncio.to_thread(mark_bot_read, owner_hash(credential), bot_id)}
+
+
 @router.get("/bot-templates")
 async def bot_templates_endpoint(x_chat_session: str | None = Header(default=None)):
     _owner_only(x_chat_session)

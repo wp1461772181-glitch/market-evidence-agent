@@ -10,6 +10,11 @@ Three things live here, all owner-only:
 * **Background model** (``agent_background_model``): the key a task needs because a chat key lives only in
   one request's memory.  Stored with ``secret_box``, never returned by any function here, revocable.
 
+Second edition, stage C: a task belongs to a bot (``bot_id``).  Its results are posted in that bot's
+line as a turn of their own (``post_to_line``), so the owner follows up right below; the 简报 inbox row
+stays as the post's unread mark.  A post waits while the owner's own turn in that line is unfinished, so
+it never splits it.  Each run is logged (``agent_task_runs``) for the bot page.
+
 The runner itself (an unattended turn, alerts, token caps) is ``agent_task_runner``.
 """
 from __future__ import annotations
@@ -20,10 +25,12 @@ import uuid
 from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import select
+from sqlalchemy import func, select, text as sql
 from sqlalchemy.dialects.postgresql import insert
 
-from .agent_chat_models import AgentBackgroundModel, AgentInboxItem, AgentResearchQueue, AgentTask
+from .agent_chat_models import (AgentBackgroundModel, AgentBot, AgentConversation, AgentInboxItem, AgentMessage,
+                                AgentResearchQueue, AgentTask, AgentTaskRun)
+from .agent_recall import TASK_POST_HEAD
 from .database import SessionLocal
 from .secret_box import CredentialEncryptionError, decrypt_secret, encrypt_secret
 
@@ -45,12 +52,14 @@ MAX_PRICE_LINES = 30
 STATUS_LABELS = {
     "running": "运行中",
     "ok": "已运行",
+    "quiet": "已运行：没有新东西",
     "no_evidence": "已运行：没有取得带来源的证据",
     "needs_input": "已运行：需要你补充信息",
     "skipped_no_model": "未运行：缺少模型",
     "skipped_daily_cap": "未运行：已达每日 token 上限",
     "skipped_no_owner": "未运行：没有所有者登录配置",
     "skipped_no_scope": "未运行：范围里没有股票",
+    "skipped_no_bot": "未运行：bot 已不存在",
     "failed": "运行失败",
 }
 SECTIONS = ("brief", "confirm")
@@ -154,7 +163,8 @@ def serialize_task(task: AgentTask, now: datetime | None = None) -> dict:
             "daily_token_cap": task.daily_token_cap, "tokens_today": tokens_used_today(task, now),
             "last_run_at": _stamp(task.last_run_at), "next_run_at": _stamp(task.next_run_at),
             "last_status": task.last_status, "last_status_label": STATUS_LABELS.get(task.last_status or "", None),
-            "last_conversation_id": str(task.last_conversation_id) if task.last_conversation_id else None}
+            "last_conversation_id": str(task.last_conversation_id) if task.last_conversation_id else None,
+            "bot_id": str(task.bot_id) if task.bot_id else None}
 
 
 def _symbols(values) -> list[str]:
@@ -249,6 +259,30 @@ def _apply(task: AgentTask, fields: dict, now: datetime) -> None:
         task.next_run_at = next_run(schedule_kind, schedule_time, timezone, now)
 
 
+def ensure_bot_columns() -> None:
+    """Add the bot column to task and inbox tables made before bots.  A fresh database gets it from the model."""
+    from .database import engine
+    with engine.begin() as connection:
+        for table in ("agent_tasks", "agent_inbox_items"):
+            connection.execute(sql(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS bot_id UUID"))
+            connection.execute(sql(f"CREATE INDEX IF NOT EXISTS ix_{table}_bot_id ON {table} (bot_id)"))
+
+
+def _task_bot(db, owner_hash: str, bot_id) -> uuid.UUID:
+    """The bot a task is attached to: one of this owner's bots, or the default bot when none is named."""
+    if bot_id in (None, ""):
+        from .agent_bots import ensure_default_bot
+        return ensure_default_bot(owner_hash).id
+    try:
+        identity = uuid.UUID(str(bot_id))
+    except (TypeError, ValueError) as exc:
+        raise TaskError("unknown_bot") from exc
+    bot = db.get(AgentBot, identity)
+    if bot is None or bot.owner_hash != owner_hash:
+        raise TaskError("unknown_bot")
+    return bot.id
+
+
 def create_task(owner_hash: str, fields: dict, *, now: datetime | None = None) -> dict:
     now = now or datetime.now(UTC)
     with SessionLocal() as db:
@@ -256,6 +290,7 @@ def create_task(owner_hash: str, fields: dict, *, now: datetime | None = None) -
         if count >= MAX_TASKS:
             raise TaskError("too_many_tasks")
         task = AgentTask(owner_hash=owner_hash, enabled=True, usage_tokens=0, symbols=[], config={})
+        task.bot_id = _task_bot(db, owner_hash, fields.get("bot_id"))
         _apply(task, fields, now)
         db.add(task)
         db.commit()
@@ -278,6 +313,8 @@ def update_task(owner_hash: str, task_id, fields: dict, *, now: datetime | None 
         task = _owned_task(db, owner_hash, task_id)
         if task is None:
             return None
+        if "bot_id" in fields:
+            task.bot_id = _task_bot(db, owner_hash, fields["bot_id"])
         _apply(task, fields, now)
         db.commit()
         db.refresh(task)
@@ -294,11 +331,40 @@ def delete_task(owner_hash: str, task_id) -> bool:
         return True
 
 
-def list_tasks(owner_hash: str) -> list[dict]:
+def list_tasks(owner_hash: str, bot_id=None) -> list[dict]:
     now = datetime.now(UTC)
     with SessionLocal() as db:
-        rows = db.scalars(select(AgentTask).where(AgentTask.owner_hash == owner_hash).order_by(AgentTask.created_at)).all()
+        query = select(AgentTask).where(AgentTask.owner_hash == owner_hash)
+        if bot_id is not None:
+            query = query.where(AgentTask.bot_id == _uuid(bot_id))
+        rows = db.scalars(query.order_by(AgentTask.created_at)).all()
         return [serialize_task(row, now) for row in rows]
+
+
+def _uuid(value) -> uuid.UUID | None:
+    try:
+        return uuid.UUID(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def log_run(db, task: AgentTask, *, status: str, tokens: int = 0, posted: int = 0, conversation_id=None) -> None:
+    db.add(AgentTaskRun(owner_hash=task.owner_hash, task_id=task.id, bot_id=task.bot_id, task_name=task.name,
+                        status=status, posted=int(posted), tokens=max(0, int(tokens or 0)),
+                        conversation_id=uuid.UUID(str(conversation_id)) if conversation_id else None))
+
+
+def list_runs(owner_hash: str, bot_id=None, *, limit: int = 20) -> list[dict]:
+    """A bot's latest runs (all its tasks), newest first, for the bot page."""
+    with SessionLocal() as db:
+        query = select(AgentTaskRun).where(AgentTaskRun.owner_hash == owner_hash)
+        if bot_id is not None:
+            query = query.where(AgentTaskRun.bot_id == _uuid(bot_id))
+        rows = db.scalars(query.order_by(AgentTaskRun.created_at.desc()).limit(max(1, min(100, limit)))).all()
+        return [{"id": str(r.id), "task_id": str(r.task_id), "task_name": r.task_name, "status": r.status,
+                 "status_label": STATUS_LABELS.get(r.status), "posted": r.posted, "tokens": r.tokens,
+                 "conversation_id": str(r.conversation_id) if r.conversation_id else None,
+                 "created_at": _stamp(r.created_at)} for r in rows]
 
 
 def scope_symbols(db, task: AgentTask) -> list[str]:
@@ -390,34 +456,168 @@ def serialize_item(row: AgentInboxItem) -> dict:
     return {"id": str(row.id), "section": row.section, "kind": row.kind, "title": row.title, "body": row.body,
             "sources": list(row.sources or []), "payload": shown, "task_id": str(row.task_id) if row.task_id else None,
             "conversation_id": str(row.conversation_id) if row.conversation_id else None,
-            "status": row.status, "created_at": _stamp(row.created_at)}
+            "bot_id": str(row.bot_id) if row.bot_id else None,
+            "posted": bool(payload.get("posted_turn_id")), "status": row.status, "created_at": _stamp(row.created_at)}
 
 
 def add_item(owner_hash: str, *, section: str, kind: str, title: str, body: str = "", sources: list | None = None,
-             payload: dict | None = None, task_id=None, conversation_id=None, dedupe_key: str | None = None, db=None) -> bool:
+             payload: dict | None = None, task_id=None, conversation_id=None, dedupe_key: str | None = None, db=None,
+             bot_id=None, post: dict | None = None, now: datetime | None = None) -> bool:
     """Store one inbox entry; False when an entry with the same ``dedupe_key`` exists (alerts run again
-    and again over the same window)."""
+    and again over the same window).  ``post`` (a brief of a bot's task: ``{"head", "citations"}``) also
+    posts it in the bot's line, now or, while the owner's turn there is unfinished, at the next flush."""
     if section not in SECTIONS:
         raise TaskError("invalid_section")
+    payload = dict(payload or {})
+    if post is not None and bot_id:
+        payload.update(post_pending=True, post_head=str(post.get("head") or "")[:200],
+                       post_citations=list(post.get("citations") or []))
     values = {"id": uuid.uuid4(), "owner_hash": owner_hash, "section": section, "kind": kind, "title": str(title)[:200],
-              "body": str(body or ""), "sources": list(sources or []), "payload": dict(payload or {}),
+              "body": str(body or ""), "sources": list(sources or []), "payload": payload,
               "task_id": uuid.UUID(str(task_id)) if task_id else None,
               "conversation_id": uuid.UUID(str(conversation_id)) if conversation_id else None,
+              "bot_id": uuid.UUID(str(bot_id)) if bot_id else None,
               "dedupe_key": dedupe_key[:200] if dedupe_key else None, "status": "unread"}
-    statement = insert(AgentInboxItem).values(**values).on_conflict_do_nothing(constraint="uq_agent_inbox_dedupe")
+    statement = (insert(AgentInboxItem).values(**values).on_conflict_do_nothing(constraint="uq_agent_inbox_dedupe")
+                 .returning(AgentInboxItem.id))
+
+    def store(session) -> bool:
+        identity = session.execute(statement).scalar()
+        if identity is None:
+            return False
+        if payload.get("post_pending"):
+            post_to_line(session, session.get(AgentInboxItem, identity), now or datetime.now(UTC))
+        return True
     if db is not None:
-        return bool(db.execute(statement).rowcount)
+        return store(db)
     with SessionLocal() as session:
-        added = bool(session.execute(statement).rowcount)
+        added = store(session)
         session.commit()
         return added
 
 
-def list_inbox(owner_hash: str, *, section: str | None = None, limit: int = 50) -> list[dict]:
+# --- the bot's line ---------------------------------------------------------------------------------
+
+POST_HEAD = TASK_POST_HEAD  # recall keeps these rows out of the owner's questions
+POST_NOTE = "（系统自动贴入，不是所有者说的话）"
+# A turn of the owner that has not finished (its last row is not a final answer) holds the posts back,
+# unless it is this old: then it was cut off and will never finish.
+BUSY_FOR = timedelta(minutes=15)
+
+
+def post_head(task_name: str, when: datetime, timezone: str) -> str:
+    local = when.astimezone(_zone(timezone))
+    return f"{POST_HEAD}「{task_name}」{local:%Y-%m-%d %H:%M}{POST_NOTE}"
+
+
+def _final(row: AgentMessage) -> bool:
+    calls = isinstance(row.tool_calls, dict) and row.tool_calls.get("calls")
+    return row.role == "assistant" and row.status in {"complete", "failed", "cancelled"} and not calls
+
+
+def line_busy(db, conversation_id, now: datetime) -> bool:
+    last = db.scalars(select(AgentMessage).where(AgentMessage.conversation_id == conversation_id)
+                      .order_by(AgentMessage.sequence.desc()).limit(1)).first()
+    if last is None or _final(last):
+        return False
+    created = last.created_at if last.created_at.tzinfo else last.created_at.replace(tzinfo=UTC)
+    return now - created < BUSY_FOR
+
+
+def post_to_line(db, item: AgentInboxItem | None, now: datetime) -> bool:
+    """Append the brief as a turn of its own at the end of its bot's line: a row that says it is a task's
+    result (not the owner's words), then the brief with its citations, so the next turn there carries it
+    and can cite it again.  False (it stays pending) while the line is busy or the bot has no line."""
+    payload = dict(item.payload or {}) if item is not None else {}
+    if not payload.get("post_pending") or item.bot_id is None:
+        return False
+    bot = db.get(AgentBot, item.bot_id)
+    if bot is None or bot.owner_hash != item.owner_hash or bot.conversation_id is None:
+        return False
+    line = db.query(AgentConversation).filter(AgentConversation.id == bot.conversation_id).with_for_update().first()
+    if line is None or line.archived_at is not None or line_busy(db, line.id, now):
+        return False
+    sequence = db.scalar(select(func.coalesce(func.max(AgentMessage.sequence), 0))
+                         .where(AgentMessage.conversation_id == line.id))
+    turn = uuid.uuid4()
+    marker = {"task_id": str(item.task_id) if item.task_id else None, "task_name": payload.get("task_name"),
+              "kind": item.kind, "item_id": str(item.id),
+              "run_conversation_id": str(item.conversation_id) if item.conversation_id else None}
+    protocol = {"task_post": marker, "audit": {}}
+    if payload.get("post_citations"):
+        protocol["citations"] = payload["post_citations"]
+    db.add(AgentMessage(conversation_id=line.id, turn_id=turn, sequence=sequence + 1, role="user",
+                        content=payload.get("post_head") or POST_HEAD, status="complete"))
+    db.add(AgentMessage(conversation_id=line.id, turn_id=turn, sequence=sequence + 2, role="assistant",
+                        content=item.body, tool_calls=protocol, status="complete"))
+    line.updated_at = func.now()
+    for key in ("post_pending", "post_head", "post_citations"):
+        payload.pop(key, None)
+    payload["posted_turn_id"] = str(turn)
+    item.payload = payload
+    db.flush()
+    return True
+
+
+def flush_posts(owner_hash: str | None = None, bot_id=None, *, now: datetime | None = None) -> int:
+    """Post the briefs that waited for a busy line (the runner's tick, and the end of each owner turn)."""
+    now = now or datetime.now(UTC)
+    posted = 0
+    with SessionLocal() as db:
+        query = select(AgentInboxItem).where(AgentInboxItem.section == "brief", AgentInboxItem.bot_id.is_not(None),
+                                             AgentInboxItem.status != "dismissed")
+        if owner_hash:
+            query = query.where(AgentInboxItem.owner_hash == owner_hash)
+        if bot_id is not None:
+            query = query.where(AgentInboxItem.bot_id == _uuid(bot_id))
+        rows = db.scalars(query.order_by(AgentInboxItem.created_at).limit(500)).all()
+        for row in rows:
+            if (row.payload or {}).get("post_pending") and post_to_line(db, row, now):
+                posted += 1
+        db.commit()
+    return posted
+
+
+def last_post(db, task_id) -> AgentInboxItem | None:
+    """The newest brief of this task that went into its bot's line (what the next run compares with)."""
+    rows = db.scalars(select(AgentInboxItem).where(AgentInboxItem.task_id == task_id, AgentInboxItem.section == "brief")
+                      .order_by(AgentInboxItem.created_at.desc()).limit(20)).all()
+    return next((row for row in rows if (row.payload or {}).get("posted_turn_id") or (row.payload or {}).get("post_pending")), None)
+
+
+def bot_counts(owner_hash: str) -> dict:
+    """{bot_id: {"unread": briefs not yet seen, "pending": 待你确认 entries}} for the sidebar."""
+    counts: dict = {}
+    with SessionLocal() as db:
+        rows = db.execute(select(AgentInboxItem.bot_id, AgentInboxItem.section, func.count())
+                          .where(AgentInboxItem.owner_hash == owner_hash, AgentInboxItem.status == "unread")
+                          .group_by(AgentInboxItem.bot_id, AgentInboxItem.section)).all()
+    for bot_id, section, count in rows:
+        entry = counts.setdefault(str(bot_id) if bot_id else None, {"unread": 0, "pending": 0})
+        entry["unread" if section == "brief" else "pending"] += int(count)
+    return counts
+
+
+def mark_bot_read(owner_hash: str, bot_id) -> int:
+    """Opening a bot's line marks its posted briefs read.  待你确认 entries stay until they are handled."""
+    identity = _uuid(bot_id)
+    if identity is None:
+        return 0
+    with SessionLocal() as db:
+        changed = db.query(AgentInboxItem).filter(AgentInboxItem.owner_hash == owner_hash, AgentInboxItem.bot_id == identity,
+                                                  AgentInboxItem.section == "brief", AgentInboxItem.status == "unread").update(
+            {"status": "read"}, synchronize_session=False)
+        db.commit()
+        return int(changed)
+
+
+def list_inbox(owner_hash: str, *, section: str | None = None, limit: int = 50, bot_id=None) -> list[dict]:
     with SessionLocal() as db:
         query = select(AgentInboxItem).where(AgentInboxItem.owner_hash == owner_hash, AgentInboxItem.status != "dismissed")
         if section:
             query = query.where(AgentInboxItem.section == section)
+        if bot_id is not None:
+            query = query.where(AgentInboxItem.bot_id == _uuid(bot_id))
         rows = db.scalars(query.order_by(AgentInboxItem.created_at.desc()).limit(max(1, min(200, limit)))).all()
         return [serialize_item(row) for row in rows]
 

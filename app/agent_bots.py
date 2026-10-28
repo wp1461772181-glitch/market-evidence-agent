@@ -10,6 +10,8 @@
 * ``model`` names a catalog entry (agent_model_catalog); the bot never holds a key.
 * Deleting a bot archives its conversation (a logical delete) and its own memory items, and touches no other
   bot.  Memory is in two layers (agent_profile): global, and each bot's own; 「助理」 reads every bot's.
+* Routine tasks belong to a bot (agent_tasks); deleting the bot deletes its tasks.  The list carries each
+  bot's unread posts and 待你确认 count for the sidebar.
 """
 from __future__ import annotations
 
@@ -19,7 +21,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy import func
 
-from .agent_chat_models import AgentBot, AgentConversation, AgentMessage, AgentProfileItem
+from .agent_chat_models import AgentBot, AgentConversation, AgentInboxItem, AgentMessage, AgentProfileItem, AgentTask
 from .database import SessionLocal
 
 DEFAULT_NAME = "助理"
@@ -85,7 +87,7 @@ def _stamp(value):
     return value.isoformat() if value else None
 
 
-def serialize(bot: AgentBot, last: dict | None = None) -> dict:
+def serialize(bot: AgentBot, last: dict | None = None, counts: dict | None = None) -> dict:
     return {"id": str(bot.id), "name": bot.name, "title": bot.title, "description": bot.description,
             "focus": bot.focus or {"companies": [], "theme": None}, "tool_scope": bot.tool_scope, "model": bot.model,
             "avatar": bot.avatar, "group": bot.group_name, "pinned": bot.pinned, "hidden": bot.hidden,
@@ -93,6 +95,7 @@ def serialize(bot: AgentBot, last: dict | None = None) -> dict:
             "conversation_id": str(bot.conversation_id) if bot.conversation_id else None,
             "daily_notify_cap": bot.daily_notify_cap, "default_company": default_company(bot),
             "last_message": (last or {}).get("text"), "last_at": (last or {}).get("at"),
+            "unread": (counts or {}).get("unread", 0), "pending": (counts or {}).get("pending", 0),
             "created_at": _stamp(bot.created_at), "updated_at": _stamp(bot.updated_at)}
 
 
@@ -227,6 +230,10 @@ def ensure_default_bot(owner_hash: str) -> AgentBot:
         db.query(AgentConversation).filter(AgentConversation.owner_hash == owner_hash,
                                            AgentConversation.bot_id.is_(None)).update(
             {"bot_id": bot.id}, synchronize_session=False)
+        # Tasks and inbox entries from before bots are the default bot's (stage C).
+        for model in (AgentTask, AgentInboxItem):
+            db.query(model).filter(model.owner_hash == owner_hash, model.bot_id.is_(None)).update(
+                {"bot_id": bot.id}, synchronize_session=False)
         db.commit()
         db.refresh(bot)
         db.expunge(bot)
@@ -257,7 +264,9 @@ def list_bots(owner_hash: str, *, include_hidden: bool = True) -> list[dict]:
             bots = [bot for bot in bots if not bot.hidden]
         bots.sort(key=lambda b: (not b.is_default, not b.pinned, b.group_name or "", b.created_at or datetime.min.replace(tzinfo=UTC)))
         last = _last_messages(db, [bot.conversation_id for bot in bots])
-        return [serialize(bot, last.get(bot.conversation_id)) for bot in bots]
+    from .agent_tasks import bot_counts
+    counts = bot_counts(owner_hash)
+    return [serialize(bot, last.get(bot.conversation_id), counts.get(str(bot.id))) for bot in bots]
 
 
 def _owned(db, owner_hash: str, bot_id) -> AgentBot | None:
@@ -326,6 +335,16 @@ def delete_bot(owner_hash: str, bot_id) -> bool:
         db.query(AgentProfileItem).filter(AgentProfileItem.owner_hash == owner_hash, AgentProfileItem.bot_id == bot.id,
                                           AgentProfileItem.status == "active").update(
             {"status": "archived"}, synchronize_session=False)
+        # Its routine tasks go with it; its briefs stop counting as unread and its suggestions are dismissed
+        # (their run conversations are archived with the bot's line).
+        db.query(AgentTask).filter(AgentTask.owner_hash == owner_hash, AgentTask.bot_id == bot.id).delete(
+            synchronize_session=False)
+        db.query(AgentInboxItem).filter(AgentInboxItem.owner_hash == owner_hash, AgentInboxItem.bot_id == bot.id,
+                                        AgentInboxItem.section == "brief", AgentInboxItem.status == "unread").update(
+            {"status": "read"}, synchronize_session=False)
+        db.query(AgentInboxItem).filter(AgentInboxItem.owner_hash == owner_hash, AgentInboxItem.bot_id == bot.id,
+                                        AgentInboxItem.section == "confirm", AgentInboxItem.status != "dismissed").update(
+            {"status": "dismissed"}, synchronize_session=False)
         db.delete(bot)
         db.commit()
         return True

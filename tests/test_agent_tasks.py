@@ -139,12 +139,13 @@ def test_slots_missed_in_sleep_run_once_then_wait_for_the_next_slot(owner):
     woke = at(2026, 11, 2, 9, 30)
     row = _task(task["id"])
     assert tasks.is_due(row, woke) and tasks.missed_slots(row, woke) == 2
-    assert run(runner.run_due(now=woke, credential=OWNER)) == {task["id"]: "ok"}
+    # Nothing to report is a quiet run (stage C).
+    assert run(runner.run_due(now=woke, credential=OWNER)) == {task["id"]: "quiet"}
     after = _task(task["id"])
     assert after.next_run_at == at(2026, 11, 3, 8, 0) and after.last_run_at == woke
     # The next tick five minutes later runs nothing: the missed slots collapsed into that one run.
     assert run(runner.run_due(now=woke + timedelta(minutes=5), credential=OWNER)) == {}
-    assert run(runner.run_due(now=at(2026, 11, 3, 8, 1), credential=OWNER)) == {task["id"]: "ok"}
+    assert run(runner.run_due(now=at(2026, 11, 3, 8, 1), credential=OWNER)) == {task["id"]: "quiet"}
 
 
 def test_a_disabled_task_is_never_due(owner):
@@ -222,8 +223,8 @@ def test_unattended_write_goes_to_the_inbox_and_runs_only_after_the_card_is_pres
     assert len(confirm) == 1 and confirm[0]["kind"] == "action" and confirm[0]["status"] == "unread"
     assert "这是 Agent 的建议" in confirm[0]["title"]
     assert "operation" not in confirm[0]["payload"]  # the list shows what it is, not the stored operation
-    brief = tasks.list_inbox(OWNER_HASH, section="brief")
-    assert len(brief) == 1 and brief[0]["sources"] == [] and brief[0]["body"] == runner.NO_EVIDENCE_BODY
+    # Stage C: a run without cited evidence posts nothing (no brief, nothing in the bot's line).
+    assert tasks.list_inbox(OWNER_HASH, section="brief") == []
     assert _task(task["id"]).last_status == "no_evidence"
 
     # The owner asks for the card later: a fresh capability in the run's conversation, still nothing executed.
@@ -368,7 +369,7 @@ def test_task_and_inbox_api_are_owner_only(owner, client):
 def _stub_turn(monkeypatch, results):
     calls = []
 
-    async def fake(credential, question, model, *, token_budget, title):
+    async def fake(credential, question, model, *, token_budget, title, **_):
         calls.append({"budget": token_budget, "question": question, "key": model["api_key"]})
         return {"conversation_id": str(uuid.uuid4()), "actions": [], "citations": [], "audit": {}, "answer": "",
                 "status": "complete", "reason": None, **results[len(calls) - 1]}

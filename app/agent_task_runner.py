@@ -10,6 +10,14 @@ An **alerts** task calls no model: new SEC filings the monitor stored, news lead
 metadata only, labelled unverified) and price lines crossed by the latest close, each a 简报 entry with
 its source.  The SEC monitor and the market refresh call the same checks right after they run.
 
+Second edition, stage C: a task belongs to a bot.  A brief runs with that bot's settings (its work
+instruction, which also says when to notify the owner; its tool scope; its model from the catalog), its
+own and the global memory, and a short note of the line's latest summary and the task's previous
+conclusion, never the whole line.  The run is still a conversation of its own (it never shares a
+checkpoint with the owner's turn); its conclusion is then posted in the bot's line.  A run with nothing
+new (the model answers ``QUIET_ANSWER``) or no cited evidence posts nothing.  The default bot's tasks also
+see the other bots' posts since their last run, so a morning digest can string them together.
+
 Cost: a run stops gathering at the task's per-run token cap, never starts once today's usage reached the
 daily cap, and a failed run is retried once only when it is safe: the retry is unattended again (reads
 only) and a run that already queued a suggestion is not retried, so a write suggestion is never repeated.
@@ -41,6 +49,16 @@ def retryable(reason) -> bool:
     from .agent_workflow.direct import RETRYABLE_PROVIDER
     return reason in RETRYABLE_PROVIDER or reason in {"no_progress", "workflow_incomplete"}
 NO_EVIDENCE_BODY = "这次运行没有取得带来源的证据，所以没有生成简报。可以打开对话查看过程，或调整任务说明。"
+QUIET_ANSWER = "无新消息"
+QUIET_RULE = (f"如果和上次的结论相比没有值得告诉所有者的新东西，只回答「{QUIET_ANSWER}」四个字，不要写别的；"
+              "这样不会往对话里发任何消息。")
+NOTE_CHARS = 1500
+DIGEST_POSTS = 20
+
+
+def is_quiet(answer: str) -> bool:
+    text = "".join(str(answer or "").split()).strip("。.！!「」\"'")
+    return text == QUIET_ANSWER
 
 
 def owner_credential() -> str | None:
@@ -53,28 +71,46 @@ def owner_credential() -> str | None:
 
 # --- an unattended turn ---------------------------------------------------------------------------
 
-async def run_unattended_turn(credential: str, question: str, model: dict, *, token_budget: int, title: str) -> dict:
-    """One agent turn with nobody watching, stored as an ordinary conversation of the owner so that the
-    brief opens as a chat the owner can continue.  Returns answer, citations, audit, status, reason,
+def _attach_to_bot(conversation_id: str, bot_id) -> None:
+    from .agent_chat_models import AgentConversation
+    with SessionLocal() as db:
+        row = db.get(AgentConversation, uuid.UUID(conversation_id))
+        if row is not None:
+            row.bot_id = uuid.UUID(str(bot_id))
+            db.commit()
+
+
+async def run_unattended_turn(credential: str, question: str, model: dict, *, token_budget: int, title: str,
+                              bot: dict | None = None, notes: list[str] | None = None) -> dict:
+    """One agent turn with nobody watching, stored as an ordinary conversation of the owner (under ``bot``,
+    whose settings it runs with) so that the run opens as a chat the owner can continue.  ``notes`` go into
+    the system-written memory note (not evidence).  Returns answer, citations, audit, status, reason,
     conversation_id and the suggestions (``actions``) the model made."""
+    from . import agent_context as layers
     from .agent_chat_store import (append_message, create_conversation, finish_conversation, owner_hash,
                                    set_conversation_title)
     from .agent_chat_stream import SYSTEM, _profile_block
     from .agent_workflow.graph import stream_workflow
     owner = owner_hash(credential)
     cid = await create_conversation(credential)
+    if bot:
+        await asyncio.to_thread(_attach_to_bot, cid, bot["bot_id"])
     turn = str(uuid.uuid4())
     await append_message(cid, turn, "user", question)
     await set_conversation_title(credential, cid, title)
     actions: list[dict] = []
     answer, done, genuine = "", None, set()
     messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": question}]
+    note = layers.summary_message([{"content": text} for text in notes or []])
+    if note:
+        messages.append(note)
     try:
         async for event in stream_workflow(question=question, messages=messages, provider=model["provider"],
                                            model=model["model"], api_key=model["api_key"], base_url=model.get("base_url"),
                                            owner_hash=owner, conversation_id=cid, identity_credential=credential,
-                                           turn_id=turn, profile_block=await _profile_block(credential),
-                                           unattended=True, token_budget=token_budget, action_sink=actions):
+                                           turn_id=turn, profile_block=await _profile_block(credential, bot),
+                                           unattended=True, token_budget=token_budget, action_sink=actions,
+                                           bot=bot):
             kind = event.get("event")
             if kind == "assistant_tool_request":
                 await append_message(cid, turn, "assistant", "", tool_calls=event["protocol"])
@@ -129,12 +165,63 @@ def brief_question(task: AgentTask, symbols: list[str], now: datetime) -> str:
     if not symbols:
         scope = "研究队列（目前为空）"
     return (f"{task.instruction}\n\n（定时任务「{task.name}」，{local:%Y-%m-%d %H:%M} {task.timezone}；范围：{scope}。"
-            "回答里的事实请标注本轮来源编号。）")
+            "回答里的事实请标注本轮来源编号。" + QUIET_RULE + "）")
+
+
+def _clip(text: str, limit: int = NOTE_CHARS) -> str:
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
+def run_notes(db, task: AgentTask, settings: dict, now: datetime) -> list[str]:
+    """What a run knows of its bot's line besides its memory: the line's latest summary segment, this task's
+    previous conclusion (so it can tell what is new) and, for the default bot, the other bots' posts since
+    this task last ran.  All labelled as the system's notes, none of it evidence."""
+    from .agent_chat_models import AgentBot, AgentConversationSummary, AgentInboxItem
+    notes = []
+    line = uuid.UUID(settings["conversation_id"])
+    segment = db.scalars(select(AgentConversationSummary).where(AgentConversationSummary.conversation_id == line)
+                         .order_by(AgentConversationSummary.seq.desc()).limit(1)).first()
+    if segment is not None:
+        notes.append("这个 bot 对话线的最近摘要：" + _clip(segment.content))
+    previous = tasks.last_post(db, task.id)
+    if previous is not None:
+        notes.append(f"这个任务上次贴进对话的结论（{tasks._stamp(previous.created_at)}）：" + _clip(previous.body))
+    if settings.get("is_default"):
+        since = task.last_run_at or now - timedelta(days=1)
+        names = {b.id: b.name for b in db.scalars(select(AgentBot).where(AgentBot.owner_hash == task.owner_hash)).all()}
+        rows = db.scalars(select(AgentInboxItem).where(AgentInboxItem.owner_hash == task.owner_hash,
+                                                       AgentInboxItem.section == "brief", AgentInboxItem.created_at > since,
+                                                       AgentInboxItem.bot_id.is_not(None),
+                                                       AgentInboxItem.bot_id != uuid.UUID(settings["bot_id"]))
+                          .order_by(AgentInboxItem.created_at).limit(DIGEST_POSTS)).all()
+        lines = [f"- bot「{names.get(row.bot_id, '已删除的 bot')}」{row.title}：{_clip(row.body, 300)}" for row in rows]
+        if lines:
+            notes.append("各 bot 自上次运行以来贴出的新消息（线索，不是证据；要引用的数字请本轮重新取证）：\n" + "\n".join(lines))
+    return notes
+
+
+def task_model(owner: str, name: str | None) -> dict | None:
+    """The bot's model from the server catalog (its key in memory only), else the older background model."""
+    from . import agent_model_catalog as catalog
+    try:
+        return catalog.resolve(name)
+    except catalog.CatalogError:
+        return tasks.load_background_model(owner)
 
 
 # --- alerts ---------------------------------------------------------------------------------------
 
-def filing_alerts(db, owner: str, task_id, symbols: list[str], since: datetime) -> int:
+def _post(task: AgentTask | None, now: datetime, sources: list[dict]) -> dict:
+    """What add_item needs to post an alert in the task's bot line: its head row and its one source."""
+    if task is None or task.bot_id is None:
+        return {}
+    return {"bot_id": task.bot_id, "now": now,
+            "post": {"head": tasks.post_head(task.name, now, task.timezone), "citations": sources}}
+
+
+def filing_alerts(db, owner: str, task_id, symbols: list[str], since: datetime, *, task: AgentTask | None = None,
+                  now: datetime | None = None) -> int:
     """Filings the SEC monitor stored for the scope since ``since``; one entry per accession."""
     from .models import SecFilingInventory
     if not symbols:
@@ -149,11 +236,19 @@ def filing_alerts(db, owner: str, task_id, symbols: list[str], since: datetime) 
                   "source_type": "official_filing", "source_id": str(row.id), "published_at": row.filed_at.isoformat()}
         body = f"SEC EDGAR 收到 {row.symbol} 的 {row.form}，申报日 {row.filed_at.isoformat()} [1]。"
         added += tasks.add_item(owner, section="brief", kind="filing", title=title, body=body, sources=[source],
-                                task_id=task_id, dedupe_key=f"filing:{row.cik}:{row.accession_number}", db=db)
+                                task_id=task_id, dedupe_key=f"filing:{row.cik}:{row.accession_number}", db=db,
+                                payload=_alert_payload(task), **_post(task, now or datetime.now(UTC), [source]))
     return added
 
 
-def news_alerts(db, owner: str, task_id, symbols: list[str], *, sources=None, now: datetime | None = None) -> int:
+def _alert_payload(task: AgentTask | None) -> dict:
+    if task is None:
+        return {}
+    return {"task_name": task.name, **({"channel_pending": "telegram"} if task.channel == "telegram" else {})}
+
+
+def news_alerts(db, owner: str, task_id, symbols: list[str], *, sources=None, now: datetime | None = None,
+                task: AgentTask | None = None) -> int:
     """News leads for the scope.  Metadata only (headline, outlet, link): a lead, not verified evidence."""
     from .news_discovery import discover_news_candidates
     if not symbols:
@@ -170,7 +265,8 @@ def news_alerts(db, owner: str, task_id, symbols: list[str], *, sources=None, no
                   "outlet": candidate.outlet, "published_at": seen.isoformat() if seen else None}
         body = f"{candidate.outlet}：{candidate.headline} [1]（新闻线索，未核实，不是证据）"
         added += tasks.add_item(owner, section="brief", kind="news", title=f"{candidate.symbol} 新闻线索",
-                                body=body, sources=[source], task_id=task_id, dedupe_key=f"news:{candidate.id}", db=db)
+                                body=body, sources=[source], task_id=task_id, dedupe_key=f"news:{candidate.id}", db=db,
+                                payload=_alert_payload(task), **_post(task, now or datetime.now(UTC), [source]))
     return added
 
 
@@ -186,7 +282,8 @@ def _last_two_closes(db, symbol: str):
     return by_day[:2]
 
 
-def price_alerts(db, owner: str, task_id, lines: list[dict]) -> int:
+def price_alerts(db, owner: str, task_id, lines: list[dict], *, task: AgentTask | None = None,
+                 now: datetime | None = None) -> int:
     """A line is crossed when the latest close is on the other side of it from the close before."""
     added = 0
     for line in lines:
@@ -209,7 +306,8 @@ def price_alerts(db, owner: str, task_id, lines: list[dict]) -> int:
                     f"{arrow}你设的 {level:g} [1]。只是提醒，不是买卖建议。")
             added += tasks.add_item(owner, section="brief", kind="price", title=f"{latest.symbol} {arrow} {level:g}",
                                     body=body, sources=[source], task_id=task_id,
-                                    dedupe_key=f"price:{task_id}:{latest.symbol}:{side}:{level:g}:{latest.trading_date.isoformat()}", db=db)
+                                    dedupe_key=f"price:{task_id}:{latest.symbol}:{side}:{level:g}:{latest.trading_date.isoformat()}", db=db,
+                                    payload=_alert_payload(task), **_post(task, now or datetime.now(UTC), [source]))
     return added
 
 
@@ -219,16 +317,21 @@ def run_alerts(task_id, *, now: datetime, news_sources=None, only: set[str] | No
         task = db.get(AgentTask, task_id)
         if task is None:
             return {}
+        if task.bot_id is None:  # a task from before bots: the default bot's
+            from .agent_bots import ensure_default_bot
+            ensure_default_bot(task.owner_hash)
+            db.refresh(task)
         config = task.config or {}
         symbols = tasks.scope_symbols(db, task)
         since = max(task.last_run_at or now - ALERT_LOOKBACK, now - ALERT_LOOKBACK_MAX)
         counts = {}
         if config.get("filings", True) and (only is None or "filings" in only):
-            counts["filings"] = filing_alerts(db, task.owner_hash, task.id, symbols, since)
+            counts["filings"] = filing_alerts(db, task.owner_hash, task.id, symbols, since, task=task, now=now)
         if config.get("news", True) and (only is None or "news" in only):
-            counts["news"] = news_alerts(db, task.owner_hash, task.id, symbols, sources=news_sources, now=now)
+            counts["news"] = news_alerts(db, task.owner_hash, task.id, symbols, sources=news_sources, now=now, task=task)
         if only is None or "prices" in only:
-            counts["prices"] = price_alerts(db, task.owner_hash, task.id, list(config.get("price_lines") or []))
+            counts["prices"] = price_alerts(db, task.owner_hash, task.id, list(config.get("price_lines") or []),
+                                            task=task, now=now)
         db.commit()
         return counts
 
@@ -248,7 +351,7 @@ def run_alert_hooks(kind: str, *, now: datetime | None = None) -> None:
 
 # --- one runner tick ------------------------------------------------------------------------------
 
-def _finish(task_id, *, status: str, now: datetime, tokens: int = 0, conversation_id=None) -> None:
+def _finish(task_id, *, status: str, now: datetime, tokens: int = 0, conversation_id=None, posted: int = 0) -> None:
     with SessionLocal() as db:
         task = db.get(AgentTask, task_id)
         if task is None:
@@ -257,6 +360,7 @@ def _finish(task_id, *, status: str, now: datetime, tokens: int = 0, conversatio
         tasks.add_usage(task, now, tokens)
         if conversation_id:
             task.last_conversation_id = uuid.UUID(str(conversation_id))
+        tasks.log_run(db, task, status=status, tokens=tokens, posted=posted, conversation_id=conversation_id)
         db.commit()
 
 
@@ -276,7 +380,9 @@ def _claim(now: datetime) -> list[dict]:
 
 
 async def run_brief(task_id, credential: str, *, now: datetime, missed: int = 1) -> str:
+    from . import agent_bots as bots
     from .agent_chat_store import owner_hash
+    settings, notes = None, []
     with SessionLocal() as db:
         task = db.get(AgentTask, task_id)
         if task is None:
@@ -285,7 +391,15 @@ async def run_brief(task_id, credential: str, *, now: datetime, missed: int = 1)
             status = "skipped_no_owner"
         else:
             status = None
-        owner, name, channel = task.owner_hash, task.name, task.channel
+            if task.bot_id is None:
+                task.bot_id = bots.ensure_default_bot(task.owner_hash).id
+                db.commit()
+            settings = bots.turn_settings(task.owner_hash, task.bot_id)
+            if settings is None:
+                status = "skipped_no_bot"
+            else:
+                notes = run_notes(db, task, settings, now)
+        owner, name, channel, bot_id, timezone = task.owner_hash, task.name, task.channel, task.bot_id, task.timezone
         symbols = tasks.scope_symbols(db, task)
         question = brief_question(task, symbols, now)
         run_cap, daily_left = task.run_token_cap, task.daily_token_cap - tasks.tokens_used_today(task, now)
@@ -293,7 +407,7 @@ async def run_brief(task_id, credential: str, *, now: datetime, missed: int = 1)
     if status:
         _finish(task_id, status=status, now=now)
         return status
-    model = await asyncio.to_thread(tasks.load_background_model, owner)
+    model = await asyncio.to_thread(task_model, owner, settings.get("model"))
     if model is None:
         _finish(task_id, status="skipped_no_model", now=now)
         return "skipped_no_model"
@@ -306,7 +420,7 @@ async def run_brief(task_id, credential: str, *, now: datetime, missed: int = 1)
             break
         budget = max(1, min(run_cap, daily_left - used))
         result = await run_unattended_turn(credential, question, model, token_budget=budget,
-                                           title=f"{name} · {local:%m-%d %H:%M}")
+                                           title=f"{name} · {local:%m-%d %H:%M}", bot=settings, notes=notes)
         used += int((result.get("audit") or {}).get("token_usage") or 0)
         retry = (result["status"] == "failed" and retryable(result.get("reason")) and not result["actions"]
                  and not result.get("citations"))
@@ -320,23 +434,28 @@ async def run_brief(task_id, credential: str, *, now: datetime, missed: int = 1)
         title = str((action.get("display") or {}).get("title") or "Agent 建议的操作")
         tasks.add_item(owner, section="confirm", kind="action", title=title[:200],
                        body=str((action.get("display") or {}).get("alternative") or ""),
-                       payload={**payload, **action}, task_id=task_id, conversation_id=conversation)
-    sources = citation_sources(result.get("citations") or [])
+                       payload={**payload, **action}, task_id=task_id, conversation_id=conversation, bot_id=bot_id)
+    citations = result.get("citations") or []
+    sources = citation_sources(citations)
     if result["status"] == "failed":
         status = "failed"
+    elif is_quiet(result["answer"]):
+        status = "quiet"
     elif result.get("pending"):
         status = "needs_input"
     elif not sources:
         status = "no_evidence"
     else:
         status = "ok"
-    body = result["answer"][:BRIEF_MAX_CHARS] if status in {"ok", "needs_input"} else NO_EVIDENCE_BODY
-    if status == "failed":
-        body = "这次定时运行没有完成（" + str(result.get("reason") or "failed") + "），没有生成简报。"
-    tasks.add_item(owner, section="brief", kind="task_brief", title=f"{name} · {local:%Y-%m-%d %H:%M}", body=body,
-                   sources=sources if status == "ok" else [], payload=payload, task_id=task_id,
-                   conversation_id=conversation)
-    _finish(task_id, status=status, now=now, tokens=used, conversation_id=conversation)
+    # Only a conclusion is posted in the bot's line (and counts as unread); a quiet run, a run without
+    # cited evidence and a failed one leave the line alone, and the task's status says what happened.
+    posted = 0
+    if status in {"ok", "needs_input"}:
+        posted = int(tasks.add_item(owner, section="brief", kind="task_brief", title=f"{name} · {local:%Y-%m-%d %H:%M}",
+                                    body=result["answer"][:BRIEF_MAX_CHARS], sources=sources if status == "ok" else [],
+                                    payload=payload, task_id=task_id, conversation_id=conversation, bot_id=bot_id,
+                                    post={"head": tasks.post_head(name, now, timezone), "citations": citations}, now=now))
+    _finish(task_id, status=status, now=now, tokens=used, conversation_id=conversation, posted=posted)
     return status
 
 
@@ -350,20 +469,26 @@ def run_alerts_task(task_id, *, now: datetime, news_sources=None) -> str:
         _finish(task_id, status="skipped_no_scope", now=now)
         return "skipped_no_scope"
     try:
-        run_alerts(task_id, now=now, news_sources=news_sources)
+        counts = run_alerts(task_id, now=now, news_sources=news_sources)
     except Exception:
         log.warning("alerts task failed", exc_info=False)
         _finish(task_id, status="failed", now=now)
         return "failed"
-    _finish(task_id, status="ok", now=now)
-    return "ok"
+    # Nothing new is a quiet run: nothing was posted in the bot's line.
+    posted = sum(counts.values())
+    _finish(task_id, status="ok" if posted else "quiet", now=now, posted=posted)
+    return "ok" if posted else "quiet"
 
 
 async def run_due(*, now: datetime | None = None, credential: str | None = None, news_sources=None) -> dict:
-    """One tick: claim every due task and run it.  Returns {task_id: status}."""
+    """One tick: post what waited for a busy line, then claim every due task and run it.  Returns {task_id: status}."""
     now = now or datetime.now(UTC)
     credential = credential if credential is not None else owner_credential()
     outcome = {}
+    try:
+        await asyncio.to_thread(tasks.flush_posts, now=now)
+    except Exception:
+        log.warning("posting waiting briefs failed", exc_info=False)
     for item in _claim(now):
         with SessionLocal() as db:
             task = db.get(AgentTask, item["id"])

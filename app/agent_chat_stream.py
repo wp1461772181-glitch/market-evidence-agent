@@ -452,6 +452,11 @@ async def stream_chat(payload:StreamRequest,request:Request,x_chat_session:str|N
       await asyncio.to_thread(_record_low_confidence,payload.message,cid,turn,owner_hash(x_chat_session),event["reason"])
      await append_message(cid,turn,"assistant",text_out,tool_calls=protocol,status="failed" if event.get("status")=="failed" else "complete")
      await finish_conversation(cid,"active")
+     if bot:
+      # Briefs that waited while this turn was unfinished go into the line now, after it.
+      from .agent_tasks import flush_posts
+      try:await asyncio.to_thread(flush_posts,owner_hash(x_chat_session),bot["bot_id"])
+      except Exception:pass
      from .agent_context_summary import schedule_summary
      schedule_summary(cid,x_chat_session,provider=chosen.provider,model=chosen.model,
                       api_key=chosen.key(),base_url=chosen.base_url)
@@ -728,6 +733,8 @@ class TaskBody(BaseModel):
     enabled: bool | None = None
     run_token_cap: int | None = None
     daily_token_cap: int | None = None
+    # The bot the task belongs to (stage C); left out on create: the default bot.
+    bot_id: str | None = Field(default=None, max_length=36)
 
 
 class InboxStatusBody(BaseModel):
@@ -747,10 +754,20 @@ def _task_error(exc) -> HTTPException:
 
 
 @router.get("/tasks")
-async def list_tasks_endpoint(x_chat_session: str | None = Header(default=None)):
+async def list_tasks_endpoint(bot_id: str | None = Query(default=None, max_length=36),
+                              x_chat_session: str | None = Header(default=None)):
     from .agent_tasks import STATUS_LABELS, list_tasks
     credential = _owner_only(x_chat_session)
-    return {"tasks": await asyncio.to_thread(list_tasks, owner_hash(credential)), "status_labels": STATUS_LABELS}
+    return {"tasks": await asyncio.to_thread(list_tasks, owner_hash(credential), bot_id), "status_labels": STATUS_LABELS}
+
+
+@router.get("/tasks/runs")
+async def list_task_runs_endpoint(bot_id: str | None = Query(default=None, max_length=36), limit: int = 20,
+                                  x_chat_session: str | None = Header(default=None)):
+    """A bot's latest runs (every task of it), newest first: the bot page lists 20."""
+    from .agent_tasks import list_runs
+    credential = _owner_only(x_chat_session)
+    return {"runs": await asyncio.to_thread(list_runs, owner_hash(credential), bot_id, limit=limit)}
 
 
 @router.post("/tasks")
@@ -787,11 +804,14 @@ async def delete_task_endpoint(task_id: str, x_chat_session: str | None = Header
 
 @router.get("/inbox")
 async def list_inbox_endpoint(section: Literal["brief", "confirm"] | None = None, limit: int = 50,
+                              bot_id: str | None = Query(default=None, max_length=36),
                               x_chat_session: str | None = Header(default=None)):
-    """简报 (briefs and alerts, each with numbered sources) and 待你确认 (writes an unattended run suggested)."""
+    """简报 (briefs and alerts, each with numbered sources; also posted in their bot's line) and 待你确认
+    (writes an unattended run suggested), each with the bot it came from."""
     from .agent_tasks import list_inbox
     credential = _owner_only(x_chat_session)
-    return {"items": await asyncio.to_thread(list_inbox, owner_hash(credential), section=section, limit=limit)}
+    return {"items": await asyncio.to_thread(list_inbox, owner_hash(credential), section=section, limit=limit,
+                                             bot_id=bot_id)}
 
 
 @router.post("/inbox/{item_id}/status")
