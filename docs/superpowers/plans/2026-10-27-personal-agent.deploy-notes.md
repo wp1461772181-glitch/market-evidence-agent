@@ -277,3 +277,20 @@ Commit `e63d39e`. Deploy after Stage C.
    - Past the cap, nothing more is sent (the tool answers notify_daily_cap).
    - A message from another account gets nothing.
 5. Old 「手机」 conversation: it stays readable under 「助理」 as 往事; new messages go into the bot lines.
+
+## Stage E — Skills (second edition; the original phase 5)
+
+Commits `4d44afd` (backend), `3413deb` (frontend). Deploy after Stage D.
+
+1. Tests on the Mac: `.venv/bin/python -m pytest -q tests/test_agent_skills.py tests/test_agent_tool_catalog.py
+   tests/test_agent_tool_labels.py tests/test_agent_bot_tasks.py` (CodeBot: 11 new).
+2. `deploy.py --backend-only`. On startup:
+   - `agent_skills` is created and `agent_bots.skills` is added (`ADD COLUMN IF NOT EXISTS`);
+   - the three built-ins are seeded (财报速读, 同行对比, 新闻摘要). A changed built-in text gets a new version on the next start.
+3. **Live check (real model):**
+   - In a bot's line, type 「/财报速读 AAPL」. The answer follows the template and every figure has a [n].
+   - Ask something a skill fits without the slash. The model may call 使用技能 (use_skill).
+   - Say 「把刚才这个流程存成技能」. A draft appears on 技能 under 草稿 and is not usable until you press 保存为技能.
+   - Import a .md whose tools include `curl`. The preview refuses it (unknown_tool).
+   - A skill that allows `add_to_research_queue` still shows a confirmation card.
+4. The skills page, the 「/」 menu and the bot's 常用技能 are frontend, so they go live only with a push (needs the owner's OK).
