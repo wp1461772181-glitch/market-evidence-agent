@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="14 14 176 176" role="img" aria-label="FinBot">
+  <title>FinBot · 3/4 立体侧颜</title>
+              <ellipse cx="98" cy="184" rx="46" ry="6" fill="#000000" opacity="0.22" />
+              <path d="M 168 30 Q 168 40 178 40 Q 168 40 168 50 Q 168 40 158 40 Q 168 40 168 30 Z" fill="#fbbf24" />
+
+              <!-- Head with 3/4 Shifted Visor -->
+              <g transform="rotate(-5 96 82)">
+                <rect x="30" y="22" width="130" height="114" rx="55" fill="#18181b" stroke="#27272a" stroke-width="3" />
+                <!-- Visor Shifted Right to Create 3/4 3D Turn -->
+                <rect x="52" y="36" width="102" height="78" rx="36" fill="#09090b" />
+
+                <!-- Near Eye (Left) + Monocle -->
+                <g transform="translate(86, 78)">
+                  <rect x="-9.5" y="-14" width="19" height="28" rx="9.5" fill="#fbbf24" />
+                  <circle cx="2" cy="3" r="3" fill="#ffffff" />
+                  <circle cx="0" cy="0" r="20" fill="#fbbf24" fill-opacity="0.07" stroke="#fbbf24" stroke-width="2.5" />
+                </g>
+
+                <!-- Far Eye (Right, Foreshortened in 3/4 View) -->
+                <g transform="translate(130, 77)">
+                  <rect x="-6.5" y="-12" width="13" height="24" rx="6.5" fill="#fbbf24" />
+                  <circle cx="1.5" cy="3" r="2.2" fill="#ffffff" />
+                </g>
+              </g>
+
+              <!-- Angled Newspaper in Foreground -->
+              <g transform="translate(6, 2) rotate(4 100 140)">
+                <path d="M 38 108 Q 70 104 102 116 L 102 170 Q 70 158 42 158 C 39 158 37 155 37 152 Z"
+                      fill="#f8fafc" stroke="#cbd5e1" stroke-width="2" stroke-linejoin="round" />
+                <path d="M 162 106 Q 132 102 102 116 L 102 170 Q 132 158 158 156 C 161 156 163 153 163 150 Z"
+                      fill="#e2e8f0" stroke="#cbd5e1" stroke-width="2" stroke-linejoin="round" />
+                <line x1="102" y1="116" x2="102" y2="170" stroke="#94a3b8" stroke-width="2" stroke-linecap="round" />
+                <polyline points="48,142 60,134 70,138 88,120"
+                          fill="none" stroke="#f59e0b" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round" />
+                <circle cx="88" cy="120" r="3" fill="#f59e0b" />
+                <line x1="114" y1="126" x2="148" y2="120" stroke="#0f172a" stroke-width="3.2" stroke-linecap="round" />
+                <line x1="114" y1="136" x2="148" y2="130" stroke="#64748b" stroke-width="2.5" stroke-linecap="round" />
+                <rect x="29" y="120" width="15" height="22" rx="7.5" transform="rotate(-12 36 131)"
+                      fill="#18181b" stroke="#fbbf24" stroke-width="2.4" />
+                <rect x="155" y="120" width="15" height="22" rx="7.5" transform="rotate(12 162 131)"
+                      fill="#18181b" stroke="#fbbf24" stroke-width="2.4" />
+              </g>
+</svg>

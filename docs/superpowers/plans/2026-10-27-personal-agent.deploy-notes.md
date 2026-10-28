@@ -492,3 +492,19 @@ Frontend only, no migration, no backend restart.  Hard-refresh the browser (favi
 
 Mac check: `cd frontend && npm run test:i18n && npm run build`, then open 设置 → 模型 → ＋ 添加模型 and type into
 the fields; check the header logo, favicon and a bot avatar show the black `$` face.
+
+## FinBot logo — 三姿势随机过渡 + 页签偷瞄笑 + 16 种 bot 头像
+
+Frontend only, no migration, no backend restart.  Hard-refresh (favicon may need a tab reopen).
+
+1. **Brand.**  `logo.svg` (歪头大小眼), `logo-peek.svg` (捧报偷瞄笑), `logo-3d.svg` (3/4 侧颜) are copied from the
+   3-poses design.  The sidebar `BrandLogo` crossfades (600 ms) to a random *other* pose every 4–8 s; reduced
+   motion keeps 歪头 still.  `favicon.svg` and `apple-touch-icon.png` are always 偷瞄笑 (no shadow/sparkle);
+   `logo-lockup.svg` is 歪头 + Fin**Bot** (gold).
+2. **Bot avatars.**  `bot:<style>-<mood>`: kline / pure / bull / square × idle 绿 / focus 蓝 / bull 黄 / mono 白
+   = 16 faces, 4×4 grid in 新建 bot and 档案 → 头像.  New bots default to `bot:kline-idle`.  `bot:` (not
+   `finbot:`) keeps every value within the server's 16-character avatar cap, so the backend is unchanged.
+   Old `orb:<colour>` / `orb:finbot` / `★` render as the K线 face in the nearest eye colour; no DB rewrite.
+
+Mac check: `cd frontend && npm run test:i18n && npm run build`; watch the sidebar logo change pose, check the tab
+icon is 偷瞄笑, and pick a few of the 16 faces in a bot's 档案.

@@ -514,7 +514,10 @@ body{background:var(--canvas);color:var(--ink)}
 
 .workspace-brand em{color:#80cfc2;font-style:normal}
 
-.brand-logo{display:block;flex:0 0 auto;width:32px;height:32px}
+.brand-logo{display:block;flex:0 0 auto;width:32px;height:32px;position:relative}
+.brand-logo img{position:absolute;inset:0;width:100%;height:100%;opacity:0;transition:opacity .6s ease-in-out}
+.brand-logo img.is-on{opacity:1}
+@media (prefers-reduced-motion:reduce){.brand-logo img{transition:none}}
 
 .rail-context{margin:38px 8px 22px;padding:14px 0;border-top:1px solid rgba(255,255,255,.12);border-bottom:1px solid rgba(255,255,255,.12);display:grid;gap:4px}
 

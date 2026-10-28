@@ -13,8 +13,8 @@ import { toggleUsual, usableSkills } from "./skill-items.mjs";
 import { toolLabel } from "./agent-tool-labels.mjs";
 import { TaskManager } from "./BotRoutines";
 import { CATALOG } from "./model-profiles.mjs";
-import { BotOrb } from "./BotOrb";
-import { BRAND, ORB_COLORS, orbAvatar, parseAvatar } from "./orb.mjs";
+import { BotFace, BotOrb } from "./BotOrb";
+import { BOT_MOODS, BOT_STYLES, botAvatar, DEFAULT_AVATAR, parseAvatar } from "./orb.mjs";
 import { WorkspaceCard } from "./WorkspaceCards";
 import { CARDS, addCard, botSymbol, loadLayout, moveCard, pinCardSymbol, removeCard, resetLayout, resizeCard, saveLayout, storeBotSymbol, symbolChoices, type CardId, type LayoutItem } from "./workspace-cards.mjs";
 
@@ -48,25 +48,29 @@ function useBotOptions() {
 
 function BotAvatar({ bot, track = false }: { bot: Pick<Bot, "avatar" | "name">; track?: boolean }) { return <BotOrb avatar={bot.avatar} name={bot.name} track={track} />; }
 
-const ORB_LABELS: Record<string, string> = { finbot: "FinBot", black: "黑", brown: "棕", red: "红", orange: "橙", yellow: "黄", green: "绿", teal: "青", blue: "蓝", purple: "紫", pink: "粉", gray: "灰" };
+const STYLE_LABELS: Record<string, string> = { kline: "K线胶囊", pure: "纯粹圆润", bull: "极简牛耳", square: "方糖终端" };
+const MOOD_LABELS: Record<string, string> = { idle: "翡翠绿", focus: "研报蓝", bull: "金牛黄", mono: "极客白" };
 
-/** The orb colour swatches: FinBot's own first, then the eleven colours. */
+/** The 16 faces: one row per silhouette, one column per eye colour. */
 function OrbSwatches({ value, onPick, disabled }: { value: string; onPick: (avatar: string) => void; disabled?: boolean }) {
   const { t } = useLocale();
   const current = parseAvatar(value);
-  return <fieldset className="orb-swatches" disabled={disabled}><legend>{t("圆球颜色")}</legend>
-    {[BRAND, ...ORB_COLORS].map(color => <button key={color} type="button" className="orb-swatch" style={{ ["--sw" as string]: `var(--orb-${color})` }}
-      aria-pressed={current.kind === "orb" && current.color === color} aria-label={t(ORB_LABELS[color])} title={t(ORB_LABELS[color])} onClick={() => onPick(orbAvatar(color))} />)}
+  return <fieldset className="orb-swatches" disabled={disabled}><legend>{t("头像样式")}</legend>
+    {BOT_STYLES.flatMap(style => BOT_MOODS.map(mood => {
+      const label = `${t(STYLE_LABELS[style])} · ${t(MOOD_LABELS[mood])}`;
+      return <button key={`${style}-${mood}`} type="button" className="orb-swatch" aria-pressed={current.kind === "bot" && current.style === style && current.mood === mood}
+        aria-label={label} title={label} onClick={() => onPick(botAvatar(style, mood))}><BotFace style={style} mood={mood} /></button>;
+    }))}
   </fieldset>;
 }
 
-/** 档案's avatar: an orb colour, or a custom emoji / character as before. */
+/** 档案's avatar: one of the 16 faces, or a custom emoji / character as before. */
 function AvatarPicker({ value, name, onChange, disabled }: { value: string; name: string; onChange: (avatar: string) => void; disabled: boolean }) {
   const { t } = useLocale();
-  const isOrb = parseAvatar(value, name).kind === "orb";
+  const isOrb = parseAvatar(value, name).kind === "bot";
   return <div className="avatar-picker"><span>{t("头像")}</span>
     <div className="avatar-picker-modes">
-      <label className="bot-check"><input type="radio" checked={isOrb} disabled={disabled} onChange={() => onChange(orbAvatar(BRAND))} />{t("圆球")}</label>
+      <label className="bot-check"><input type="radio" checked={isOrb} disabled={disabled} onChange={() => onChange(DEFAULT_AVATAR)} />{t("机器人")}</label>
       <label className="bot-check"><input type="radio" checked={!isOrb} disabled={disabled} onChange={() => onChange("")} />{t("自定义 emoji")}</label>
       <BotOrb avatar={value} name={name || "·"} size={32} track />
     </div>
@@ -153,8 +157,8 @@ export function NewBotDialog({ onClose, onCreated }: { onClose: () => void; onCr
   const { t } = useLocale();
   const [templates, setTemplates] = useState<BotTemplate[]>([]), [tools, setTools] = useState<BotTool[]>([]);
   const [name, setName] = useState(""), [picked, setPicked] = useState<BotTemplate | null>(null);
-  // A new bot is a FinBot orb unless another colour is picked.
-  const [avatar, setAvatar] = useState(orbAvatar(BRAND));
+  // A new bot is the default face unless another one is picked.
+  const [avatar, setAvatar] = useState(DEFAULT_AVATAR);
   const [busy, setBusy] = useState(false), [status, setStatus] = useState("");
   const dialog = useRef<HTMLElement>(null), nameBox = useRef<HTMLInputElement>(null);
   useEffect(() => { nameBox.current?.focus(); const key = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); }; document.addEventListener("keydown", key); return () => document.removeEventListener("keydown", key); }, [onClose]);
@@ -176,7 +180,7 @@ export function NewBotDialog({ onClose, onCreated }: { onClose: () => void; onCr
       <button className="profile-close" onClick={onClose} aria-label={t("关闭")} disabled={busy}>×</button>
       <h2 id="new-bot-title">{t("新建 bot")}</h2>
       <form className="bot-create" onSubmit={e => void save(e)}>
-        <div className="bot-orb-hero"><BotOrb avatar={avatar} name={name || "FinBot"} size={96} track /><small>{avatar === orbAvatar(BRAND) ? "FinBot" : name || t("新 bot")}</small></div>
+        <div className="bot-orb-hero"><BotOrb avatar={avatar} name={name || "FinBot"} size={96} track /><small>{avatar === DEFAULT_AVATAR ? "FinBot" : name || t("新 bot")}</small></div>
         <OrbSwatches value={avatar} onPick={setAvatar} disabled={busy} />
         <label>{t("名字")}<input ref={nameBox} value={name} maxLength={40} disabled={busy} onChange={e => setName(e.target.value)} placeholder={picked?.name || t("例如：读财报")} /></label>
         {templates.length > 0 && <fieldset className="bot-template-chips" disabled={busy}><legend>{t("模板（可选）")}</legend>

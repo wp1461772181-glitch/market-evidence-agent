@@ -1,8 +1,13 @@
-export declare const ORB_COLORS: string[];
-export declare const BRAND: "finbot";
-export type ParsedAvatar = { kind: "orb"; color: string; brand: boolean } | { kind: "text"; text: string };
+export type BotStyle = "kline" | "pure" | "bull" | "square";
+export type BotMood = "idle" | "focus" | "bull" | "mono";
+export declare const BOT_STYLES: BotStyle[];
+export declare const BOT_MOODS: BotMood[];
+export declare const MOOD_COLORS: Record<BotMood, string>;
+export declare const DEFAULT_AVATAR: string;
+export type ParsedAvatar = { kind: "bot"; style: BotStyle; mood: BotMood } | { kind: "text"; text: string };
 export declare function parseAvatar(avatar: string | null | undefined, name?: string): ParsedAvatar;
-export declare function orbAvatar(color: string): string;
+export declare function botAvatar(style: string, mood: string): string;
+export declare function nextPose(current: number, count: number, random?: () => number): number;
 export type Point = { x: number; y: number };
 export declare function gazeOffset(center: Point, pointer: Point | null, options?: { max?: number; k?: number }): Point;
 export type GazeHub = { register(element: Element, apply: (offset: Point) => void): () => void; size(): number };

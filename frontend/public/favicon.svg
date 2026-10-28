@@ -1,7 +1,43 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="FinBot">
-  <circle cx="32" cy="32" r="30" fill="#1c1c1c"/>
-  <g fill="#fff" font-family="'Helvetica Neue',Arial,sans-serif" font-size="23" font-weight="700" text-anchor="middle">
-    <text x="22" y="37">$</text>
-    <text x="42" y="37">$</text>
-  </g>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="22 18 156 156" role="img" aria-label="FinBot">
+
+              <!-- Head Tucked Low Behind Paper -->
+              <g transform="rotate(-4 100 88)">
+                <rect x="34" y="26" width="132" height="110" rx="54" fill="#18181b" stroke="#27272a" stroke-width="3" />
+                <rect x="46" y="40" width="108" height="74" rx="36" fill="#09090b" />
+
+                <!-- Left Eye: Happy Excited Arc (^) -->
+                <g transform="translate(75, 76)">
+                  <path d="M -9 4 Q 0 -10 9 4" fill="none" stroke="#fbbf24" stroke-width="5" stroke-linecap="round" />
+                </g>
+
+                <!-- Right Eye: Big Curious Monocle Eye Peeking Over Paper -->
+                <g transform="translate(123, 75)">
+                  <rect x="-9.5" y="-13" width="19" height="26" rx="9.5" fill="#fbbf24" />
+                  <circle cx="-2.5" cy="-2" r="3" fill="#ffffff" />
+                  <circle cx="0" cy="0" r="20" fill="#fbbf24" fill-opacity="0.08" stroke="#fbbf24" stroke-width="2.6" />
+                </g>
+              </g>
+
+              <!-- High Held Curved White Newspaper (Overlapping Chin for Cute Peek Effect) -->
+              <g transform="translate(0, -6)">
+                <path d="M 36 104 Q 68 100 100 114 L 100 174 Q 68 162 40 162 C 37 162 35 159 35 156 Z"
+                      fill="#f8fafc" stroke="#cbd5e1" stroke-width="2" stroke-linejoin="round" />
+                <path d="M 164 104 Q 132 100 100 114 L 100 174 Q 132 162 160 162 C 163 162 165 159 165 156 Z"
+                      fill="#e2e8f0" stroke="#cbd5e1" stroke-width="2" stroke-linejoin="round" />
+                <line x1="100" y1="114" x2="100" y2="174" stroke="#94a3b8" stroke-width="2" stroke-linecap="round" />
+
+                <polyline points="46,144 58,134 68,139 86,120"
+                          fill="none" stroke="#f59e0b" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round" />
+                <circle cx="86" cy="120" r="3.2" fill="#f59e0b" />
+                <line x1="46" y1="153" x2="84" y2="155" stroke="#94a3b8" stroke-width="2.6" stroke-linecap="round" />
+
+                <line x1="114" y1="126" x2="150" y2="120" stroke="#0f172a" stroke-width="3.2" stroke-linecap="round" />
+                <line x1="114" y1="137" x2="150" y2="131" stroke="#64748b" stroke-width="2.5" stroke-linecap="round" />
+                <line x1="114" y1="147" x2="138" y2="143" stroke="#94a3b8" stroke-width="2.5" stroke-linecap="round" />
+
+                <rect x="27" y="114" width="15" height="22" rx="7.5" transform="rotate(-10 34 125)"
+                      fill="#18181b" stroke="#fbbf24" stroke-width="2.4" />
+                <rect x="158" y="114" width="15" height="22" rx="7.5" transform="rotate(10 165 125)"
+                      fill="#18181b" stroke="#fbbf24" stroke-width="2.4" />
+              </g>
 </svg>
