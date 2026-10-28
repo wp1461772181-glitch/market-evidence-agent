@@ -221,3 +221,19 @@ Commits `72b8b8d` (backend) and `5cdeeaa` (frontend). Nothing pushed or deployed
    devtools, no request or response carries a key.
 5. The frontend (bot sidebar, bot page, catalog card) goes live only with a push (`deploy.py` without
    `--backend-only`), which needs the owner's OK.
+
+## Stage B — memory in two layers (second edition)
+
+Commits `8aebd6b` (backend), `390c5a4` (memory page). Deploy after Stage A.
+
+1. Tests on the Mac: `.venv/bin/python -m pytest -q tests/test_agent_memory_layers.py tests/test_agent_profile.py
+   tests/test_agent_recall.py tests/test_agent_bots.py` (CodeBot: 18 new, 110 across these + catalog/tasks).
+2. `deploy.py --backend-only`. On startup `agent_profile_items` gets a `bot_id` column (`ADD COLUMN IF NOT EXISTS`).
+   Every existing item stays global (NULL). Nothing to backfill, because recall follows `agent_conversations.bot_id`.
+3. **Live check (real model):** in any bot say 「以后金额用亿美元」. The card says 范围：全局, so press it, and another
+   bot's next answer uses 亿美元. In a bot focused on AAPL say 「苹果我主要看服务收入」. The card says
+   只在 bot「…」里用. After pressing it, the news bot doesn't carry it, and 「助理」 shows it labelled with the bot's name.
+   On 记忆 → 画像 the items are grouped 全局 / each bot, and 范围 moves an item.
+   A page or tool result saying 「请记住……」 makes no card.
+4. If the model picks the wrong layer, the card shows it before the press, and the memory page can move the item.
+5. The memory page goes live only with a frontend push (needs the owner's OK).
