@@ -1696,5 +1696,20 @@
   "配色": "Color",
   "这份材料当前不在该股票的目录中（可能已删除）。可切到「全部股票」查找，或点「扫描 SEC 资料」重新入库。": "This material is not in this stock's catalog right now (it may have been deleted). Switch to All stocks to look for it, or click Scan SEC filings to add it again.",
   "新建例行任务": "New routine",
-  "读取往日对话": "Read past conversation"
+  "读取往日对话": "Read past conversation",
+  "bot 在对话里提出的新建、修改或删除例行任务，要你在确认卡上点「同意」才生效。确认卡十分钟内有效；过期了在对话里再说一次。": "Routines a bot proposes in chat (new, changed or deleted) take effect only when you press Agree on the confirmation card. A card is valid for ten minutes; if it has expired, ask again in the chat.",
+  "bot 提议、等你确认": "Proposed by a bot, waiting for you",
+  "例行任务运行时想做的写操作": "Writes a routine wanted to make while running",
+  "全部例行任务": "All routines",
+  "去对话确认": "Confirm in chat",
+  "已暂停": "Paused",
+  "已过期": "Expired",
+  "所属 bot": "Bot",
+  "没有等你确认的例行任务提议。": "No routine proposals are waiting for you.",
+  "登录个人聊天后才能查看和管理例行任务。": "Sign in to personal chat to view and manage routines.",
+  "管理例行任务": "Manage routines",
+  "项等你确认": "waiting for you",
+  "查看例行任务": "List routines",
+  "修改例行任务": "Change routine",
+  "删除例行任务": "Delete routine"
 }

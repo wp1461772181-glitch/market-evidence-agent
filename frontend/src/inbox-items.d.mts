@@ -1,4 +1,5 @@
-import type { AgentTask, InboxItem, InboxSource, PriceLine } from "./api";
+import type { AgentTask, InboxItem, InboxSource, PriceLine, TaskProposal } from "./api";
+export function waitingCount(botId: string, proposals: Pick<TaskProposal, "bot_id" | "expired">[], confirms: Pick<InboxItem, "status">[]): number;
 export function inboxKindLabel(kind: string): string;
 export function scheduleLabel(task: Pick<AgentTask, "schedule_kind" | "schedule_time">): string;
 export function inboxOrder(items: InboxItem[]): InboxItem[];

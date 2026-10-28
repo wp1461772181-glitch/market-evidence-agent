@@ -1,5 +1,5 @@
 import { AgentAdminPage, AgentChatPanel, AgentChatProviderRoot, useOpenConversation, useSelectBot } from "./AgentChatPanel";
-import { BotRailList, BotSide, NewBotDialog, useBots } from "./BotPages";
+import { BotRailList, BotSide, NewBotDialog, RoutineIcon, useBots } from "./BotPages";
 import { BrandLogo } from "./BotOrb";
 import { botFromHash } from "./bot-items.mjs";
 import { Tx, formatDateTime as formatLocalizedDateTime, getLocalePreference, translatePhrase, useLocale } from "./i18n";
@@ -16,7 +16,7 @@ import { getChatMode, setChatMode, personalChatLogin, getResearchQueue, putResea
 import { registerWatchlistAdder, setWatchlistSnapshot } from "./watchlist-bridge.mjs";
 import { chatSessionKey } from "./chat-session.mjs";
 import { completePersonalLogin } from "./chat-mode-switch.mjs";
-import { BriefsPage, MemoryPage, MePage, SkillsPage } from "./PersonalPages";
+import { MemoryPage, MePage, RoutinesPage, SkillsPage } from "./PersonalPages";
 import { formatDelta } from "./delta.mjs";
 import { conversationFromHash } from "./memory-items.mjs";
 import { applyTheme, saveTheme, storedTheme, type ThemeChoice } from "./theme.mjs";
@@ -26,20 +26,21 @@ const DEFAULT_SYMBOLS = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"
 const WATCHLIST_KEY = "market-evidence-agent:watchlist:v1";
 type SupportedSymbol = string;
 type FilingState = { kind: "idle" } | { kind: "loading" } | { kind: "ready"; data: FilingInventory } | { kind: "error"; message: string };
-type WorkspaceSection = "overview" | "forecast" | "evidence" | "materials" | "revisions" | "evaluation" | "replay" | "agent" | "bot" | "admin" | "briefs" | "skills" | "memory" | "me";
-type ResearchSection = Exclude<WorkspaceSection, "agent" | "bot" | "admin" | "briefs" | "skills" | "memory" | "me">;
+type WorkspaceSection = "overview" | "forecast" | "evidence" | "materials" | "revisions" | "evaluation" | "replay" | "agent" | "bot" | "admin" | "routines" | "skills" | "memory" | "me";
+type ResearchSection = Exclude<WorkspaceSection, "agent" | "bot" | "admin" | "routines" | "skills" | "memory" | "me">;
 // The personal-agent navigation groups the older sections: 公司 holds 总览; 预测 (its own sidebar entry since
 // the bot-first sidebar buried it two clicks deep under 公司) holds 预测工作台, 修订, 到期评估 and 历史回放;
 // 资料库 holds 材料库 and 证据.  The older hashes stay the addresses, so links inside
 // the older pages (#materials, #evidence/<id>/…) and the agent's open_page keep working unchanged.
-type NavGroup = "chat" | "briefs" | "company" | "forecast" | "library" | "skills" | "memory" | "settings";
+type NavGroup = "chat" | "routines" | "company" | "forecast" | "library" | "skills" | "memory" | "settings";
 const FORECAST_TABS = ["forecast", "revisions", "evaluation", "replay"] as const;
 const LIBRARY_TABS = ["materials", "evidence"] as const;
-const HASH_ALIASES: Record<string, WorkspaceSection> = { chat: "agent", company: "overview", library: "materials", settings: "admin" };
+// #briefs was the 待你确认 page; it is the 例行任务 page now.
+const HASH_ALIASES: Record<string, WorkspaceSection> = { chat: "agent", company: "overview", library: "materials", settings: "admin", briefs: "routines" };
 function navGroup(section: WorkspaceSection): NavGroup {
   if (section === "agent" || section === "bot") return "chat";
   if (section === "admin") return "settings";
-  if (section === "briefs" || section === "skills" || section === "memory") return section;
+  if (section === "routines" || section === "skills" || section === "memory") return section;
   if (section === "me") return "memory";
   if ((LIBRARY_TABS as readonly string[]).includes(section)) return "library";
   if ((FORECAST_TABS as readonly string[]).includes(section)) return "forecast";
@@ -209,7 +210,7 @@ function WorkspaceApp({onModeChange}:{onModeChange:(mode:"guest"|"personal")=>vo
 
   function addWatchSymbol() { const ticker = normalizeTicker(watchInput); if (!ticker) { setWatchError("请输入有效的美股代码，例如 AMD 或 BRK.B。"); return; } if (symbols.includes(ticker)) { setWatchError("该代码已在关注列表中。"); return; } if (symbols.length >= MAX_WATCHLIST) { setWatchError("关注列表最多保存 30 个代码。"); return; } setSymbols(items => [...items, ticker]); setWatchInput(""); setWatchError(""); openStock(ticker); }
   function removeWatchSymbol(ticker: string) { const remaining = symbols.filter(item => item !== ticker); setSymbols(remaining); setRequestedSymbol(current => selectionForWatchlist(current, remaining)); }
-  const botRail = personal ? (close: () => void) => <BotRailList bots={botList.bots} confirmActive={activeSection === "briefs"} onConfirm={() => { close(); navigate("briefs"); }} error={botList.error} activeBotId={activeBot?.id ?? null} onOpen={bot => { close(); openBot(bot); }} onNew={() => { close(); setNewBotOpen(true); }} /> : undefined;
+  const botRail = personal ? (close: () => void) => <BotRailList bots={botList.bots} routinesActive={activeSection === "routines"} onRoutines={() => { close(); navigate("routines"); }} error={botList.error} activeBotId={activeBot?.id ?? null} onOpen={bot => { close(); openBot(bot); }} onNew={() => { close(); setNewBotOpen(true); }} /> : undefined;
   const newBotDialog = newBotOpen && <NewBotDialog onClose={() => setNewBotOpen(false)} onCreated={bot => { setNewBotOpen(false); void botList.reload().then(() => openBot(bot)); }} />;
   const shellProps = { activeSection, navigate, symbol: requestedSymbol, symbols, onSelectStock: openStock, watchInput, setWatchInput, addWatchSymbol, watchError, setWatchError, onModeChange, botRail, overlay: newBotDialog };
   if (activeBot) return <Shell {...shellProps}><BotPage bot={activeBot} symbol={requestedSymbol} watchlist={symbols} onSelectSymbol={setRequestedSymbol} onOpenCompany={(ticker, section) => { const clean = normalizeTicker(ticker); if (clean) { if (!symbols.includes(clean) && symbols.length < MAX_WATCHLIST) setSymbols(items => [...items, clean]); openStock(clean, section === "forecast" ? "forecast" : "overview"); } }} onChanged={() => void botList.reload()} onDeleted={() => { void botList.reload(); navigate("agent"); }} onSettings={() => navigate("admin")} onModeChange={onModeChange} /></Shell>;
@@ -217,7 +218,7 @@ function WorkspaceApp({onModeChange}:{onModeChange:(mode:"guest"|"personal")=>vo
   if (activeSection === "bot") return <Shell {...shellProps}><main className="workspace"><p role="status">{botList.loaded ? translatePhrase("bot 不存在或已删除。") : translatePhrase("正在读取…")}</p></main></Shell>;
   if (activeSection === "agent") return <Shell {...shellProps}><AgentChatPanel onSettings={() => navigate("admin")} onModeChange={onModeChange} /></Shell>;
   if (activeSection === "admin") return <Shell {...shellProps}><AgentAdminPage onBack={() => navigate("agent")} /></Shell>;
-  if (activeSection === "briefs") return <Shell {...shellProps}><BriefsPage onNavigate={navigate} onChanged={() => void botList.reload()} /></Shell>;
+  if (activeSection === "routines") return <Shell {...shellProps}><RoutinesPage bots={botList.bots} onNavigate={navigate} onChanged={() => void botList.reload()} /></Shell>;
   if (activeSection === "skills") return <Shell {...shellProps}><SkillsPage /></Shell>;
   if (activeSection === "memory") return <Shell {...shellProps}><MemoryPage onNavigate={navigate} /></Shell>;
   if (activeSection === "me") return <Shell {...shellProps}><MePage onNavigate={navigate} /></Shell>;
@@ -437,9 +438,9 @@ function Shell({ activeSection, navigate, symbol, symbols, onSelectStock, watchI
     { id: "memory", group: "memory", label: t("记忆"), hint: t("画像和往事"), icon: "◇" },
     { id: "admin", group: "settings", label: t("设置"), hint: t("模型与账户"), icon: "⚙" },
   ];
-  const mobileTabs: Array<{ id: WorkspaceSection; label: string; icon: string; active: boolean }> = [
+  const mobileTabs: Array<{ id: WorkspaceSection; label: string; icon: React.ReactNode; active: boolean }> = [
     { id: "agent", label: t("对话"), icon: "✳", active: activeSection === "agent" },
-    { id: "briefs", label: t("待你确认"), icon: "✉", active: activeSection === "briefs" },
+    { id: "routines", label: t("例行任务"), icon: <RoutineIcon />, active: activeSection === "routines" },
     { id: "overview", label: t("公司"), icon: "◌", active: navGroup(activeSection) === "company" || navGroup(activeSection) === "forecast" },
     { id: "me", label: t("我"), icon: "☺", active: ["me", "memory", "skills", "admin", "materials", "evidence"].includes(activeSection) },
   ];
@@ -524,7 +525,7 @@ function isSupportedSymbol(symbol: string): symbol is SupportedSymbol { return i
 function isValidSymbol(symbol: string): boolean { return /^[A-Z]{1,5}(?:[.-][A-Z]{1,2})?$/i.test(symbol.trim()); }
 function sectionFromHash(): WorkspaceSection {
   const value = window.location.hash.replace(/^#/, "").split(/[/?]/, 1)[0];
-  if ((["overview", "forecast", "evidence", "materials", "revisions", "evaluation", "replay", "agent", "bot", "admin", "briefs", "skills", "memory", "me"] as const).includes(value as WorkspaceSection)) return value as WorkspaceSection;
+  if ((["overview", "forecast", "evidence", "materials", "revisions", "evaluation", "replay", "agent", "bot", "admin", "routines", "skills", "memory", "me"] as const).includes(value as WorkspaceSection)) return value as WorkspaceSection;
   // The conversation is the home page.
   return HASH_ALIASES[value] ?? "agent";
 }

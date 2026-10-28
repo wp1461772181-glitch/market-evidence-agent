@@ -156,7 +156,10 @@ const TASK_ERRORS:Record<string,string>={invalid_schedule:"时间格式应为 HH
   unknown_skill:"这个技能不存在。"};
 export async function listAgentTasks(signal?:AbortSignal,botId?:string):Promise<AgentTask[]>{ return (await ownerJson<{tasks:AgentTask[]}>(botId?`tasks?bot_id=${encodeURIComponent(botId)}`:"tasks",{signal},"任务暂时无法读取。")).tasks; }
 export type TaskRun = { id:string; task_id:string; task_name:string; status:string; status_label:string; posted:number; tokens:number; conversation_id:string|null; created_at:string|null };
-export async function listTaskRuns(botId:string,signal?:AbortSignal):Promise<TaskRun[]>{ return (await ownerJson<{runs:TaskRun[]}>(`tasks/runs?bot_id=${encodeURIComponent(botId)}&limit=20`,{signal},"最近运行暂时无法读取。")).runs; }
+export async function listTaskRuns(botId:string|undefined,signal?:AbortSignal):Promise<TaskRun[]>{ return (await ownerJson<{runs:TaskRun[]}>(botId?`tasks/runs?bot_id=${encodeURIComponent(botId)}&limit=20`:"tasks/runs?limit=20",{signal},"最近运行暂时无法读取。")).runs; }
+/** A routine card a bot proposed in chat that the owner has not pressed yet (expired: its press no longer runs). */
+export type TaskProposal = { id:string; conversation_id:string; bot_id:string|null; tools:string[]; title:string|null; targets:Array<Record<string,string>>; detail:string|null; expires_at:string; expired:boolean; created_at:string|null };
+export async function listTaskProposals(signal?:AbortSignal):Promise<TaskProposal[]>{ return (await ownerJson<{proposals:TaskProposal[]}>("tasks/proposals",{signal},"任务暂时无法读取。")).proposals; }
 export async function markBotRead(botId:string):Promise<number>{ return (await ownerJson<{read:number}>(`bots/${encodeURIComponent(botId)}/read`,{method:"POST"},"操作失败，请重试。")).read; }
 export async function createAgentTask(task:AgentTaskInput):Promise<AgentTask>{ return (await ownerJson<{task:AgentTask}>("tasks",{method:"POST",body:task},"保存任务失败。")).task; }
 export async function updateAgentTask(id:string,task:AgentTaskInput):Promise<AgentTask>{ return (await ownerJson<{task:AgentTask}>(`tasks/${encodeURIComponent(id)}`,{method:"PATCH",body:task},"保存任务失败。")).task; }

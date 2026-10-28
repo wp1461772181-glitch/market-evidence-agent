@@ -1,75 +1,101 @@
 import { useCallback, useEffect, useState } from "react";
 import { useOpenConversation } from "./AgentChatPanel";
-import { confirmProfileItem, createProfileItem, deleteProfileItem, getChatMode, listBots, listInbox, listProfileItems, listRecall, mintInboxCard, setInboxStatus, updateProfileItem, type Bot, type InboxItem, type ProfileBot, type ProfileItem, type RecallItem } from "./api";
+import { confirmProfileItem, createProfileItem, deleteProfileItem, getChatMode, listBots, listInbox, listProfileItems, listRecall, listTaskProposals, mintInboxCard, setInboxStatus, updateProfileItem, type Bot, type InboxItem, type ProfileBot, type ProfileItem, type RecallItem, type TaskProposal } from "./api";
+import { RoutineIcon } from "./BotPages";
+import { TaskManager } from "./BotRoutines";
 import { useLocale } from "./i18n";
 export { SkillsPage } from "./SkillsPage";
 import { inboxOrder } from "./inbox-items.mjs";
 import { layerLabel, manualItemDraft, originLabel, profileGroups, profileLayers, recallGroups, recallKindLabel } from "./memory-items.mjs";
 
-// Pages of the personal agent (the skills page lives in SkillsPage.tsx).  The briefs route (kept for URL
-// compatibility) shows only the 待你确认 suggestions of unattended runs; routines live on each bot's page; the memory
-// page lists profile items and past conversations.  All through the owner-only /agent-chat API.
+// Pages of the personal agent (the skills page lives in SkillsPage.tsx).  The 例行任务 page (#routines; #briefs, its
+// old 待你确认 address, still opens it) holds every bot's routines, the routine cards a bot proposed that wait for the
+// owner's press, and the writes unattended runs suggested; the memory page lists profile items and past conversations.
+// All through the owner-only /agent-chat API.
 
-type Go = (section: "agent" | "briefs" | "skills" | "memory" | "admin" | "materials") => void;
+type Go = (section: "agent" | "routines" | "skills" | "memory" | "admin" | "materials") => void;
 
-export function BriefsPage({ onNavigate, onChanged }: { onNavigate: Go; onChanged?: () => void }) {
+export function RoutinesPage({ bots, onNavigate, onChanged }: { bots: Bot[]; onNavigate: Go; onChanged?: () => void }) {
   const { t } = useLocale();
   const openConversation = useOpenConversation();
+  const [proposals, setProposals] = useState<TaskProposal[] | null>(null);
   const [confirms, setConfirms] = useState<InboxItem[] | null>(null);
-  const [botNames, setBotNames] = useState<Map<string, string>>(new Map());
   const [error, setError] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const personal = getChatMode() === "personal";
 
-  const loadConfirms = useCallback((signal?: AbortSignal) => {
-    listInbox("confirm", signal).then(setConfirms).catch(e => { if (!signal?.aborted) setError(e instanceof Error ? e.message : "简报暂时无法读取。"); });
+  const load = useCallback((signal?: AbortSignal) => {
+    const fail = (e: unknown) => { if (!signal?.aborted) setError(e instanceof Error ? e.message : "任务暂时无法读取。"); };
+    listTaskProposals(signal).then(setProposals).catch(fail);
+    listInbox("confirm", signal).then(setConfirms).catch(fail);
   }, []);
   useEffect(() => {
     if (!personal) return;
     const ctrl = new AbortController();
-    loadConfirms(ctrl.signal);
-    listBots(ctrl.signal).then(data => setBotNames(new Map(data.bots.map(b => [b.id, b.name])))).catch(() => { /* items then read as 已删除的 bot only when the list loads */ });
+    load(ctrl.signal);
     return () => ctrl.abort();
-  }, [personal, loadConfirms]);
+  }, [personal, load]);
 
   // One busy marker and one error line for every action of the page.
   async function act(id: string, action: () => Promise<unknown>) {
     setBusy(id); setError("");
     try { await action(); } catch (e) { setError(e instanceof Error ? e.message : "操作失败，请重试。"); } finally { setBusy(null); }
   }
-  const dismiss = (id: string) => act(id, async () => { await setInboxStatus(id, "dismissed"); loadConfirms(); onChanged?.(); });
+  const dismiss = (id: string) => act(id, async () => { await setInboxStatus(id, "dismissed"); load(); onChanged?.(); });
   // The card is minted now, with its own ten-minute capability, in the conversation of the run.
   const mintCard = (item: InboxItem) => act(item.id, async () => {
     const minted = await mintInboxCard(item.id);
     await openConversation(minted.conversation_id);
     onNavigate("agent");
   });
-  const botLabel = (item: InboxItem) => item.bot_id ? botNames.get(item.bot_id) ?? (botNames.size ? t("已删除的 bot") : "") : t("已删除的 bot");
+  // A proposed routine card waits in the conversation it was made in: open that conversation to press it.
+  const openProposal = (proposal: TaskProposal) => act(proposal.id, async () => {
+    await openConversation(proposal.conversation_id);
+    onNavigate("agent");
+  });
+  const botLabel = (id: string | null) => bots.find(b => b.id === id)?.name ?? (bots.length ? t("已删除的 bot") : "");
+  const waiting = inboxOrder(confirms ?? []);
 
-  if (!personal) return <main className="personal-page" aria-labelledby="briefs-title">
-    <h1 id="briefs-title">{t("待你确认")}</h1>
-    <section className="personal-card"><p>{t("登录个人聊天后才能查看待你确认的操作。")}</p></section>
+  if (!personal) return <main className="personal-page" aria-labelledby="routines-title">
+    <h1 id="routines-title"><RoutineIcon /> {t("例行任务")}</h1>
+    <section className="personal-card"><p>{t("登录个人聊天后才能查看和管理例行任务。")}</p></section>
     <div><button className="primary-action" type="button" onClick={() => onNavigate("agent")}>{t("去对话")}</button></div>
   </main>;
 
-  return <main className="personal-page" aria-labelledby="briefs-title">
-    <h1 id="briefs-title">{t("待你确认")}</h1>
+  return <main className="personal-page" aria-labelledby="routines-title">
+    <h1 id="routines-title"><RoutineIcon /> {t("例行任务")}</h1>
     {error && <p role="alert">{error}</p>}
-    <section className="personal-card memory-panel">
-      <p>{t("定时任务在无人值守时只读不写。它想做的写操作会放在这里，不会自动执行；点「生成确认卡」后到对话里核对，点「同意」才执行。")}</p>
-      {confirms === null && !error ? <p>{t("正在加载…")}</p> : inboxOrder(confirms ?? []).length === 0 ? <p>{t("没有待你确认的操作。")}</p> :
-        <ul className="memory-list">{inboxOrder(confirms ?? []).map(item => <li key={item.id}>
-          <div className="memory-line"><span className="personal-badge">{t("Agent 的建议")}</span>{botLabel(item) && <span className="personal-badge">{botLabel(item)}</span>}<strong>{item.title}</strong></div>
-          {item.body && <blockquote className="memory-quote">“{item.body}”</blockquote>}
-          {item.payload.task_name && <p className="fine-print">{t("来自任务：")}{item.payload.task_name}</p>}
+    <section className="personal-card memory-panel" aria-labelledby="routine-proposals-title">
+      <h3 id="routine-proposals-title">{t("bot 提议、等你确认")}</h3>
+      <p className="fine-print">{t("bot 在对话里提出的新建、修改或删除例行任务，要你在确认卡上点「同意」才生效。确认卡十分钟内有效；过期了在对话里再说一次。")}</p>
+      {proposals === null && !error ? <p>{t("正在加载…")}</p> : (proposals ?? []).length === 0 ? <p>{t("没有等你确认的例行任务提议。")}</p> :
+        <ul className="memory-list">{(proposals ?? []).map(proposal => <li key={proposal.id}>
+          <div className="memory-line">{botLabel(proposal.bot_id) && <span className="personal-badge">{botLabel(proposal.bot_id)}</span>}<strong>{proposal.title}</strong>
+            {proposal.expired && <span className="personal-badge">{t("已过期")}</span>}</div>
+          {proposal.targets.map((target, index) => <p key={index} className="fine-print">{Object.values(target).join(" · ")}</p>)}
+          {proposal.detail && <blockquote className="memory-quote">{proposal.detail}</blockquote>}
           <div className="memory-actions">
-            <button type="button" className="secondary-action" disabled={busy === item.id} onClick={() => void mintCard(item)}>{t("生成确认卡")}</button>
-            {item.conversation_id && <a className="secondary-action" href={`#agent/${item.conversation_id}`}>{t("打开对话")}</a>}
-            <button type="button" className="secondary-action" disabled={busy === item.id} onClick={() => void dismiss(item.id)}>{t("忽略")}</button>
+            <button type="button" className="secondary-action" disabled={busy === proposal.id} onClick={() => void openProposal(proposal)}>{t(proposal.expired ? "打开对话" : "去对话确认")}</button>
           </div>
         </li>)}</ul>}
     </section>
-    <div><button className="primary-action" type="button" onClick={() => onNavigate("agent")}>{t("去对话")}</button></div>
+    <section className="personal-card memory-panel">
+      <TaskManager bots={bots} onChanged={() => { load(); onChanged?.(); }} />
+    </section>
+    {waiting.length > 0 && <section className="personal-card memory-panel" aria-labelledby="routine-confirms-title">
+      <h3 id="routine-confirms-title">{t("例行任务运行时想做的写操作")}</h3>
+      <p className="fine-print">{t("定时任务在无人值守时只读不写。它想做的写操作会放在这里，不会自动执行；点「生成确认卡」后到对话里核对，点「同意」才执行。")}</p>
+      <ul className="memory-list">{waiting.map(item => <li key={item.id}>
+        <div className="memory-line"><span className="personal-badge">{t("Agent 的建议")}</span>{botLabel(item.bot_id) && <span className="personal-badge">{botLabel(item.bot_id)}</span>}<strong>{item.title}</strong></div>
+        {item.body && <blockquote className="memory-quote">“{item.body}”</blockquote>}
+        {item.payload.task_name && <p className="fine-print">{t("来自任务：")}{item.payload.task_name}</p>}
+        <div className="memory-actions">
+          <button type="button" className="secondary-action" disabled={busy === item.id} onClick={() => void mintCard(item)}>{t("生成确认卡")}</button>
+          {item.conversation_id && <a className="secondary-action" href={`#agent/${item.conversation_id}`}>{t("打开对话")}</a>}
+          <button type="button" className="secondary-action" disabled={busy === item.id} onClick={() => void dismiss(item.id)}>{t("忽略")}</button>
+        </div>
+      </li>)}</ul>
+    </section>}
   </main>;
 }
 

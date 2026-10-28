@@ -6,12 +6,13 @@ export const CARDS = [
   { id: "forecast", title: "研究预测", size: "m" },
   { id: "materials", title: "最近资料", size: "m" },
   { id: "filings", title: "官方申报", size: "m" },
-  { id: "confirm", title: "待你确认", size: "s" },
   { id: "routines", title: "例行任务", size: "s" },
   { id: "brief", title: "简报", size: "m" },
   { id: "watchlist", title: "自选列表", size: "s" },
 ];
-export const DEFAULT_LAYOUT = ["price", "forecast", "materials", "filings", "confirm", "routines"].map((card) => ({ card }));
+export const DEFAULT_LAYOUT = ["price", "forecast", "materials", "filings", "routines"].map((card) => ({ card }));
+// The 待你确认 card was folded into 例行任务 (2026-10-28): a saved layout holding it keeps one 例行任务 card in its place.
+const RENAMED = { confirm: "routines" };
 const KNOWN = new Set(CARDS.map((c) => c.id));
 const SIZES = new Set(["s", "m", "l"]);
 const TICKER = /^[A-Z]{1,5}(?:[.-][A-Z]{1,2})?$/;
@@ -23,8 +24,10 @@ export function cleanLayout(value) {
   if (!Array.isArray(value)) return null;
   const out = [];
   for (const item of value) {
-    if (!item || typeof item !== "object" || !KNOWN.has(item.card)) continue;
-    const entry = { card: item.card };
+    const card = item && typeof item === "object" ? RENAMED[item.card] ?? item.card : null;
+    if (!KNOWN.has(card)) continue;
+    if (card !== item.card && value.some((other) => other && other.card === card)) continue;
+    const entry = { card };
     if (SIZES.has(item.size)) entry.size = item.size;
     if (typeof item.symbol === "string" && TICKER.test(item.symbol)) entry.symbol = item.symbol;
     out.push(entry);

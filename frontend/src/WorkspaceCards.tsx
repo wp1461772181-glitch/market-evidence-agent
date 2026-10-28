@@ -1,10 +1,10 @@
 // The bot workspace's data cards (UX batch 2, P3).  Each card loads on its own, so one failing read never blanks
 // the others.  Facts only: prices, dates, counts and titles; no buy/sell wording anywhere.
 import { useEffect, useState } from "react";
-import { getFilingInventory, getMaterialLibrary, getResearchQueue, getV2Prices, getV2Workspace, listAgentTasks, listInbox, mintInboxCard, setInboxStatus, type Bot } from "./api";
+import { getFilingInventory, getMaterialLibrary, getResearchQueue, getV2Prices, getV2Workspace, listAgentTasks, listInbox, listTaskProposals, type Bot } from "./api";
 import { formatDate, getLocalePreference, useLocale } from "./i18n";
-import { useOpenConversation } from "./AgentChatPanel";
 import { CARDS, priceSummary, type LayoutItem } from "./workspace-cards.mjs";
+import { waitingCount } from "./inbox-items.mjs";
 import { materialHref } from "./material-focus.mjs";
 
 type Load<T> = { kind: "loading" } | { kind: "ready"; value: T } | { kind: "error" };
@@ -97,25 +97,21 @@ function FilingsCard({ symbol }: { symbol: string }) {
   </>;
 }
 
-function ConfirmCard({ bot }: { bot: Bot }) {
-  const { t } = useLocale();
-  const openConversation = useOpenConversation();
-  const [state, reload] = useLoad(`confirm:${bot.id}`, signal => listInbox("confirm", signal, bot.id));
-  const [busy, setBusy] = useState<string | null>(null);
-  const act = async (id: string, run: () => Promise<unknown>) => { setBusy(id); try { await run(); } catch { /* the list reload shows the state */ } finally { setBusy(null); reload(); } };
-  return <Body state={state} empty={v => !v.filter(i => i.status !== "done" && i.status !== "dismissed").length}>{v => <ul className="ws-list">
-    {v.filter(i => i.status !== "done" && i.status !== "dismissed").slice(0, 5).map(item => <li key={item.id}><span>{item.payload.display?.title || item.title}</span>
-      <span className="ws-actions"><button type="button" className="text-button" disabled={busy === item.id} onClick={() => void act(item.id, async () => { const minted = await mintInboxCard(item.id); await openConversation(minted.conversation_id); })}>{t("去确认")}</button>
-        <button type="button" className="text-button" disabled={busy === item.id} onClick={() => void act(item.id, () => setInboxStatus(item.id, "dismissed"))}>{t("忽略")}</button></span></li>)}
-  </ul>}</Body>;
-}
-
+// 例行任务 (it took in the 待你确认 card): this bot's routines, and how many of its cards wait for the owner —
+// routine cards proposed in chat and writes its unattended runs suggested — with the way to the 例行任务 page.
 function RoutinesCard({ bot }: { bot: Bot }) {
   const { t } = useLocale();
-  const [state] = useLoad(`routines:${bot.id}`, signal => listAgentTasks(signal, bot.id));
-  return <Body state={state} empty={v => !v.length}>{v => <ul className="ws-list">{v.slice(0, 5).map(task =>
-    <li key={task.id}><span>{task.name}{task.enabled ? "" : ` · ${t("已停用")}`}</span>
-      <small className="ws-muted"> {t("下次")} {day(task.next_run_at)}{task.last_status_label ? ` · ${t("上次")} ${t(task.last_status_label)}` : ""}</small></li>)}</ul>}</Body>;
+  const [state] = useLoad(`routines:${bot.id}`, signal => Promise.all([listAgentTasks(signal, bot.id), listTaskProposals(signal),
+    listInbox("confirm", signal, bot.id)]).then(([tasks, proposals, confirms]) => ({ tasks,
+      waiting: waitingCount(bot.id, proposals, confirms) })));
+  return <>
+    <Body state={state} empty={v => !v.tasks.length && !v.waiting}>{v => <>
+      {v.waiting > 0 && <p><a href="#routines">{v.waiting} {t("项等你确认")} →</a></p>}
+      <ul className="ws-list">{v.tasks.slice(0, 5).map(task =>
+        <li key={task.id}><span>{task.name}{task.enabled ? "" : ` · ${t("已停用")}`}</span>
+          <small className="ws-muted"> {t("下次")} {day(task.next_run_at)}{task.last_status_label ? ` · ${t("上次")} ${t(task.last_status_label)}` : ""}</small></li>)}</ul></>}</Body>
+    <a className="text-button" href="#routines">{t("管理例行任务")} →</a>
+  </>;
 }
 
 function BriefCard({ bot }: { bot: Bot }) {
@@ -139,7 +135,6 @@ export function WorkspaceCard({ item, bot, symbol, wide, onOpenCompany, onPickSy
     : item.card === "forecast" ? <ForecastCard symbol={sym} onOpen={() => onOpenCompany(sym, "forecast")} />
     : item.card === "materials" ? <MaterialsCard symbol={sym} />
     : item.card === "filings" ? <FilingsCard symbol={sym} />
-    : item.card === "confirm" ? <ConfirmCard bot={bot} />
     : item.card === "routines" ? <RoutinesCard bot={bot} />
     : item.card === "brief" ? <BriefCard bot={bot} />
     : <WatchlistCard onPick={onPickSymbol} />;

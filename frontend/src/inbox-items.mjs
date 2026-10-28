@@ -48,3 +48,10 @@ export function formatPriceLines(lines) {
   return (Array.isArray(lines) ? lines : []).flatMap(l => [
     ...(l.above != null ? [`${l.symbol}>${l.above}`] : []), ...(l.below != null ? [`${l.symbol}<${l.below}`] : [])]).join(", ");
 }
+
+/** How many cards wait for the owner on a bot's 例行任务 card: its unexpired routine proposals and the writes its
+ *  unattended runs suggested that are not done or dismissed. */
+export function waitingCount(botId, proposals, confirms) {
+  return proposals.filter((p) => p.bot_id === botId && !p.expired).length
+    + confirms.filter((i) => i.status !== "done" && i.status !== "dismissed").length;
+}

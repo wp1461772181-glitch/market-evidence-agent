@@ -79,7 +79,16 @@ function AvatarPicker({ value, name, onChange, disabled }: { value: string; name
   </div>;
 }
 
-export function BotRailList({ bots, error, activeBotId, confirmActive, onConfirm, onOpen, onNew }: { bots: Bot[]; error: string; activeBotId: string | null; confirmActive: boolean; onConfirm: () => void; onOpen: (bot: Bot) => void; onNew: () => void }) {
+/** 例行任务: a calendar with a clock.  An SVG, not a glyph: the rail's font drew ✉ as nothing (Levi: 没有图标). */
+export function RoutineIcon() {
+  return <svg className="routine-icon" viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" strokeWidth="1.8"
+    strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+    <path d="M8 3v3M16 3v3M4 9h11M13 21H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v4" />
+    <circle cx="17.5" cy="17.5" r="4" /><path d="M17.5 15.8v1.9l1.2 1" />
+  </svg>;
+}
+
+export function BotRailList({ bots, error, activeBotId, routinesActive, onRoutines, onOpen, onNew }: { bots: Bot[]; error: string; activeBotId: string | null; routinesActive: boolean; onRoutines: () => void; onOpen: (bot: Bot) => void; onNew: () => void }) {
   const { t } = useLocale();
   const { top, groups } = botSections(bots);
   const pending = bots.reduce((sum, b) => sum + (b.pending || 0), 0);
@@ -92,8 +101,8 @@ export function BotRailList({ bots, error, activeBotId, confirmActive, onConfirm
     {bot.unread > 0 && <span className="bot-unread" aria-label={`${bot.unread} ${t("条未读")}`}>{bot.unread > 99 ? "99+" : bot.unread}</span>}
   </button></li>;
   return <section className="bot-rail" aria-label={t("Bot 列表")}>
-    <button type="button" className={`bot-row bot-confirm${confirmActive ? " is-active" : ""}`} aria-current={confirmActive ? "page" : undefined} onClick={onConfirm}>
-      <span className="bot-avatar" aria-hidden="true">✉</span><span className="bot-row-text"><strong>{t("待你确认")}</strong></span>
+    <button type="button" className={`bot-row bot-confirm${routinesActive ? " is-active" : ""}`} aria-current={routinesActive ? "page" : undefined} onClick={onRoutines}>
+      <span className="bot-avatar" aria-hidden="true"><RoutineIcon /></span><span className="bot-row-text"><strong>{t("例行任务")}</strong></span>
       {pending > 0 && <span className="bot-pending-badge" aria-label={`${pending} ${t("条待确认")}`}>{pending}</span>}
     </button>
     <div className="bot-rail-head"><span>{t("Bot")}</span><button type="button" className="bot-new" onClick={onNew} aria-label={t("新建 bot")} title={t("新建 bot")}>＋</button></div>

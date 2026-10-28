@@ -1,4 +1,4 @@
-export type CardId = "price" | "forecast" | "materials" | "filings" | "confirm" | "routines" | "brief" | "watchlist";
+export type CardId = "price" | "forecast" | "materials" | "filings" | "routines" | "brief" | "watchlist";
 export type LayoutItem = { card: CardId; size?: "s" | "m" | "l"; symbol?: string };
 export declare const CARDS: { id: CardId; title: string; size: "s" | "m" | "l" }[];
 export declare const DEFAULT_LAYOUT: LayoutItem[];
