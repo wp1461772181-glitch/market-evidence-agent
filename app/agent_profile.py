@@ -26,7 +26,10 @@ from .database import SessionLocal
 
 KINDS = ("preference", "about_me", "instruction")
 KIND_LABELS = {"preference": "偏好", "about_me": "关于我", "instruction": "长期指令"}
-ORIGINS = ("explicit", "inferred")
+# manual: the owner typed the item on the memory page (UX batch 3); its quote is what they typed.  It ranks
+# with explicit (said in chat and confirmed on a card): both are the owner's outright word.
+ORIGINS = ("explicit", "inferred", "manual")
+OWNER_ORIGINS = ("explicit", "manual")
 TEXT_MAX_CHARS = 200
 QUOTE_MIN_CHARS = 2
 MAX_ACTIVE_ITEMS = 30
@@ -171,8 +174,8 @@ def add_item(owner_hash: str, *, kind: str, text: str, quote: str, message: str,
         active = _layer(_active(db, owner_hash), layer)
         same = next((r for r in active if _plain(r.text) == _plain(text) and r.kind == kind), None)
         if same:
-            if origin == "explicit" and same.origin != "explicit":
-                same.origin = "explicit"
+            if origin in OWNER_ORIGINS and same.origin not in OWNER_ORIGINS:
+                same.origin = origin
                 same.quote, same.source_message_id = quote, source or same.source_message_id
             same.updated_at = datetime.now(UTC)
             db.commit()
@@ -180,7 +183,7 @@ def add_item(owner_hash: str, *, kind: str, text: str, quote: str, message: str,
         if topic:
             rivals = [r for r in active if r.kind == kind and r.topic == topic]
             # What the owner said outright outranks what was inferred from their words.
-            if origin == "inferred" and any(r.origin == "explicit" for r in rivals):
+            if origin == "inferred" and any(r.origin in OWNER_ORIGINS for r in rivals):
                 return {"status": "skipped", "reason": "explicit_exists"}
             for row in rivals:
                 row.status = "archived"
@@ -195,6 +198,16 @@ def add_item(owner_hash: str, *, kind: str, text: str, quote: str, message: str,
             raise
         db.commit()
         return {"status": "added", "item": serialize(row, names)}
+
+
+def add_manual_item(owner_hash: str, *, kind: str, text: str, topic: str | None = None,
+                    bot_id: str | None = None) -> dict:
+    """The owner types an item on the memory page, for the global layer or one of their bots.  No chat turn
+    is involved: the typed text is its own quote (origin ``manual``), so nothing but the owner's own words
+    can become such a row either."""
+    text = " ".join(str(text or "").split())
+    return add_item(owner_hash, kind=kind, text=text, quote=text, message=text, origin="manual", topic=topic,
+                    bot_id=bot_id)
 
 
 def resolve_handle(owner_hash: str, value: str, *, bot_id: str | None = None, every_bot: bool = False) -> dict | None:
@@ -312,7 +325,7 @@ def visible_texts(owner_hash: str, bot_id: str | None = None) -> list[str]:
 
 
 def _line(row: AgentProfileItem, layer: str = "") -> str:
-    origin = "" if row.origin == "explicit" else "·推断"
+    origin = "" if row.origin in OWNER_ORIGINS else "·推断"
     return f"- {handle(row.id)} [{KIND_LABELS[row.kind]}{origin}{layer}] {row.text}"
 
 
@@ -320,7 +333,7 @@ def _pick(rows, lines, budget: int) -> list[tuple]:
     """Explicit items first, then inferred ones by recent use, within 30 lines and ``budget`` bytes; returned
     in creation order so the message stays byte-identical while the items do not change (prefix cache)."""
     floor = datetime.min.replace(tzinfo=UTC)
-    ranked = (sorted((r for r in rows if r.origin == "explicit"), key=lambda r: r.updated_at or floor, reverse=True)
+    ranked = (sorted((r for r in rows if r.origin in OWNER_ORIGINS), key=lambda r: r.updated_at or floor, reverse=True)
               + sorted((r for r in rows if r.origin == "inferred"),
                        key=lambda r: (r.last_used_at or r.created_at or floor), reverse=True))
     chosen, used = [], 0

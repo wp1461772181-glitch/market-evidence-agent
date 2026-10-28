@@ -476,7 +476,7 @@ async def stream_chat(payload:StreamRequest,request:Request,x_chat_session:str|N
      if _is_owner(x_chat_session) and not payload.pending_request_id:
       from .agent_profile_extract import schedule_extraction
       schedule_extraction(owner_hash(x_chat_session),payload.message,conversation_id=cid,turn_id=turn,
-                          bot=bot,
+                          bot=bot,asked_to_remember=bool((event.get("audit") or {}).get("profile_ask")),
                           provider=chosen.provider,model=chosen.model,
                           api_key=chosen.key(),base_url=chosen.base_url)
      if restored:yield frame("citations",{"turn_id":turn,"items":restored})
@@ -669,6 +669,28 @@ async def get_profile_endpoint(x_chat_session: str | None = Header(default=None)
     bots = await asyncio.to_thread(list_bots, owner_hash(credential))
     return {"items": await asyncio.to_thread(list_items, owner_hash(credential)),
             "bots": [{"id": b["id"], "name": b["name"], "is_default": b["is_default"]} for b in bots]}
+
+
+class ProfileCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: str = Field(max_length=20)
+    text: str = Field(max_length=400)
+    topic: str | None = Field(default=None, max_length=40)
+    bot_id: str | None = Field(default=None, max_length=36)
+
+
+@router.post("/profile")
+async def create_profile_endpoint(body: ProfileCreate, x_chat_session: str | None = Header(default=None)):
+    """The owner types an item on the memory page: global (``bot_id`` null) or one bot's own memory."""
+    from .agent_profile import ProfileError, add_manual_item
+    credential = _owner_only(x_chat_session)
+    try:
+        outcome = await asyncio.to_thread(add_manual_item, owner_hash(credential), **body.model_dump())
+    except ProfileError as exc:
+        raise HTTPException(422, str(exc)) from None
+    if outcome.get("status") == "skipped":
+        raise HTTPException(409, outcome.get("reason") or "profile_write_skipped")
+    return {"status": outcome["status"], "item": outcome.get("item")}
 
 
 class ProfilePatch(BaseModel):

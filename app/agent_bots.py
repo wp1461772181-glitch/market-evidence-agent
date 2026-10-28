@@ -38,9 +38,12 @@ _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 # Not data tools: asking the user, choosing from a result, arithmetic on cited figures, re-reading an old
 # citation, moving the browser, and suggesting a write (whose target is still checked against the scope).
 # They stay in every bot, so a narrow scope never leaves a bot unable to ask or to cite.  notify_telegram too:
-# whether a bot notifies is its instruction's call, and its daily cap (0: never) is the switch.
+# whether a bot notifies is its instruction's call, and its daily cap (0: never) is the switch.  remember and
+# forget too: every bot has its own memory layer and both only ever make a card (2026-10-28: a bot whose
+# scope left them out answered 写记忆失败 while the background extractor stored the item anyway).
 ALWAYS_ON = frozenset({"ask_user", "use_result_set", "calculate", "read_history_citation", "select_stock",
-                       "open_page", "request_action", "notify_telegram", "use_skill", "draft_skill"})
+                       "open_page", "request_action", "notify_telegram", "use_skill", "draft_skill",
+                       "remember", "forget"})
 
 TEMPLATES = {
     "blank": {"label": "空白", "name": "", "title": "", "description": "", "tool_scope": None},

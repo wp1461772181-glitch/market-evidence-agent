@@ -6,7 +6,7 @@ import uuid
 import pytest
 
 from app import agent_profile as profile
-from app.agent_chat_models import AgentConversation, AgentMessage, AgentProfileItem
+from app.agent_chat_models import AgentBot, AgentConversation, AgentMessage, AgentProfileItem
 from app.agent_chat_store import owner_hash
 from app.agent_workflow import consent
 from app.agent_workflow.models import AgentConsent
@@ -18,7 +18,7 @@ OWNER_HASH = owner_hash(OWNER)
 
 @pytest.fixture
 def owner(monkeypatch, disposable_database):
-    Base.metadata.create_all(engine, tables=[AgentConsent.__table__, AgentProfileItem.__table__,
+    Base.metadata.create_all(engine, tables=[AgentConsent.__table__, AgentProfileItem.__table__, AgentBot.__table__,
                                              AgentConversation.__table__, AgentMessage.__table__])
     with SessionLocal() as db:
         db.query(AgentProfileItem).delete()

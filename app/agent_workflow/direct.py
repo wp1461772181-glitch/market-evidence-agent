@@ -826,6 +826,11 @@ class Turn:
                 messages.append({'role':'system','content':'The previous classification was invalid JSON/schema or added an unrequested fiscal period. Return complete valid classify_request arguments using only enum values; leave unspecified period/form null.'})
         self.route=routing.category;self.scope=routing.model_dump();self.audit['route']=self.route
         self.granted_actions=set() if self.unattended() else {name for name in routing.requested_actions if self.in_scope(name)}
+        if self.asked_to_remember(routing.requested_actions):
+            # The owner's own words ask to remember: the card is the guard, so a classifier that missed the ask
+            # does not leave the model without the tool (2026-10-28: AppleBot said 写记忆失败, no card).
+            self.audit['profile_ask']=True
+            if self.in_scope('remember') and not vetoed('remember',self.authorization_question):self.granted_actions.add('remember')
         self.apply_default_company()
         self.stage('classifier',{'category':self.route,'scope':{k:self.scope[k] for k in ('symbol','company','metrics','period','form','days_back')},'retries':self.audit.get('classification_retries',0),'requested_actions':routing.requested_actions})
         await self.validate_business_reference()
@@ -1438,6 +1443,43 @@ class Turn:
         self.proposals.append(([operation],display))
         self.audit['write_outcome']='proposed'
         return {'ok':True,'data':[{'status':'awaiting_confirmation','title':display.get('title')}]}
+
+    def asked_to_remember(self,requested=()):
+        """This turn's owner asked to remember something: the classifier says so or their own words do."""
+        if not self.owner or self.unattended() or self.original.startswith(CONTROL_PREFIXES):return False
+        return 'remember' in requested or authorized('remember',self.user_words())
+
+    async def recover_remember(self):
+        """An ask to remember that reached no card and no refusal: the server reads the owner's words for the
+        item (the extractor's prompt, nothing but the message) and makes the card itself.  True when a card
+        is waiting.  A refused remember stays refused: this never runs after the model's remember failed."""
+        if not self.audit.get('profile_ask') or self.pending or self.proposals or self.resuming:return False
+        if 'remember' in self.write_reasons or self.audit.get('remember_called') or not self.write_allowed('remember'):return False
+        from ..agent_profile_extract import EXTRACT_PROMPT,candidates,ExtractionRejected
+        words=self.user_words()
+        payload={'message':words[:2000],'known':[]}
+        if self.context.bot_id:payload['bot']={'name':self.context.bot_name or ''}
+        try:
+            messages=[{'role':'system','content':EXTRACT_PROMPT},
+                      {'role':'user','content':json.dumps(payload,ensure_ascii=False,separators=(',',':'))}]
+            decider=self.context.decider
+            if decider and len(inspect.signature(decider).parameters)==2:
+                message=await injected(decider,messages,[])
+                message=message[1] if isinstance(message,tuple) else message
+            else:message=await self.model(messages,[],protocol_retries=0)
+            found=candidates(message.get('content'),words,in_bot=bool(self.context.bot_id))
+        except (ExtractionRejected,ValueError,HTTPException,RuntimeError):found=[]
+        self.audit['remember_recovered']=bool(found)
+        if not found:return False
+        item=found[0];item.pop('exact',None)
+        outcome=await self.propose_profile('remember',{k:item[k] for k in ('kind','topic','text','quote','scope')})
+        if not outcome.get('ok') or not self.proposals:return False
+        self.write_reasons.pop('remember',None)
+        await self.confirm_proposals()
+        return bool(self.pending)
+
+    def remember_card_finish(self):
+        return self.finish('请核对确认卡中的操作、来源和日期，确认后执行。',status='waiting_for_input',generated=True)
 
     def remember_quote(self,proposed):
         """The quote on a remember card comes from the user's own message, never from the model alone.
@@ -2334,6 +2376,7 @@ class Turn:
                     answer,verdict=await self.refusal_verdict(why)
                     return self.finish(answer,reason='tool_failures' if failed else 'zero_evidence',
                                        status='succeeded',generated=True)
+                if await self.recover_remember():return self.remember_card_finish()
                 return await self.finish_answer(content or '没有生成可用的回答。')
             if not isinstance(calls,list) or len(calls)>12:stop='provider_protocol_invalid';break
             if any(not isinstance(c,dict) or not isinstance(c.get('id'),str) for c in calls):stop='provider_protocol_invalid';break
@@ -2346,6 +2389,7 @@ class Turn:
                 # Calls the model already decided on run to the hard cap; the soft cap only ends gathering.
                 if self.budget(soft=False):stop=self.budget(soft=False);break
                 function=call.get('function',{});name=function.get('name')
+                if name=='remember':self.audit['remember_called']=True;self.audit['profile_ask']=self.audit.get('profile_ask') or bool(self.owner)
                 if name in definitions() and not self.in_scope(name):
                     # Outside this bot's tool scope: refused whatever the model or a page asked for.
                     self.audit['tool_calls']+=1;outcome=tools.error('tool_not_in_bot_scope');self.feedback.append({'name':name,**outcome})
@@ -2469,6 +2513,7 @@ class Turn:
                     if display.get('saved_date') and display.get('web_date'):description='库内日期：'+display['saved_date']+'；网页日期：'+display['web_date']+'。'+description
                     return self.finish(description,status='waiting_for_input',generated=True)
         stop=stop or self.audit['stop_reason'] or self.budget() or 'no_progress'
+        if await self.recover_remember():return self.remember_card_finish()
         # Finalization never receives tools, capabilities or rejected bodies.
         async with self.trace.step('closing') as node:
             closing=await self.closing_answer()
