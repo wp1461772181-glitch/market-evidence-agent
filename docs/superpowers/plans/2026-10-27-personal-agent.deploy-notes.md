@@ -379,3 +379,19 @@ No migration (the avatar column is reused: `orb:<colour>` strings, ≤16 chars).
    (FinBot + 11 colours) that recolour it at once; the sidebar's current bot and the hovered row look around,
    the others stay still; the chat header shows the same orb; 档案 › 头像 switches 圆球 / 自定义 emoji; old
    emoji avatars still show; macOS 减少动态效果 → pupils centred, no blinking.
+
+## 2026-10-28 UX batch 2 — P3 工作区 MVP
+
+Frontend only; no backend change, no migration. Layout and each bot's current stock live in this browser
+(`localStorage`: `market-evidence-agent:workspace:<botId>:v1`, `market-evidence-agent:bot-symbol:<botId>:v1`).
+1. Tests: `cd frontend && npm run test:i18n` (new `scripts/workspace-cards.test.mjs`), `npm run build`.
+2. Goes live with the Pages push.
+3. **Check by hand (acceptance §5 问题4):** open a bot whose focus is only AAPL → 当前股票 is AAPL whatever was
+   open before; pick MSFT in the workspace menu (or type another ticker + Enter) → the cards reload, the page
+   stays on the bot, and 公司 / 资料库 then open on MSFT; ⚙ 编辑卡片: remove 官方申报, add 简报, move 行情 to the
+   top, reload → kept; 恢复默认 restores the six; ⤢ → half width (two columns, larger 3-month line), again →
+   full width, again → narrow. No buy/sell wording anywhere (行情 shows close, change with arrow and sign).
+   An agent 「切到 NVDA」 on the bot page moves this bot's current stock.
+4. Known limits: the 行情 card draws a 3-month close line, not the full candlestick chart (that component needs
+   the forecast desk's inspection state); 官方申报 links to 资料库 for scanning instead of minting a scan card
+   there; 待你确认 offers 去确认 (opens the card in its conversation) and 忽略.

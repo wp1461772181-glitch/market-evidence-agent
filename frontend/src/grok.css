@@ -177,3 +177,37 @@ body { -webkit-font-smoothing: antialiased; }
 .avatar-picker { display: grid; gap: 8px; }
 .avatar-picker-modes { display: flex; gap: 12px; font-size: 13px; }
 
+/* --- bot workspace (UX batch 2, P3): stock picker, data cards, ⤢ widths ------------------------ */
+.agent-layout.is-bot[data-side-width="half"] { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.agent-layout.is-bot[data-side-width="full"] { grid-template-columns: minmax(0, 1fr); }
+.agent-layout.is-bot[data-side-width="full"] > :not(.bot-side) { display: none; }
+.bot-side .section-tabs { align-items: center; }
+.ws-expand { margin-left: auto; border: 1px solid var(--me-line) !important; border-radius: 999px !important; padding: 2px 10px !important; color: var(--me-muted); background: transparent; }
+.bot-workspace { display: grid; gap: 10px; padding-top: 10px; }
+.ws-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.ws-symbol { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--me-muted); }
+.ws-symbol select, .ws-symbol-input, .ws-edit-bar select, .ws-card-controls select, .ws-pin { font: inherit; font-size: 13px; padding: 4px 8px; border: 1px solid var(--me-line); border-radius: 8px; background: var(--me-surface-2); color: var(--me-ink); }
+.ws-symbol-input { width: 7.5em; }
+.ws-pin { width: 6em; }
+.ws-edit-bar { display: flex; gap: 8px; align-items: center; }
+.ws-grid { display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr); }
+.bot-workspace.is-wide .ws-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.bot-workspace.is-wide .ws-card.size-l { grid-column: 1 / -1; }
+.ws-card { border: 1px solid var(--me-line); border-radius: 12px; padding: 10px 12px; background: var(--me-surface); color: var(--me-ink); display: grid; gap: 6px; align-content: start; min-width: 0; }
+.ws-card header { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.ws-card h4 { margin: 0; font-size: 13px; font-weight: 600; }
+.ws-card-controls { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.ws-muted { color: var(--me-muted); font-size: 12px; margin: 0; }
+.ws-fine { font-size: 11px; }
+.ws-price { margin: 0; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.ws-price strong { font-size: 20px; }
+.ws-spark { width: 100%; height: 48px; color: var(--me-accent); }
+.bot-workspace.is-wide .ws-spark { height: 120px; }
+.ws-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; font-size: 13px; }
+.ws-list li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px; min-width: 0; }
+.ws-list a { color: var(--me-ink); text-decoration: none; overflow-wrap: anywhere; }
+.ws-list a:hover { text-decoration: underline; }
+.ws-actions { margin-left: auto; display: inline-flex; gap: 6px; }
+.ws-new { font-size: 10px; color: var(--me-accent); background: var(--me-accent-soft); border-radius: 999px; padding: 0 6px; }
+.ws-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+@media (max-width: 760px) { .agent-layout.is-bot[data-side-width] { grid-template-columns: minmax(0, 1fr); } .agent-layout.is-bot[data-side-width="full"] > :not(.bot-side) { display: block; } }

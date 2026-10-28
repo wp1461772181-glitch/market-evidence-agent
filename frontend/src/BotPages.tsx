@@ -12,6 +12,8 @@ import { TaskManager } from "./BotRoutines";
 import { CATALOG } from "./model-profiles.mjs";
 import { BotOrb } from "./BotOrb";
 import { BRAND, ORB_COLORS, orbAvatar, parseAvatar } from "./orb.mjs";
+import { WorkspaceCard } from "./WorkspaceCards";
+import { CARDS, addCard, botSymbol, loadLayout, moveCard, pinCardSymbol, removeCard, resetLayout, resizeCard, saveLayout, storeBotSymbol, symbolChoices, type CardId, type LayoutItem } from "./workspace-cards.mjs";
 
 const message = (error: unknown, fallback: string) => translatePhrase(error instanceof Error ? error.message : fallback);
 
@@ -239,31 +241,73 @@ type OpenCompany = (ticker: string, section?: "overview" | "forecast") => void;
 
 /** The 工作区 tab: where the line's work points — its focus companies and the research pages they open.  预测
  * (forecast, revision, maturity review, replay) lives on the company pages, never as price talk in the line. */
-function BotWorkspaceTab({ bot, symbol, onOpenCompany }: { bot: Bot; symbol: string; onOpenCompany: OpenCompany }) {
+function BotWorkspaceTab({ bot, symbol, watchlist, wide, onPickSymbol, onOpenCompany }: { bot: Bot; symbol: string; watchlist: string[]; wide: boolean; onPickSymbol: (symbol: string) => void; onOpenCompany: OpenCompany }) {
   const { t } = useLocale();
-  const companies = bot.focus.companies;
-  const links = (ticker: string, name?: string | null) => <li key={ticker} className="bot-focus-item"><span className="bot-focus-name">{ticker}{name ? ` · ${name}` : ""}</span>
-    <span className="bot-focus-links"><button type="button" className="text-button" onClick={() => onOpenCompany(ticker)}>{t("总览")} →</button>
-      <button type="button" className="text-button" onClick={() => onOpenCompany(ticker, "forecast")}>{t("预测工作台")} →</button></span></li>;
-  return <div className="bot-workspace">
-    <h3>{t("当前股票")}</h3>
-    <ul className="bot-focus-list">{links(symbol)}</ul>
-    {companies.length ? <><h3>{t("关注公司")}</h3><ul className="bot-focus-list">{companies.filter(c => c.symbol !== symbol).map(c => links(c.symbol, c.name))}</ul></>
-      : <p className="fine-print">{t("这个 bot 没有关注公司；任何公司都能问。")}</p>}
-    {bot.focus.theme && <p>{t("关注主题")}：{bot.focus.theme}</p>}
+  const [layout, setLayoutState] = useState<LayoutItem[]>(() => loadLayout(bot.id));
+  const [editing, setEditing] = useState(false), [typed, setTyped] = useState("");
+  const setLayout = (next: LayoutItem[]) => setLayoutState(saveLayout(bot.id, next));
+  const choices = symbolChoices(bot, watchlist, symbol);
+  const pickTyped = () => { const clean = typed.trim().toUpperCase(); if (/^[A-Z]{1,5}(?:[.-][A-Z]{1,2})?$/.test(clean)) { onPickSymbol(clean); setTyped(""); } };
+  const missing = CARDS.filter(c => !layout.some(x => x.card === c.id));
+  return <div className={`bot-workspace${wide ? " is-wide" : ""}`}>
+    <div className="ws-toolbar">
+      <label className="ws-symbol">{t("当前股票")}
+        <select value={symbol} onChange={e => onPickSymbol(e.target.value)}>{choices.map(s => <option key={s} value={s}>{s}</option>)}</select>
+      </label>
+      <input className="ws-symbol-input" value={typed} maxLength={8} placeholder={t("其他代码")} aria-label={t("其他代码")} onChange={e => setTyped(e.target.value)} onKeyDown={e => { if (e.key === "Enter") pickTyped(); }} />
+      <button type="button" className="text-button" aria-pressed={editing} onClick={() => setEditing(!editing)}>{editing ? t("完成") : `⚙ ${t("编辑卡片")}`}</button>
+    </div>
+    {editing && <div className="ws-edit-bar">
+      {missing.length > 0 && <select value="" aria-label={t("添加卡片")} onChange={e => { if (e.target.value) setLayout(addCard(layout, e.target.value as CardId)); }}>
+        <option value="">＋ {t("添加卡片")}</option>{missing.map(c => <option key={c.id} value={c.id}>{t(c.title)}</option>)}</select>}
+      <button type="button" className="text-button" onClick={() => setLayoutState(resetLayout(bot.id))}>{t("恢复默认")}</button>
+    </div>}
+    <div className="ws-grid">{layout.map((item, index) => <WorkspaceCard key={`${item.card}:${index}`} item={item} bot={bot} symbol={symbol} wide={wide} editing={editing}
+      onOpenCompany={onOpenCompany} onPickSymbol={onPickSymbol}
+      controls={editing ? <span className="ws-card-controls">
+        <button type="button" className="text-button" disabled={index === 0} aria-label={t("上移")} onClick={() => setLayout(moveCard(layout, index, -1))}>↑</button>
+        <button type="button" className="text-button" disabled={index === layout.length - 1} aria-label={t("下移")} onClick={() => setLayout(moveCard(layout, index, 1))}>↓</button>
+        <select value={item.size ?? ""} aria-label={t("大小")} onChange={e => setLayout(resizeCard(layout, index, e.target.value as "s" | "m" | "l"))}><option value="">{t("默认")}</option><option value="s">S</option><option value="m">M</option><option value="l">L</option></select>
+        {["price", "forecast", "materials", "filings"].includes(item.card) && <input className="ws-pin" defaultValue={item.symbol ?? ""} maxLength={8} placeholder={t("固定股票")} aria-label={t("固定股票")} onBlur={e => setLayout(pinCardSymbol(layout, index, e.target.value))} />}
+        <button type="button" className="text-button" aria-label={t("删除")} onClick={() => setLayout(removeCard(layout, index))}>✕</button>
+      </span> : undefined} />)}</div>
+    {bot.focus.theme && <p className="fine-print">{t("关注主题")}：{bot.focus.theme}</p>}
     <p className="fine-print">{t("隔离的是记忆和注意力，不是数据：任何 bot 都能查所有公司的数据，工具范围限定的除外。")}</p>
   </div>;
 }
 
-export function BotSide({ bot, symbol, onOpenCompany, onChanged, onDeleted }: { bot: Bot; symbol: string; onOpenCompany: OpenCompany; onChanged: (bot: Bot) => void; onDeleted: () => void }) {
+type SideWidth = "narrow" | "half" | "full";
+const NEXT_WIDTH: Record<SideWidth, SideWidth> = { narrow: "half", half: "full", full: "narrow" };
+
+/** The bot's right rail.  Its current stock is its own (workspace-cards.botSymbol) and is also written back to the
+ * page's stock, so 公司 / 资料库 open on the same one.  An agent select_stock changes the page's stock, which the
+ * rail adopts while it is open. */
+export function BotSide({ bot, symbol, watchlist = [], onSelectSymbol, onOpenCompany, onChanged, onDeleted }: { bot: Bot; symbol: string; watchlist?: string[]; onSelectSymbol?: (symbol: string) => void; onOpenCompany: OpenCompany; onChanged: (bot: Bot) => void; onDeleted: () => void }) {
   const { t } = useLocale();
   const [tab, setTab] = useState<"workspace" | "profile">("workspace");
-  return <aside id="bot-side" className="bot-side" aria-label={`${bot.name} · ${t("工作区")}`}>
+  const [current, setCurrent] = useState(() => botSymbol(bot, symbol));
+  const [width, setWidth] = useState<SideWidth>("narrow");
+  const aside = useRef<HTMLElement>(null), seenGlobal = useRef(symbol);
+  useEffect(() => { if (current !== symbol) onSelectSymbol?.(current); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (symbol === seenGlobal.current) return;
+    seenGlobal.current = symbol;
+    if (symbol !== current) { setCurrent(symbol); storeBotSymbol(bot.id, symbol); }
+  }, [symbol]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    const layoutBox = aside.current?.closest(".agent-layout") as HTMLElement | null;
+    if (!layoutBox) return;
+    layoutBox.dataset.sideWidth = width;
+    return () => { delete layoutBox.dataset.sideWidth; };
+  }, [width]);
+  const pick = (next: string) => { const clean = storeBotSymbol(bot.id, next); if (!clean) return; setCurrent(clean); seenGlobal.current = clean; onSelectSymbol?.(clean); };
+  return <aside ref={aside} id="bot-side" className="bot-side" aria-label={`${bot.name} · ${t("工作区")}`}>
     <div className="section-tabs" role="tablist">
       <button type="button" role="tab" aria-selected={tab === "workspace"} aria-current={tab === "workspace" ? "page" : undefined} onClick={() => setTab("workspace")}>{t("工作区")}</button>
       <button type="button" role="tab" aria-selected={tab === "profile"} aria-current={tab === "profile" ? "page" : undefined} onClick={() => setTab("profile")}>{t("档案")}</button>
+      {tab === "workspace" && <button type="button" className="ws-expand" onClick={() => setWidth(NEXT_WIDTH[width])} aria-label={t("展开工作区")} title={width === "narrow" ? t("展开到一半") : width === "half" ? t("全宽") : t("收窄")}>{width === "full" ? "⤡" : "⤢"}</button>}
     </div>
-    {tab === "workspace" ? <BotWorkspaceTab bot={bot} symbol={symbol} onOpenCompany={onOpenCompany} /> : <BotProfileTab key={bot.id} bot={bot} onChanged={onChanged} onDeleted={onDeleted} />}
+    {tab === "workspace" ? <BotWorkspaceTab bot={bot} symbol={current} watchlist={watchlist} wide={width !== "narrow"} onPickSymbol={pick} onOpenCompany={onOpenCompany} /> : <BotProfileTab key={bot.id} bot={bot} onChanged={onChanged} onDeleted={onDeleted} />}
   </aside>;
 }
 
