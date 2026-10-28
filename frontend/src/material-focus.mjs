@@ -6,6 +6,11 @@ export const MATERIAL_FOCUS_KEY = "market-evidence-agent:material-analysis-focus
 const TICKER = /^[A-Z]{1,5}(?:[.-][A-Z]{1,2})?$/;
 const ID = /^[0-9a-f-]{8,64}$/i;
 
+/** The 工作区 card's link to one 资料库 row; its type keeps an SEC filing from being looked for among uploads. */
+export function materialHref(symbol, item) {
+  return `#materials?symbol=${encodeURIComponent(symbol)}&focus=${item.source_id}&type=${item.source_type}`;
+}
+
 /** {symbol, source_type, source_id} from a #materials?symbol=&focus=[&type=] hash, or null. */
 export function materialLinkFromHash(hash) {
   const value = String(hash || "").replace(/^#/, "");
