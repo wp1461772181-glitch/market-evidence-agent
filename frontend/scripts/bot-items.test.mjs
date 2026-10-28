@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { botDraft, botFromHash, botModelLabel, botSections, focusText, keyStatusLabel, parseFocusSymbols, toggleTool, toolEnabled } from "../src/bot-items.mjs";
+import { newBotFields, botDraft, botFromHash, botModelLabel, botSections, focusText, keyStatusLabel, parseFocusSymbols, toggleTool, toolEnabled } from "../src/bot-items.mjs";
 
 const bot = (id, extra = {}) => ({ id, name: id, group: "", pinned: false, hidden: false, is_default: false, last_at: null, model: null, ...extra });
 
@@ -59,4 +59,16 @@ test("a catalog model shows configured or missing, never its key; a bot without 
   assert.deepEqual(botModelLabel(bot("x"), catalog), { name: "main", label: "主模型", usable: true, isDefault: true });
   assert.deepEqual(botModelLabel(bot("x", { model: "cheap" }), catalog), { name: "cheap", label: "cheap", usable: false, isDefault: false });
   assert.equal(botModelLabel(bot("x", { model: "gone" }), catalog).usable, false);
+});
+
+test("a new bot is a name only; a template just pre-fills what was left blank", () => {
+  const tools = [{ name: "web_research" }, { name: "remember" }];
+  const news = { id: "news_monitor", name: "抓新闻", title: "新闻监控", description: "盯新闻", tool_scope: ["web_research", "gone_tool"] };
+  assert.deepEqual(newBotFields("  小助手 ", null, tools), { name: "小助手", template: "blank" });
+  assert.deepEqual(newBotFields("小助手", { id: "blank", name: "", title: "", description: "", tool_scope: null }, tools), { name: "小助手", template: "blank" });
+  assert.deepEqual(newBotFields("", news, tools), { name: "抓新闻", template: "news_monitor", title: "新闻监控", description: "盯新闻", tool_scope: ["web_research"] });
+  // The owner's own name wins; nothing about focus, model, skills or the daily cap is ever sent.
+  const fields = newBotFields("我的新闻", { ...news, tool_scope: null }, tools);
+  assert.equal(fields.name, "我的新闻");
+  for (const key of ["tool_scope", "focus", "model", "skills", "daily_notify_cap"]) assert.ok(!(key in fields), key);
 });

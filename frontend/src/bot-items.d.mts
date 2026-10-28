@@ -3,6 +3,7 @@ export const MAX_FOCUS_COMPANIES: number;
 export function botFromHash(hash: string): string | null;
 export function botSections(bots: Bot[], options?: { showHidden?: boolean }): { top: Bot | null; groups: Array<{ name: string; bots: Bot[] }> };
 export function botDraft(template: BotTemplate | null | undefined, tools: BotTool[]): { name: string; title: string; description: string; tool_scope: string[] | null; template: string; focus: BotFocus; model: string | null };
+export function newBotFields(name: string, template: BotTemplate | null | undefined, tools: BotTool[]): { name: string; template: string; title?: string; description?: string; tool_scope?: string[] };
 export function toggleTool(scope: string[] | null | undefined, name: string, allNames: string[]): string[] | null;
 export function toolEnabled(scope: string[] | null | undefined, name: string): boolean;
 export function parseFocusSymbols(text: string): { companies: Array<{ symbol: string }>; invalid: string[]; truncated: boolean };

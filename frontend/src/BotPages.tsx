@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { addCatalogModel, createBot, deleteBot, deleteCatalogModel, getBotTemplates, getChatMode, getModelCatalog, listBots, listSkills, setDefaultCatalogModel, updateBot, updateCatalogModel,
   type Skill, type Bot, type BotFields, type BotTemplate, type BotTool, type CatalogEntryInput, type CatalogModel, type ModelCatalog } from "./api";
 import { translatePhrase, useLocale } from "./i18n";
-import { botDraft, botModelLabel, botSections, focusText, keyStatusLabel, parseFocusSymbols, toggleTool, toolEnabled } from "./bot-items.mjs";
+import { botDraft, botModelLabel, botSections, newBotFields, focusText, keyStatusLabel, parseFocusSymbols, toggleTool, toolEnabled } from "./bot-items.mjs";
 import { toggleUsual, usableSkills } from "./skill-items.mjs";
 import { toolLabel } from "./agent-tool-labels.mjs";
 import { TaskManager } from "./BotRoutines";
@@ -110,31 +110,42 @@ function draftOf(bot: Bot): Draft {
     avatar: bot.avatar, group: bot.group, pinned: bot.pinned, hidden: bot.hidden, daily_notify_cap: bot.daily_notify_cap };
 }
 
+/** New bot: one step.  A name is all it needs; a template is an optional shortcut that only pre-fills what was
+ * left blank.  Focus, model, tools, skills and the daily cap are set later on the bot's 档案 tab. */
 export function NewBotDialog({ onClose, onCreated }: { onClose: () => void; onCreated: (bot: Bot) => void }) {
   const { t } = useLocale();
-  const { catalog, tools, templates, error } = useBotOptions();
-  const [draft, setDraft] = useState<Draft | null>(null), [busy, setBusy] = useState(false), [status, setStatus] = useState("");
-  const dialog = useRef<HTMLElement>(null);
-  useEffect(() => { dialog.current?.querySelector<HTMLElement>("button,input")?.focus(); const key = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); }; document.addEventListener("keydown", key); return () => document.removeEventListener("keydown", key); }, [onClose]);
-  async function save() {
-    if (!draft) return;
+  const [templates, setTemplates] = useState<BotTemplate[]>([]), [tools, setTools] = useState<BotTool[]>([]);
+  const [name, setName] = useState(""), [picked, setPicked] = useState<BotTemplate | null>(null);
+  const [busy, setBusy] = useState(false), [status, setStatus] = useState("");
+  const dialog = useRef<HTMLElement>(null), nameBox = useRef<HTMLInputElement>(null);
+  useEffect(() => { nameBox.current?.focus(); const key = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); }; document.addEventListener("keydown", key); return () => document.removeEventListener("keydown", key); }, [onClose]);
+  useEffect(() => {
+    const controller = new AbortController();
+    // Templates are only a shortcut: when they cannot be read, a name still creates the bot.
+    getBotTemplates(controller.signal).then(v => { setTemplates(v.templates.filter(x => x.id !== "blank")); setTools(v.tools); }).catch(() => { /* create works without them */ });
+    return () => controller.abort();
+  }, []);
+  const fields = newBotFields(name, picked, tools);
+  async function save(event?: React.FormEvent) {
+    event?.preventDefault();
+    if (!fields.name || busy) return;
     setBusy(true); setStatus("");
-    try { onCreated(await createBot(fieldsOf(draft))); } catch (err) { setStatus(message(err, t("创建失败，请重试。"))); } finally { setBusy(false); }
+    try { onCreated(await createBot(fields)); } catch (err) { setStatus(message(err, t("创建失败，请重试。"))); } finally { setBusy(false); }
   }
   return <div className="profile-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }}>
-    <section ref={dialog} className="profile-modal bot-dialog" role="dialog" aria-modal="true" aria-labelledby="new-bot-title">
+    <section ref={dialog} className="profile-modal bot-dialog is-compact" role="dialog" aria-modal="true" aria-labelledby="new-bot-title">
       <button className="profile-close" onClick={onClose} aria-label={t("关闭")} disabled={busy}>×</button>
-      <p className="eyebrow">{t("新建 bot")}</p><h2 id="new-bot-title">{draft ? t("填写它的岗位") : t("从模板开始")}</h2>
-      {error && <p role="alert">{error}</p>}
-      {!draft && <div className="bot-templates">{templates.map(tpl => <button key={tpl.id} type="button" className="profile-card" onClick={() => setDraft(botDraft(tpl, tools))}>
-        <strong>{t(tpl.label)}</strong><small>{tpl.description ? t(tpl.description) : t("从空白开始，自己写说明。")}</small>
-        <small>{tpl.tool_scope === null ? t("全部工具") : `${tpl.tool_scope.length} ${t("个工具")}`}</small></button>)}
-        {!templates.length && !error && <p role="status">{t("正在读取…")}</p>}
-        <p className="fine-print">{t("模板只是捷径，选完照样能改。")}</p></div>}
-      {draft && <><BotForm draft={draft} setDraft={setDraft} tools={tools} catalog={catalog} isDefault={false} disabled={busy} />
+      <h2 id="new-bot-title">{t("新建 bot")}</h2>
+      <form className="bot-create" onSubmit={e => void save(e)}>
+        <label>{t("名字")}<input ref={nameBox} value={name} maxLength={40} disabled={busy} onChange={e => setName(e.target.value)} placeholder={picked?.name || t("例如：读财报")} /></label>
+        {templates.length > 0 && <fieldset className="bot-template-chips" disabled={busy}><legend>{t("模板（可选）")}</legend>
+          {templates.map(tpl => <button key={tpl.id} type="button" className="bot-chip" aria-pressed={picked?.id === tpl.id} title={tpl.description ? t(tpl.description) : undefined} onClick={() => setPicked(picked?.id === tpl.id ? null : tpl)}>{t(tpl.label)}</button>)}
+        </fieldset>}
+        <p className="fine-print">{picked ? t("模板只预填空着的头衔、说明和工具范围。") : ""}{t("关注公司、模型、工具、技能和通知上限，创建后都在「档案」里改。")}</p>
         {status && <p className="agent-chat-status is-error" role="alert">{status}</p>}
-        <div className="chat-archive-tools"><button type="button" className="secondary-action" disabled={busy} onClick={() => setDraft(null)}>{t("换模板")}</button>
-          <button type="button" className="primary-action" disabled={busy || !draft.name.trim()} onClick={() => void save()}>{busy ? t("正在保存…") : t("创建")}</button></div></>}
+        <div className="chat-archive-tools"><button type="button" className="secondary-action" disabled={busy} onClick={onClose}>{t("取消")}</button>
+          <button type="submit" className="primary-action" disabled={busy || !fields.name}>{busy ? t("正在保存…") : t("创建")}</button></div>
+      </form>
     </section>
   </div>;
 }

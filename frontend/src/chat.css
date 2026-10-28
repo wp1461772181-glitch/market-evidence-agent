@@ -481,3 +481,12 @@
 .side-toggle { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 10px; border: 1px solid var(--c-line); border-radius: 8px; background: transparent; color: inherit; font: inherit; font-size: 12px; cursor: pointer; }
 .side-toggle.is-open { background: var(--c-soft, rgba(127, 127, 127, .12)); }
 .side-toggle:focus-visible { outline: 2px solid var(--c-accent, #7aa2ff); outline-offset: 2px; }
+
+/* Fix 5: the one-step new-bot dialog. */
+.bot-dialog.is-compact { width: min(440px, calc(100vw - 32px)); }
+.bot-create { display: grid; gap: 14px; }
+.bot-create label { display: grid; gap: 6px; font-size: 13px; }
+.bot-template-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; border: 0; }
+.bot-template-chips legend { width: 100%; margin-bottom: 6px; font-size: 13px; }
+.bot-chip { min-height: 30px; padding: 0 12px; border: 1px solid var(--c-line); border-radius: 999px; background: transparent; color: inherit; font: inherit; font-size: 12px; cursor: pointer; }
+.bot-chip[aria-pressed="true"] { border-color: var(--c-accent, #7aa2ff); background: var(--c-accent-soft, rgba(122, 162, 255, .16)); }

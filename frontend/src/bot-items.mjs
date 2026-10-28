@@ -30,6 +30,18 @@ export function botDraft(template, tools) {
     focus: { companies: [], theme: null }, model: null };
 }
 
+/** What a new bot is created with: the name, and nothing else unless a template was picked.  A template only
+ * pre-fills what the owner left blank (its name when the name is empty, its title, description and tool scope);
+ * focus, model, skills and the daily cap stay at the server's defaults until the 档案 tab changes them. */
+export function newBotFields(name, template, tools) {
+  const typed = String(name ?? "").trim();
+  if (!template || template.id === "blank") return { name: typed, template: "blank" };
+  const draft = botDraft(template, tools);
+  return { name: typed || draft.name.trim(), template: draft.template,
+    ...(draft.title ? { title: draft.title } : {}), ...(draft.description ? { description: draft.description } : {}),
+    ...(draft.tool_scope !== null ? { tool_scope: draft.tool_scope } : {}) };
+}
+
 /** Turn one tool on or off.  null means every tool; turning all of them on again gives null back, so the bot keeps
  * up with tools added later.  A scope only ever narrows the catalog: names outside it are dropped. */
 export function toggleTool(scope, name, allNames) {
