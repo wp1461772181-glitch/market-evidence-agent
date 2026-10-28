@@ -91,6 +91,9 @@ class AgentProfileItem(Base):
     origin: Mapped[str] = mapped_column(String(10), nullable=False)
     source_message_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
     quote: Mapped[str] = mapped_column(String(200), nullable=False)
+    # The layer (second edition): NULL is global, read by every bot; a bot id is that bot's own memory, read
+    # by it and by the default bot.  Added to older tables by ``agent_profile.ensure_bot_column``.
+    bot_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(10), nullable=False, default="active")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)

@@ -80,7 +80,7 @@ async def execute_reversible(operation,key,context,*,emit=None):
         if saved['status']!='executing' or saved['operations'][int(index)]!=operation:raise ValueError('confirmation_parameter_mismatch')
         name=operation['name'];args=validate(name,operation['arguments'])
         if definitions()[name].level!='reversible':raise ValueError('invalid_action_tool')
-        if name=='remember':args['_source_message_id']=operation.get('source_message_id')
+        if name=='remember':args['_source_message_id']=operation.get('source_message_id');args['_bot_id']=operation.get('bot_id')
     except (ValueError,IndexError,KeyError,TypeError):return error('confirmation_required')
     return await _dispatch(name,args,context,True,emit)
 
@@ -93,7 +93,11 @@ async def _dispatch(name,args,context,is_owner,emit):
         # The owner's own conversations, never another credential's; memory, not evidence (agent_recall).
         from .. import agent_recall as recall
         if not is_owner:return error('owner_login_required')
-        rows=await asyncio.to_thread(recall.search,context.owner_hash,args['query'],args.get('limit',3),exclude=context.conversation_id)
+        # A bot recalls its own line (its older, summarized part too); the default bot every bot's line.
+        bot=getattr(context,'bot_id',None)
+        if bot:rows=await asyncio.to_thread(recall.search,context.owner_hash,args['query'],args.get('limit',3),
+                                            bot_ids=None if context.bot_is_default else [bot])
+        else:rows=await asyncio.to_thread(recall.search,context.owner_hash,args['query'],args.get('limit',3),exclude=context.conversation_id)
         return {**result(rows,'past conversations'),'label':recall.LABEL,'note':recall.NOTE}
     if context.executor:
         value=context.executor(name,args)
@@ -211,8 +215,9 @@ async def _dispatch(name,args,context,is_owner,emit):
             return result([{'status':'forgotten','text':item['text'],'handle':item['handle']}],'owner profile') if item else error('profile_item_not_found')
         # The quote was checked against the user's message when the card was made (Turn.propose), and
         # the operation carrying it is frozen under the confirmation token; here only its shape is checked.
+        # The layer is the frozen bot_id the server set from the proposing turn (None: global).
         try:value=await asyncio.to_thread(profile.add_item,context.owner_hash,origin='explicit',message=args['quote'],
-                                          source_message_id=args.get('_source_message_id'),
+                                          source_message_id=args.get('_source_message_id'),bot_id=args.get('_bot_id'),
                                           **{k:args[k] for k in ('kind','topic','text','quote')})
         except profile.ProfileError as exc:return error(str(exc))
         if value.get('status')=='skipped':return error(value.get('reason') or 'profile_write_skipped')

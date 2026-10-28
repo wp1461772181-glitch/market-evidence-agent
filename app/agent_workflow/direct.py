@@ -1414,10 +1414,15 @@ class Turn:
             if not quote:return self.write_error(name,'quote_not_in_user_message')
             args={**args,'quote':quote};operation['arguments']['quote']=quote
             operation['source_message_id']=await asyncio.to_thread(profile.user_message_id,self.context.conversation_id,str(self.state.get('turn_id') or ''))
-            display={'title':WRITE_TITLES['remember'],'targets':[{'title':args['text'],'quote':args['quote']}],
-                     'alternative':'可以撤回：之后说「忘掉……」或在记忆页删除。它只影响回答的格式和侧重，不是证据，也不授权任何操作。'}
+            # The model proposes the layer; the server resolves "bot" to this turn's bot (no bot: global).
+            bot=self.context.bot_id if args.get('scope')=='bot' else None
+            operation['bot_id']=bot
+            layer=f"只在 bot「{self.context.bot_name or ''}」里用" if bot else '全局：所有 bot 都用'
+            display={'title':WRITE_TITLES['remember'],'targets':[{'title':args['text'],'quote':args['quote'],'scope':layer}],
+                     'alternative':f'范围：{layer}（记忆页可改）。可以撤回：之后说「忘掉……」或在记忆页删除。它只影响回答的格式和侧重，不是证据，也不授权任何操作。'}
         else:
-            item=await asyncio.to_thread(profile.resolve_handle,self.context.owner_hash,args['item_id'])
+            item=await asyncio.to_thread(profile.resolve_handle,self.context.owner_hash,args['item_id'],
+                                         bot_id=self.context.bot_id,every_bot=self.context.bot_is_default)
             if not item:return self.write_error(name,'profile_item_not_found')
             display={'title':WRITE_TITLES['forget'],'targets':[{'title':item['text']}],
                      'alternative':'忘掉后这条不再用于回答；记忆页里仍能看到它的归档记录。'}

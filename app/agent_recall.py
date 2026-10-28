@@ -10,6 +10,10 @@ and never becomes a citation, so a figure the answer takes from it still needs t
 Retrieval is lexical (CJK bigrams and Latin words, scored in Python over the owner's rows).  The
 knowledge store's hybrid retrieval is bound to knowledge documents and their index generations, and a
 single owner's conversations are few, so a separate vector collection is not worth its upkeep yet.
+
+Scope (second edition): a row belongs to the bot whose line its conversation is (``agent_conversations.
+bot_id``), so it follows the conversation without a copy.  A bot searches its own line; the default bot
+searches every bot's.  A deleted bot's line is archived and no longer searched.
 """
 from __future__ import annotations
 
@@ -20,7 +24,7 @@ import uuid
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 
-from .agent_chat_models import (AgentConversation, AgentConversationRecall, AgentConversationSummary,
+from .agent_chat_models import (AgentBot, AgentConversation, AgentConversationRecall, AgentConversationSummary,
                                 AgentConversationTitle, AgentMessage)
 from .database import SessionLocal
 
@@ -149,11 +153,20 @@ def backfill() -> int:
     return written
 
 
-def _rows(db, owner: str, exclude: str | None):
-    statement = (select(AgentConversationRecall, AgentConversation.updated_at)
+def _rows(db, owner: str, exclude: str | None, bot_ids=None):
+    statement = (select(AgentConversationRecall, AgentConversation.updated_at, AgentConversation.bot_id, AgentBot.name)
                  .join(AgentConversation, AgentConversation.id == AgentConversationRecall.conversation_id)
+                 .outerjoin(AgentBot, (AgentBot.id == AgentConversation.bot_id) & (AgentBot.owner_hash == owner))
                  .where(AgentConversationRecall.owner_hash == owner, AgentConversation.owner_hash == owner,
                         AgentConversation.archived_at.is_(None)))
+    if bot_ids is not None:
+        wanted = []
+        for value in bot_ids:
+            try:
+                wanted.append(uuid.UUID(str(value)))
+            except ValueError:
+                pass
+        statement = statement.where(AgentConversation.bot_id.in_(wanted))
     if exclude:
         try:
             statement = statement.where(AgentConversationRecall.conversation_id != uuid.UUID(str(exclude)))
@@ -163,11 +176,12 @@ def _rows(db, owner: str, exclude: str | None):
                       .limit(SCAN_ROWS)).all()
 
 
-def _item(row: AgentConversationRecall, updated_at) -> dict:
+def _item(row: AgentConversationRecall, updated_at, bot_id=None, bot_name=None) -> dict:
     cid = str(row.conversation_id)
     return {"conversation_id": cid, "title": row.title, "date": updated_at.date().isoformat() if updated_at else None,
             "summary": row.text[:SUMMARY_SHOWN_CHARS],
-            "kind": "summary" if row.seq else "questions", "link": f"#agent/{cid}"}
+            "kind": "summary" if row.seq else "questions", "link": f"#agent/{cid}",
+            "bot_id": str(bot_id) if bot_id else None, "bot_name": bot_name}
 
 
 def _score(row: AgentConversationRecall, wanted: list[str]) -> tuple[int, int]:
@@ -177,37 +191,38 @@ def _score(row: AgentConversationRecall, wanted: list[str]) -> tuple[int, int]:
     return len(matched), hits
 
 
-def search(owner: str, query: str, limit: int = MAX_LIMIT, *, exclude: str | None = None) -> list[dict]:
-    """The owner's conversations that best match the query, one line each (best-matching row)."""
+def search(owner: str, query: str, limit: int = MAX_LIMIT, *, exclude: str | None = None, bot_ids=None) -> list[dict]:
+    """The owner's conversations that best match the query, one line each (best-matching row).  ``bot_ids``
+    None: every line; otherwise only those bots' lines."""
     wanted = terms(query)
     if not wanted:
-        return recent(owner, limit=limit, exclude=exclude)
+        return recent(owner, limit=limit, exclude=exclude, bot_ids=bot_ids)
     limit = max(1, min(MAX_LIMIT, int(limit)))
     best: dict[str, tuple] = {}
     with SessionLocal() as db:
-        for order, (row, updated_at) in enumerate(_rows(db, owner, exclude)):
+        for order, (row, updated_at, bot_id, bot_name) in enumerate(_rows(db, owner, exclude, bot_ids)):
             matched, hits = _score(row, wanted)
             if not matched:
                 continue
             key = (matched, hits, -order)
             cid = str(row.conversation_id)
             if cid not in best or key > best[cid][0]:
-                best[cid] = (key, row, updated_at)
+                best[cid] = (key, _item(row, updated_at, bot_id, bot_name))
     ranked = sorted(best.values(), key=lambda value: value[0], reverse=True)[:limit]
-    return [_item(row, updated_at) for _key, row, updated_at in ranked]
+    return [item for _key, item in ranked]
 
 
-def recent(owner: str, limit: int = 20, *, exclude: str | None = None) -> list[dict]:
+def recent(owner: str, limit: int = 20, *, exclude: str | None = None, bot_ids=None) -> list[dict]:
     """The owner's newest conversations, one line each: the newest summary segment, else the questions."""
     limit = max(1, min(50, int(limit)))
     seen: dict[str, dict] = {}
     with SessionLocal() as db:
-        for row, updated_at in _rows(db, owner, exclude):
+        for row, updated_at, bot_id, bot_name in _rows(db, owner, exclude, bot_ids):
             cid = str(row.conversation_id)
             if cid not in seen:  # rows of a conversation come newest segment first, questions (seq 0) last
                 if len(seen) >= limit:
                     break
-                seen[cid] = _item(row, updated_at)
+                seen[cid] = _item(row, updated_at, bot_id, bot_name)
     return list(seen.values())
 
 

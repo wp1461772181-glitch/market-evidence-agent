@@ -5,7 +5,7 @@ from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from typing import Literal
 from starlette.background import BackgroundTask
-from pydantic import model_validator, BaseModel, Field, SecretStr, field_validator
+from pydantic import model_validator, BaseModel, ConfigDict, Field, SecretStr, field_validator
 from .agent_chat_provider import ProviderFailure
 from .agent_chat_api import REQUEST_SLOTS
 from .agent_tools import tool_schemas
@@ -301,13 +301,15 @@ def _failure_notice(exc:Exception)->str:
 def _is_owner(credential:str|None)->bool:
  from .agent_chat_identity import owner_credential_matches
  return owner_credential_matches(credential)
-async def _profile_block(credential:str|None)->str|None:
+async def _profile_block(credential:str|None,bot:dict|None=None)->str|None:
  """The owner's profile message for this turn (None for guests, or when it cannot be read: a profile is a
- convenience and never blocks a turn)."""
+ convenience and never blocks a turn).  A bot's turn gets global and its own items, the default bot every
+ bot's; a turn without a bot gets the global layer."""
  if not _is_owner(credential):return None
  from .agent_profile import render_block,touch_used
+ bot=bot or {}
  try:
-  block,ids=await asyncio.to_thread(render_block,owner_hash(credential))
+  block,ids=await asyncio.to_thread(render_block,owner_hash(credential),bot.get("bot_id"),every_bot=bool(bot.get("is_default")))
   if ids:await asyncio.to_thread(touch_used,owner_hash(credential),ids)
   return block
  except Exception:
@@ -396,7 +398,7 @@ async def stream_chat(payload:StreamRequest,request:Request,x_chat_session:str|N
    from .agent_workflow.semantic import hydrate_legacy_web_sets, legacy_web_source_choices
    legacy_result_sets=hydrate_legacy_web_sets(history_rows,owner=owner_hash(x_chat_session),conversation=cid)
    legacy_source_choices=legacy_web_source_choices(history_rows)
-   profile_block=await _profile_block(x_chat_session)
+   profile_block=await _profile_block(x_chat_session,bot)
    async for event in stream_workflow(question=payload.message,messages=messages,provider=chosen.provider,model=chosen.model,
      api_key=chosen.key(),base_url=chosen.base_url,owner_hash=owner_hash(x_chat_session),
      conversation_id=cid,identity_credential=x_chat_session,turn_id=turn,pending_request_id=payload.pending_request_id,
@@ -456,6 +458,7 @@ async def stream_chat(payload:StreamRequest,request:Request,x_chat_session:str|N
      if _is_owner(x_chat_session) and not payload.pending_request_id:
       from .agent_profile_extract import schedule_extraction
       schedule_extraction(owner_hash(x_chat_session),payload.message,conversation_id=cid,turn_id=turn,
+                          bot=bot,
                           provider=chosen.provider,model=chosen.model,
                           api_key=chosen.key(),base_url=chosen.base_url)
      if restored:yield frame("citations",{"turn_id":turn,"items":restored})
@@ -640,10 +643,35 @@ async def put_research_queue_endpoint(body: ResearchQueueBody, x_chat_session: s
 
 @router.get("/profile")
 async def get_profile_endpoint(x_chat_session: str | None = Header(default=None)):
-    """The owner's profile items, active and archived, for the memory page."""
+    """The owner's profile items, active and archived, for the memory page, and the bots an item can be
+    moved to (its layer: global or one bot)."""
+    from .agent_bots import list_bots
     from .agent_profile import list_items
     credential = _owner_only(x_chat_session)
-    return {"items": await asyncio.to_thread(list_items, owner_hash(credential))}
+    bots = await asyncio.to_thread(list_bots, owner_hash(credential))
+    return {"items": await asyncio.to_thread(list_items, owner_hash(credential)),
+            "bots": [{"id": b["id"], "name": b["name"], "is_default": b["is_default"]} for b in bots]}
+
+
+class ProfilePatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    text: str | None = Field(default=None, max_length=400)
+    bot_id: str | None = Field(default=None, max_length=36)
+
+
+@router.patch("/profile/{item_id}")
+async def patch_profile_endpoint(item_id: str, body: ProfilePatch, x_chat_session: str | None = Header(default=None)):
+    """The owner edits an item's text or moves it to another layer (``bot_id`` null: global)."""
+    from .agent_profile import ProfileError, update_item
+    credential = _owner_only(x_chat_session)
+    fields = body.model_dump(exclude_unset=True)
+    try:
+        item = await asyncio.to_thread(update_item, owner_hash(credential), item_id, fields)
+    except ProfileError as exc:
+        raise HTTPException(422, str(exc)) from None
+    if item is None:
+        raise HTTPException(404, "profile_item_not_found")
+    return {"item": item}
 
 
 @router.post("/profile/{item_id}/confirm")
@@ -668,15 +696,19 @@ async def delete_profile_endpoint(item_id: str, x_chat_session: str | None = Hea
 
 
 @router.get("/recall")
-async def get_recall_endpoint(q: str | None = None, limit: int = 20, x_chat_session: str | None = Header(default=None)):
-    """The owner's past conversations for the memory page: newest first, or the best matches for ``q``.
-    Memory, not evidence; another credential's conversations are never listed."""
+async def get_recall_endpoint(q: str | None = None, limit: int = 20, bot_id: str | None = None,
+                              x_chat_session: str | None = Header(default=None)):
+    """The owner's past conversations for the memory page: newest first, or the best matches for ``q``;
+    ``bot_id`` keeps one bot's line.  Each names its bot.  Memory, not evidence; another credential's
+    conversations are never listed."""
     from . import agent_recall as recall
     credential = _owner_only(x_chat_session)
+    bots = [bot_id] if bot_id else None
     if q and q.strip():
-        items = await asyncio.to_thread(recall.search, owner_hash(credential), q.strip()[:200], recall.MAX_LIMIT)
+        items = await asyncio.to_thread(recall.search, owner_hash(credential), q.strip()[:200], recall.MAX_LIMIT,
+                                        bot_ids=bots)
     else:
-        items = await asyncio.to_thread(recall.recent, owner_hash(credential), max(1, min(50, limit)))
+        items = await asyncio.to_thread(recall.recent, owner_hash(credential), max(1, min(50, limit)), bot_ids=bots)
     return {"items": items, "label": recall.LABEL}
 
 

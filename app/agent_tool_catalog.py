@@ -118,6 +118,7 @@ class RememberArgs(Args):
     topic:str|None=Field(default=None,pattern=r'^[a-z][a-z0-9_]{0,39}$',description='Short slug of the setting this changes (currency_unit, answer_language, answer_order); a newer item with the same kind and topic replaces the older one. Null when it replaces nothing.')
     text:str=Field(min_length=1,max_length=200,description='Short note of what to remember, in the user\'s language.')
     quote:str=Field(min_length=2,max_length=200,description="The user's own words of THIS turn that ask for it, copied character for character; the server quotes the user's message when this is not in it.")
+    scope:Literal['global','bot']=Field(default='global',description="global: holds in every bot (units, language, answer style, who the user is, views across companies). bot: only in the bot you are (a view on or focus within its company or theme, what it should watch). No other bot can be named.")
 class RecallArgs(Args):
     query:str=Field(min_length=1,max_length=200,description='What the user remembers talking about: company, ticker, topic.')
     limit:int=Field(default=3,ge=1,le=5)

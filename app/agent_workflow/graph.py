@@ -76,7 +76,8 @@ async def stream_workflow(*, question: str, messages: list[dict], provider: str,
         owner_hash=owner_hash, conversation_id=conversation_id, identity_credential=identity_credential,
         classifier=classifier, history_citation_catalogue=tuple(history_citation_catalogue or ()),
         profile_block=profile_block, unattended=unattended, token_budget=token_budget, action_sink=action_sink,
-        bot_id=bot.get("bot_id"), bot_block=bot.get("block"), tool_scope=bot.get("tool_scope"),
+        bot_id=bot.get("bot_id"), bot_name=bot.get("bot_name"), bot_is_default=bool(bot.get("is_default")),
+        bot_block=bot.get("block"), tool_scope=bot.get("tool_scope"),
         default_company=bot.get("default_company"))
     thread = checkpoint_thread_id(owner_hash, conversation_id)
     async with open_postgres_checkpointer(checkpoint_database_url()) as saver:

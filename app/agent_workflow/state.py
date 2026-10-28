@@ -52,6 +52,9 @@ class AgentRuntimeContext:
     # setting and never evidence or write authority.  ``tool_scope`` None: every tool; otherwise the only
     # tool names this turn may offer or run.  ``default_company`` applies only when the question names none.
     bot_id: str | None = None
+    # Memory layers (agent_profile, agent_recall): a bot reads global and its own; the default bot every bot's.
+    bot_name: str | None = None
+    bot_is_default: bool = False
     bot_block: str | None = field(default=None, repr=False, compare=False)
     tool_scope: frozenset | None = field(default=None, compare=False)
     default_company: dict | None = field(default=None, compare=False)

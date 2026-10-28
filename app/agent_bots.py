@@ -8,7 +8,8 @@
   catalog; it can only remove tools).  Exactly one focus company makes it the default company of a question
   that names none; the turn's audit records that the company came from the bot's settings.
 * ``model`` names a catalog entry (agent_model_catalog); the bot never holds a key.
-* Deleting a bot archives its conversation (a logical delete) and touches no other bot.
+* Deleting a bot archives its conversation (a logical delete) and its own memory items, and touches no other
+  bot.  Memory is in two layers (agent_profile): global, and each bot's own; 「助理」 reads every bot's.
 """
 from __future__ import annotations
 
@@ -18,7 +19,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy import func
 
-from .agent_chat_models import AgentBot, AgentConversation, AgentMessage
+from .agent_chat_models import AgentBot, AgentConversation, AgentMessage, AgentProfileItem
 from .database import SessionLocal
 
 DEFAULT_NAME = "助理"
@@ -310,8 +311,8 @@ def update_bot(owner_hash: str, bot_id, fields: dict) -> dict | None:
 
 
 def delete_bot(owner_hash: str, bot_id) -> bool:
-    """Remove the bot and archive its conversations (they stay in the database).  The default bot cannot be
-    deleted.  No other bot, conversation or memory changes."""
+    """Remove the bot and archive its conversations and its own memory items (they stay in the database and
+    on the memory page).  The default bot cannot be deleted.  No other bot, conversation or memory changes."""
     with SessionLocal() as db:
         bot = _owned(db, owner_hash, bot_id)
         if bot is None:
@@ -322,6 +323,9 @@ def delete_bot(owner_hash: str, bot_id) -> bool:
                                            AgentConversation.bot_id == bot.id,
                                            AgentConversation.archived_at.is_(None)).update(
             {"archived_at": func.now()}, synchronize_session=False)
+        db.query(AgentProfileItem).filter(AgentProfileItem.owner_hash == owner_hash, AgentProfileItem.bot_id == bot.id,
+                                          AgentProfileItem.status == "active").update(
+            {"status": "archived"}, synchronize_session=False)
         db.delete(bot)
         db.commit()
         return True
@@ -369,7 +373,8 @@ def turn_settings(owner_hash: str, bot_id) -> dict | None:
             db.commit()
             db.refresh(bot)
         company = default_company(bot)
-        settings = {"bot_id": str(bot.id), "bot_name": bot.name, "conversation_id": str(bot.conversation_id),
+        settings = {"bot_id": str(bot.id), "bot_name": bot.name, "is_default": bool(bot.is_default),
+                    "conversation_id": str(bot.conversation_id),
                     "model": bot.model, "description": bot.description, "theme": (bot.focus or {}).get("theme"),
                     "focus_companies": [c["symbol"] for c in (bot.focus or {}).get("companies") or []],
                     "tool_scope": frozenset(bot.tool_scope) | ALWAYS_ON if bot.tool_scope is not None else None,
