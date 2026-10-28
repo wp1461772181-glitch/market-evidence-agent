@@ -255,3 +255,25 @@ Commits `c1b0a13` (backend), `8b46b58` (frontend). Deploy after Stage B.
    已运行：没有新东西). Suggestions from a run show in 待你确认 (sidebar top), labelled with the bot.
 5. The default bot can hold a 每天早上 digest task: its runs see the other bots' posts since its last run.
 6. The bot page and sidebar are frontend, so they go live only with a push (needs the owner's OK).
+
+## Stage D — Telegram as a tool (second edition)
+
+Commit `e63d39e`. Deploy after Stage C.
+
+1. Tests on the Mac: `.venv/bin/python -m pytest -q tests/test_agent_notify.py tests/test_telegram_bridge.py
+   tests/test_telegram_bridge_flow.py tests/test_agent_bot_tasks.py` (CodeBot: 11 new).
+2. `deploy.py --backend-only`. On startup:
+   - `agent_telegram_messages` (the outbox) is created;
+   - `agent_telegram_bind.chat_id` and `user_id` are widened to BIGINT;
+   - brief tasks with channel telegram are migrated: their instruction gets a note to use notify_telegram, and the
+     channel becomes inbox.
+3. Restart the bridge (`com.market-evidence-agent.telegram-bridge`). It no longer needs the background model: each
+   Telegram turn is a bot turn, and its model comes from the server catalog. Check `--dry-run` first.
+4. **Live check (real model):**
+   - Give the news bot the instruction 「只有重要程度为高才发 Telegram」 and a daily cap of 2 (bot 档案).
+     Its notification arrives as 【抓新闻】… with 来源：[1] title https://….
+   - Reply to that message in Telegram. The answer comes from 抓新闻 and appears in its line.
+   - 「@苹果 …」 goes to the Apple bot. A plain message goes to 「助理」.
+   - Past the cap, nothing more is sent (the tool answers notify_daily_cap).
+   - A message from another account gets nothing.
+5. Old 「手机」 conversation: it stays readable under 「助理」 as 往事; new messages go into the bot lines.
