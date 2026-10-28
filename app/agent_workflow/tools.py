@@ -48,7 +48,8 @@ async def search_knowledge(args,context):
         from ..knowledge.models import KnowledgeDocument
         with SessionLocal() as db:
             terms=[AgentWebSource.owner_hash==context.owner_hash]
-            if symbol:terms.append(AgentWebSource.symbol==symbol)
+            # With a stock, query_materials already read a page filed in 资料库: one copy, not two.
+            if symbol:terms.extend((AgentWebSource.symbol==symbol,AgentWebSource.uploaded_evidence_id.is_(None)))
             elif args.get('company'):terms.append(AgentWebSource.company.ilike(args['company']))
             elif not args.get('source_id'):terms.append(AgentWebSource.excerpt.contains(query,autoescape=True))
             if args.get('source_id'):terms.append(AgentWebSource.id==uuid.UUID(args['source_id']))
@@ -292,7 +293,7 @@ def execute_costly(operation,key,context):
             if not before or not after or after<before:
                 return {'ok':True,'status':'completed_without_write','reason':'not_newer'}
         with SessionLocal() as db:
-            value=save_snapshot(db,context.owner_hash,page,symbol=args.get('symbol'),company=args.get('company'));db.commit()
+            value=save_snapshot(db,context.owner_hash,page,symbol=args.get('symbol'),company=args.get('company'),library=not args.get('knowledge_only'));db.commit()
             # The report names the material the user reviewed, not just its ticker.
             return {**value,'title':str(page.get('title') or args['url']).strip()[:300] or args['url']}
     if name=='initialize_prices':

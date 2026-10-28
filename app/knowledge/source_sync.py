@@ -42,7 +42,7 @@ def sync_source_batch(session_factory, tokenizer, generation: str, *, source_typ
             from .models import KnowledgeChunk
             chunked=select(KnowledgeChunk.id).join(KnowledgeDocument,KnowledgeDocument.id==KnowledgeChunk.document_id).where(
                 KnowledgeDocument.source_table=='agent_web_sources',KnowledgeDocument.source_id==__import__('sqlalchemy').cast(AgentWebSource.id,__import__('sqlalchemy').String),KnowledgeChunk.generation==generation).correlate(AgentWebSource).exists()
-            rows=session.scalars(select(AgentWebSource).where(~chunked).order_by(AgentWebSource.fetched_at).limit(batch_size)).all()
+            rows=session.scalars(select(AgentWebSource).where(~chunked,AgentWebSource.uploaded_evidence_id.is_(None)).order_by(AgentWebSource.fetched_at).limit(batch_size)).all()
             docs=[as_document(row) for row in rows]
             next_cursor=str(rows[-1].id) if rows else None
         elif source_type == "faq":

@@ -518,7 +518,7 @@ def get_job(*, db: Session, job_id: UUID) -> dict[str, Any] | None:
 
 def list_materials(*, db: Session, symbol: str | None = None, source_type: str | None = None,
                    analysis_status: str | None = None, review_status: str | None = None,
-                   limit: int = 10, offset: int = 0) -> dict[str, Any]:
+                   limit: int = 10, offset: int = 0, order: str = "published") -> dict[str, Any]:
     if not 1 <= limit <= 50 or offset < 0:
         raise MaterialAnalysisError("limit must be 1-50 and offset must be non-negative")
     if source_type is not None and source_type not in {"official_filing", "uploaded_media"}:
@@ -563,7 +563,13 @@ def list_materials(*, db: Session, symbol: str | None = None, source_type: str |
         if analysis_status is None or item["analysis_status"] == analysis_status:
             if review_status is None or item["review_status"] == review_status:
                 items.append(item)
-    items.sort(key=lambda item: (item["published_at"] or "", item["observed_at"] or "", item["source_id"]), reverse=True)
+    if order not in {"published", "recent"}:
+        raise MaterialAnalysisError("order must be published or recent")
+    # "recent" is 最近存入: when the library received it, for finding what an agent just saved.
+    if order == "recent":
+        items.sort(key=lambda item: (item["observed_at"] or "", item["published_at"] or "", item["source_id"]), reverse=True)
+    else:
+        items.sort(key=lambda item: (item["published_at"] or "", item["observed_at"] or "", item["source_id"]), reverse=True)
     total = len(items)
     return {"items": items[offset:offset + limit], "total": total, "limit": limit, "offset": offset}
 

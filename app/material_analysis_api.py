@@ -87,12 +87,13 @@ def _require_schema(db: Session) -> None:
 @router.get("/v3/materials")
 def materials(
     symbol: str | None = None, source_type: str | None = None, analysis_status: str | None = None,
-    review_status: str | None = None, limit: int = 10, offset: int = 0, db: Session = Depends(_db),
+    review_status: str | None = None, limit: int = 10, offset: int = 0, order: str = "published",
+    db: Session = Depends(_db),
 ):
     _require_schema(db)
     try:
         return list_materials(db=db, symbol=symbol, source_type=source_type, analysis_status=analysis_status,
-                              review_status=review_status, limit=limit, offset=offset)
+                              review_status=review_status, limit=limit, offset=offset, order=order)
     except MaterialAnalysisError as exc:
         raise HTTPException(status_code=exc.status_code, detail={"code": exc.code, "message": str(exc)}) from exc
 

@@ -11,9 +11,9 @@ def test_web_snapshot_deduplicates_url_and_body_and_keeps_type(disposable_databa
     identity='a'*64;url='https://example.org/news?b=2&a=1#top'
     page={'url':url,'title':'Micron revenue news','excerpt':'Micron revenue increased.','published_at':'2026-10-14T12:00:00Z','fetched_at':datetime.now(UTC).isoformat(),'body_provenance':'public_page_fetch'}
     with SessionLocal() as db:
-        one=save_snapshot(db,identity,page,symbol='MU',company='Micron');db.commit()
-        two=save_snapshot(db,identity,{**page,'url':'https://example.org/news?a=1&b=2'},symbol='MU',company='Micron');db.commit()
-        three=save_snapshot(db,identity,{**page,'url':'https://example.org/alias'},symbol='MU');db.commit()
+        one=save_snapshot(db,identity,page,symbol='MU',company='Micron',library=False);db.commit()
+        two=save_snapshot(db,identity,{**page,'url':'https://example.org/news?a=1&b=2'},symbol='MU',company='Micron',library=False);db.commit()
+        three=save_snapshot(db,identity,{**page,'url':'https://example.org/alias'},symbol='MU',library=False);db.commit()
         assert one['document_id']==two['document_id']==three['document_id']
         assert two['status']=='already_exists'
         doc=db.get(KnowledgeDocument,uuid.UUID(one['document_id']))
@@ -45,7 +45,7 @@ def test_saved_web_survives_sync_index_retrieval_and_owner_citation_restore(disp
     generation=uuid.uuid4().hex*2;credential='web-pipeline-owner';identity=owner_hash(credential)
     page={'url':'https://example.org/pipeline/'+uuid.uuid4().hex,'title':'CWEB update','excerpt':'CWEB published its engineering update.','published_at':'2026-10-14T00:00:00Z','fetched_at':datetime.now(UTC).isoformat()}
     with SessionLocal() as db:
-        saved=save_snapshot(db,identity,page,symbol='CWEB',company='CWEB');db.commit()
+        saved=save_snapshot(db,identity,page,symbol='CWEB',company='CWEB',library=False);db.commit()
     factory=lambda:Session(engine)
     for _ in range(12):sync_source_batch(factory,Tok(),generation,source_type='web',batch_size=10)
     store=Store();out=index_pending(factory,Embed(),store,generation,max_tasks=200)

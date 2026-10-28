@@ -428,6 +428,22 @@ def execution_facts(value: dict,operations: list|None=None) -> list[dict]:
     return rows or [{'status':'complete','ok':value.get('ok',True)}]
 
 
+def library_note(value: dict,language: str='Chinese') -> str:
+    """Where a confirmed save landed in 资料库, as a link the web page opens on that row (UX batch 2, P1).
+
+    ``FINBOT_WEB_URL`` (the deployed page, e.g. the Pages address) makes the link absolute, so a Telegram
+    reply carries one too; without it the link is the page's own hash route."""
+    import os
+    base=os.getenv('FINBOT_WEB_URL','').strip()
+    links=[]
+    for row in execution_rows(value):
+        link=row.get('material_link') if isinstance(row,dict) else None
+        if isinstance(link,str) and link.startswith('#materials?') and (row.get('symbol'),link) not in links:links.append((row.get('symbol'),link))
+    if not links:return ''
+    label='在资料库查看' if language=='Chinese' else 'Open in the library'
+    return '\n\n'+'\n'.join(f'{label}：[资料库 · {symbol}]({base}{link})' for symbol,link in links[:4])
+
+
 def execution_rows(value: dict) -> list[dict]:
     """The handler rows of a consent result, whether they sit at the top level or under ``data``."""
     rows=[]
@@ -1354,6 +1370,19 @@ class Turn:
         if args.get('decision_date'):row['decision_date']=args['decision_date']
         return [row] if row else [{'symbol':symbol}]
 
+    def library_symbol(self,args):
+        """The stock a saved page is filed under: the model's, the request's, then the bot's own company."""
+        company=self.default_company()
+        return args.get('symbol') or self.scope.get('symbol') or (company or {}).get('symbol')
+
+    def library_symbol_required(self):
+        """Which stock's 资料库?  The model asks the user with these candidates (ask_user), never guesses."""
+        seen=[];company=self.default_company()
+        for symbol in [*(self.context.watchlist or ()),(company or {}).get('symbol')]:
+            if symbol and symbol not in seen:seen.append(symbol)
+        return {'ok':False,'data':[],'error_code':'library_symbol_required','candidates':seen[:8],
+                'question':'存到哪只股票的资料库？','hint':'用 ask_user 问用户存到哪只股票（给出 candidates，并加一项「只存知识库」），再带上 symbol 重新调用；用户选只存知识库时传 knowledge_only=true。'}
+
     async def propose(self,name,args):
         if not self.owner:return self.write_error(name,'owner_login_required')
         if self.unattended():return self.write_error(name,'unattended_read_only')
@@ -1368,7 +1397,9 @@ class Turn:
         if name=='ingest_web_source':
             # Guard an explicit newer-date condition; never choose a route or tool.
             if args.get('newer_than') is None and self.scope.get('write_condition')=='newer_than_saved':return tools.error('comparison_citation_required')
-            args={**args,'company':args.get('company') or self.scope.get('company'),'symbol':args.get('symbol') or self.scope.get('symbol')}
+            args={**args,'company':args.get('company') or self.scope.get('company'),'symbol':self.library_symbol(args)}
+            # 资料库 is per stock: with no stock to file it under, ask before minting a card (UX batch 2, P1).
+            if not args['symbol'] and not args.get('knowledge_only'):return self.library_symbol_required()
             operation['arguments']=copy.deepcopy(args)
             web=next((r for o in self.observations for r in o['result']['data'] if r.get('url')==args['url']),None)
             if web is None:web=next((r for s in self.sets for r in s['rows'] if r.get('url')==args['url']),None)
@@ -1377,7 +1408,8 @@ class Turn:
             operation['snapshot']=freeze_snapshot(web)
             operation['entity_aliases']=self.scope.get('_entity_aliases',[])
             pub=timestamp(web.get('published_at'));operation['published_at']=web.get('published_at')
-            display.update(title=web.get('title'),url=args['url'],web_date=web.get('published_at'),alternative='也可抓取最新 SEC 官方文件。')
+            destination=('只存知识库检索，不进资料库' if args.get('knowledge_only') else f'存入 资料库 · {args["symbol"]} ＋ 知识库检索')+'。也可抓取最新 SEC 官方文件。'
+            display.update(title=web.get('title'),url=args['url'],web_date=web.get('published_at'),alternative=destination)
             display['targets']=[{**(display.get('targets') or [{}])[0],'title':web.get('title') or args['url']}]
             if args.get('newer_than') is not None:
                 older=next((c for c in self.citations if c['ordinal']==args['newer_than'] and c['source_type'] in {'official_filing','saved_filing'}),None)
@@ -1393,7 +1425,8 @@ class Turn:
             from ..database import SessionLocal
             with SessionLocal() as db:
                 existing=db.scalar(select(AgentWebSource).where(AgentWebSource.owner_hash==self.context.owner_hash,or_(AgentWebSource.source_url==canonical_url(args['url']),AgentWebSource.content_hash==operation['snapshot']['content_hash'])))
-                if existing:return {'ok':True,'data':[{'status':'already_exists','source_id':str(existing.id)}]}
+                # A page saved before it could reach 资料库 (vector only) may still be filed there now.
+                if existing and (existing.uploaded_evidence_id or args.get('knowledge_only')):return {'ok':True,'data':[{'status':'already_exists','source_id':str(existing.id)}]}
         if name in {'fetch_sec','refresh_sec'}:
             # Current metadata is discovered without inventory registration or download.
             from .sec_sources import prepare_filing
@@ -1981,10 +2014,10 @@ class Turn:
                 if _REPORT_IDENTIFIER.search(text) or (language=='Chinese' and _REPORT_STATUS_WORD.search(text)):continue
                 if queued and '好了' not in text and 'ask me' not in text.lower():text=text+'\n\n'+follow_up
                 self.audit['source']='model_execution_report'
-                return self.finish(text,generated=True)
+                return self.finish(text+library_note(value,language),generated=True)
             except Exception:continue
         self.audit['source']='fixed_execution_report'
-        return self.finish(fallback+('\n\n'+follow_up if queued else ''),generated=True)
+        return self.finish(fallback+('\n\n'+follow_up if queued else '')+library_note(value,language),generated=True)
 
     def request_words(self):
         """The human's own words for this turn: a press on a card sends only the button's value."""

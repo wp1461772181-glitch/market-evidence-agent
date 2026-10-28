@@ -146,7 +146,8 @@ def test_a_text_poor_page_is_reported_as_page_without_text(owner):
 
 
 def test_a_saved_web_source_returns_the_article_title_for_the_report(monkeypatch, disposable_database):
-    Base.metadata.create_all(engine, tables=[AgentWebSource.__table__, KnowledgeDocument.__table__])
+    Base.metadata.create_all(engine, tables=[AgentWebSource.__table__, KnowledgeDocument.__table__,
+                                             UploadedEvidence.__table__, KnowledgeUploadOwner.__table__])
     monkeypatch.setattr(tools, 'owner_credential_matches', lambda credential: credential == 'owner')
     url = 'https://example.org/article/' + uuid.uuid4().hex
     page = {'url': url, 'title': 'Alphabet 的 AI 债务融资', 'excerpt': 'Alphabet 发行债券，市场关注其 AI 支出。',

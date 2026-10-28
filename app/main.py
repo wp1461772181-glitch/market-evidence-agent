@@ -196,6 +196,9 @@ def create_tables() -> None:
     from .agent_recall import safe_hook as _safe_hook
     from .agent_tasks import migrate_brief_channels
     ensure_telegram_columns()
+    # UX batch 2 (P1): a saved web page names its 资料库 row.
+    from .agent_workflow.web_sources import ensure_columns as ensure_web_source_columns
+    ensure_web_source_columns()
     _safe_hook(migrate_brief_channels)
     # Stage E: a bot's usual skills, and the built-in skills seeded (a changed text gets a new version).
     from . import agent_skills as skills_store

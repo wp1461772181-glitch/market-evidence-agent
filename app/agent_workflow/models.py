@@ -36,3 +36,5 @@ class AgentWebSource(Base):
     published_at:Mapped[datetime|None]=mapped_column(DateTime(timezone=True),nullable=True)
     fetched_at:Mapped[datetime]=mapped_column(DateTime(timezone=True))
     fetch_method:Mapped[str]=mapped_column(String(64))
+    # The 资料库 row (uploaded_evidence) this page was also saved as; search reads that copy (UX batch 2, P1).
+    uploaded_evidence_id:Mapped[uuid.UUID|None]=mapped_column(Uuid,nullable=True)

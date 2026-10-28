@@ -329,3 +329,29 @@ Frontend only, no migrations, no backend restart. Plan: `docs/superpowers/plans/
      dark text on a transparent pill; a watchlist card's 打开 link no longer vanishes on hover.
 4. **Check by hand:** 设置 › 外观 浅色, then 深色 — 总览 top card, any dialog's 取消, a watchlist card hover,
    chat consent/clarification inputs. Take the 9 screenshots (§3.1 step 6) per theme for the notes.
+
+## 2026-10-28 UX batch 2 — P1 资料入库进左侧资料库
+
+Backend + frontend. Migration: `agent_web_sources.uploaded_evidence_id UUID` (`ADD COLUMN IF NOT EXISTS`, on API start).
+
+1. **Tests on the Mac (not run on the Linux box — it has no Postgres):**
+   `.venv/bin/python -m pytest -q tests/test_agent_save_lands_in_material_library.py tests/test_telegram_consent_write.py
+   tests/test_agent_confirmed_write_failures.py tests/test_agent_web_ingestion.py tests/test_agent_redesign_behaviors.py
+   tests/test_telegram_save_card_live_shape.py tests/test_telegram_card_double_tap.py tests/test_agent_saved_material_citations.py
+   tests/test_material_analysis_api.py tests/test_agent_tool_catalog.py`.  Frontend: `cd frontend && npm run test:i18n && npm run build`.
+2. `deploy.py --backend-only`, restart the API (migration runs on start) and the Telegram bridge.
+3. **Optional, for clickable links in Telegram replies:** set `FINBOT_WEB_URL` to the web page's address (the
+   Pages URL, e.g. `https://wp1461772181-glitch.github.io/market-evidence-agent/`) in the API's environment.
+   Without it the reply's link is the page's own `#materials?...` route (works on the web, plain text in Telegram).
+4. **Backfill (Levi said yes, dry run first):**
+   `.venv/bin/python -m scripts.backfill_web_sources_to_materials` → prints how many web saves would be filed,
+   per stock, and how many have no stock (left alone).  Show Levi the numbers, then
+   `.venv/bin/python -m scripts.backfill_web_sources_to_materials --apply`.  Re-running is safe.
+5. **What changed:** a confirmed 「保存网页」 now writes 资料库 (uploaded_evidence, same `create_uploaded_evidence`
+   as 上传媒体) + owner mapping; search keeps that copy only (the web-only document is withdrawn, the source sync
+   skips filed pages, lexical search with a stock reads 资料库). The stock comes from the request, then the
+   bot's own company; with none the agent asks 「存到哪只股票的资料库？」 first. The card says
+   「存入 资料库 · AAPL ＋ 知识库检索」; the reply ends with 「在资料库查看：[资料库 · AAPL](…#materials?symbol=AAPL&focus=…)」.
+   资料库 has 股票 (当前 / 全部股票) and 排序 (发布时间 / 最近存入) selects.
+6. **Live check:** Telegram 「把这篇 <网址> 存进 AAPL 的资料库」 → 同意 → reply has the link → web 资料库 › AAPL
+   lists it first under 最近存入 as 上传材料 → ask about it in chat, it is cited → save it again: no second row.

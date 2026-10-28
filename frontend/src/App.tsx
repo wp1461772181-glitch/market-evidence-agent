@@ -8,6 +8,7 @@ import type { FilingInventory, JevLearningStatus, PriceHistory } from "./types";
 import { V2ForecastWorkspace } from "./V2ForecastWorkspace";
 import { EvidenceCenter } from "./EvidenceCenter";
 import { MaterialLibrary } from "./MaterialLibrary";
+import { MATERIAL_FOCUS_KEY, materialLinkFromHash } from "./material-focus.mjs";
 import { HistoricalReplayWorkspace } from "./HistoricalReplayWorkspace";
 import { normalizeTicker, normalizeWatchlist, selectionForWatchlist, MAX_WATCHLIST } from "./watchlist.mjs";
 import { getChatMode, setChatMode, personalChatLogin, getResearchQueue, putResearchQueue } from "./api";
@@ -127,8 +128,18 @@ function WorkspaceApp({onModeChange}:{onModeChange:(mode:"guest"|"personal")=>vo
   useEffect(() => { if (symbols.length) setRequestedSymbol(current => selectionForWatchlist(current, symbols)); }, [symbols]);
   useEffect(() => { try { localStorage.setItem("market-evidence-agent:selected-symbol:v1", requestedSymbol); } catch { /* optional preference */ } }, [requestedSymbol]);
 
+  // A save reply's link (#materials?symbol=AAPL&focus=<id>) opens 资料库 on that stock and row.
+  const [materialFocusKey, setMaterialFocusKey] = useState(0);
   useEffect(() => {
-    const onHashChange = () => setActiveSection(sectionFromHash());
+    const openMaterialLink = () => {
+      const link = materialLinkFromHash(window.location.hash);
+      if (!link) return;
+      if (link.source_id) { try { sessionStorage.setItem(MATERIAL_FOCUS_KEY, JSON.stringify(link)); } catch { /* the list still opens */ } }
+      setRequestedSymbol(link.symbol);
+      setMaterialFocusKey((value) => value + 1);
+    };
+    openMaterialLink();
+    const onHashChange = () => { setActiveSection(sectionFromHash()); openMaterialLink(); };
     window.addEventListener("hashchange", onHashChange);
     return () => window.removeEventListener("hashchange", onHashChange);
   }, []);
@@ -220,7 +231,7 @@ function WorkspaceApp({onModeChange}:{onModeChange:(mode:"guest"|"personal")=>vo
     return result;
   }
 
-  if (activeSection === "materials") return <Shell {...shellProps}><SectionTabs section={activeSection} navigate={navigate} /><MaterialLibrary key={requestedSymbol} symbol={requestedSymbol} onScan={async () => { const result = await startFilingScan(); setRetryKey((value) => value + 1); return result; }} /></Shell>;
+  if (activeSection === "materials") return <Shell {...shellProps}><SectionTabs section={activeSection} navigate={navigate} /><MaterialLibrary key={`${requestedSymbol}:${materialFocusKey}`} symbol={requestedSymbol} onScan={async () => { const result = await startFilingScan(); setRetryKey((value) => value + 1); return result; }} /></Shell>;
   if (!symbols.length) return <Shell {...shellProps}><main className="workspace"><section className="empty-watchlist"><h1>{translatePhrase("关注列表为空")}</h1><p>{translatePhrase("添加一只股票，或恢复默认关注股票，继续查看研究总览。")}</p><button className="primary-action" onClick={() => { setSymbols(DEFAULT_SYMBOLS); setRequestedSymbol(DEFAULT_SYMBOL); }}>{translatePhrase("恢复默认股票")}</button></section></main></Shell>;
   if (activeData.kind === "loading" || activeData.symbol !== requestedSymbol) return <Shell {...shellProps}><Loading symbol={requestedSymbol} /></Shell>;
   const supported = isSupportedSymbol(requestedSymbol);
@@ -512,7 +523,7 @@ function SectionTabs({ section, navigate }: { section: WorkspaceSection; navigat
 function isSupportedSymbol(symbol: string): symbol is SupportedSymbol { return isValidSymbol(symbol); }
 function isValidSymbol(symbol: string): boolean { return /^[A-Z]{1,5}(?:[.-][A-Z]{1,2})?$/i.test(symbol.trim()); }
 function sectionFromHash(): WorkspaceSection {
-  const value = window.location.hash.replace(/^#/, "").split("/", 1)[0];
+  const value = window.location.hash.replace(/^#/, "").split(/[/?]/, 1)[0];
   if ((["overview", "forecast", "evidence", "materials", "revisions", "evaluation", "replay", "agent", "bot", "admin", "briefs", "skills", "memory", "me"] as const).includes(value as WorkspaceSection)) return value as WorkspaceSection;
   // The conversation is the home page.
   return HASH_ALIASES[value] ?? "agent";

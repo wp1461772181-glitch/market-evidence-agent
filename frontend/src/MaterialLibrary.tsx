@@ -3,18 +3,16 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, getMaterialLibrary } from "./api";
 import { MaterialAnalysisDetail } from "./MaterialAnalysisDetail";
 import type { FilingScanResult, MaterialAnalysisStatus, MaterialItem, MaterialSourceType } from "./types";
+import { MATERIAL_FOCUS_KEY, librarySymbol, usableFocus, type UsableFocus } from "./material-focus.mjs";
 
-type MaterialFocus = { symbol: string; source_type: MaterialSourceType; source_id: string; analysis_id: string };
+type MaterialFocus = UsableFocus;
 
+// A focus comes from a brief's citation (with its analysis) or a save reply's link (#materials?focus=, none yet).
 function takeMaterialFocus(symbol: string): MaterialFocus | null {
   try {
-    const raw = window.sessionStorage.getItem("market-evidence-agent:material-analysis-focus");
-    window.sessionStorage.removeItem("market-evidence-agent:material-analysis-focus");
-    if (!raw) return null;
-    const value = JSON.parse(raw) as Partial<MaterialFocus>;
-    return value.symbol === symbol && (value.source_type === "official_filing" || value.source_type === "uploaded_media")
-      && typeof value.source_id === "string" && typeof value.analysis_id === "string"
-      ? value as MaterialFocus : null;
+    const raw = window.sessionStorage.getItem(MATERIAL_FOCUS_KEY);
+    window.sessionStorage.removeItem(MATERIAL_FOCUS_KEY);
+    return raw ? usableFocus(JSON.parse(raw), symbol) : null;
   } catch { return null; }
 }
 
@@ -36,6 +34,9 @@ export function MaterialLibrary({ symbol, onScan }: { symbol: string; onScan: ()
   const { t } = useLocale();
   const [sourceType, setSourceType] = useState<MaterialSourceType | "all">("all");
   const [analysisStatus, setAnalysisStatus] = useState("all");
+  const [scope, setScope] = useState<"current" | "all">("current");
+  const [order, setOrder] = useState<"published" | "recent">("published");
+  const listSymbol = librarySymbol(scope, symbol);
   const [offset, setOffset] = useState(0);
   const [refreshKey, setRefreshKey] = useState(0);
   const [materialFocus, setMaterialFocus] = useState<MaterialFocus | null>(() => takeMaterialFocus(symbol));
@@ -52,7 +53,7 @@ export function MaterialLibrary({ symbol, onScan }: { symbol: string; onScan: ()
     const controller = new AbortController();
     const requestNumber = ++pageRequestRef.current;
     setPage({ kind: "loading" });
-    getMaterialLibrary(symbol, { sourceType, analysisStatus, offset, signal: controller.signal })
+    getMaterialLibrary(listSymbol, { sourceType, analysisStatus, order, offset, signal: controller.signal })
       .then((result) => {
         if (controller.signal.aborted || requestNumber !== pageRequestRef.current) return;
         setPage({ kind: "ready", items: result.items, total: result.total });
@@ -67,7 +68,7 @@ export function MaterialLibrary({ symbol, onScan }: { symbol: string; onScan: ()
         setPage({ kind: "error", message });
       });
     return () => controller.abort();
-  }, [symbol, sourceType, analysisStatus, offset, refreshKey]);
+  }, [listSymbol, symbol, sourceType, analysisStatus, order, offset, refreshKey]);
 
   useEffect(() => {
     if (!materialFocus) return;
@@ -78,7 +79,7 @@ export function MaterialLibrary({ symbol, onScan }: { symbol: string; onScan: ()
       try {
         let total = 0;
         for (let pageOffset = 0; pageOffset === 0 || pageOffset < total; pageOffset += 10) {
-          const result = await getMaterialLibrary(symbol, { sourceType: materialFocus!.source_type, offset: pageOffset, signal: controller.signal });
+          const result = await getMaterialLibrary(symbol, { sourceType: materialFocus!.source_type, order: "recent", offset: pageOffset, signal: controller.signal });
           total = result.total;
           const match = result.items.find((item) => item.source_type === materialFocus!.source_type && item.source_id === materialFocus!.source_id);
           if (controller.signal.aborted || requestNumber !== pageRequestRef.current) return;
@@ -86,6 +87,8 @@ export function MaterialLibrary({ symbol, onScan }: { symbol: string; onScan: ()
             setPage({ kind: "ready", items: result.items, total });
             setOffset(pageOffset);
             setSelected(match);
+            setScope("current");
+            setOrder("recent");
             setFocusAnalysisId(materialFocus!.analysis_id);
             setMaterialFocus(null);
             return;
@@ -128,6 +131,8 @@ export function MaterialLibrary({ symbol, onScan }: { symbol: string; onScan: ()
     <section className="material-library-panel">
       {focusMessage && <p className="material-error" role="status">{focusMessage}</p>}
       <div className="material-filterbar">
+        <label>{<Tx text={"股票"} />}<select value={scope} onChange={(event) => { setMaterialFocus(null); setFocusAnalysisId(null); setScope(event.target.value as "current" | "all"); setOffset(0); }}><option value="current">{`${t("当前股票")} · ${symbol}`}</option><option value="all">{t("全部股票")}</option></select></label>
+        <label>{<Tx text={"排序"} />}<select value={order} onChange={(event) => { setOrder(event.target.value as "published" | "recent"); setOffset(0); }}><option value="published">{t("按发布时间")}</option><option value="recent">{t("最近存入")}</option></select></label>
         <label>{<Tx text={"来源"} />}<select value={sourceType} onChange={(event) => { setMaterialFocus(null); setFocusAnalysisId(null); setSourceType(event.target.value as MaterialSourceType | "all"); setOffset(0); }}><option value="all">{<Tx text={"全部来源"} />}</option><option value="official_filing">{<Tx text={"SEC 官方"} />}</option><option value="uploaded_media">{<Tx text={"上传材料"} />}</option></select></label>
         <label>{<Tx text={"分析状态"} />}<select value={analysisStatus} onChange={(event) => { setMaterialFocus(null); setFocusAnalysisId(null); setAnalysisStatus(event.target.value); setOffset(0); }}><option value="all">{<Tx text={"全部状态"} />}</option><option value="not_started">{<Tx text={"待分析"} />}</option><option value="queued">{<Tx text={"排队中"} />}</option><option value="running">{<Tx text={"分析中"} />}</option><option value="succeeded">{<Tx text={"已分析"} />}</option><option value="failed">{<Tx text={"最近失败"} />}</option><option value="blocked_data">{<Tx text={"缺少正文"} />}</option></select></label>
         <span className="material-count">{page.kind === "ready" ? `${page.total} ${t("份材料")}` : ""}</span>
@@ -139,7 +144,7 @@ export function MaterialLibrary({ symbol, onScan }: { symbol: string; onScan: ()
           {page.kind === "ready" && page.items.length === 0 && <p className="material-empty">{<Tx text={"没有匹配材料。可在证据页上传媒体材料，或扫描 SEC 资料。"} />}</p>}
           {page.kind === "ready" && page.items.map((item) => <button key={`${item.source_type}:${item.source_id}`} type="button" className={`material-row ${selected?.source_id === item.source_id && selected.source_type === item.source_type ? "is-selected" : ""}`} onClick={() => { setFocusAnalysisId(null); setSelected(item); }}>
             <span className="material-row-top"><strong>{item.title}</strong><span className={`material-status status-${item.analysis_status}`}>{translatePhrase(statusLabel(item))}</span></span>
-            <span className="material-row-meta">{t(item.source_type === "official_filing" ? "SEC 官方" : "上传材料")} · {t("发布")} {formatDate(item.published_at)}</span>
+            <span className="material-row-meta">{scope === "all" ? `${item.symbol} · ` : ""}{t(item.source_type === "official_filing" ? "SEC 官方" : "上传材料")} · {t("发布")} {formatDate(item.published_at)}</span>
             <span className="material-row-meta">{item.latest_analysis_version_no ? `${t("AI 分析")} v${item.latest_analysis_version_no}` : t("尚无 AI 分析记录")}</span>
           </button>)}
           {page.kind === "ready" && <div className="material-pagination"><button className="secondary-action" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - 10))}>{<Tx text={"上一页"} />}</button><span>{page.total ? `${offset + 1}–${Math.min(offset + 10, page.total)} / ${page.total}` : `0 ${t("条")}`}</span><button className="secondary-action" disabled={offset + 10 >= page.total} onClick={() => setOffset(offset + 10)}>{<Tx text={"下一页"} />}</button></div>}

@@ -245,3 +245,47 @@ def test_a_streamed_save_card_becomes_telegram_buttons_not_a_go_to_the_web_note(
     with SessionLocal() as db:
         assert db.scalar(select(UploadedEvidence).where(
             UploadedEvidence.source_url == operation["arguments"]["source_url"])) is not None
+
+
+def test_agree_on_telegram_files_a_web_page_into_the_library(owner, monkeypatch):
+    """UX batch 2 (P1): a page saved from Telegram is listed in 资料库, not only in the knowledge base."""
+    from datetime import UTC, datetime
+    from app.agent_workflow.models import AgentWebSource
+    from app.agent_workflow.web_sources import freeze_snapshot
+    from app.knowledge.models import KnowledgeDocument
+    Base.metadata.create_all(engine, tables=[AgentWebSource.__table__, KnowledgeDocument.__table__])
+    monkeypatch.setenv("FINBOT_WEB_URL", "https://finbot.example/")
+    conversation = "tg-web-" + uuid.uuid4().hex[:8]
+    url = "https://example.org/tsla/" + uuid.uuid4().hex
+    page = {"url": url, "title": "特斯拉 Robotaxi 进展", "excerpt": "特斯拉在奥斯汀扩大 Robotaxi 服务。" + uuid.uuid4().hex,
+            "published_at": "2026-10-21T00:00:00+00:00", "fetched_at": datetime.now(UTC).isoformat(),
+            "body_provenance": "public_page_fetch"}
+    operation = {"name": "ingest_web_source", "arguments": {"url": url, "symbol": "TSLA", "company": "Tesla"},
+                 "snapshot": freeze_snapshot(page), "entity_aliases": []}
+    card = consent.propose(owner, conversation, [operation], {"title": "特斯拉 Robotaxi 进展",
+                           "targets": [{"symbol": "TSLA", "title": "特斯拉 Robotaxi 进展"}]},
+                           question="把这篇存进 TSLA 的资料库")
+    sent, asked = [], []
+
+    async def send_text(client, bot_token, chat_id, text, inline_keyboard=None, *, markdown=True):
+        sent.append((chat_id, text, inline_keyboard))
+        return 3000 + len(sent)
+
+    async def answer_callback(*_):
+        pass
+
+    monkeypatch.setattr(bridge, "_send_text", send_text)
+    monkeypatch.setattr(bridge, "_answer_callback", answer_callback)
+    monkeypatch.setattr(bridge, "_bot_token_for_send", lambda owner_hash, tg: "123:x")
+    monkeypatch.setattr(bridge, "_ask_agent", _server_line(conversation, card, asked))
+    pending = {}
+    keyboard = bridge._make_keyboard([card], pending, conversation, owner, "b-1", "助理")
+    press = {"id": "cb-web", "from": {"id": OWNER_ID}, "data": keyboard[0][0]["callback_data"],
+             "message": {"chat": {"id": OWNER_ID, "type": "private"}}}
+    asyncio.run(bridge._handle_callback(None, press, pending, OWNER_HASH, owner, OWNER_ID, OWNER_ID, _Telegram()))
+
+    with SessionLocal() as db:
+        saved = db.scalar(select(UploadedEvidence).where(UploadedEvidence.source_url == url))
+        assert saved is not None and saved.symbol == "TSLA"
+        assert db.scalar(select(KnowledgeUploadOwner).where(KnowledgeUploadOwner.upload_id == saved.id)).owner_hash == OWNER_HASH
+    assert f"https://finbot.example/#materials?symbol=TSLA&focus={saved.id}" in sent[-1][1]

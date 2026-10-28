@@ -40,8 +40,12 @@ def official_entity_metadata(monkeypatch):
 
 @pytest.fixture
 def owned(monkeypatch, disposable_database):
+    from app.knowledge.models import KnowledgeUploadOwner
+    from app.models import UploadedEvidence
+    # A confirmed page save also files it in 资料库 (uploaded_evidence, UX batch 2).
     Base.metadata.create_all(engine, tables=[AgentConsent.__table__, AgentWebSource.__table__,
-                                             KnowledgeDocument.__table__, AgentResearchQueue.__table__])
+                                             KnowledgeDocument.__table__, AgentResearchQueue.__table__,
+                                             UploadedEvidence.__table__, KnowledgeUploadOwner.__table__])
     for module in (direct, consent, tools):
         monkeypatch.setattr(module, "owner_credential_matches", lambda c: c == "owner")
     return "owner"

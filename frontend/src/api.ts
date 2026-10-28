@@ -365,9 +365,12 @@ export async function getV2Prices(symbol: string, signal?: AbortSignal): Promise
 
 export async function getMaterialLibrary(
   symbol: string,
-  options: { sourceType?: MaterialSourceType | "all"; analysisStatus?: string; reviewStatus?: string; offset?: number; limit?: number; signal?: AbortSignal } = {},
+  options: { sourceType?: MaterialSourceType | "all"; analysisStatus?: string; reviewStatus?: string; order?: "published" | "recent"; offset?: number; limit?: number; signal?: AbortSignal } = {},
 ): Promise<MaterialLibraryResponse> {
-  const params = new URLSearchParams({ symbol, limit: String(options.limit ?? 10), offset: String(options.offset ?? 0) });
+  // An empty symbol is 全部股票: the library lists every stock's materials.
+  const params = new URLSearchParams({ limit: String(options.limit ?? 10), offset: String(options.offset ?? 0) });
+  if (symbol) params.set("symbol", symbol);
+  if (options.order && options.order !== "published") params.set("order", options.order);
   if (options.sourceType && options.sourceType !== "all") params.set("source_type", options.sourceType);
   if (options.analysisStatus && options.analysisStatus !== "all") params.set("analysis_status", options.analysisStatus);
   if (options.reviewStatus && options.reviewStatus !== "all") params.set("review_status", options.reviewStatus);

@@ -26,7 +26,9 @@ def call(name,**args):return {'tool_calls':[{'id':uuid.uuid4().hex,'function':{'
 
 @pytest.fixture
 def owned(monkeypatch,disposable_database):
-    Base.metadata.create_all(engine,tables=[AgentConsent.__table__,AgentWebSource.__table__,KnowledgeDocument.__table__,AgentResearchQueue.__table__])
+    from app.knowledge.models import KnowledgeUploadOwner
+    from app.models import UploadedEvidence
+    Base.metadata.create_all(engine,tables=[AgentConsent.__table__,AgentWebSource.__table__,KnowledgeDocument.__table__,AgentResearchQueue.__table__,UploadedEvidence.__table__,KnowledgeUploadOwner.__table__])
     for module in (direct,consent,tools):monkeypatch.setattr(module,'owner_credential_matches',lambda c:c=='owner')
     return 'owner'
 
@@ -128,7 +130,7 @@ def test_conditional_web_save_compares_frozen_dates_before_card(owned,newer):
 
 def test_confirmed_web_save_persists_once_and_is_searchable(owned,monkeypatch):
     p=page('Oracle',1,n=uuid.uuid4().hex)
-    r,_,_,ctx=run('搜索 Oracle 新闻然后导入资料库',owner=True,grants=['ingest_web_source'],scope={'company':'Oracle'},steps=[call('web_research',query='Oracle news',company='Oracle'),call('ingest_web_source',url=p['url'])],answers={'web_research':{'ok':True,'data':[p]}})
+    r,_,_,ctx=run('搜索 Oracle 新闻然后导入资料库',owner=True,grants=['ingest_web_source'],scope={'company':'Oracle','symbol':'ORCL'},steps=[call('web_research',query='Oracle news',company='Oracle'),call('ingest_web_source',url=p['url'])],answers={'web_research':{'ok':True,'data':[p]}})
     assert r['status']=='waiting_for_input';card=r['pending_request']
     with SessionLocal() as db:assert not db.scalar(select(AgentWebSource).where(AgentWebSource.source_url==p['url']))
     from app.agent_workflow import web_sources
