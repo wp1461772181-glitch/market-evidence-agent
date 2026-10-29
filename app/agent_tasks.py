@@ -495,11 +495,24 @@ def load_background_model(owner_hash: str) -> dict | None:
 
 def serialize_item(row: AgentInboxItem) -> dict:
     payload = row.payload or {}
-    shown = {k: payload[k] for k in ("display", "task_name", "channel_pending", "missed_slots") if k in payload}
+    shown = {k: payload[k] for k in ("display", "task_name", "channel_pending", "missed_slots",
+                                     "confirmation_state", "action_token", "short_code", "actions",
+                                     "text_fallback_hint", "expires_at", "confirmed_at", "execution_outcome") if k in payload}
+    if row.section == "confirm":
+        if "confirmation_state" not in shown:
+            shown["confirmation_state"] = "confirmed" if row.status == "done" else ("skipped" if row.status == "dismissed" else "pending_confirm")
+        shown.setdefault("actions", [
+            {"id": "confirm", "label": "确认"},
+            {"id": "skip", "label": "跳过"},
+            {"id": "later", "label": "稍后"},
+        ])
     return {"id": str(row.id), "section": row.section, "kind": row.kind, "title": row.title, "body": row.body,
             "sources": list(row.sources or []), "payload": shown, "task_id": str(row.task_id) if row.task_id else None,
             "conversation_id": str(row.conversation_id) if row.conversation_id else None,
             "bot_id": str(row.bot_id) if row.bot_id else None,
+            "confirmation_state": shown.get("confirmation_state"),
+            "action_token": shown.get("action_token"),
+            "short_code": shown.get("short_code"),
             "posted": bool(payload.get("posted_turn_id")), "status": row.status, "created_at": _stamp(row.created_at)}
 
 
@@ -513,11 +526,26 @@ def add_item(owner_hash: str, *, section: str, kind: str, title: str, body: str 
     path as notify_telegram, within the bot's daily cap; a full cap or no bound chat only skips the message."""
     if section not in SECTIONS:
         raise TaskError("invalid_section")
+    item_uuid = uuid.uuid4()
     payload = dict(payload or {})
+    if section == "confirm":
+        payload.setdefault("confirmation_state", "pending_confirm")
+        action_token = payload.setdefault("action_token", uuid.uuid4().hex)
+        import hashlib as _hl
+        short_code = payload.setdefault(
+            "short_code",
+            _hl.sha256(f"{item_uuid}:{action_token}".encode("utf-8")).hexdigest()[:6].upper(),
+        )
+        payload.setdefault("actions", [
+            {"id": "confirm", "label": "确认"},
+            {"id": "skip", "label": "跳过"},
+            {"id": "later", "label": "稍后"},
+        ])
+        payload.setdefault("text_fallback_hint", f"回复 CONFIRM {short_code} 也可直接确认")
     if post is not None and bot_id:
         payload.update(post_pending=True, post_head=str(post.get("head") or "")[:200],
                        post_citations=list(post.get("citations") or []))
-    values = {"id": uuid.uuid4(), "owner_hash": owner_hash, "section": section, "kind": kind, "title": str(title)[:200],
+    values = {"id": item_uuid, "owner_hash": owner_hash, "section": section, "kind": kind, "title": str(title)[:200],
               "body": str(body or ""), "sources": list(sources or []), "payload": payload,
               "task_id": uuid.UUID(str(task_id)) if task_id else None,
               "conversation_id": uuid.UUID(str(conversation_id)) if conversation_id else None,

@@ -269,6 +269,62 @@ async def _dispatch(name,args,context,is_owner,emit):
         except profile.ProfileError as exc:return error(str(exc))
         if value.get('status')=='skipped':return error(value.get('reason') or 'profile_write_skipped')
         return result([{'status':'remembered','text':value['item']['text'],'handle':value['item']['handle']}],'owner profile')
+    if name=='search_configured_news':
+        from .. import fin_news_engine as news
+        return await asyncio.to_thread(
+            news.search_configured_news,
+            query=args.get('query'),
+            tickers=args.get('tickers'),
+            keywords=args.get('keywords'),
+            source_ids=args.get('source_ids'),
+            since=args.get('since'),
+            until=args.get('until'),
+            limit=args.get('limit',10),
+            refresh_first=bool(args.get('refresh_first',False)),
+        )
+    if name=='list_news_sources':
+        from .. import fin_news_engine as news
+        return await asyncio.to_thread(news.list_news_sources)
+    if name=='dry_run_news_source':
+        from .. import fin_news_engine as news
+        return await asyncio.to_thread(news.dry_run_news_source,args['source_id'])
+    if name=='diagnose_news_source':
+        from .. import fin_news_engine as news
+        return await asyncio.to_thread(news.diagnose_news_source,args['source_id'])
+    if name=='upsert_news_source':
+        from .. import fin_news_engine as news
+        if not is_owner:return error('owner_login_required')
+        spec={k:v for k,v in args.items() if k!='require_confirm_on_major_change' and v is not None}
+        return await asyncio.to_thread(
+            news.upsert_news_source,
+            spec,
+            require_confirm_on_major_change=bool(args.get('require_confirm_on_major_change',False)),
+            owner_hash=context.owner_hash,
+        )
+    if name=='disable_news_source':
+        from .. import fin_news_engine as news
+        if not is_owner:return error('owner_login_required')
+        return await asyncio.to_thread(news.disable_news_source,args['source_id'],enabled=bool(args.get('enabled',False)))
+    if name=='set_news_source_alternate':
+        from .. import fin_news_engine as news
+        if not is_owner:return error('owner_login_required')
+        return await asyncio.to_thread(
+            news.set_news_source_alternate,
+            args['source_id'],
+            args.get('alternates') or [],
+            switch_to_first=bool(args.get('switch_to_first',False)),
+            require_confirm=bool(args.get('require_confirm',False)),
+            owner_hash=context.owner_hash,
+        )
+    if name=='repair_news_source_with_rea':
+        from .. import fin_news_engine as news
+        if not is_owner:return error('owner_login_required')
+        return await asyncio.to_thread(
+            news.repair_news_source_with_rea,
+            args['source_id'],
+            require_confirm=bool(args.get('require_confirm',True)),
+            owner_hash=context.owner_hash,
+        )
     return error('unknown_tool')
 
 

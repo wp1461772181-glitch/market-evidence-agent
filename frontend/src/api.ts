@@ -128,7 +128,9 @@ export async function listRecall(query="",signal?:AbortSignal,botId?:string|null
 // when saved and never comes back: the server answers with has_key only.
 export type InboxSource = { ordinal:number; title:string; url:string|null; source_type:string|null; published_at?:string|null };
 export type InboxItem = { id:string; section:"brief"|"confirm"; kind:"task_brief"|"filing"|"news"|"price"|"action"; title:string; body:string; sources:InboxSource[];
-  payload:{ task_name?:string; channel_pending?:string; missed_slots?:number; display?:{ title?:string; targets?:unknown[]; alternative?:string } };
+  payload:{ task_name?:string; channel_pending?:string; missed_slots?:number; display?:{ title?:string; targets?:unknown[]; alternative?:string }; confirmation_state?:string; action_token?:string; short_code?:string };
+  confirmation_state?:"pending_confirm"|"confirmed"|"skipped"|"expired"; action_token?:string|null; short_code?:string|null;
+  actions?:Array<{ id:"confirm"|"skip"|"later"; label:string; kind:string }>;
   task_id:string|null; bot_id:string|null; posted:boolean; conversation_id:string|null; status:"unread"|"read"|"done"|"dismissed"; created_at:string|null };
 export type PriceLine = { symbol:string; above?:number; below?:number };
 export type AgentTask = { id:string; name:string; kind:"brief"|"alerts"; schedule_kind:"daily"|"weekdays"|"hourly"; schedule_time:string; timezone:string;
@@ -174,6 +176,17 @@ export async function setInboxStatus(id:string,status:InboxItem["status"]):Promi
 /** Mint the confirmation card of a 待你确认 item in its conversation; open that conversation to press it. */
 export async function mintInboxCard(id:string):Promise<{conversation_id:string;request_id:string;expires_at:string|null}>{
   return await ownerJson(`inbox/${encodeURIComponent(id)}/card`,{method:"POST"},"生成确认卡失败，请重试。");
+}
+/** Inline confirmation on a 待你确认 card without leaving the 例行任务 / 通知列表 page. */
+export async function confirmInboxItem(id:string,action:"confirm"|"skip"|"later",actionToken?:string|null):Promise<{ok:boolean;state:string;message?:string;item:InboxItem|null}>{
+  return await ownerJson(`inbox/${encodeURIComponent(id)}/confirm`,{method:"POST",body:{action,...(actionToken?{action_token:actionToken}:{})}},"确认失败，请重试。");
+}
+export type NewsPushSettings = { summary_max_tokens: number; presets: Array<{ label: string; value: number }> };
+export async function getNewsSourcesConfig(signal?:AbortSignal):Promise<{push:NewsPushSettings;sources:Array<{id:string;label:string;kind:string;enabled:boolean;health:string}>}>{
+  return await ownerJson("news-sources",{signal},"新闻源配置暂时无法读取。");
+}
+export async function saveNewsPushSettings(summaryMaxTokens:number):Promise<{ok:boolean;push:{summary_max_tokens:number}}>{
+  return await ownerJson("news-sources/push-settings",{method:"PUT",body:{summary_max_tokens:summaryMaxTokens}},"保存失败，请重试。");
 }
 export async function getBackgroundModel(signal?:AbortSignal):Promise<BackgroundModel>{ return await ownerJson("background-model",{signal},"后台模型设置暂时无法读取。"); }
 export async function saveBackgroundModel(value:{provider:string;model:string;base_url?:string|null;api_key?:string}):Promise<BackgroundModel>{

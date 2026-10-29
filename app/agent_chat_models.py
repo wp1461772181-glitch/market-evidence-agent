@@ -342,3 +342,37 @@ class AgentSkill(Base):
     status: Mapped[str] = mapped_column(String(10), nullable=False, default="active")  # active | draft
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class NewsItem(Base):
+    """Normalized item fetched from a configured public news source (news_items)."""
+    __tablename__ = "news_items"
+    __table_args__ = (UniqueConstraint("source_id", "dedupe_key", name="uq_news_items_source_dedupe"),)
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    source_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    source_name: Mapped[str] = mapped_column(String(160), nullable=False, default="")
+    dedupe_key: Mapped[str] = mapped_column(String(256), nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(500), nullable=False)
+    url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    body_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    time_inferred: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    tickers: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    keywords_hit: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    language: Mapped[str] = mapped_column(String(20), nullable=False, default="zh-CN")
+    raw_ref: Mapped[str | None] = mapped_column(String(512), nullable=True)
+
+
+class NewsPushLog(Base):
+    """Tracks which news_items have already been pushed per owner/channel so each item is pushed at most once."""
+    __tablename__ = "news_push_log"
+    __table_args__ = (UniqueConstraint("news_item_id", "owner_hash", "channel", name="uq_news_push_log_item_owner_channel"),)
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    news_item_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
+    owner_hash: Mapped[str] = mapped_column(String(64), nullable=False, default="", index=True)
+    channel: Mapped[str] = mapped_column(String(40), nullable=False, default="finbot_notify")
+    inbox_item_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    pushed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+

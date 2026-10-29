@@ -213,6 +213,8 @@ def create_tables() -> None:
     # Conversations stored before the past-conversation index existed (agent_recall) are indexed once.
     from .agent_recall import backfill as backfill_recall, safe_hook
     safe_hook(backfill_recall)
+    from .fin_news_engine import ensure_news_tables
+    safe_hook(ensure_news_tables)
     with SessionLocal() as session:
         seed_faq(session)
         session.commit()
@@ -243,6 +245,32 @@ def get_db():
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.post("/finbot/routines/{routine_id}/confirm")
+def finbot_routine_inline_confirm(
+    routine_id: str,
+    payload: dict | None = None,
+) -> dict[str, object]:
+    """Direct notification-side confirmation endpoint (`POST /finbot/routines/{id}/confirm`, §6.B)."""
+    from . import fin_news_engine as news
+    body = payload or {}
+    action = str(body.get("action") or "confirm")
+    action_token = body.get("action_token")
+    owner = body.get("owner_hash")
+    try:
+        return news.handle_inline_confirmation_action(
+            routine_id,
+            action=action,
+            owner_hash=owner,
+            action_token=action_token,
+        )
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
 
 
 @app.get("/health/agent-workflow")

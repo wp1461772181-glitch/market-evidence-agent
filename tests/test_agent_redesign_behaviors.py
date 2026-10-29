@@ -42,7 +42,7 @@ async def turn(question,*,route='A',scope=None,steps=(),answers=None,owner=False
         return copy.deepcopy(value)
     async def decide(*_):return next(steps,{'content':'已完成，来源见 [1]。' if any(n=='web_research' for n,_ in calls) else '没有可核验资料。'})
     context=AgentRuntimeContext('custom','test','dummy',owner_hash=owner_hash('owner' if owner else 'guest'),conversation_id='c',identity_credential='owner' if owner else 'guest',
-        classifier=lambda q:{'category':route,'requested_actions':list(grants),**{k:v for k,v in (scope or {}).items() if k!='answer'}},decider=decide,executor=execute,answerer=lambda *_:(scope or {}).get('answer') or '已完成：已返回证据；未完成：剩余请求。',resolver=resolver)
+        classifier=lambda q:{'category':route,'mode':'rag' if route=='A' else 'none','requested_actions':list(grants),**{k:v for k,v in (scope or {}).items() if k!='answer'}},decider=decide,executor=execute,answerer=lambda *_:(scope or {}).get('answer') or '已完成：已返回证据；未完成：剩余请求。',resolver=resolver)
     async def emit(e):events.append(e)
     result=await run_direct_turn(question,context,emit=emit,state={**(state or {}),'requested_pending_id':pending},messages=messages)
     return result,calls,events,context

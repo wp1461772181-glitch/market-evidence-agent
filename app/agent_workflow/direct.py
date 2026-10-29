@@ -89,7 +89,35 @@ def referenced_urls(text):
     # grounding still runs separately before any operation is proposed.
     return {url.rstrip('.,;:!?，。；：！？、') for url in URL.findall(text)}
 
-from .routing import Routing
+from .routing import Routing, safe_parse_route
+
+_NON_TICKER_STOPWORDS = {
+    'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M',
+    'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
+    'AI', 'AN', 'AND', 'API', 'ARE', 'AS', 'AT', 'AUM', 'ATR', 'BE', 'BY',
+    'BOLL', 'CAGR', 'CEO', 'CFO', 'COO', 'CTO', 'CLI', 'CPI', 'CSV', 'DCF',
+    'DO', 'DOM', 'EBIT', 'EBITDA', 'EDGAR', 'EPS', 'ETF', 'ETFS', 'EV', 'FAQ',
+    'FCF', 'FED', 'FOR', 'FROM', 'FX', 'FY', 'GAAP', 'GDP', 'GMT', 'HK', 'HTML',
+    'HTTP', 'HTTPS', 'ID', 'IDE', 'IF', 'IN', 'IPO', 'IR', 'IS', 'IT', 'JSON',
+    'KDJ', 'KPI', 'LLM', 'LOI', 'LTM', 'MA', 'MACD', 'MD', 'MOM', 'MTD', 'NAV',
+    'NO', 'NON', 'NOT', 'NPV', 'NTM', 'NYSE', 'OF', 'OHL', 'OHLC', 'OHLCV', 'OK',
+    'ON', 'OR', 'OTC', 'PB', 'PCF', 'PDF', 'PE', 'PEG', 'PLC', 'PPI', 'PR', 'PS',
+    'QOQ', 'QTD', 'RAG', 'REA', 'ROA', 'ROE', 'ROI', 'ROIC', 'RSS', 'SEC', 'SO',
+    'SQL', 'SSE', 'THE', 'TO', 'TTM', 'UI', 'UK', 'UP', 'URL', 'US', 'USA', 'USD',
+    'UTC', 'UX', 'VAR', 'VOL', 'VS', 'VWAP', 'WACC', 'WAS', 'WEB', 'WITH', 'WERE',
+    'XBRL', 'XML', 'YAML', 'YOY', 'YTD', ' Q1', 'Q1', 'Q2', 'Q3', 'Q4', 'H1', 'H2',
+}
+_TICKER_TOKEN_RE = re.compile(r'(?<![A-Za-z0-9_\-])([A-Z]{2,5}(?:\.[A-Z])?)(?![A-Za-z0-9_\-])')
+
+
+def _extract_ticker_tokens(text: str) -> list[str]:
+    out: list[str] = []
+    for match in _TICKER_TOKEN_RE.findall(str(text or '')):
+        tok = match.strip().upper()
+        if tok and tok not in _NON_TICKER_STOPWORDS and tok not in out:
+            out.append(tok)
+    return out
+
 
 class HistoryCitationRef(BaseModel):
     model_config=ConfigDict(extra='forbid')
@@ -102,7 +130,8 @@ class Reference(BaseModel):
     canonical_question:str=Field(default='',max_length=4000)
     question:str|None=None
     choices:list[str]=Field(default_factory=list,max_length=8)
-    referents:list[Referent]=Field(default_factory=list,max_length=8)
+    referents:list[Referent]=Field(default_factory=list,max_length=30)
+    symbols:list[Annotated[str,Field(min_length=1,max_length=12,pattern=r'^[A-Za-z0-9.\-^]+$')]]=Field(default_factory=list,max_length=30,description='All stock tickers mentioned or resolved in this request.')
     history_citations:list[HistoryCitationRef]=Field(default_factory=list,max_length=6,description='References to allowlisted sources in earlier answers, selected from citation_catalogue.')
     clarification_answers:list[Annotated[int,Field(ge=1,le=50)]]=Field(default_factory=list,max_length=8,description='Only for clarifying an earlier citation: select the candidate answers_back positions from citation_catalogue. Include the answer holding the requested source. The server renders their exact openings. Do not bind history_citations while clarifying.')
 
@@ -116,7 +145,8 @@ INSTRUCTION=(
  '【工具】财报里的营收、利润、现金流、资产负债等数字先用 query_financials（XBRL 披露值，带期间和单位）；原文段落用 search_knowledge 或 query_sec_filings；'
  '已经通过 read_history_citation 取回并核验的来源可直接用本轮新编号回答，不必为了相同数字重新检索；用户确实需要更长正文或不同口径时再查其他来源。'
  '回查引用原文时，按原样给出取回文本，仅补充影响理解的口径说明，回答完即结束。'
- '新闻和近期事件用 web_research，时间窗口或条数变了就重新搜，不要拿旧结果充数；任何公司都可以检索，不需要在研究队列里。股价走势用 query_stock_prices，已保存行情为空时说明可由所有者确认初始化行情，或改用公开检索。'
+ '涉及行情异动、宏观快讯、用户自选相关「最新发生了什么」时，先调用 search_configured_news；若返回的 items 足够回答（有明确标题+链接+时间），将其作为证据引用，不得编造未返回的字段；若 items 为空或明显过时（meta.hint 为 fallback_to_web_search_recommended），再调用 web_research。无论来源是配置源还是 web_research，引用与数字都必须过 citation / numeric 闸，禁止「自家源免检」。'
+ '新闻和近期事件时间窗口或条数变了就重新搜，不要拿旧结果充数；任何公司都可以检索，不需要在研究队列里。股价走势用 query_stock_prices，已保存行情为空时说明可由所有者确认初始化行情，或改用公开检索。'
  '换一种查法仍查不到就结束，不要把所有工具挨个试一遍。互不依赖的查询可以同时调用；参数报错按提示修正，不要重复同样的调用。'
  '已有结果的条目用 use_result_set（结果集 ID 与从 1 开始的序号）。指代有两个以上同样合理的对象（例如用户并列两家公司后问“它”）时用 ask_user 列出候选问清楚；'
  '只有一个合理对象就直接用，并在回答里说明用的是哪一个。本轮结果里已有的编号、日期、期间直接使用，不要反问用户。问任务是否完成时，只查那一项。',
@@ -133,21 +163,31 @@ CLASSIFY_PROMPT=('Return classify_request. Decide by what the request needs, in 
     'A — answering needs data this product stores: prices, SEC filings, uploaded materials, saved AI analysis, saved FAQ, saved forecasts, or a specific saved source.\n'
     'B — finance, markets or company knowledge you can explain without any data this system stores: concepts, definitions, how something works, a business model, a worked example. It may reason with general or illustrative numbers; what makes it B is that it needs none of this system\'s records.\n'
     'C — anything else this product does not do; coding included.\n'
+    'For route A, also choose mode (rag | prices | financials | forecast | none):\n'
+    '- mode="rag": needs text passages from the knowledge base, SEC filing excerpts, uploaded materials, saved AI analysis or FAQ.\n'
+    '- mode="prices": needs stock prices, K-lines/OHLC, close prices, price changes, volatility, or multi-stock price comparisons/calculations.\n'
+    '- mode="financials": needs disclosed financial statement figures (revenue, net income, EPS, gross margin, cash flow, etc.).\n'
+    '- mode="forecast": needs saved forecast records or forecast comparisons.\n'
+    '- mode="none": mixed/uncertain read-only queries, or routes B/C/D.\n'
     # Boundary cases are the ones a rule list gets wrong: they are chosen so that the words
     # of the request and the route disagree.  They are examples, never requests to act on.
     'Boundary examples, route and the scope it implies:\n'
-    '"AAPL 最近收盘价是多少" → A, symbol AAPL (a saved price record has to be read).\n'
-    '"毛利率是怎么算的" → B (a definition; no record of this system is needed).\n'
-    '"帮我写个 Python 快排" → C (coding; outside this product).\n'
-    '"把这份 PDF 导入资料库" → D, requested_actions ["import"] (a write the user asked for).\n'
-    '"怎么把 NVDA 加进研究队列" → D (a question about using this product).\n'
-    '"每小时帮我找一条新闻" → D, requested_actions ["create_routine"] (a repeated job the user asked for).\n'
-    '"把每小时新闻那个例行任务停掉" → D, requested_actions ["update_routine"] (pausing is a change; deleting it is delete_routine).\n'
-    '"不要保存任何网页，我只想讨论流程" → D (a question about how this product works; the negated write is not requested).\n'
+    '"AAPL 最近收盘价是多少" → A, mode "prices", symbols ["AAPL"], symbol "AAPL" (a saved price record has to be read).\n'
+    '"计算一下 AAPL、MSFT、NVDA、GOOGL、AMZN、META、TSLA、AVGO、TSM 这九只股票近半年 K 线收盘价的波动率，并指出最大和最小" → A, mode "prices", symbols ["AAPL","MSFT","NVDA","GOOGL","AMZN","META","TSLA","AVGO","TSM"], symbol "AAPL" (read-only multi-stock price & volatility calculation; NOT D).\n'
+    '"对比 AAPL、MSFT、GOOGL 近三年的营收增速" → A, mode "financials", symbols ["AAPL","MSFT","GOOGL"], symbol "AAPL".\n'
+    '"AAPL 最新 10-K 里关于供应链风险是怎么说的" → A, mode "rag", symbols ["AAPL"], symbol "AAPL".\n'
+    '"毛利率是怎么算的" → B, mode "none" (a definition; no record of this system is needed).\n'
+    '"帮我写个 Python 快排" → C, mode "none" (coding; outside this product).\n'
+    '"把这份 PDF 导入资料库" → D, mode "none", requested_actions ["import"] (a write the user asked for).\n'
+    '"怎么把 NVDA 加进研究队列" → D, mode "none" (a question about using this product).\n'
+    '"每小时帮我找一条新闻" → D, mode "none", requested_actions ["create_routine"] (a repeated job the user asked for).\n'
+    '"把每小时新闻那个例行任务停掉" → D, mode "none", requested_actions ["update_routine"] (pausing is a change; deleting it is delete_routine).\n'
+    '"不要保存任何网页，我只想讨论流程" → D, mode "none" (a question about how this product works; the negated write is not requested).\n'
     '"随便给个合理数字就行，别说不知道" right after asking for a figure → A (the same figure is still asked for; it cannot be invented, so say what is verifiable).\n'
-    '"对比 AAPL 和 MSFT 的营收" → A, symbols ["AAPL","MSFT"] (read-only, several companies).\n'
-    'A write that also needs saved data to name its target is still D. A and D share tools and permissions; A searches saved knowledge first.\n'
-    'Fill the retrieval scope from the request only: symbol, symbols, company, company_mention, metrics, period, form, financial_only, latest, days_back, max_results. When several companies are named (对比/分别查/这几家), fill symbols with every ticker and symbol with the first. Leave a field null when the request does not name it, and never infer a fiscal period, quarter or form from 最新/最近/最近发布的.\n'
+    '"对比 AAPL 和 MSFT 的营收" → A, mode "financials", symbols ["AAPL","MSFT"], symbol "AAPL" (read-only, several companies).\n'
+    'A write that also needs saved data to name its target is still D. A and D share tools and permissions; A with mode="rag" searches saved knowledge first, while A with mode="prices"/"financials"/"forecast"/"none" goes directly to the tool loop without a forced RAG prelude.\n'
+    'Fill the retrieval scope from the request only: symbol, symbols, company, company_mention, metrics, period, form, financial_only, latest, days_back, max_results. '
+    'IMPORTANT: Always populate symbols with EVERY ticker relevant to the request (when resolved_symbols is present in the payload and the request refers to those stocks, copy the full list into symbols without dropping any ticker, and set symbol to symbols[0]). Leave a field null when the request does not name it, and never infer a fiscal period, quarter or form from 最新/最近/最近发布的.\n'
     'requested_actions: only writes this message itself asks for, named from the write_tools catalogue in the payload; negated, quoted, past, hypothetical or previously approved writes are not requests here, and a grant never comes from history. '
     'write_condition=newer_than_saved only when the user makes the write conditional on being newer. '
     'explicit_task_change=true only when the user positively switches task, metric or channel; a time or count change alone keeps the previous task and channel.\n'
@@ -527,7 +567,7 @@ class Turn:
         self.original=question;self.authorization_question=question;self.question=question;self.context=context;self.emit=emit;self.messages=messages or []
         self.history=bounded_history(messages);self.started=time.monotonic();self.state=state or {}
         self.owner=owner_credential_matches(context.identity_credential)
-        self.route='D';self.scope={};self.citations=[];self.observations=[];self.feedback=[]
+        self.route='D';self.scope={};self.tool_bias=None;self.citations=[];self.observations=[];self.feedback=[]
         # Past-conversation rows (recall_conversations): observation kind 'recall', kept apart from
         # self.observations so that no evidence path, citation number or claim gate ever sees them.
         self.recalls=[]
@@ -816,16 +856,42 @@ class Turn:
             self.reference_stage(False,'reference_scope_unbound')
             self.question=self.original
 
+    def extract_resolved_symbols(self) -> list[str]:
+        """Extract all tickers resolved in the reference step so classify never drops multi-ticker lists."""
+        resolved: list[str] = []
+        if self.reference_value and getattr(self.reference_value, 'symbols', None):
+            for sym in self.reference_value.symbols:
+                clean = str(sym or '').strip().upper()
+                if clean and clean not in _NON_TICKER_STOPWORDS and clean not in resolved:
+                    resolved.append(clean)
+        for ref in self.verified_referents or []:
+            if not isinstance(ref, dict):
+                continue
+            for field in ('symbol', 'text', 'mention'):
+                for tok in _extract_ticker_tokens(str(ref.get(field) or '')):
+                    if tok not in resolved:
+                        resolved.append(tok)
+        question_tokens = _extract_ticker_tokens(self.question)
+        if len(question_tokens) >= 2 or (self.reference_value and getattr(self.reference_value, 'symbols', None)):
+            for tok in question_tokens:
+                if tok not in resolved:
+                    resolved.append(tok)
+        return resolved[:30]
+
     async def classify(self):
         self.audit['nodes'].append('classify_intent')
         await self.emit({'event':'status','status':'recognizing_intent'})
+        resolved_symbols=self.extract_resolved_symbols()
         payload={'question':self.question,'original':self.original,'user_action_words':self.authorization_question,'previous_category':self.state.get('previous_category'),'history':self.history,'previous_scope':self.state.get('previous_scope'),'as_of_utc':datetime.now(UTC).isoformat(),'write_tools':write_tool_catalogue()}
+        if resolved_symbols:
+            payload['resolved_symbols']=resolved_symbols
         company=self.default_company()
         if company:payload['default_company']={'symbol':company['symbol'],'company':company.get('company'),
             'note':'Set by the owner for this bot. Use it only when the request names no company; a named company wins.'}
         prompt=CLASSIFY_PROMPT
         messages=[{'role':'system','content':prompt},{'role':'user','content':json.dumps(payload,ensure_ascii=False)}]
         is_injected=bool(self.context.intent_recognizer or self.context.classifier)
+        mode_defaulted=False
         for attempt in range(2):
             try:
                 if self.context.intent_recognizer:value=await injected(self.context.intent_recognizer,payload)
@@ -835,7 +901,7 @@ class Turn:
                     try:value=json.loads(value)
                     except ValueError:value={'category':value}
                 if is_injected and isinstance(value,dict):value={'days_back':None,**value}
-                routing=Routing.model_validate(value)
+                routing,mode_defaulted=safe_parse_route(value)
                 if routing.period:
                     from ..freshness import requested_years
                     if not requested_years(routing.period)<=requested_years(self.question):routing.period=None
@@ -844,7 +910,19 @@ class Turn:
                 if attempt or is_injected:raise
                 self.audit['classification_retries']=1
                 messages.append({'role':'system','content':'The previous classification was invalid JSON/schema or added an unrequested fiscal period. Return complete valid classify_request arguments using only enum values; leave unspecified period/form null.'})
-        self.route=routing.category;self.scope=routing.model_dump();self.audit['route']=self.route
+        if mode_defaulted:
+            self.audit['classify_mode_defaulted']=True
+        if routing.category in {'A','D'} and resolved_symbols:
+            current_syms=[str(s).strip().upper() for s in (routing.symbols or []) if s]
+            if not current_syms or len(current_syms)<len(resolved_symbols) or any(s not in current_syms for s in resolved_symbols):
+                merged:list[str]=[]
+                for s in [*current_syms,*resolved_symbols]:
+                    if s and s not in merged:merged.append(s)
+                routing.symbols=merged[:30]
+                routing.symbol=routing.symbols[0] if routing.symbols else routing.symbol
+                self.audit['classify_symbols_backfilled']=True
+                self.audit['classify_symbols_resolved_count']=len(resolved_symbols)
+        self.route=routing.category;self.scope=routing.model_dump();self.audit['route']=self.route;self.audit['mode']=routing.mode
         self.granted_actions=set() if self.unattended() else {name for name in routing.requested_actions if self.in_scope(name)}
         if self.asked_to_remember(routing.requested_actions):
             # The owner's own words ask to remember: the card is the guard, so a classifier that missed the ask
@@ -856,7 +934,7 @@ class Turn:
             for name in ROUTINE_WRITES:
                 if self.in_scope(name) and routine_ask(name,self.user_words()):self.granted_actions.add(name)
         self.apply_default_company()
-        self.stage('classifier',{'category':self.route,'scope':{k:self.scope[k] for k in ('symbol','company','metrics','period','form','days_back')},'retries':self.audit.get('classification_retries',0),'requested_actions':routing.requested_actions})
+        self.stage('classifier',{'category':self.route,'mode':self.scope.get('mode'),'scope':{k:self.scope.get(k) for k in ('symbol','symbols','mode','company','metrics','period','form','days_back')},'retries':self.audit.get('classification_retries',0),'requested_actions':routing.requested_actions})
         await self.validate_business_reference()
         if self.pending:return
         previous=self.state.get('previous_scope',{});previous_symbol=previous.get('symbol')
@@ -893,6 +971,10 @@ class Turn:
             elif not explicit:
                 self.scope['symbol']=routing.symbol or previous_symbol
                 self.scope['company']=routing.company or known_company or None
+                if not self.scope.get('symbols') and previous.get('symbols'):
+                    self.scope['symbols']=list(previous['symbols'])
+                elif not self.scope.get('symbols') and self.scope.get('symbol'):
+                    self.scope['symbols']=[self.scope['symbol']]
 
     def default_company(self):
         company=getattr(self.context,'default_company',None)
@@ -1150,7 +1232,17 @@ class Turn:
         prior=self.prior_turns()
         hint={'resolved_question':self.question,
               'referents':[r.get('text') or r.get('mention') for r in self.verified_referents if r.get('text') or r.get('mention')][:6],
-              'classifier_scope':{k:self.scope.get(k) for k in ('symbol','symbols','company','metrics','period','form','financial_only','latest','days_back','max_results','requested_actions') if self.scope.get(k) not in (None,[],'',False)}}
+              'classifier_scope':{k:self.scope.get(k) for k in ('symbol','symbols','mode','company','metrics','period','form','financial_only','latest','days_back','max_results','requested_actions') if self.scope.get(k) not in (None,[],'',False)}}
+        if self.tool_bias:
+            hint['tool_bias']=self.tool_bias
+            bias_notes={
+                'prices':'Prefer query_stock_prices for each ticker in symbols, then calculate for derived metrics such as volatility/returns/comparisons.',
+                'financials':'Prefer query_financials for each ticker in symbols, then calculate for ratios/growth/comparisons.',
+                'forecast':'Prefer query_forecasts for the requested ticker(s).',
+                'knowledge':'Prefer search_knowledge or query_sec_filings for text passages.',
+            }
+            if self.tool_bias in bias_notes:
+                hint['tool_bias_hint']=bias_notes[self.tool_bias]
         # The profile sits after the fixed instruction and before the conversation, so the prefix is stable.
         return [{'role':'system','content':instruction},*self.profile_messages(),*self.skill_messages(),*([{'role':'system','content':HISTORY_NOTE},*prior] if prior else []),
             {'role':'user','content':self.question},
@@ -1215,7 +1307,7 @@ class Turn:
         # A tool cannot silently broaden the entity fixed by the classifier.
         named=[str(v) for v in (self.scope.get('symbols') or []) if v]
         if self.scope.get('symbol') and args.get('symbol') and args['symbol']!=self.scope['symbol'] and self.route!='D' \
-           and args['symbol'] not in named and not contains(args['symbol'],self.original):raise ValueError('scope_not_grounded')
+           and args['symbol'] not in named and not contains(args['symbol'],self.original) and not contains(args['symbol'],self.question):raise ValueError('scope_not_grounded')
 
     async def execute_read(self,name,args):
         call_id=self.active_call_id or str(uuid.uuid4());await self.emit({'event':'tool_start','call_id':call_id,'name':name,'arguments':args})
@@ -1277,10 +1369,13 @@ class Turn:
     async def publish_result(self,name,outcome):
         # Read results reach SSE/history only after the same gate used by the answer.
         policy=definitions()[name]
+        admin_tools={'query_system_status','query_research_queue','recall_conversations','read_past_conversation','list_routines',
+                     'list_news_sources','dry_run_news_source','diagnose_news_source','upsert_news_source','disable_news_source',
+                     'set_news_source_alternate','repair_news_source_with_rea'}
         if not outcome.get('ok'):safe=outcome if outcome.get('bindable_values') else tools.error(outcome.get('error_code') or 'tool_failed')
-        elif policy.level!='read' or name in {'query_system_status','query_research_queue','recall_conversations','read_past_conversation','list_routines'}:safe=outcome
+        elif policy.level!='read' or name in admin_tools:safe=outcome
         elif self.last_accepted is not None:safe=self.last_accepted
-        else:safe={k:v for k,v in self.feedback[-1].items() if k in {'ok','data','status','error_code','hint'}}
+        else:safe={k:v for k,v in self.feedback[-1].items() if k in {'ok','data','items','meta','status','error_code','hint'}}
         from ..agent_chat_stream import bounded_tool_result
         await self.emit({'event':'tool_result','call_id':self.active_call_id or self.last_call_id,'name':name,'result':bounded_tool_result(safe)})
 
@@ -1300,7 +1395,7 @@ class Turn:
                 self.feedback.append({'name':name,'error_code':'history_citation_derived','result':derived})
                 return
             self.feedback.append({'name':name,'error_code':outcome.get('error_code'),'hint':outcome.get('hint')});return
-        rows=outcome.get('data') or []
+        rows=outcome.get('data') if outcome.get('data') is not None else (outcome.get('items') or [])
         if not isinstance(rows,list):rows=[rows]
         policy=definitions()[name]
         if name=='calculate':
@@ -1325,7 +1420,10 @@ class Turn:
             shown={'ok':True,'label':outcome.get('label'),'note':outcome.get('note'),'data':rows}
             self.recalls.append({'name':name,'kind':'recall','arguments':args,'result':shown,'accepted_evidence':False})
             self.feedback.append({'name':name,'result':shown});return
-        if policy.level!='read' or name in {'query_system_status','query_research_queue','list_routines'}:
+        admin_tools={'query_system_status','query_research_queue','list_routines',
+                     'list_news_sources','dry_run_news_source','diagnose_news_source','upsert_news_source','disable_news_source',
+                     'set_news_source_alternate','repair_news_source_with_rea'}
+        if policy.level!='read' or name in admin_tools:
             self.feedback.append({'name':name,'result':outcome});return
         from .evidence import canonical_metric
         requirements={key:self.scope.get(key) for key in ('company','metrics','period')}
@@ -1337,6 +1435,16 @@ class Turn:
         # Actual tool args define this source's scope, including a compound request's
         # independent company/window. No dictionary maps company names to tickers.
         requirements['symbol']=args.get('symbol') or self.scope.get('symbol')
+        if args.get('symbol') and self.scope.get('symbol') and args['symbol']!=self.scope['symbol'] and not args.get('company'):
+            requirements['company']=None
+        if name=='search_configured_news':
+            tickers_arg=args.get('tickers') or []
+            if len(tickers_arg)==1:
+                requirements['symbol']=str(tickers_arg[0]).upper()
+            elif len(tickers_arg)>1:
+                requirements['symbol']=None
+            if not args.get('company'):
+                requirements['company']=None
         if name=='web_research':
             requirements['company']=args.get('company') or self.scope.get('company');requirements['days_back']=args.get('days_back')
             from ..agent_web_research import METRIC_GROUPS
@@ -1352,10 +1460,15 @@ class Turn:
             row['_citations']=[c for c in outcome.get('_citations',[]) if (row.get('id') and str(c.get('source_id',''))==str(row['id'])) or (row.get('question') and c.get('title')==row['question'][:180] and f"[{c.get('ordinal')}]" in str(row.get('answer','')))]
             if row.get('material_type'):row.setdefault('source_type',row['material_type'])
             if name=='web_research':row['source_type']='web'
+            elif name=='search_configured_news':
+                row['source_type']='configured_news'
+                row['origin']='configured_news'
+                if not row.get('excerpt'):
+                    row['excerpt']=f"{row.get('title') or ''} — {row.get('summary') or ''}".strip(' —')
             elif name=='query_sec_filings':row.setdefault('source_type','official_filing')
-            if requirements.get('symbol') and name!='web_research' and not row.get('symbol'):row['_verified_symbol']=requirements['symbol']
+            if requirements.get('symbol') and name not in {'web_research','search_configured_news'} and not row.get('symbol'):row['_verified_symbol']=requirements['symbol']
             row_requirements={**requirements}
-            if row.get('source_type')=='web_news':row_requirements['days_back']=self.scope.get('days_back')
+            if row.get('source_type') in {'web_news','configured_news'}:row_requirements['days_back']=self.scope.get('days_back')
             ok,reason=gate_row(self.question,row,**row_requirements,soft=True)
             if ok:
                 if reason.startswith('soft:'):
@@ -1368,7 +1481,8 @@ class Turn:
             else:reasons.append(reason)
         # Failed/rejected bodies never reach the answer model, including in errors.
         if not accepted:
-            self.feedback.append({'name':name,'ok':True,'data':[],'status':'no_matching_evidence','error_code':reasons[0] if reasons else 'zero_evidence','hint':'The read completed. Empty evidence is not a failed tool: do not retry this saved-data query unchanged. Use a justified public search or conclude that there is no verifiable information.'});self.no_new+=1;return
+            fallback_hint = 'fallback_to_web_search_recommended' if name=='search_configured_news' else 'The read completed. Empty evidence is not a failed tool: do not retry this saved-data query unchanged. Use a justified public search or conclude that there is no verifiable information.'
+            self.feedback.append({'name':name,'ok':True,'data':[],'items':[],'meta':outcome.get('meta') or {'hint':fallback_hint},'status':'no_matching_evidence','error_code':reasons[0] if reasons else 'zero_evidence','hint':fallback_hint});self.no_new+=1;return
         signature=hashlib.sha256(json.dumps([{k:r.get(k) for k in ('id','source_id','url','source_url','content_hash','excerpt','summary','close')} for r in accepted],sort_keys=True,default=str).encode()).hexdigest()
         if signature in self.evidence_signatures:self.repeated_evidence+=1
         else:self.repeated_evidence=0;self.evidence_signatures.add(signature)
@@ -2140,9 +2254,10 @@ class Turn:
                 answer='\n\n'.join(_fmt_op(f) for f in operational)
         if self.route in {'A','D'}:
             from .evidence import rejected_lines, reviewed_answer
+            has_configured_news = any(c.get('source_type')=='configured_news' or c.get('origin')=='configured_news' for c in self.citations)
             is_web = any(getattr(obs,'tool_name',None) in {'web_research','ingest_web_source'} or (isinstance(obs,dict) and (obs.get('name') in {'web_research','ingest_web_source'} or obs.get('route')=='public_web_research')) for obs in self.observations) or any(c.get('source_type')=='web' for c in self.citations)
-            check_claims = not generated and (self.route=='A' or not is_web)
-            require_citations = not generated and (self.route=='A' or (bool(self.observations) and not is_web and not self.pending))
+            check_claims = not generated and (self.route=='A' or has_configured_news or not is_web)
+            require_citations = not generated and (self.route=='A' or has_configured_news or (bool(self.observations) and not is_web and not self.pending))
             state=self.system_state_text() if check_claims and not self.citations else ''
             if state:
                 # An answer about the product's own state (the research queue, a task) has no source to
@@ -2373,10 +2488,11 @@ class Turn:
     async def agent_loop(self):
         """The tool loop and the closing answer: shared by a new request and a resumed one."""
         recalled=await self.recall_bound_citations()
+        mode=str(self.scope.get('mode') or 'none').strip().lower()
         if self.route=='A' and not recalled:
             from .financials import xbrl_metrics_for
             wanted=xbrl_metrics_for(self.scope.get('metrics') or []);covered=False
-            if wanted and self.scope.get('symbol'):
+            if wanted and self.scope.get('symbol') and mode in {'rag','financials','none'} and len(self.scope.get('symbols') or [])<=1:
                 # A figure the filing reported in XBRL is read exactly instead of being hunted in prose.
                 figures_args={'symbol':self.scope['symbol'],'metrics':wanted}
                 figures=await self.execute_read('query_financials',figures_args);self.accept('query_financials',figures_args,figures);await self.publish_result('query_financials',figures)
@@ -2385,11 +2501,17 @@ class Turn:
                 # search only adds prose: in production it tripled what the model reads and took the same
                 # question from 6 s to 36 s.  The model can still search when it needs more.
                 covered=set(wanted)<=found and len(self.scope.get('symbols') or [])<=1
-            if not covered:
-                args={k:self.scope.get(k) for k in ('symbol','company','latest','form','financial_only') if self.scope.get(k) is not None}
-                args['query']=self.scope.get('query') or self.question[:400]
-                initial=await self.execute_read('search_knowledge',args);self.accept('search_knowledge',args,initial);await self.publish_result('search_knowledge',initial)
-            self.audit['retrieval_gate']='sufficient_evidence' if self.observations else 'zero_evidence'
+            if mode=='rag':
+                self.tool_bias='knowledge';self.audit['tool_bias']='knowledge'
+                if not covered:
+                    args={k:self.scope.get(k) for k in ('symbol','company','latest','form','financial_only') if self.scope.get(k) is not None}
+                    args['query']=self.scope.get('query') or self.question[:400]
+                    initial=await self.execute_read('search_knowledge',args);self.accept('search_knowledge',args,initial);await self.publish_result('search_knowledge',initial)
+                self.audit['retrieval_gate']='sufficient_evidence' if self.observations else 'zero_evidence'
+            else:
+                self.tool_bias=mode if mode in {'prices','financials','forecast'} else None
+                self.audit['tool_bias']=self.tool_bias
+                self.audit['retrieval_gate']='sufficient_evidence' if self.observations else f'skipped_mode_{mode}'
             self.no_new=0  # The mandatory prelude is not an attempted repeated agent search.
         elif recalled:
             self.audit['retrieval_gate']='history_citation_recalled'

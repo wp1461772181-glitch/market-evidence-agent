@@ -893,6 +893,90 @@ async def inbox_card_endpoint(item_id: str, x_chat_session: str | None = Header(
         raise HTTPException(404 if str(exc) == "inbox_item_not_found" else 422, str(exc))
 
 
+class InlineConfirmBody(BaseModel):
+    action: Literal["confirm", "skip", "later", "expire"] = "confirm"
+    action_token: str | None = Field(default=None, max_length=128)
+
+
+class PushSummaryTokensBody(BaseModel):
+    summary_max_tokens: int | str
+
+
+class UpsertNewsSourceBody(BaseModel):
+    id: str = Field(min_length=2, max_length=80)
+    name: str | None = Field(default=None, max_length=160)
+    enabled: bool = True
+    kind: Literal["rss", "http_json", "http_html"] = "rss"
+    url: str = Field(min_length=8, max_length=2048)
+    homepage: str | None = Field(default=None, max_length=2048)
+    language: str = Field(default="zh-CN", max_length=20)
+    tags: list[str] = Field(default_factory=list, max_length=20)
+    markets: list[str] = Field(default_factory=list, max_length=10)
+    rea_repair: bool = True
+    alternates: list[str] = Field(default_factory=list, max_length=10)
+
+
+@router.post("/inbox/{item_id}/confirm")
+@router.post("/routines/{item_id}/confirm")
+@router.post("/routines/confirmations/{item_id}/action")
+async def inline_confirm_endpoint(
+    item_id: str,
+    body: InlineConfirmBody | None = None,
+    x_chat_session: str | None = Header(default=None),
+):
+    """Inline confirmation on notification / routine card without jumping into the chat conversation (§6.B)."""
+    from . import fin_news_engine as news
+    credential = _owner_only(x_chat_session)
+    req_body = body or InlineConfirmBody()
+    try:
+        return await asyncio.to_thread(
+            news.handle_inline_confirmation_action,
+            item_id,
+            req_body.action,
+            owner_hash=owner_hash(credential),
+            action_token=req_body.action_token,
+        )
+    except LookupError as exc:
+        raise HTTPException(404, str(exc))
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+
+
+@router.get("/news-sources")
+async def get_news_sources_endpoint(x_chat_session: str | None = Header(default=None)):
+    from . import fin_news_engine as news
+    _owner_only(x_chat_session)
+    return await asyncio.to_thread(news.list_news_sources)
+
+
+@router.put("/news-sources/push-settings")
+async def put_news_push_settings_endpoint(body: PushSummaryTokensBody, x_chat_session: str | None = Header(default=None)):
+    from . import fin_news_engine as news
+    _owner_only(x_chat_session)
+    try:
+        cfg = await asyncio.to_thread(news.update_push_summary_max_tokens, body.summary_max_tokens)
+        return {"ok": True, "summary_max_tokens": cfg["push"]["summary_max_tokens"], "push": cfg["push"]}
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+
+
+@router.post("/news-sources")
+async def upsert_news_source_endpoint(body: UpsertNewsSourceBody, x_chat_session: str | None = Header(default=None)):
+    from . import fin_news_engine as news
+    credential = _owner_only(x_chat_session)
+    try:
+        return await asyncio.to_thread(
+            news.upsert_news_source,
+            body.model_dump(exclude_none=True),
+            owner_hash=owner_hash(credential),
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+
+
+
 @router.get("/background-model")
 async def get_background_model_endpoint(x_chat_session: str | None = Header(default=None)):
     """Provider, model and whether a key is saved.  The key itself is never returned."""

@@ -129,12 +129,20 @@ def _gate_outcome(ok: bool,reason: str,soft: bool) -> tuple[bool,str]:
     return False,reason
 
 
+def _has_valid_http_url(value: object) -> bool:
+    text = str(value or '').strip()
+    return text.startswith(('http://', 'https://')) and '://' in text and len(text.split('://', 1)[1].strip('/')) >= 3
+
+
 def gate_row(question: str, row: dict, *, symbol: str | None=None, company: str | None=None,
              metrics: list[str] | None=None, period: str | None=None, days_back: int | None=None,
              official_only: bool=False, now: datetime | None=None, entity_aliases: list[str] | None=None,
              soft: bool=False) -> tuple[bool,str]:
     kind=row.get('source_type','')
-    web=kind in {'web','web_news'} or 'url' in row
+    is_configured_news=kind=='configured_news' or row.get('origin')=='configured_news'
+    if is_configured_news and not _has_valid_http_url(row.get('url') or row.get('source_url')):
+        return False,'missing_citation_url'
+    web=kind in {'web','web_news','configured_news'} or 'url' in row
     if row.get('fetch_error') or row.get('body_hash_valid') is False:return False,'invalid_source_body'
     if official_only and kind not in {'official_filing','saved_filing'}:return False,'official_source_required'
     body=' '.join(str(row.get(k) or '') for k in ('excerpt','content','summary','text','answer','reasons'))
@@ -237,7 +245,12 @@ def citation_markers(answer,citations):
 
 
 def citation_errors(answer: str,citations: list[dict]) -> list[int]:
-    valid={int(c['ordinal']) for c in citations if type(c.get('ordinal')) is int}
+    valid=set()
+    for c in citations:
+        if type(c.get('ordinal')) is not int:continue
+        if (c.get('source_type') in {'configured_news'} or c.get('origin')=='configured_news') and not _has_valid_http_url(c.get('url') or c.get('source_url')):
+            continue
+        valid.add(int(c['ordinal']))
     return [int(n) for n in citation_markers(answer,citations) if int(n) not in valid]
 
 
@@ -295,17 +308,22 @@ def number_rows(name: str,rows: list[dict],citations: list[dict],scope: dict) ->
             row['_citations']=[{**c,'ordinal':mapping[c['ordinal']]} for c in rich]
             accepted.append(row)
             continue
-        kind=row.get('source_type') or ('web' if name=='web_research' else 'official_filing' if name=='query_sec_filings' else 'saved_price' if name=='query_stock_prices' else 'saved_forecast' if name=='query_latest_forecast' else 'ai_analysis' if 'analysis' in name else 'research_faq' if 'faq' in name else 'saved_material')
+        kind=row.get('source_type') or ('configured_news' if name=='search_configured_news' else 'web' if name=='web_research' else 'official_filing' if name=='query_sec_filings' else 'saved_price' if name=='query_stock_prices' else 'saved_forecast' if name=='query_latest_forecast' else 'ai_analysis' if 'analysis' in name else 'research_faq' if 'faq' in name else 'saved_material')
+        if kind=='configured_news' and not _has_valid_http_url(row.get('url') or row.get('source_url')):
+            continue
         body=str(row.get('excerpt') or row.get('answer') or row.get('summary') or json.dumps(row,ensure_ascii=False,default=str))
         key=hashlib.sha256(json.dumps([kind,row.get('id'),row.get('source_id'),row.get('url'),body],sort_keys=True,default=str).encode()).hexdigest()
         old=next((c for c in citations if c.get('evidence_key')==key),None)
         if old: ordinal=old['ordinal']
         else:
             ordinal=len(citations)+1
+            resolved_url=row.get('source_url') or row.get('content_source_url') or row.get('url')
+            origin=row.get('origin') or ('configured_news' if kind=='configured_news' else 'web' if kind in {'web','web_news'} else 'saved')
             citations.append({'ordinal':ordinal,'evidence_key':key,'chunk_id':row.get('chunk_id'),'document_id':row.get('document_id'),
-                'source_id':str(row.get('source_id') or row.get('id') or ''),'question':row.get('question'),'source_type':kind,'tool_arguments':row.get('tool_arguments'),
+                'source_id':str(row.get('source_id') or row.get('id') or ''),'question':row.get('question'),'source_type':kind,'origin':origin,'tool_arguments':row.get('tool_arguments'),
                 'title':str(row.get('title') or row.get('accession_number') or scope.get('company') or name)[:300],
-                'source_url':row.get('source_url') or row.get('content_source_url') or row.get('url'),
+                'source_name':row.get('source_name') or row.get('source'),
+                'url':resolved_url,'source_url':resolved_url,
                 'published_at':row.get('published_at') or row.get('filed_at') or row.get('trading_date'),
                 'observed_at':row.get('fetched_at') or row.get('observed_at'),'quote':body[:5000],
                 'trading_date':row.get('trading_date'),'source':row.get('source'),'fetched_at':row.get('fetched_at'),

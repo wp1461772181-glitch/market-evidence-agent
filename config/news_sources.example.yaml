@@ -1,0 +1,56 @@
+version: 1
+
+defaults:
+  poll_interval_minutes: 15
+  lookback_hours: 24
+  max_items_per_source: 50
+  push_summary_max_tokens: 256
+  timezone: Asia/Kuala_Lumpur
+
+sources:
+  - id: jin10-flash
+    name: 金十数据·快讯
+    enabled: true
+    kind: rss   # rss | http_json | http_html
+    url: https://example.com/flash/rss
+    homepage: https://www.jin10.com/
+    language: zh-CN
+    tags: [macro, flash]
+    markets: [CN, US]
+    fetch:
+      timeout_seconds: 20
+      headers:
+        User-Agent: FinBotNewsBot/1.0 (+local; research)
+    normalize:
+      time_format: auto
+    filters:
+      include_keywords: []
+      exclude_keywords: ["广告", "推广"]
+    rate_limit:
+      min_interval_seconds: 60
+    rea_repair: true
+    alternates: []
+    health: ok
+
+  - id: sec-atom-optional
+    name: SEC 公告（可选补充）
+    enabled: false
+    kind: rss
+    url: https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=&company=&dateb=&owner=include&count=40&output=atom
+    tags: [sec, filing]
+
+watchlists:
+  - id: default
+    tickers: [NVDA, AAPL, 600519]
+    keywords: ["降息", "非农", "财报", "指引"]
+    push_on_match: true
+
+push:
+  enabled: true
+  channel: finbot_notify
+  summary_max_tokens: 256
+  max_items_per_digest: 8
+  digest_cron: "*/30 * * * *"
+  actions_required:
+    - confirm_inline: true
+    - open_chat_fallback: true

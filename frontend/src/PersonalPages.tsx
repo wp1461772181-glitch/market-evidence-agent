@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useOpenConversation } from "./AgentChatPanel";
-import { confirmProfileItem, createProfileItem, deleteProfileItem, getChatMode, listBots, listInbox, listProfileItems, listRecall, listTaskProposals, mintInboxCard, setInboxStatus, updateProfileItem, type Bot, type InboxItem, type ProfileBot, type ProfileItem, type RecallItem, type TaskProposal } from "./api";
+import { confirmInboxItem, confirmProfileItem, createProfileItem, deleteProfileItem, getChatMode, getNewsSourcesConfig, listBots, listInbox, listProfileItems, listRecall, listTaskProposals, mintInboxCard, saveNewsPushSettings, setInboxStatus, updateProfileItem, type Bot, type InboxItem, type ProfileBot, type ProfileItem, type RecallItem, type TaskProposal } from "./api";
 import { RoutineIcon } from "./BotPages";
 import { TaskManager } from "./BotRoutines";
 import { useLocale } from "./i18n";
@@ -20,6 +20,7 @@ export function RoutinesPage({ bots, onNavigate, onChanged }: { bots: Bot[]; onN
   const openConversation = useOpenConversation();
   const [proposals, setProposals] = useState<TaskProposal[] | null>(null);
   const [confirms, setConfirms] = useState<InboxItem[] | null>(null);
+  const [summaryMaxTokens, setSummaryMaxTokens] = useState<number>(256);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const personal = getChatMode() === "personal";
@@ -28,6 +29,9 @@ export function RoutinesPage({ bots, onNavigate, onChanged }: { bots: Bot[]; onN
     const fail = (e: unknown) => { if (!signal?.aborted) setError(e instanceof Error ? e.message : "任务暂时无法读取。"); };
     listTaskProposals(signal).then(setProposals).catch(fail);
     listInbox("confirm", signal).then(setConfirms).catch(fail);
+    getNewsSourcesConfig(signal).then(cfg => {
+      if (cfg?.push?.summary_max_tokens) setSummaryMaxTokens(cfg.push.summary_max_tokens);
+    }).catch(() => { /* optional */ });
   }, []);
   useEffect(() => {
     if (!personal) return;
@@ -42,6 +46,15 @@ export function RoutinesPage({ bots, onNavigate, onChanged }: { bots: Bot[]; onN
     try { await action(); } catch (e) { setError(e instanceof Error ? e.message : "操作失败，请重试。"); } finally { setBusy(null); }
   }
   const dismiss = (id: string) => act(id, async () => { await setInboxStatus(id, "dismissed"); load(); onChanged?.(); });
+  const inlineConfirm = (item: InboxItem, action: "confirm" | "skip" | "later") => act(item.id, async () => {
+    await confirmInboxItem(item.id, action, item.action_token);
+    load();
+    onChanged?.();
+  });
+  const updateSummaryMaxTokens = (val: number) => act("push-tokens", async () => {
+    const res = await saveNewsPushSettings(val);
+    setSummaryMaxTokens(res.push.summary_max_tokens);
+  });
   // The card is minted now, with its own ten-minute capability, in the conversation of the run.
   const mintCard = (item: InboxItem) => act(item.id, async () => {
     const minted = await mintInboxCard(item.id);
@@ -80,16 +93,29 @@ export function RoutinesPage({ bots, onNavigate, onChanged }: { bots: Bot[]; onN
         </li>)}</ul>}
     </section>
     <section className="personal-card memory-panel">
+      <div className="memory-line">
+        <label className="memory-scope">新闻推送摘要长度上限
+          <select value={summaryMaxTokens} disabled={busy === "push-tokens"} onChange={e => void updateSummaryMaxTokens(Number(e.target.value))}>
+            <option value={128}>短（128 tokens）</option>
+            <option value={256}>中（256 tokens）</option>
+            <option value={512}>长（512 tokens）</option>
+          </select>
+        </label>
+      </div>
       <TaskManager bots={bots} onChanged={() => { load(); onChanged?.(); }} />
     </section>
     {waiting.length > 0 && <section className="personal-card memory-panel" aria-labelledby="routine-confirms-title">
       <h3 id="routine-confirms-title">{t("例行任务运行时想做的写操作")}</h3>
       <p className="fine-print">{t("定时任务在无人值守时只读不写。它想做的写操作会放在这里，不会自动执行；点「生成确认卡」后到对话里核对，点「同意」才执行。")}</p>
       <ul className="memory-list">{waiting.map(item => <li key={item.id}>
-        <div className="memory-line"><span className="personal-badge">{t("Agent 的建议")}</span>{botLabel(item.bot_id) && <span className="personal-badge">{botLabel(item.bot_id)}</span>}<strong>{item.title}</strong></div>
+        <div className="memory-line"><span className="personal-badge">{t("Agent 的建议")}</span>{botLabel(item.bot_id) && <span className="personal-badge">{botLabel(item.bot_id)}</span>}<strong>{item.title}</strong>
+          {item.confirmation_state && <span className="personal-badge">{item.confirmation_state}</span>}</div>
         {item.body && <blockquote className="memory-quote">“{item.body}”</blockquote>}
         {item.payload.task_name && <p className="fine-print">{t("来自任务：")}{item.payload.task_name}</p>}
         <div className="memory-actions">
+          <button type="button" className="primary-action" disabled={busy === item.id || item.confirmation_state === "confirmed"} onClick={() => void inlineConfirm(item, "confirm")}>{t("确认")}</button>
+          <button type="button" className="secondary-action" disabled={busy === item.id || item.confirmation_state === "skipped"} onClick={() => void inlineConfirm(item, "skip")}>跳过</button>
+          <button type="button" className="secondary-action" disabled={busy === item.id} onClick={() => void inlineConfirm(item, "later")}>稍后</button>
           <button type="button" className="secondary-action" disabled={busy === item.id} onClick={() => void mintCard(item)}>{t("生成确认卡")}</button>
           {item.conversation_id && <a className="secondary-action" href={`#agent/${item.conversation_id}`}>{t("打开对话")}</a>}
           <button type="button" className="secondary-action" disabled={busy === item.id} onClick={() => void dismiss(item.id)}>{t("忽略")}</button>

@@ -166,6 +166,50 @@ class NotifyArgs(Args):
     text:str=Field(min_length=1,max_length=1500,description="What to tell the owner, in the owner's language. Every sentence with a figure or date carries this turn's evidence number [n].")
     evidence_ids:list[int]=Field(default_factory=list,max_length=20,description='The [n] evidence numbers of THIS turn the text uses.')
 
+class SearchConfiguredNewsArgs(Args):
+    query:str|None=Field(default=None,max_length=300,description='Optional free text search query.')
+    tickers:list[str]=Field(default_factory=list,max_length=30,description='Stock tickers to filter by, e.g. ["NVDA"].')
+    keywords:list[str]=Field(default_factory=list,max_length=20,description='Keywords to filter by, e.g. ["降息"].')
+    source_ids:list[str]=Field(default_factory=list,max_length=20,description='Optional specific configured source IDs.')
+    since:str|None=Field(default=None,max_length=64,description='ISO8601 start timestamp.')
+    until:str|None=Field(default=None,max_length=64,description='ISO8601 end timestamp.')
+    limit:int=Field(default=10,ge=1,le=30)
+    refresh_first:bool=Field(default=False,description='Poll matching enabled sources once before searching (respects rate_limit).')
+
+class DryRunNewsSourceArgs(Args):
+    source_id:str=Field(min_length=1,max_length=80)
+
+class DiagnoseNewsSourceArgs(Args):
+    source_id:str=Field(min_length=1,max_length=80)
+
+class UpsertNewsSourceArgs(Args):
+    id:str=Field(min_length=2,max_length=80)
+    name:str|None=Field(default=None,max_length=160)
+    enabled:bool=True
+    kind:Literal['rss','http_json','http_html']='rss'
+    url:str=Field(min_length=8,max_length=2048)
+    homepage:str|None=Field(default=None,max_length=2048)
+    language:str=Field(default='zh-CN',max_length=20)
+    tags:list[str]=Field(default_factory=list,max_length=20)
+    markets:list[str]=Field(default_factory=list,max_length=10)
+    rea_repair:bool=True
+    alternates:list[str]=Field(default_factory=list,max_length=10)
+    require_confirm_on_major_change:bool=False
+
+class DisableNewsSourceArgs(Args):
+    source_id:str=Field(min_length=2,max_length=80)
+    enabled:bool=False
+
+class SetNewsSourceAlternateArgs(Args):
+    source_id:str=Field(min_length=2,max_length=80)
+    alternates:list[str]=Field(default_factory=list,max_length=10)
+    switch_to_first:bool=False
+    require_confirm:bool=False
+
+class RepairNewsSourceWithReaArgs(Args):
+    source_id:str=Field(min_length=2,max_length=80)
+    require_confirm:bool=True
+
 @dataclass(frozen=True)
 class ToolPolicy:
     name:str
@@ -221,6 +265,14 @@ EXTRA=(
  ('use_skill',UseSkillArgs,'skill','Load the full steps and output format of one listed skill and follow them. While it is active only the tools it allows are offered (never more than this turn already has); a write it allows still needs the owner\'s confirmation card.'),
  ('draft_skill',DraftSkillArgs,'skill','Only when the OWNER asks in this turn to save the way of working as a skill (存成技能): draft it from this turn\'s tool calls. The draft is inert and goes to the skills page; it becomes a skill only when the owner saves it there.'),
  ('notify_telegram',NotifyArgs,'notify','Send the owner a short Telegram message, only when your work instruction (or the task\'s) says this is worth notifying; with nothing new, do not call it. It goes to the owner\'s own bound chat only (you cannot choose a recipient), starts with your bot name and reads as plain chat: the [n] you cite are checked, then dropped, and no sources list is added, so write any link the owner should open into the text itself; a figure without this turn\'s evidence number is refused. Not a write: no card, also in scheduled runs. Each bot has a daily limit; past it the message stays in the conversation only.'),
+ ('search_configured_news',SearchConfiguredNewsArgs,'read','Search news items from enabled user-configured news sources only (RSS/JSON/HTML). Call this FIRST for recent market/macro/company news before falling back to web_research. Every returned item has a URL and still goes through citation and numeric gates.'),
+ ('list_news_sources',Empty,'read','List configured public news sources, health status, defaults, watchlists, and push settings (without sensitive headers).'),
+ ('dry_run_news_source',DryRunNewsSourceArgs,'read','Fetch 1 sample page from a configured news source and verify normalized items contain title, url, and published_at.'),
+ ('diagnose_news_source',DiagnoseNewsSourceArgs,'read','Diagnose a configured news source: return health, consecutive failures, last error, REA repair eligibility, and probe sample.'),
+ ('upsert_news_source',UpsertNewsSourceArgs,'read','Create or update a configured news source (URL, kind, enabled, alternates, rea_repair). Human-Agent parity.'),
+ ('disable_news_source',DisableNewsSourceArgs,'read','Disable or re-enable a configured news source by source_id.'),
+ ('set_news_source_alternate',SetNewsSourceAlternateArgs,'read','Set alternate fallback URLs for a configured news source and optionally switch to the first alternate.'),
+ ('repair_news_source_with_rea',RepairNewsSourceWithReaArgs,'read','Use REA inspection/alternates to repair a degraded or failing configured news source (rate-limited per source; major changes create an inline confirmation card).'),
 )
 # Owner-only: they act on the owner's own records, so a guest neither sees nor proposes them.
 OWNER_ONLY={'review_filing','remember','forget','create_routine','list_routines','update_routine','delete_routine','recall_conversations','read_past_conversation','notify_telegram','use_skill','draft_skill'}

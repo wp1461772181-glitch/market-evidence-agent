@@ -39,7 +39,7 @@ def stream_fixture(monkeypatch):
         if 'classify_request' in names:
             # Legacy fixture callers can still set intent; the test fixture translates it.
             category={'general':'B','unsupported_action':'C','system_action':'D','compound_research':'D'}.get(classification.get('intent'),classification.get('category','A'))
-            value={'days_back':None,'category':category,'symbol':classification.get('symbol')}
+            value={'days_back':None,'category':category,'mode':classification.get('mode','rag' if category=='A' else 'none'),'symbol':classification.get('symbol')}
             return {},{'content':json.dumps(value)}
         if not schemas:return {},{'content':'First increment'}
         if decisions:return {'usage':{'total_tokens':5}},decisions.pop(0)

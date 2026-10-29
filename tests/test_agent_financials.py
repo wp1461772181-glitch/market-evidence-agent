@@ -120,7 +120,7 @@ def test_saved_data_turn_reads_reported_figures_when_the_metric_is_one_of_them()
 REVENUE_ROW={'source_id':'f1','symbol':'MSFT','form':'10-K','source_type':'reported_figure','metric':'revenue',
     'title':'MSFT 10-K · 营业收入 FY2026','filed_at':'2026-07-29','excerpt':'营业收入（Revenue）FY2026：331,839,000,000 USD。'}
 
-def _figure_turn(rows,metrics=('营业收入',),symbols=None):
+def _figure_turn(rows,metrics=('营业收入',),symbols=None,mode='rag'):
     from app.agent_workflow import direct
     from app.agent_workflow.state import AgentRuntimeContext
     executed=[]
@@ -128,7 +128,7 @@ def _figure_turn(rows,metrics=('营业收入',),symbols=None):
         executed.append(name)
         return {'ok':True,'data':copy.deepcopy(rows) if name=='query_financials' else []}
     async def emit(_):pass
-    scope={'category':'A','symbol':'MSFT','metrics':list(metrics),'days_back':None,**({'symbols':symbols} if symbols else {})}
+    scope={'category':'A','mode':mode,'symbol':'MSFT','metrics':list(metrics),'days_back':None,**({'symbols':symbols} if symbols else {})}
     ctx=AgentRuntimeContext('custom','test','dummy',classifier=lambda _:scope,
         decider=lambda *_:{'content':'MSFT FY2026 营业收入为 331,839,000,000 美元 [1]。'},executor=execute)
     asyncio.run(direct.run_direct_turn('查 MSFT 最近一期年报的营业收入',ctx,emit=emit))

@@ -215,6 +215,27 @@ async def _handle_message(client, credential: str, owner: str, message: dict,
 
     if not text:
         return
+    upper_text = text.strip().upper()
+    if upper_text.startswith(("CONFIRM ", "SKIP ", "LATER ")):
+        parts = text.strip().split(maxsplit=1)
+        if len(parts) == 2:
+            verb, code = parts[0].upper(), parts[1].strip().upper()
+            action_map = {"CONFIRM": "confirm", "SKIP": "skip", "LATER": "later"}
+            from app import fin_news_engine
+            from app.agent_chat_store import owner_hash
+            result = await asyncio.to_thread(
+                fin_news_engine.handle_inline_confirmation_action,
+                code,
+                action_map[verb],
+                owner_hash=owner_hash(credential),
+            )
+            bot_token = _bot_token_for_send(owner, tg)
+            if result.get("ok"):
+                msg = f"已处理（{result.get('confirmation_state')}）。"
+            else:
+                msg = f"确认码无效或已过期（{result.get('error_code')}）。"
+            await _send_text(client, bot_token, bound_chat, msg)
+            return
     reply_to = (message.get("reply_to_message") or {}).get("message_id")
     target = await asyncio.to_thread(tg.route, owner, text, reply_to if isinstance(reply_to, int) else None)
     if not target["text"]:
