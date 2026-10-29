@@ -100,6 +100,10 @@ def config_path(custom_path: str | Path | None = None) -> Path:
     return repo_root / "config" / "news_sources.yaml"
 
 
+DEFAULT_BROWSER_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+SEC_COMPLIANT_UA = "MarketEvidenceAgent/1.0 (research@finbot.local)"
+
+
 def default_config_dict() -> dict[str, Any]:
     return {
         "version": 1,
@@ -115,28 +119,81 @@ def default_config_dict() -> dict[str, Any]:
                 "id": "jin10-flash",
                 "name": "金十数据·快讯",
                 "enabled": True,
-                "kind": "rss",
-                "url": "https://rsshub.app/jin10",
+                "kind": "http_json",
+                "url": "https://www.jin10.com/flash_newest.js",
                 "homepage": "https://www.jin10.com/",
                 "language": "zh-CN",
                 "tags": ["macro", "flash"],
                 "markets": ["CN", "US"],
                 "fetch": {
                     "timeout_seconds": 20,
-                    "headers": {"User-Agent": "FinBotNewsBot/1.0 (+local; research)"},
+                    "headers": {
+                        "User-Agent": DEFAULT_BROWSER_UA,
+                        "Referer": "https://www.jin10.com/",
+                    },
+                    "items_jsonpath": "$",
+                    "url_template": "https://flash.jin10.com/detail/{id}",
                 },
                 "normalize": {"time_format": "auto"},
                 "filters": {"include_keywords": [], "exclude_keywords": ["广告", "推广"]},
                 "rate_limit": {"min_interval_seconds": 60},
                 "rea_repair": True,
-                "alternates": ["https://www.jin10.com/flash"],
+                "alternates": [
+                    "https://flash-api.jin10.com/get_flash_list?channel=-8200&vip=1",
+                    "https://www.jin10.com/flash",
+                ],
                 "health": "ok",
-            }
+            },
+            {
+                "id": "yahoo-finance-rss",
+                "name": "Yahoo Finance Market News",
+                "enabled": True,
+                "kind": "rss",
+                "url": "https://feeds.finance.yahoo.com/rss/2.0/headline?s=NVDA,AAPL,MSFT,GOOGL,AMZN,META,TSLA&region=US&lang=en-US",
+                "homepage": "https://finance.yahoo.com/news/",
+                "language": "en-US",
+                "tags": ["market", "us-stocks"],
+                "markets": ["US"],
+                "fetch": {
+                    "timeout_seconds": 20,
+                    "headers": {"User-Agent": DEFAULT_BROWSER_UA},
+                },
+                "normalize": {"time_format": "auto"},
+                "filters": {"include_keywords": [], "exclude_keywords": ["Advertisement", "Sponsored"]},
+                "rate_limit": {"min_interval_seconds": 60},
+                "rea_repair": True,
+                "alternates": [
+                    "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664",
+                    "https://www.nasdaq.com/feed/rssoutbound?category=Markets",
+                ],
+                "health": "ok",
+            },
+            {
+                "id": "sec-atom-optional",
+                "name": "SEC 公告（可选补充）",
+                "enabled": False,
+                "kind": "rss",
+                "url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=8-K&count=20&output=atom",
+                "homepage": "https://www.sec.gov/edgar/searchedgar/companysearch",
+                "language": "en-US",
+                "tags": ["sec", "filing"],
+                "markets": ["US"],
+                "fetch": {
+                    "timeout_seconds": 20,
+                    "headers": {"User-Agent": SEC_COMPLIANT_UA},
+                },
+                "normalize": {"time_format": "auto"},
+                "filters": {"include_keywords": [], "exclude_keywords": []},
+                "rate_limit": {"min_interval_seconds": 60},
+                "rea_repair": True,
+                "alternates": [],
+                "health": "ok",
+            },
         ],
         "watchlists": [
             {
                 "id": "default",
-                "tickers": ["NVDA", "AAPL", "600519"],
+                "tickers": ["NVDA", "AAPL", "MSFT", "600519"],
                 "keywords": ["降息", "非农", "财报", "指引"],
                 "push_on_match": True,
             }
@@ -220,7 +277,8 @@ def validate_config(raw: dict[str, Any], *, strict_tokens: bool = False) -> dict
             health = "ok"
         fetch = src.get("fetch") if isinstance(src.get("fetch"), dict) else {}
         fetch.setdefault("timeout_seconds", 20)
-        fetch.setdefault("headers", {"User-Agent": "FinBotNewsBot/1.0 (+local; research)"})
+        default_ua = SEC_COMPLIANT_UA if "sec.gov" in parsed_url.netloc.lower() else DEFAULT_BROWSER_UA
+        fetch.setdefault("headers", {"User-Agent": default_ua})
         normalize = src.get("normalize") if isinstance(src.get("normalize"), dict) else {"time_format": "auto"}
         filters = src.get("filters") if isinstance(src.get("filters"), dict) else {}
         filters.setdefault("include_keywords", [])
@@ -368,10 +426,71 @@ def _parse_datetime(raw: Any, fetched_at: datetime) -> tuple[datetime, bool]:
     return fetched_at, True
 
 
+def _resolve_live_endpoint(
+    url: str, kind: str, headers: dict[str, str]
+) -> tuple[str, str, dict[str, str]]:
+    """Map legacy or homepage URLs to verified live feed endpoints when running against live network."""
+    if _CUSTOM_HTTP_FETCHER is not None:
+        return url, kind, headers
+    trimmed = url.strip().rstrip("/")
+    hdrs = dict(headers or {})
+    if trimmed in {
+        "https://rsshub.app/jin10",
+        "https://www.jin10.com",
+        "https://jin10.com",
+        "https://www.jin10.com/flash",
+        "https://flash.jin10.com",
+    }:
+        hdrs.setdefault("Referer", "https://www.jin10.com/")
+        return "https://www.jin10.com/flash_newest.js", "http_json", hdrs
+    if "flash-api.jin10.com" in trimmed:
+        hdrs.setdefault("x-app-id", "bVBF4FyRTn5NJF5n")
+        hdrs.setdefault("x-version", "1.0.0")
+        hdrs.setdefault("Referer", "https://www.jin10.com/")
+        return url, "http_json", hdrs
+    if trimmed in {
+        "https://www.bloomberg.com/markets",
+        "https://www.bloomberg.com",
+        "https://bloomberg.com/markets",
+        "https://bloomberg.com",
+    } and kind == "rss":
+        return "https://feeds.bloomberg.com/markets/news.rss", "rss", hdrs
+    if trimmed in {
+        "https://finance.yahoo.com/news/rssindex",
+        "https://finance.yahoo.com/rss/topstories",
+        "https://finance.yahoo.com/news",
+        "https://finance.yahoo.com",
+    } and kind == "rss":
+        return (
+            "https://feeds.finance.yahoo.com/rss/2.0/headline?s=NVDA,AAPL,MSFT,GOOGL,AMZN,META,TSLA&region=US&lang=en-US",
+            "rss",
+            hdrs,
+        )
+    return url, kind, hdrs
+
+
 def _http_get(url: str, headers: dict[str, str], timeout: int) -> tuple[int, str]:
     if _CUSTOM_HTTP_FETCHER is not None:
         return _CUSTOM_HTTP_FETCHER(url, headers, timeout)
-    req = urllib.request.Request(url, headers=headers or {"User-Agent": "FinBotNewsBot/1.0"})
+    req_headers = dict(headers or {})
+    ua = str(req_headers.get("User-Agent") or "").strip()
+    if "sec.gov" in url.lower():
+        if not ua or "FinBotNewsBot" in ua or "Mozilla" in ua:
+            req_headers["User-Agent"] = SEC_COMPLIANT_UA
+    else:
+        if not ua or "FinBotNewsBot" in ua or "Chrome/" in ua:
+            req_headers["User-Agent"] = DEFAULT_BROWSER_UA
+        parsed = urlparse(url)
+        if (
+            parsed.scheme
+            and parsed.netloc
+            and "yahoo.com" not in parsed.netloc.lower()
+            and "Referer" not in req_headers
+            and "referer" not in req_headers
+        ):
+            req_headers["Referer"] = f"{parsed.scheme}://{parsed.netloc}/"
+    req_headers.setdefault("Accept", "*/*")
+    req = urllib.request.Request(url, headers=req_headers)
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         status = getattr(resp, "status", 200) or 200
         raw_bytes = resp.read(2_000_000)
@@ -384,7 +503,14 @@ def _local_tag(tag: str) -> str:
 
 
 def _parse_rss(xml_text: str, base_url: str) -> list[dict[str, Any]]:
-    root = ET.fromstring(xml_text.strip())
+    cleaned_xml = re.sub(
+        r'(<\?xml[^>]*?)\s+encoding=["\'][^"\']+["\']',
+        r"\1",
+        xml_text.strip(),
+        count=1,
+        flags=re.I,
+    )
+    root = ET.fromstring(cleaned_xml)
     items: list[dict[str, Any]] = []
     # RSS 2.0 <item> or Atom <entry>
     for elem in root.iter():
@@ -444,12 +570,20 @@ def _resolve_jsonpath(data: Any, path_expr: str) -> Any:
 
 
 def _parse_http_json(json_text: str, base_url: str, fetch_cfg: dict[str, Any]) -> list[dict[str, Any]]:
-    payload = json.loads(json_text)
+    cleaned_json = json_text.strip()
+    cleaned_json = re.sub(r"^\s*(?:var|let|const)\s+[A-Za-z0-9_$]+\s*=\s*", "", cleaned_json)
+    if cleaned_json.endswith(";"):
+        cleaned_json = cleaned_json[:-1].strip()
+    payload = json.loads(cleaned_json)
     items_path = str(fetch_cfg.get("items_jsonpath") or "$.data.list")
     raw_list = _resolve_jsonpath(payload, items_path)
     if not isinstance(raw_list, list):
         if isinstance(payload, list):
             raw_list = payload
+        elif isinstance(payload, dict) and isinstance(payload.get("data"), list):
+            raw_list = payload["data"]
+        elif isinstance(payload, dict) and isinstance(payload.get("items"), list):
+            raw_list = payload["items"]
         else:
             return []
     field_map = fetch_cfg.get("field_map") if isinstance(fetch_cfg.get("field_map"), dict) else {}
@@ -457,18 +591,62 @@ def _parse_http_json(json_text: str, base_url: str, fetch_cfg: dict[str, Any]) -
     url_key = str(field_map.get("url") or "url")
     pub_key = str(field_map.get("published_at") or "published_at")
     sum_key = str(field_map.get("summary") or "summary")
+    url_template = str(fetch_cfg.get("url_template") or "").strip()
 
     out: list[dict[str, Any]] = []
     for entry in raw_list:
         if not isinstance(entry, dict):
             continue
-        raw_url = str(entry.get(url_key) or entry.get("link") or "").strip()
+        nested_data = entry.get("data") if isinstance(entry.get("data"), dict) else {}
+        ext_id = str(entry.get("id") or nested_data.get("id") or "").strip()
+        raw_title = str(
+            _resolve_jsonpath(entry, title_key)
+            or entry.get(title_key)
+            or nested_data.get("title")
+            or ""
+        ).strip()
+        raw_summary = str(
+            _resolve_jsonpath(entry, sum_key)
+            or entry.get(sum_key)
+            or entry.get("content")
+            or nested_data.get("content")
+            or nested_data.get("summary")
+            or ""
+        ).strip()
+        clean_summary = _strip_html(raw_summary)
+        if not raw_title and clean_summary:
+            bracket_match = re.search(r"【([^】]{2,140})】", clean_summary)
+            if bracket_match:
+                raw_title = bracket_match.group(1).strip()
+            else:
+                raw_title = clean_summary[:80]
+        raw_url = str(
+            _resolve_jsonpath(entry, url_key)
+            or entry.get(url_key)
+            or entry.get("link")
+            or nested_data.get("source_link")
+            or nested_data.get("link")
+            or ""
+        ).strip()
+        if not raw_url and ext_id:
+            if url_template and "{id}" in url_template:
+                raw_url = url_template.replace("{id}", ext_id)
+            elif "jin10.com" in base_url:
+                raw_url = f"https://flash.jin10.com/detail/{ext_id}"
+            else:
+                raw_url = f"{base_url.split('#')[0]}#id={ext_id}"
         out.append({
-            "title": str(entry.get(title_key) or "").strip(),
+            "title": raw_title,
             "url": urljoin(base_url, raw_url) if raw_url else "",
-            "summary": str(entry.get(sum_key) or entry.get("content") or "").strip(),
-            "published_at": entry.get(pub_key) or entry.get("time") or "",
-            "external_id": str(entry.get("id") or ""),
+            "summary": raw_summary,
+            "published_at": (
+                _resolve_jsonpath(entry, pub_key)
+                or entry.get(pub_key)
+                or entry.get("time")
+                or nested_data.get("time")
+                or ""
+            ),
+            "external_id": ext_id,
         })
     return out
 
@@ -524,17 +702,23 @@ def _parse_http_html(html_text: str, base_url: str, fetch_cfg: dict[str, Any]) -
 
 
 def fetch_source(source: dict[str, Any]) -> list[dict[str, Any]]:
-    kind = str(source.get("kind") or "rss").lower()
-    url = str(source.get("url") or "").strip()
+    raw_kind = str(source.get("kind") or "rss").lower()
+    raw_url = str(source.get("url") or "").strip()
     fetch_cfg = source.get("fetch") if isinstance(source.get("fetch"), dict) else {}
     timeout = int(fetch_cfg.get("timeout_seconds") or 20)
-    headers = fetch_cfg.get("headers") if isinstance(fetch_cfg.get("headers"), dict) else {}
+    raw_headers = fetch_cfg.get("headers") if isinstance(fetch_cfg.get("headers"), dict) else {}
+    url, kind, headers = _resolve_live_endpoint(raw_url, raw_kind, raw_headers)
     status, body = _http_get(url, headers, timeout)
     if status >= 400:
         raise RuntimeError(f"http_status_{status}")
+    head = body.lstrip()[:120].lower()
     if kind == "rss":
+        if head.startswith(("{", "[", "var ", "let ", "const ")):
+            return _parse_http_json(body, url, fetch_cfg)
         return _parse_rss(body, url)
     if kind == "http_json":
+        if head.startswith(("<?xml", "<rss", "<feed")):
+            return _parse_rss(body, url)
         return _parse_http_json(body, url, fetch_cfg)
     if kind == "http_html":
         return _parse_http_html(body, url, fetch_cfg)

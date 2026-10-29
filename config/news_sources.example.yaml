@@ -11,16 +11,19 @@ sources:
   - id: jin10-flash
     name: 金十数据·快讯
     enabled: true
-    kind: rss   # rss | http_json | http_html
-    url: https://example.com/flash/rss
+    kind: http_json   # rss | http_json | http_html
+    url: https://www.jin10.com/flash_newest.js
     homepage: https://www.jin10.com/
     language: zh-CN
     tags: [macro, flash]
     markets: [CN, US]
     fetch:
       timeout_seconds: 20
+      items_jsonpath: $
+      url_template: https://flash.jin10.com/detail/{id}
       headers:
-        User-Agent: FinBotNewsBot/1.0 (+local; research)
+        User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36
+        Referer: https://www.jin10.com/
     normalize:
       time_format: auto
     filters:
@@ -29,14 +32,35 @@ sources:
     rate_limit:
       min_interval_seconds: 60
     rea_repair: true
-    alternates: []
+    alternates:
+      - https://flash-api.jin10.com/get_flash_list?channel=-8200&vip=1
     health: ok
+
+  - id: yahoo-finance-rss
+    name: Yahoo Finance Market News
+    enabled: true
+    kind: rss
+    url: https://feeds.finance.yahoo.com/rss/2.0/headline?s=NVDA,AAPL,MSFT,GOOGL,AMZN,META,TSLA&region=US&lang=en-US
+    homepage: https://finance.yahoo.com/news/
+    language: en-US
+    tags: [market, us-stocks]
+    markets: [US]
+
+  - id: bloomberg_market
+    name: BloombergMarket
+    enabled: true
+    kind: rss
+    url: https://feeds.bloomberg.com/markets/news.rss
+    homepage: https://www.bloomberg.com/markets
+    language: en-US
+    tags: [news, macro]
+    markets: [US]
 
   - id: sec-atom-optional
     name: SEC 公告（可选补充）
     enabled: false
     kind: rss
-    url: https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=&company=&dateb=&owner=include&count=40&output=atom
+    url: https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=8-K&count=20&output=atom
     tags: [sec, filing]
 
 watchlists:

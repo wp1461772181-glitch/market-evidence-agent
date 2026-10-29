@@ -1,98 +1,147 @@
 version: 1
-
 defaults:
   poll_interval_minutes: 15
   lookback_hours: 24
   max_items_per_source: 50
   push_summary_max_tokens: 256
   timezone: Asia/Kuala_Lumpur
-
 sources:
-  - id: jin10-flash
-    name: 金十数据·快讯
-    enabled: true
-    kind: rss
-    url: https://rsshub.app/jin10
-    homepage: https://www.jin10.com/
-    language: zh-CN
-    tags: [macro, flash]
-    markets: [CN, US]
-    fetch:
-      timeout_seconds: 20
-      headers:
-        User-Agent: FinBotNewsBot/1.0 (+local; research)
-    normalize:
-      time_format: auto
-    filters:
-      include_keywords: []
-      exclude_keywords: ["广告", "推广"]
-    rate_limit:
-      min_interval_seconds: 60
-    rea_repair: true
-    alternates:
-      - https://www.jin10.com/flash
-    health: ok
-
-  - id: yahoo-finance-rss
-    name: Yahoo Finance Market News
-    enabled: true
-    kind: rss
-    url: https://finance.yahoo.com/news/rssindex
-    homepage: https://finance.yahoo.com/news/
-    language: en-US
-    tags: [market, us-stocks]
-    markets: [US]
-    fetch:
-      timeout_seconds: 20
-      headers:
-        User-Agent: FinBotNewsBot/1.0 (+local; research)
-    normalize:
-      time_format: auto
-    filters:
-      include_keywords: []
-      exclude_keywords: ["Advertisement", "Sponsored"]
-    rate_limit:
-      min_interval_seconds: 60
-    rea_repair: true
-    alternates: []
-    health: ok
-
-  - id: sec-atom-optional
-    name: SEC 公告（可选补充）
-    enabled: false
-    kind: rss
-    url: https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=&company=&dateb=&owner=include&count=40&output=atom
-    homepage: https://www.sec.gov/edgar/searchedgar/companysearch
-    language: en-US
-    tags: [sec, filing]
-    markets: [US]
-    fetch:
-      timeout_seconds: 20
-      headers:
-        User-Agent: FinBotNewsBot/1.0 (+local; research)
-    normalize:
-      time_format: auto
-    filters:
-      include_keywords: []
-      exclude_keywords: []
-    rate_limit:
-      min_interval_seconds: 60
-    rea_repair: true
-    alternates: []
-    health: ok
-
+- id: jin10-flash
+  name: 金十数据·快讯
+  enabled: true
+  kind: http_json
+  url: https://www.jin10.com/flash_newest.js
+  homepage: https://www.jin10.com/
+  language: zh-CN
+  tags:
+  - macro
+  - flash
+  markets:
+  - CN
+  - US
+  fetch:
+    timeout_seconds: 20
+    items_jsonpath: $
+    url_template: https://flash.jin10.com/detail/{id}
+    headers:
+      User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36
+      Referer: https://www.jin10.com/
+  normalize:
+    time_format: auto
+  filters:
+    include_keywords: []
+    exclude_keywords:
+    - 广告
+    - 推广
+  rate_limit:
+    min_interval_seconds: 60
+  rea_repair: true
+  alternates:
+  - https://www.jin10.com/flash
+  - https://flash-api.jin10.com/get_flash_list?channel=-8200&vip=1
+  health: ok
+- id: yahoo-finance-rss
+  name: Yahoo Finance Market News
+  enabled: true
+  kind: rss
+  url: https://feeds.finance.yahoo.com/rss/2.0/headline?s=NVDA,AAPL,MSFT,GOOGL,AMZN,META,TSLA&region=US&lang=en-US
+  homepage: https://finance.yahoo.com/news/
+  language: en-US
+  tags:
+  - market
+  - us-stocks
+  markets:
+  - US
+  fetch:
+    timeout_seconds: 20
+    headers:
+      User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36
+  normalize:
+    time_format: auto
+  filters:
+    include_keywords: []
+    exclude_keywords:
+    - Advertisement
+    - Sponsored
+  rate_limit:
+    min_interval_seconds: 60
+  rea_repair: true
+  alternates:
+  - https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664
+  - https://www.nasdaq.com/feed/rssoutbound?category=Markets
+  health: ok
+- id: bloomberg_market
+  name: BloombergMarket
+  enabled: true
+  kind: rss
+  url: https://feeds.bloomberg.com/markets/news.rss
+  homepage: https://www.bloomberg.com/markets
+  language: en-US
+  tags:
+  - news
+  - macro
+  markets:
+  - US
+  fetch:
+    timeout_seconds: 20
+    headers:
+      User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36
+  normalize:
+    time_format: auto
+  filters:
+    include_keywords: []
+    exclude_keywords: []
+  rate_limit:
+    min_interval_seconds: 60
+  rea_repair: true
+  alternates:
+  - https://feeds.bloomberg.com/technology/news.rss
+  health: ok
+- id: sec-atom-optional
+  name: SEC 公告（可选补充）
+  enabled: false
+  kind: rss
+  url: https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=8-K&count=20&output=atom
+  homepage: https://www.sec.gov/edgar/searchedgar/companysearch
+  language: en-US
+  tags:
+  - sec
+  - filing
+  markets:
+  - US
+  fetch:
+    timeout_seconds: 20
+    headers:
+      User-Agent: MarketEvidenceAgent/1.0 (research@finbot.local)
+  normalize:
+    time_format: auto
+  filters:
+    include_keywords: []
+    exclude_keywords: []
+  rate_limit:
+    min_interval_seconds: 60
+  rea_repair: true
+  alternates: []
+  health: ok
 watchlists:
-  - id: default
-    tickers: [NVDA, AAPL, MSFT, 600519]
-    keywords: ["降息", "非农", "财报", "指引"]
-    push_on_match: true
-
+- id: default
+  tickers:
+  - NVDA
+  - AAPL
+  - MSFT
+  - '600519'
+  keywords:
+  - 降息
+  - 非农
+  - 财报
+  - 指引
+  push_on_match: true
 push:
   enabled: true
   channel: finbot_notify
   summary_max_tokens: 256
   max_items_per_digest: 8
-  digest_cron: "*/30 * * * *"
+  digest_cron: '*/30 * * * *'
   actions_required:
-    - confirm_inline: true
-    - open_chat_fallback: true
+  - confirm_inline: true
+  - open_chat_fallback: true
