@@ -288,6 +288,7 @@ def test_a_failed_recall_falls_back_to_the_usual_prelude(monkeypatch):
     async def emit(_): pass
     turn=Turn("原文",context,emit,[],{});turn.route="A"
     turn.bound_history_citations=[{"turn_id":"old","ordinal":2,"answers_back":1,"derived":False,"parents":[]}]
+    turn.scope={"mode":"rag"}
     calls=[]
     async def execute(name,args):
         calls.append(name)

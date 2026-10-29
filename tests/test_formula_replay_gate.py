@@ -6,6 +6,7 @@ import copy
 import uuid
 from datetime import UTC, date, datetime, timedelta
 
+import exchange_calendars as xcals
 from sqlalchemy import delete, update
 
 from app.agent_chat_stream import _restore_citations
@@ -15,7 +16,20 @@ from app.agent_workflow.evidence import number_rows
 from app.agent_workflow.formula_replay import execute_calculate_formula, replay_formula_citations
 from app.agent_workflow.formula_sandbox import formula_sha256
 from app.database import Base, SessionLocal, engine
-from app.models import MarketPrice
+from app.models import MarketPrice, MarketPriceRevision
+
+XNYS = xcals.get_calendar("XNYS")
+
+
+def _sessions_back(end: date, count: int) -> list[date]:
+    """Newest-first XNYS sessions on or before `end`; seeded history must be real trading days."""
+    sessions: list[date] = []
+    day = end
+    while len(sessions) < count:
+        if XNYS.is_session(day):
+            sessions.append(day)
+        day -= timedelta(days=1)
+    return sessions
 
 
 def _setup_aapl_formula_citations() -> tuple[list[dict], list[str]]:
@@ -25,10 +39,10 @@ def _setup_aapl_formula_citations() -> tuple[list[dict], list[str]]:
     rows: list[dict] = []
     row_ids: list[str] = []
     with SessionLocal() as session:
+        session.execute(delete(MarketPriceRevision).where(MarketPriceRevision.symbol == "AAPL"))
         session.execute(delete(MarketPrice).where(MarketPrice.symbol == "AAPL"))
         session.commit()
-        for idx in range(25):
-            d = base_date - timedelta(days=idx)
+        for idx, d in enumerate(_sessions_back(base_date, 25)):
             close_val = round(200.0 + idx * 0.8 + (1.5 if idx % 2 == 0 else -1.1), 2)
             mp = MarketPrice(
                 id=uuid.uuid4(),

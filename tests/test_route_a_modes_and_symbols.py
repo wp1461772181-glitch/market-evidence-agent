@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from datetime import date, timedelta
+
+import exchange_calendars as xcals
 import pytest
 
 from app.agent_workflow import direct
@@ -11,6 +14,18 @@ from app.agent_workflow.state import AgentRuntimeContext
 
 
 NINE_TICKERS = ['AAPL', 'MSFT', 'NVDA', 'GOOGL', 'AMZN', 'META', 'TSLA', 'AVGO', 'TSM']
+XNYS = xcals.get_calendar("XNYS")
+
+
+def _sessions_back(end: date, count: int) -> list[date]:
+    """Newest-first XNYS sessions on or before `end`; seeded history must be real trading days."""
+    sessions: list[date] = []
+    day = end
+    while len(sessions) < count:
+        if XNYS.is_session(day):
+            sessions.append(day)
+        day -= timedelta(days=1)
+    return sessions
 
 
 def _call(name: str, **arguments):
@@ -264,7 +279,7 @@ def test_nine_stocks_six_month_volatility_compacts_window_and_grounds_volatility
     from app.agent_workflow.claim_review import apply_claim_gate
     from app.agent_workflow.evidence import unsupported_number_values
     from app.database import Base, SessionLocal, engine
-    from app.models import MarketPrice
+    from app.models import MarketPrice, MarketPriceRevision
 
     Base.metadata.create_all(bind=engine)
     base_date = date(2026, 10, 29)
@@ -272,12 +287,12 @@ def test_nine_stocks_six_month_volatility_compacts_window_and_grounds_volatility
     receipt_by_symbol = {}
 
     with SessionLocal() as session:
+        session.execute(delete(MarketPriceRevision).where(MarketPriceRevision.symbol.in_(NINE_TICKERS)))
         session.execute(delete(MarketPrice).where(MarketPrice.symbol.in_(NINE_TICKERS)))
         session.commit()
         for idx, sym in enumerate(NINE_TICKERS):
             rows = []
-            for day_idx in range(127):
-                d = base_date - timedelta(days=day_idx)
+            for day_idx, d in enumerate(_sessions_back(base_date, 127)):
                 swing = (idx + 1) * 0.8 * (1 if day_idx % 2 == 0 else -1)
                 close_val = round(100.0 + idx * 15.0 + swing, 2)
                 mp = MarketPrice(

@@ -7,15 +7,28 @@ import statistics
 import uuid
 from datetime import UTC, date, datetime, timedelta
 
+import exchange_calendars as xcals
 from sqlalchemy import delete
 
 from app.agent_tools import build_price_set_row, query_stock_prices
 from app.agent_workflow.evidence import number_rows
 from app.agent_workflow.formula_replay import execute_calculate_formula
 from app.database import Base, SessionLocal, engine
-from app.models import MarketPrice
+from app.models import MarketPrice, MarketPriceRevision
 
 NINE_TICKERS = ["AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA", "AVGO", "TSM"]
+XNYS = xcals.get_calendar("XNYS")
+
+
+def _sessions_back(end: date, count: int) -> list[date]:
+    """Newest-first XNYS sessions on or before `end`; seeded history must be real trading days."""
+    sessions: list[date] = []
+    day = end
+    while len(sessions) < count:
+        if XNYS.is_session(day):
+            sessions.append(day)
+        day -= timedelta(days=1)
+    return sessions
 
 
 def _seed_symbol_prices(symbol: str, count: int, *, base_price: float = 150.0, swing_scale: float = 1.2) -> list[dict]:
@@ -24,10 +37,10 @@ def _seed_symbol_prices(symbol: str, count: int, *, base_price: float = 150.0, s
     fetched_ts = datetime(2026, 10, 28, 12, 0, 0, tzinfo=UTC)
     rows: list[dict] = []
     with SessionLocal() as session:
+        session.execute(delete(MarketPriceRevision).where(MarketPriceRevision.symbol == symbol))
         session.execute(delete(MarketPrice).where(MarketPrice.symbol == symbol))
         session.commit()
-        for idx in range(count):
-            d = base_date - timedelta(days=idx)
+        for idx, d in enumerate(_sessions_back(base_date, count)):
             close_val = round(base_price + idx * 0.25 + swing_scale * math.sin(idx * 0.35), 2)
             mp = MarketPrice(
                 id=uuid.uuid4(),

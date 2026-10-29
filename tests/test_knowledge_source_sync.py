@@ -1,12 +1,12 @@
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.database import Base, engine
 from app.agent_chat_models import AgentFAQ
-from app.knowledge.models import KnowledgeChunk, KnowledgeDocument, KnowledgeIndexTask, KnowledgeUploadOwner
+from app.knowledge.models import KnowledgeChunk, KnowledgeDocument, KnowledgeExtractionRun, KnowledgeIndexTask, KnowledgeUploadOwner
 from app.models import UploadedEvidence
 from scripts.migrate_knowledge import migrate
 
@@ -17,6 +17,9 @@ class Tok:
 
 def test_bounded_material_sync_is_idempotent_and_keeps_private_owner_scope(disposable_database):
     migrate(engine)
+    # The sync cursor is process-wide (scope_key material_sync.*); an earlier test can leave it past this test's random ids.
+    with Session(engine) as session, session.begin():
+        session.execute(update(KnowledgeExtractionRun).where(KnowledgeExtractionRun.scope_key.like("material_sync.%")).values(cursor=None))
     Base.metadata.create_all(engine, tables=[AgentFAQ.__table__, UploadedEvidence.__table__])
     now = datetime.now(UTC)
     mapped_id, unknown_id = uuid4(), uuid4()
@@ -36,7 +39,8 @@ def test_bounded_material_sync_is_idempotent_and_keeps_private_owner_scope(dispo
     from app.knowledge.source_sync import sync_source_batch
     generation = "s" * 64
     for _ in range(3): sync_source_batch(lambda: Session(engine), Tok(), generation, source_type="faq", batch_size=10)
-    sync_source_batch(lambda: Session(engine), Tok(), generation, source_type="upload", batch_size=10)
+    # Batches are capped at ten rows and earlier tests leave upload rows behind, so drain the source before asserting.
+    for _ in range(50): sync_source_batch(lambda: Session(engine), Tok(), generation, source_type="upload", batch_size=10)
     with Session(engine) as session:
         faq_docs = session.scalars(select(KnowledgeDocument).where(KnowledgeDocument.source_table == "agent_faq",
             KnowledgeDocument.source_id.in_(["991001","991002","991003"]))).all()

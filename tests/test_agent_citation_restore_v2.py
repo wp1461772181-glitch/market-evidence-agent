@@ -53,9 +53,10 @@ def test_more_than_ten_source_identities_survive_history_restore():
     with SessionLocal() as db:
         rows=[MarketPrice(symbol='MANY',trading_date=date(2026,1,n),open=10,high=11,low=9,close=10,volume=50,source='citation-test',fetched_at=now) for n in (5,6,7,8,9,12,13,14,15,16,20,21)]
         db.add_all(rows);db.commit()
-        number_rows('query_stock_prices',[{'id':str(r.id),'symbol':r.symbol,'close':r.close,'trading_date':r.trading_date.isoformat(),'source':r.source,'fetched_at':r.fetched_at.isoformat()} for r in rows],citations,{})
+        number_rows('query_stock_prices',[{'id':str(r.id),'symbol':r.symbol,'open':r.open,'high':r.high,'low':r.low,'close':r.close,'volume':r.volume,'trading_date':r.trading_date.isoformat(),'source':r.source,'fetched_at':r.fetched_at.isoformat()} for r in rows],citations,{})
     restored=_restore_citations(citations,'guest')
-    assert len(restored)==12 and all(c['source_type']=='saved_price' for c in restored)
+    # More than ten rows compact into one saved_price_set receipt (evidence.py); that receipt must survive restoration.
+    assert len(restored)==1 and restored[0]['source_type']=='saved_price_set' and restored[0]['n']==12
 
 def test_a_filing_citation_quotes_exactly_what_the_reading_tool_showed():
  """A stored filing is quoted through one excerpt helper; the verifier must use it too."""
