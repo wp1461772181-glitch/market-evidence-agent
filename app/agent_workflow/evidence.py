@@ -331,9 +331,13 @@ def number_rows(name: str,rows: list[dict],citations: list[dict],scope: dict) ->
                 'fields':_citation_fields(row),'evidence_quotes':_evidence_quotes(row)})
         if kind=='saved_price':
             citations[ordinal-1]['quote']=str(row['close'])
-            # The quote stays the close (the restore check compares it); the row's other prices are
-            # kept beside it so an answer that states the open, high, low or volume can be checked.
-            citations[ordinal-1]['figures']=' '.join(f'{k} {row[k]}' for k in ('trading_date','open','high','low','close','volume') if row.get(k) is not None)
+            # The quote stays the close (the restore check compares it); the row's other prices and
+            # deterministic window stats are kept beside it so open/high/low/volume/volatility claims can be checked.
+            price_figure_keys=('trading_date','open','high','low','close','volume',
+                'window_trading_days','window_start_date','window_end_date','window_start_close','window_end_close',
+                'window_high_close','window_low_close','period_return_pct','close_price_std','close_cv_pct',
+                'daily_return_volatility_pct','annualized_volatility_pct')
+            citations[ordinal-1]['figures']=' '.join(f'{k} {row[k]}' for k in price_figure_keys if row.get(k) is not None)
         row['citation']=f'[{ordinal}]';row['source_type']=kind
         accepted.append(row)
     return accepted

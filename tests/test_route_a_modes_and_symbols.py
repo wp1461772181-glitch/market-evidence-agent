@@ -254,3 +254,112 @@ def test_route_a_missing_mode_defaults_to_none_without_rag_prelude():
     assert result['audit']['mode'] == 'none'
     assert result['audit'].get('classify_mode_defaulted') is True
     assert result['audit'].get('tool_bias') is None
+
+
+def test_nine_stocks_six_month_volatility_compacts_window_and_grounds_volatility_figures():
+    """9 stocks × 127 daily bars must not trigger chat_context_too_large and must ground volatility metrics."""
+    from datetime import date, timedelta
+    from app.agent_tools import _summarize_price_window
+    from app.agent_workflow.claim_review import apply_claim_gate
+    from app.agent_workflow.evidence import unsupported_number_values
+
+    base_date = date(2026, 10, 29)
+    raw_by_symbol = {}
+    for idx, sym in enumerate(NINE_TICKERS):
+        rows = []
+        for day_idx in range(127):
+            d = base_date - timedelta(days=day_idx)
+            swing = (idx + 1) * 0.8 * (1 if day_idx % 2 == 0 else -1)
+            close_val = round(100.0 + idx * 20.0 + swing, 2)
+            rows.append({
+                'id': f'{sym}-{d.isoformat()}',
+                'symbol': sym,
+                'trading_date': d.isoformat(),
+                'open': close_val - 0.5,
+                'high': close_val + 1.0,
+                'low': close_val - 1.0,
+                'close': close_val,
+                'volume': 10_000_000 + day_idx * 1000,
+                'source': 'stooq',
+                'fetched_at': '2026-10-29T00:00:00+00:00',
+            })
+        compacted = _summarize_price_window(rows)
+        assert len(compacted) <= 4
+        assert compacted[0]['window_trading_days'] == 127
+        assert 'daily_return_volatility_pct' in compacted[0]
+        assert 'annualized_volatility_pct' in compacted[0]
+        assert 'close_price_std' in compacted[0]
+        raw_by_symbol[sym] = compacted
+
+    def execute(name, args):
+        if name == 'query_stock_prices':
+            return {'ok': True, 'data': raw_by_symbol[args['symbol']], 'source': 'market_prices'}
+        return {'ok': True, 'data': []}
+
+    ordinals = {}
+    cur = 1
+    for sym in NINE_TICKERS:
+        ordinals[sym] = cur
+        cur += len(raw_by_symbol[sym])
+
+    lines = []
+    for sym in NINE_TICKERS:
+        r0 = raw_by_symbol[sym][0]
+        ord_n = ordinals[sym]
+        lines.append(
+            f"- {sym}：日收益率波动率 {r0['daily_return_volatility_pct']}%，"
+            f"年化波动率 {r0['annualized_volatility_pct']}%，"
+            f"收盘价标准差 {r0['close_price_std']} [{ord_n}]。"
+        )
+    hi_sym = max(NINE_TICKERS, key=lambda s: raw_by_symbol[s][0]['daily_return_volatility_pct'])
+    lo_sym = min(NINE_TICKERS, key=lambda s: raw_by_symbol[s][0]['daily_return_volatility_pct'])
+    lines.append(
+        f"波动最大的股票是 {hi_sym}（日波动率 {raw_by_symbol[hi_sym][0]['daily_return_volatility_pct']}%）[{ordinals[hi_sym]}]，"
+        f"波动最小的股票是 {lo_sym}（日波动率 {raw_by_symbol[lo_sym][0]['daily_return_volatility_pct']}%）[{ordinals[lo_sym]}]。"
+    )
+    final_answer = "\n".join(lines)
+
+    steps = iter([
+        {
+            'content': None,
+            'tool_calls': [
+                {'id': f'call-{sym}', 'function': {'name': 'query_stock_prices', 'arguments': {'symbol': sym, 'start': '2026-04-29', 'end': '2026-10-29', 'limit': 183}}}
+                for sym in NINE_TICKERS
+            ],
+        },
+        {'content': final_answer},
+    ])
+
+    async def emit(_):
+        pass
+
+    ctx = AgentRuntimeContext(
+        'custom', 'test', 'dummy',
+        resolver=lambda _: {
+            'relationship': 'followup',
+            'canonical_question': '计算 AAPL、MSFT、NVDA、GOOGL、AMZN、META、TSLA、AVGO、TSM 这九只股票近半年 K 线收盘价的波动率，指出波动最大和最小的股票',
+            'symbols': NINE_TICKERS,
+        },
+        classifier=lambda _: {
+            'category': 'A',
+            'mode': 'prices',
+            'symbol': 'AAPL',
+            'symbols': NINE_TICKERS,
+            'days_back': 183,
+        },
+        decider=lambda *_: next(steps),
+        executor=execute,
+    )
+    result = asyncio.run(
+        direct.run_direct_turn(
+            '计算一下这九只股票近半年 K 线收盘价的波动率，然后指出波动最大的股票和波动最小的股票',
+            ctx,
+            emit=emit,
+            messages=[{'role': 'user', 'content': '我关注 AAPL、MSFT、NVDA、GOOGL、AMZN、META、TSLA、AVGO、TSM'}],
+        )
+    )
+    assert result['status'] == 'succeeded'
+    assert not unsupported_number_values(result['answer'], result['citations'])
+    gate = apply_claim_gate(result['answer'], result['citations'], mode='enforce')
+    assert not gate.dropped_lines
+

@@ -1212,7 +1212,12 @@ class Turn:
         # shortcut: a turn already carrying a full history can still pass the guard; trim by measured room if that shows up.
         while len(json.dumps(self.protocol,ensure_ascii=False).encode())>layers.RUNNING_REQUEST_BYTES//2:
             starts=[i for i,m in enumerate(self.protocol) if m.get('role')=='assistant']
-            if len(starts)<2:break
+            if len(starts)<2:
+                # Single-batch fallback: compact oversized tool payloads so a multi-symbol batch never overflows RUNNING_REQUEST_BYTES.
+                for m in self.protocol:
+                    if m.get('role')=='tool' and isinstance(m.get('content'),str) and len(m['content'])>6000:
+                        m['content']=m['content'][:6000]
+                break
             self.protocol=self.protocol[starts[1]:]
         instruction='\n'.join(INSTRUCTION)
         from .claim_gate_flags import claim_quote_gate_mode
@@ -1236,7 +1241,7 @@ class Turn:
         if self.tool_bias:
             hint['tool_bias']=self.tool_bias
             bias_notes={
-                'prices':'Prefer query_stock_prices for each ticker in symbols, then calculate for derived metrics such as volatility/returns/comparisons.',
+                'prices':'Prefer query_stock_prices for each ticker in symbols; its latest row includes deterministic window stats (daily_return_volatility_pct, annualized_volatility_pct, close_price_std, close_cv_pct, period_return_pct) that can be cited directly.',
                 'financials':'Prefer query_financials for each ticker in symbols, then calculate for ratios/growth/comparisons.',
                 'forecast':'Prefer query_forecasts for the requested ticker(s).',
                 'knowledge':'Prefer search_knowledge or query_sec_filings for text passages.',

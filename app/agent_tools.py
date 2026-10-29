@@ -212,6 +212,58 @@ async def _expanded_retrieval(function, symbol: str, keyword: str, limit: int, s
     if first is None:first={'ok':True,'data':[],'source':'knowledge','as_of':None}
     return {**first,"data":rows[:limit],"as_of":max((str(row.get("observed_at")) for row in rows if isinstance(row,dict) and row.get("observed_at")),default=first.get("as_of"))}
 
+def _summarize_price_window(data: list[dict]) -> list[dict]:
+    """Attach deterministic window statistics (volatility, return, std, high/low) to the latest price row
+    and compact multi-week/multi-month series to key anchor rows so multi-stock queries fit the context budget."""
+    import math
+    if len(data) < 2:
+        return data
+    chronological = [r for r in reversed(data) if isinstance(r.get("close"), (int, float))]
+    if len(chronological) < 2:
+        return data
+    closes = [float(r["close"]) for r in chronological]
+    n = len(closes)
+    mean_close = sum(closes) / n
+    close_std = math.sqrt(sum((c - mean_close) ** 2 for c in closes) / (n - 1))
+    close_cv_pct = (close_std / mean_close * 100.0) if mean_close else 0.0
+    period_return_pct = ((closes[-1] - closes[0]) / closes[0] * 100.0) if closes[0] else 0.0
+    daily_returns = [(closes[i] - closes[i - 1]) / closes[i - 1] for i in range(1, n) if closes[i - 1]]
+    if len(daily_returns) >= 2:
+        mean_ret = sum(daily_returns) / len(daily_returns)
+        daily_vol = math.sqrt(sum((r - mean_ret) ** 2 for r in daily_returns) / (len(daily_returns) - 1))
+        daily_vol_pct = daily_vol * 100.0
+        annualized_vol_pct = daily_vol * math.sqrt(252.0) * 100.0
+    else:
+        daily_vol_pct = (abs(daily_returns[0]) * 100.0) if daily_returns else 0.0
+        annualized_vol_pct = daily_vol_pct * math.sqrt(252.0)
+    data[0].update({
+        "window_trading_days": n,
+        "window_start_date": chronological[0].get("trading_date"),
+        "window_end_date": chronological[-1].get("trading_date"),
+        "window_start_close": round(closes[0], 2),
+        "window_end_close": round(closes[-1], 2),
+        "window_high_close": round(max(closes), 2),
+        "window_low_close": round(min(closes), 2),
+        "period_return_pct": round(period_return_pct, 2),
+        "close_price_std": round(close_std, 2),
+        "close_cv_pct": round(close_cv_pct, 2),
+        "daily_return_volatility_pct": round(daily_vol_pct, 2),
+        "annualized_volatility_pct": round(annualized_vol_pct, 2),
+    })
+    if len(data) <= 10:
+        return data
+    high_row = max(chronological, key=lambda r: float(r["close"]))
+    low_row = min(chronological, key=lambda r: float(r["close"]))
+    anchors = [data[0], high_row, low_row, chronological[0]]
+    compacted = []
+    seen = set()
+    for row in anchors:
+        key = row.get("id") or row.get("trading_date")
+        if key not in seen:
+            seen.add(key)
+            compacted.append(row)
+    return compacted
+
 @tool(args_schema=PriceArgs)
 async def query_stock_prices(symbol: str, limit: int = 5, days: int | None = None, start: str | None = None, end: str | None = None) -> dict:
     """Read saved daily stock prices; this is not a live quote."""
@@ -223,7 +275,8 @@ async def query_stock_prices(symbol: str, limit: int = 5, days: int | None = Non
     except ValueError:return {"ok":False,"data":[],"error_code":"invalid_date_range"}
     filters=" AND trading_date<=CAST(:upper AS date)"+(" AND trading_date>=CAST(:lower AS date)" if lower else "")
     rows = await _query("SELECT id, symbol, trading_date, open, high, low, close, volume, source, fetched_at FROM market_prices WHERE symbol=:symbol"+filters+" ORDER BY trading_date DESC LIMIT :limit", {"symbol":symbol,"limit":limit,"lower":str(lower) if lower else None,"upper":str(upper)})
-    return {"ok":True,"data":[{k:_json(v) for k,v in r.items()} for r in rows],"source":"market_prices","as_of":_json(rows[0]["fetched_at"]) if rows else None}
+    data = _summarize_price_window([{k:_json(v) for k,v in r.items()} for r in rows])
+    return {"ok":True,"data":data,"source":"market_prices","as_of":_json(rows[0]["fetched_at"]) if rows else None}
 
 def forecast_target(contract):
     """What a forecast's probabilities are about: the close on one date against an anchor close."""
