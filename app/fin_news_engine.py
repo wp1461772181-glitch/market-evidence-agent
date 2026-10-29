@@ -448,13 +448,62 @@ def _resolve_live_endpoint(
         hdrs.setdefault("x-version", "1.0.0")
         hdrs.setdefault("Referer", "https://www.jin10.com/")
         return url, "http_json", hdrs
+    if trimmed == "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent":
+        hdrs["User-Agent"] = SEC_COMPLIANT_UA
+        return (
+            "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=8-K&count=20&output=atom",
+            "rss",
+            hdrs,
+        )
+    if trimmed in {
+        "https://www.federalreserve.gov/newsevents/pressreleases.htm",
+        "https://www.federalreserve.gov/newsevents",
+    }:
+        return "https://www.federalreserve.gov/feeds/press_all.xml", "rss", hdrs
+    if trimmed == "https://home.treasury.gov/news/press-releases":
+        return "https://home.treasury.gov/news/press-releases", "http_html", hdrs
+    if trimmed in {
+        "https://www.ecb.europa.eu/press/html/index.en.html",
+        "https://www.ecb.europa.eu/press",
+    }:
+        return "https://www.ecb.europa.eu/rss/press.html", "rss", hdrs
+    if trimmed in {
+        "https://www.reuters.com/business",
+        "https://www.reuters.com/markets",
+        "https://www.reuters.com",
+    }:
+        return (
+            "https://news.google.com/rss/search?q=site:reuters.com/business+when:7d&hl=en-US&gl=US&ceid=US:en",
+            "rss",
+            hdrs,
+        )
     if trimmed in {
         "https://www.bloomberg.com/markets",
         "https://www.bloomberg.com",
         "https://bloomberg.com/markets",
         "https://bloomberg.com",
-    } and kind == "rss":
+    }:
         return "https://feeds.bloomberg.com/markets/news.rss", "rss", hdrs
+    if trimmed in {
+        "https://www.cnbc.com/markets",
+        "https://www.cnbc.com",
+    }:
+        return "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664", "rss", hdrs
+    if trimmed in {
+        "https://www.bbc.com/news/business",
+        "https://www.bbc.co.uk/news/business",
+    }:
+        return "https://feeds.bbci.co.uk/news/business/rss.xml", "rss", hdrs
+    if trimmed in {
+        "https://english.news.cn/business",
+        "http://www.xinhuanet.com/english/business",
+    }:
+        return "https://english.news.cn/list/china-business.htm", "http_html", hdrs
+    if trimmed in {
+        "http://www.csrc.gov.cn",
+        "https://www.csrc.gov.cn",
+    }:
+        return "http://www.csrc.gov.cn/csrc/c106311/common_list.shtml", "http_html", hdrs
     if trimmed in {
         "https://finance.yahoo.com/news/rssindex",
         "https://finance.yahoo.com/rss/topstories",
@@ -506,7 +555,7 @@ def _parse_rss(xml_text: str, base_url: str) -> list[dict[str, Any]]:
     cleaned_xml = re.sub(
         r'(<\?xml[^>]*?)\s+encoding=["\'][^"\']+["\']',
         r"\1",
-        xml_text.strip(),
+        xml_text.lstrip("\ufeff \t\r\n").strip(),
         count=1,
         flags=re.I,
     )
@@ -651,54 +700,183 @@ def _parse_http_json(json_text: str, base_url: str, fetch_cfg: dict[str, Any]) -
     return out
 
 
+from html.parser import HTMLParser
+
+
+class _AnchorExtractor(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.anchors: list[tuple[str, str]] = []
+        self._current_href: str | None = None
+        self._buf: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() == "a":
+            attr_dict = {k.lower(): (v or "") for k, v in attrs}
+            href = attr_dict.get("href", "").strip()
+            if href:
+                self._current_href = href
+                self._buf = []
+
+    def handle_data(self, data: str) -> None:
+        if self._current_href is not None:
+            self._buf.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() == "a" and self._current_href is not None:
+            text = " ".join("".join(self._buf).split()).strip()
+            if text:
+                self.anchors.append((self._current_href, text))
+            self._current_href = None
+            self._buf = []
+
+
+_NAV_EXACT_STOP = {
+    "skip to main content",
+    "联系我们",
+    "法律声明",
+    "网站地图",
+    "首页",
+    "home",
+    "more",
+    "readouts",
+    "press releases",
+    "testimonies",
+    "statements & remarks",
+}
+
+
+def _infer_date_from_url(url: str) -> str:
+    m8 = re.search(r"/(20\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])/", url)
+    if m8:
+        return f"{m8.group(1)}-{m8.group(2)}-{m8.group(3)}"
+    m_dash = re.search(r"/(20\d{2})[-/](0[1-9]|1[0-2])[-/](0[1-9]|[12]\d|3[01])/", url)
+    if m_dash:
+        return f"{m_dash.group(1)}-{m_dash.group(2)}-{m_dash.group(3)}"
+    return ""
+
+
 def _parse_http_html(html_text: str, base_url: str, fetch_cfg: dict[str, Any]) -> list[dict[str, Any]]:
-    try:
-        from bs4 import BeautifulSoup
-        soup = BeautifulSoup(html_text, "html.parser")
-        list_selector = str(fetch_cfg.get("list_selector") or "article, .news-item, li")
-        field_selectors = fetch_cfg.get("field_selectors") if isinstance(fetch_cfg.get("field_selectors"), dict) else {}
-        title_sel = str(field_selectors.get("title") or "h2 a, h3 a, a")
-        url_sel = str(field_selectors.get("url") or "h2 a@href, h3 a@href, a@href")
-        time_sel = str(field_selectors.get("published_at") or "time@datetime, time, .time")
-        sum_sel = str(field_selectors.get("summary") or ".summary, p")
+    href_regex_str = str(fetch_cfg.get("href_regex") or "").strip()
+    if not href_regex_str:
+        lower_base = base_url.lower()
+        if "treasury.gov" in lower_base:
+            href_regex_str = r"/news/press-releases/(?:sb|jy|sm)\d+"
+        elif "news.cn" in lower_base or "xinhuanet.com" in lower_base:
+            href_regex_str = r"(?:\d{8}|\d{4}-\d{2}/\d{2})/[A-Za-z0-9_]+/(?:c\.html|c_\d+\.htm)"
+        elif "csrc.gov.cn" in lower_base:
+            href_regex_str = r"/csrc/c\d+/c[0-9a-zA-Z]+/content\.shtml"
+    href_re = re.compile(href_regex_str, re.I) if href_regex_str else None
 
-        def _extract(node: Any, selector_spec: str) -> str:
-            for candidate in [s.strip() for s in selector_spec.split(",") if s.strip()]:
-                sel, _, attr = candidate.partition("@")
-                target = node.select_one(sel.strip()) if sel.strip() else node
-                if not target:
+    raw_candidates: list[dict[str, Any]] = []
+    if not href_re:
+        try:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(html_text, "html.parser")
+            list_selector = str(fetch_cfg.get("list_selector") or "article, .news-item, li")
+            field_selectors = fetch_cfg.get("field_selectors") if isinstance(fetch_cfg.get("field_selectors"), dict) else {}
+            title_sel = str(field_selectors.get("title") or "h2 a, h3 a, a")
+            url_sel = str(field_selectors.get("url") or "h2 a@href, h3 a@href, a@href")
+            time_sel = str(field_selectors.get("published_at") or "time@datetime, time, .time")
+            sum_sel = str(field_selectors.get("summary") or ".summary, p")
+
+            def _extract(node: Any, selector_spec: str) -> str:
+                for candidate in [s.strip() for s in selector_spec.split(",") if s.strip()]:
+                    sel, _, attr = candidate.partition("@")
+                    target = node.select_one(sel.strip()) if sel.strip() else node
+                    if not target:
+                        continue
+                    if attr:
+                        val = target.get(attr.strip())
+                        if val:
+                            return str(val).strip()
+                    else:
+                        txt = target.get_text(" ", strip=True)
+                        if txt:
+                            return txt
+                return ""
+
+            for node in soup.select(list_selector):
+                title = _extract(node, title_sel)
+                raw_url = _extract(node, url_sel)
+                if not title and not raw_url:
                     continue
-                if attr:
-                    val = target.get(attr.strip())
-                    if val:
-                        return str(val).strip()
-                else:
-                    txt = target.get_text(" ", strip=True)
-                    if txt:
-                        return txt
-            return ""
+                full_url = urljoin(base_url, raw_url) if raw_url else ""
+                pub_str = _extract(node, time_sel) or _infer_date_from_url(full_url)
+                raw_candidates.append({
+                    "title": title,
+                    "url": full_url,
+                    "summary": _extract(node, sum_sel),
+                    "published_at": pub_str,
+                })
+        except ImportError:
+            pass
 
-        out: list[dict[str, Any]] = []
-        for node in soup.select(list_selector):
-            title = _extract(node, title_sel)
-            raw_url = _extract(node, url_sel)
-            if not title and not raw_url:
+    if not raw_candidates:
+        parser = _AnchorExtractor()
+        try:
+            parser.feed(html_text)
+        except Exception:
+            pass
+        for href, inner in parser.anchors:
+            if not href or not inner or href.startswith(("#", "javascript:", "mailto:")):
                 continue
-            out.append({
-                "title": title,
-                "url": urljoin(base_url, raw_url) if raw_url else "",
-                "summary": _extract(node, sum_sel),
-                "published_at": _extract(node, time_sel),
+            if inner.strip().lower() in _NAV_EXACT_STOP:
+                continue
+            full_url = urljoin(base_url, href)
+            if href_re and not (href_re.search(href) or href_re.search(full_url)):
+                continue
+            if len(inner) < 6:
+                continue
+            raw_candidates.append({
+                "title": inner,
+                "url": full_url,
+                "summary": "",
+                "published_at": _infer_date_from_url(full_url),
             })
-        return out
-    except ImportError:
-        # Lightweight regex fallback if bs4 is not installed
-        out = []
-        for match in re.finditer(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', html_text, re.I | re.S):
-            href, inner = match.group(1).strip(), _strip_html(match.group(2))
-            if inner and href:
-                out.append({"title": inner, "url": urljoin(base_url, href), "summary": "", "published_at": ""})
-        return out
+
+    by_url: dict[str, dict[str, Any]] = {}
+    for item in raw_candidates:
+        u = item.get("url") or ""
+        t = item.get("title") or ""
+        if not u or not t or t.strip().lower() in _NAV_EXACT_STOP:
+            continue
+        prev = by_url.get(u)
+        if prev is None:
+            by_url[u] = item
+        else:
+            # When a site has both a headline link and a summary link pointing to the same URL,
+            # keep the first as title and the longer second one as summary
+            if not prev.get("summary") and t != prev["title"]:
+                if len(t) > len(prev["title"]):
+                    prev["summary"] = t
+                else:
+                    prev["summary"] = prev["title"]
+                    prev["title"] = t
+    return list(by_url.values())
+
+
+def _fetch_single_url(url: str, kind: str, headers: dict[str, str], timeout: int, fetch_cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    resolved_url, resolved_kind, resolved_headers = _resolve_live_endpoint(url, kind, headers)
+    status, body = _http_get(resolved_url, resolved_headers, timeout)
+    if status >= 400:
+        raise RuntimeError(f"http_status_{status}")
+    head = body.lstrip("\ufeff \t\r\n")[:120].lower()
+    if resolved_kind == "rss":
+        if head.startswith(("{", "[", "var ", "let ", "const ")):
+            return _parse_http_json(body, resolved_url, fetch_cfg)
+        if head.startswith(("<!doctype html", "<html")):
+            return _parse_http_html(body, resolved_url, fetch_cfg)
+        return _parse_rss(body, resolved_url)
+    if resolved_kind == "http_json":
+        if head.startswith(("<?xml", "<rss", "<feed")):
+            return _parse_rss(body, resolved_url)
+        return _parse_http_json(body, resolved_url, fetch_cfg)
+    if resolved_kind == "http_html":
+        if head.startswith(("<?xml", "<rss", "<feed")):
+            return _parse_rss(body, resolved_url)
+        return _parse_http_html(body, resolved_url, fetch_cfg)
+    raise ValueError(f"unsupported_source_kind:{resolved_kind}")
 
 
 def fetch_source(source: dict[str, Any]) -> list[dict[str, Any]]:
@@ -707,22 +885,31 @@ def fetch_source(source: dict[str, Any]) -> list[dict[str, Any]]:
     fetch_cfg = source.get("fetch") if isinstance(source.get("fetch"), dict) else {}
     timeout = int(fetch_cfg.get("timeout_seconds") or 20)
     raw_headers = fetch_cfg.get("headers") if isinstance(fetch_cfg.get("headers"), dict) else {}
-    url, kind, headers = _resolve_live_endpoint(raw_url, raw_kind, raw_headers)
-    status, body = _http_get(url, headers, timeout)
-    if status >= 400:
-        raise RuntimeError(f"http_status_{status}")
-    head = body.lstrip()[:120].lower()
-    if kind == "rss":
-        if head.startswith(("{", "[", "var ", "let ", "const ")):
-            return _parse_http_json(body, url, fetch_cfg)
-        return _parse_rss(body, url)
-    if kind == "http_json":
-        if head.startswith(("<?xml", "<rss", "<feed")):
-            return _parse_rss(body, url)
-        return _parse_http_json(body, url, fetch_cfg)
-    if kind == "http_html":
-        return _parse_http_html(body, url, fetch_cfg)
-    raise ValueError(f"unsupported_source_kind:{kind}")
+    try:
+        items = _fetch_single_url(raw_url, raw_kind, raw_headers, timeout, fetch_cfg)
+        if items:
+            return items
+    except Exception as primary_exc:
+        if _CUSTOM_HTTP_FETCHER is not None:
+            raise
+        last_exc: Exception = primary_exc
+    else:
+        last_exc = RuntimeError("empty_or_unparseable_items")
+
+    if _CUSTOM_HTTP_FETCHER is None:
+        for alt in source.get("alternates") or []:
+            alt_url = str(alt.get("url") if isinstance(alt, dict) else alt).strip()
+            alt_kind = str((alt.get("kind") if isinstance(alt, dict) else None) or raw_kind).lower()
+            if not alt_url:
+                continue
+            try:
+                items = _fetch_single_url(alt_url, alt_kind, raw_headers, timeout, fetch_cfg)
+                if items:
+                    return items
+            except Exception as exc:
+                last_exc = exc
+                continue
+    raise last_exc
 
 
 def normalize_item(

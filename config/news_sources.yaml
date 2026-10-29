@@ -6,6 +6,292 @@ defaults:
   push_summary_max_tokens: 256
   timezone: Asia/Kuala_Lumpur
 sources:
+- id: sec-edgar-current
+  name: SEC EDGAR 最新申报
+  enabled: true
+  kind: rss
+  url: https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=8-K&count=20&output=atom
+  homepage: https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent
+  language: en-US
+  tags:
+  - sec
+  - filing
+  - 8-K
+  markets:
+  - US
+  fetch:
+    timeout_seconds: 20
+    headers:
+      User-Agent: MarketEvidenceAgent/1.0 (research@finbot.local)
+  normalize:
+    time_format: auto
+  filters:
+    include_keywords: []
+    exclude_keywords: []
+  rate_limit:
+    min_interval_seconds: 60
+  rea_repair: true
+  alternates:
+  - https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=10-Q&count=20&output=atom
+  health: ok
+- id: fed-press-releases
+  name: 美联储新闻稿
+  enabled: true
+  kind: rss
+  url: https://www.federalreserve.gov/feeds/press_all.xml
+  homepage: https://www.federalreserve.gov/newsevents/pressreleases.htm
+  language: en-US
+  tags:
+  - macro
+  - fed
+  - rates
+  markets:
+  - US
+  fetch:
+    timeout_seconds: 20
+    headers:
+      User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36
+  normalize:
+    time_format: auto
+  filters:
+    include_keywords: []
+    exclude_keywords: []
+  rate_limit:
+    min_interval_seconds: 60
+  rea_repair: true
+  alternates:
+  - https://www.federalreserve.gov/feeds/press_monetary.xml
+  health: ok
+- id: us-treasury-press
+  name: 美国财政部新闻
+  enabled: true
+  kind: http_html
+  url: https://home.treasury.gov/news/press-releases
+  homepage: https://home.treasury.gov/news/press-releases
+  language: en-US
+  tags:
+  - macro
+  - treasury
+  - sanctions
+  markets:
+  - US
+  fetch:
+    timeout_seconds: 20
+    href_regex: /news/press-releases/(?:sb|jy|sm)\d+
+    headers:
+      User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36
+  normalize:
+    time_format: auto
+  filters:
+    include_keywords: []
+    exclude_keywords: []
+  rate_limit:
+    min_interval_seconds: 60
+  rea_repair: true
+  alternates: []
+  health: ok
+- id: ecb-press
+  name: 欧洲央行媒体中心
+  enabled: true
+  kind: rss
+  url: https://www.ecb.europa.eu/rss/press.html
+  homepage: https://www.ecb.europa.eu/press/html/index.en.html
+  language: en-US
+  tags:
+  - macro
+  - ecb
+  - europe
+  markets:
+  - EU
+  fetch:
+    timeout_seconds: 20
+    headers:
+      User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36
+  normalize:
+    time_format: auto
+  filters:
+    include_keywords: []
+    exclude_keywords: []
+  rate_limit:
+    min_interval_seconds: 60
+  rea_repair: true
+  alternates:
+  - https://www.ecb.europa.eu/rss/blog.html
+  health: ok
+- id: reuters-business
+  name: Reuters 财经
+  enabled: true
+  kind: rss
+  url: https://news.google.com/rss/search?q=site:reuters.com/business+when:7d&hl=en-US&gl=US&ceid=US:en
+  homepage: https://www.reuters.com/business/
+  language: en-US
+  tags:
+  - reuters
+  - global
+  - business
+  markets:
+  - US
+  - EU
+  - CN
+  fetch:
+    timeout_seconds: 20
+    headers:
+      User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36
+  normalize:
+    time_format: auto
+  filters:
+    include_keywords: []
+    exclude_keywords: []
+  rate_limit:
+    min_interval_seconds: 60
+  rea_repair: true
+  alternates:
+  - https://news.google.com/rss/search?q=site:reuters.com/markets+when:7d&hl=en-US&gl=US&ceid=US:en
+  health: ok
+- id: bloomberg_market
+  name: Bloomberg Markets
+  enabled: true
+  kind: rss
+  url: https://feeds.bloomberg.com/markets/news.rss
+  homepage: https://www.bloomberg.com/markets
+  language: en-US
+  tags:
+  - bloomberg
+  - markets
+  - macro
+  markets:
+  - US
+  fetch:
+    timeout_seconds: 20
+    headers:
+      User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36
+  normalize:
+    time_format: auto
+  filters:
+    include_keywords: []
+    exclude_keywords: []
+  rate_limit:
+    min_interval_seconds: 60
+  rea_repair: true
+  alternates:
+  - https://feeds.bloomberg.com/technology/news.rss
+  health: ok
+- id: cnbc-markets
+  name: CNBC Markets
+  enabled: true
+  kind: rss
+  url: https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664
+  homepage: https://www.cnbc.com/markets/
+  language: en-US
+  tags:
+  - cnbc
+  - markets
+  - us-stocks
+  markets:
+  - US
+  fetch:
+    timeout_seconds: 20
+    headers:
+      User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36
+  normalize:
+    time_format: auto
+  filters:
+    include_keywords: []
+    exclude_keywords: []
+  rate_limit:
+    min_interval_seconds: 60
+  rea_repair: true
+  alternates:
+  - https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=15839069
+  health: ok
+- id: bbc-business
+  name: BBC Business
+  enabled: true
+  kind: rss
+  url: https://feeds.bbci.co.uk/news/business/rss.xml
+  homepage: https://www.bbc.com/news/business
+  language: en-US
+  tags:
+  - bbc
+  - macro
+  - global
+  markets:
+  - US
+  - EU
+  - UK
+  fetch:
+    timeout_seconds: 20
+    headers:
+      User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36
+  normalize:
+    time_format: auto
+  filters:
+    include_keywords: []
+    exclude_keywords: []
+  rate_limit:
+    min_interval_seconds: 60
+  rea_repair: true
+  alternates: []
+  health: ok
+- id: xinhua-english-business
+  name: 新华社英文财经
+  enabled: true
+  kind: http_html
+  url: https://english.news.cn/list/china-business.htm
+  homepage: https://english.news.cn/business/
+  language: en-US
+  tags:
+  - xinhua
+  - china
+  - policy
+  markets:
+  - CN
+  fetch:
+    timeout_seconds: 20
+    href_regex: (?:\d{8}|\d{4}-\d{2}/\d{2})/[A-Za-z0-9_]+/(?:c\.html|c_\d+\.htm)
+    headers:
+      User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36
+  normalize:
+    time_format: auto
+  filters:
+    include_keywords: []
+    exclude_keywords: []
+  rate_limit:
+    min_interval_seconds: 60
+  rea_repair: true
+  alternates:
+  - https://english.news.cn/business/
+  health: ok
+- id: csrc-announcements
+  name: 中国证监会官网信息公开
+  enabled: true
+  kind: http_html
+  url: http://www.csrc.gov.cn/csrc/c106311/common_list.shtml
+  homepage: http://www.csrc.gov.cn/
+  language: zh-CN
+  tags:
+  - csrc
+  - regulation
+  - a-shares
+  markets:
+  - CN
+  fetch:
+    timeout_seconds: 20
+    href_regex: /csrc/c\d+/c[0-9a-zA-Z]+/content\.shtml
+    headers:
+      User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36
+  normalize:
+    time_format: auto
+  filters:
+    include_keywords: []
+    exclude_keywords: []
+  rate_limit:
+    min_interval_seconds: 60
+  rea_repair: true
+  alternates:
+  - http://www.csrc.gov.cn/csrc/c100028/common_list.shtml
+  - http://www.csrc.gov.cn/
+  health: ok
 - id: jin10-flash
   name: 金十数据·快讯
   enabled: true
@@ -70,38 +356,11 @@ sources:
   - https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664
   - https://www.nasdaq.com/feed/rssoutbound?category=Markets
   health: ok
-- id: bloomberg_market
-  name: BloombergMarket
-  enabled: true
-  kind: rss
-  url: https://feeds.bloomberg.com/markets/news.rss
-  homepage: https://www.bloomberg.com/markets
-  language: en-US
-  tags:
-  - news
-  - macro
-  markets:
-  - US
-  fetch:
-    timeout_seconds: 20
-    headers:
-      User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36
-  normalize:
-    time_format: auto
-  filters:
-    include_keywords: []
-    exclude_keywords: []
-  rate_limit:
-    min_interval_seconds: 60
-  rea_repair: true
-  alternates:
-  - https://feeds.bloomberg.com/technology/news.rss
-  health: ok
 - id: sec-atom-optional
   name: SEC 公告（可选补充）
   enabled: false
   kind: rss
-  url: https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=8-K&count=20&output=atom
+  url: https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=10-K&count=20&output=atom
   homepage: https://www.sec.gov/edgar/searchedgar/companysearch
   language: en-US
   tags:

@@ -1,74 +1,106 @@
 version: 1
-
 defaults:
   poll_interval_minutes: 15
   lookback_hours: 24
   max_items_per_source: 50
   push_summary_max_tokens: 256
   timezone: Asia/Kuala_Lumpur
-
 sources:
-  - id: jin10-flash
-    name: 金十数据·快讯
-    enabled: true
-    kind: http_json   # rss | http_json | http_html
-    url: https://www.jin10.com/flash_newest.js
-    homepage: https://www.jin10.com/
-    language: zh-CN
-    tags: [macro, flash]
-    markets: [CN, US]
-    fetch:
-      timeout_seconds: 20
-      items_jsonpath: $
-      url_template: https://flash.jin10.com/detail/{id}
-      headers:
-        User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36
-        Referer: https://www.jin10.com/
-    normalize:
-      time_format: auto
-    filters:
-      include_keywords: []
-      exclude_keywords: ["广告", "推广"]
-    rate_limit:
-      min_interval_seconds: 60
-    rea_repair: true
-    alternates:
-      - https://flash-api.jin10.com/get_flash_list?channel=-8200&vip=1
-    health: ok
-
-  - id: yahoo-finance-rss
-    name: Yahoo Finance Market News
+  - id: sec-edgar-current
+    name: SEC EDGAR 最新申报
     enabled: true
     kind: rss
-    url: https://feeds.finance.yahoo.com/rss/2.0/headline?s=NVDA,AAPL,MSFT,GOOGL,AMZN,META,TSLA&region=US&lang=en-US
-    homepage: https://finance.yahoo.com/news/
+    url: https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=8-K&count=20&output=atom
+    homepage: https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent
     language: en-US
-    tags: [market, us-stocks]
+    tags: [sec, filing, 8-K]
     markets: [US]
-
+  - id: fed-press-releases
+    name: 美联储新闻稿
+    enabled: true
+    kind: rss
+    url: https://www.federalreserve.gov/feeds/press_all.xml
+    homepage: https://www.federalreserve.gov/newsevents/pressreleases.htm
+    language: en-US
+    tags: [macro, fed, rates]
+    markets: [US]
+  - id: us-treasury-press
+    name: 美国财政部新闻
+    enabled: true
+    kind: http_html
+    url: https://home.treasury.gov/news/press-releases
+    homepage: https://home.treasury.gov/news/press-releases
+    language: en-US
+    tags: [macro, treasury, sanctions]
+    markets: [US]
+  - id: ecb-press
+    name: 欧洲央行媒体中心
+    enabled: true
+    kind: rss
+    url: https://www.ecb.europa.eu/rss/press.html
+    homepage: https://www.ecb.europa.eu/press/html/index.en.html
+    language: en-US
+    tags: [macro, ecb, europe]
+    markets: [EU]
+  - id: reuters-business
+    name: Reuters 财经
+    enabled: true
+    kind: rss
+    url: https://news.google.com/rss/search?q=site:reuters.com/business+when:7d&hl=en-US&gl=US&ceid=US:en
+    homepage: https://www.reuters.com/business/
+    language: en-US
+    tags: [reuters, global, business]
+    markets: [US, EU, CN]
   - id: bloomberg_market
-    name: BloombergMarket
+    name: Bloomberg Markets
     enabled: true
     kind: rss
     url: https://feeds.bloomberg.com/markets/news.rss
     homepage: https://www.bloomberg.com/markets
     language: en-US
-    tags: [news, macro]
+    tags: [bloomberg, markets, macro]
     markets: [US]
-
-  - id: sec-atom-optional
-    name: SEC 公告（可选补充）
-    enabled: false
+  - id: cnbc-markets
+    name: CNBC Markets
+    enabled: true
     kind: rss
-    url: https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=8-K&count=20&output=atom
-    tags: [sec, filing]
-
+    url: https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664
+    homepage: https://www.cnbc.com/markets/
+    language: en-US
+    tags: [cnbc, markets, us-stocks]
+    markets: [US]
+  - id: bbc-business
+    name: BBC Business
+    enabled: true
+    kind: rss
+    url: https://feeds.bbci.co.uk/news/business/rss.xml
+    homepage: https://www.bbc.com/news/business
+    language: en-US
+    tags: [bbc, macro, global]
+    markets: [US, EU, UK]
+  - id: xinhua-english-business
+    name: 新华社英文财经
+    enabled: true
+    kind: http_html
+    url: https://english.news.cn/list/china-business.htm
+    homepage: https://english.news.cn/business/
+    language: en-US
+    tags: [xinhua, china, policy]
+    markets: [CN]
+  - id: csrc-announcements
+    name: 中国证监会官网信息公开
+    enabled: true
+    kind: http_html
+    url: http://www.csrc.gov.cn/csrc/c106311/common_list.shtml
+    homepage: http://www.csrc.gov.cn/
+    language: zh-CN
+    tags: [csrc, regulation, a-shares]
+    markets: [CN]
 watchlists:
   - id: default
-    tickers: [NVDA, AAPL, 600519]
+    tickers: [NVDA, AAPL, MSFT, 600519]
     keywords: ["降息", "非农", "财报", "指引"]
     push_on_match: true
-
 push:
   enabled: true
   channel: finbot_notify
