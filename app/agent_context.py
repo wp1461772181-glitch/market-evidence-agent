@@ -203,7 +203,7 @@ def turn_catalogue_entry(group: list[dict]) -> dict | None:
         source = {"ordinal": ordinal, "title": title,
                   "source_type": str(item.get("source_type") or "unknown"),
                   "available": bool(item.get("quote")) and not item.get("unavailable") and item.get("source_type") != "unavailable"}
-        if item.get("derived"):
+        if item.get("derived") or item.get("source_type") in {"calculation", "formula_calculation"}:
             source["derived"] = True
             parents = item.get("parents") or (item.get("calculation") or {}).get("parents", [])
             source["parents"] = [p for p in parents if isinstance(p, int)]

@@ -52,7 +52,7 @@ def _record_low_confidence(question,conversation_id,turn_id,owner,reason):
  with SessionLocal() as session:
   session.add(LowConfidenceQuestion(question=question,conversation_id=conversation_id,turn_id=turn_id,
     entry_point='agent_chat',reason=reason,owner_hash=owner));session.commit()
-def _restore_citations(items,credential):
+def _restore_citations(items,credential=None):
  from datetime import UTC,datetime
  from uuid import UUID
  from sqlalchemy import select
@@ -60,7 +60,7 @@ def _restore_citations(items,credential):
  from .knowledge.models import KnowledgeChunk,KnowledgeDocument
  from .knowledge.repository import document_integrity
  from .knowledge.retrieval import _source_hash
- verified=[]; owner=owner_hash(credential); now=datetime.now(UTC)
+ verified=[]; owner=owner_hash(credential) if credential else None; now=datetime.now(UTC)
  with SessionLocal() as session:
   for fallback_ordinal,item in enumerate(items,1):
    ordinal=item.get('ordinal',fallback_ordinal)
@@ -76,6 +76,21 @@ def _restore_citations(items,credential):
      else:verified.append({'ordinal':ordinal,'chunk_id':None,'title':'来源已失效','section':'','source_url':None,'source_type':'unavailable','truncated':False})
     except (ValueError,TypeError,AttributeError,ArithmeticError):
      verified.append({'ordinal':ordinal,'chunk_id':None,'title':'来源已失效','section':'','source_url':None,'source_type':'unavailable','truncated':False})
+    continue
+   if item.get('source_type')=='saved_price_set':
+    from .agent_tools import load_vectors
+    from .agent_workflow.formula_sandbox import FormulaError
+    try:
+     row_ids=item.get('row_ids') or []
+     parent_digest=item.get('parent_digest')
+     values,dates,digest=load_vectors(row_ids,'close',expected_digest=parent_digest)
+     valid=bool(parent_digest and digest==parent_digest and len(values)==item.get('n')
+       and item.get('set_id')==f"ps_{digest[:16]}"
+       and dates and dates[0]==item.get('start_date') and dates[-1]==item.get('end_date'))
+    except (FormulaError,ValueError,TypeError,KeyError):
+     valid=False
+    verified.append({**item,'chunk_id':None,'document_id':None,'source_url':None} if valid else
+                    {'ordinal':ordinal,'chunk_id':None,'title':'来源已失效','section':'','source_url':None,'source_type':'unavailable','truncated':False})
     continue
    if item.get('source_type') in {'research_faq','saved_forecast'} and not item.get('chunk_id'):
     try:
@@ -112,6 +127,15 @@ def _restore_citations(items,credential):
     except (ValueError,KeyError,TypeError):
      live=False
     verified.append({**item,'chunk_id':None,'document_id':None} if live else
+                    {'ordinal':ordinal,'chunk_id':None,'title':'来源已失效','section':'','source_url':None,'source_type':'unavailable','truncated':False})
+    continue
+   if item.get('source_type')=='formula_calculation':
+    from .agent_workflow.formula_replay import verify_single_formula_citation
+    try:
+     live,_reason=verify_single_formula_citation(item,verified)
+    except Exception:
+     live=False
+    verified.append({**item,'chunk_id':None,'document_id':None,'source_url':None} if live else
                     {'ordinal':ordinal,'chunk_id':None,'title':'来源已失效','section':'','source_url':None,'source_type':'unavailable','truncated':False})
     continue
    if item.get('source_type')=='reported_figure':

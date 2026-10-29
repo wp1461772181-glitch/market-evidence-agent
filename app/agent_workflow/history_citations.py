@@ -24,9 +24,13 @@ async def read_history_citation(args: dict, context) -> dict:
     if not found.get("ok"): return _failure(found.get("error_code", "history_citation_not_found"))
     citation = found["citation"]
     calculation = citation.get("calculation") if isinstance(citation.get("calculation"), dict) else {}
-    if citation.get("derived") or citation.get("source_type") == "calculation":
+    if citation.get("derived") or citation.get("source_type") in {"calculation", "formula_calculation"}:
         parents = citation.get("parents") or calculation.get("parents") or []
-        return {**_failure("history_citation_derived"), "parents": parents}
+        return {
+            **_failure("history_citation_derived"),
+            "parents": parents,
+            "hint": "这是计算来源，不能直接取回；先读取 parents 中的原始来源，再用 calculate 或 calculate_formula 重算。",
+        }
     try:
         from ..agent_chat_stream import _restore_citations
         restored = await asyncio.to_thread(_restore_citations, [citation], context.identity_credential)

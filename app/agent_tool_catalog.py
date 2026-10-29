@@ -16,6 +16,17 @@ class CalculateArgs(Args):
     expression:str=Field(min_length=1,max_length=200)
     inputs:list[CalculationInput]=Field(min_length=1,max_length=8)
     decimals:int=Field(default=2,ge=0,le=8)
+class FormulaVector(Args):
+    source_ordinal:int=Field(ge=1,le=1000)
+    field:Literal['open','high','low','close','volume']
+class FormulaBinding(Args):
+    label:str=Field(pattern=r'^[A-Za-z0-9._-]{1,16}$')
+    inputs:dict[str,FormulaVector]=Field(min_length=1,max_length=6)
+class CalculateFormulaArgs(Args):
+    formula_code:str=Field(min_length=10,max_length=2000)
+    bindings:list[FormulaBinding]=Field(min_length=1,max_length=20)
+    decimals:int=Field(default=4,ge=0,le=8)
+    unit:Literal['ratio','pct','price','count']='ratio'
 class HistoryCitationArgs(Args):
     turn_id:str=Field(pattern=r'^[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$')
     ordinal:int=Field(ge=1,le=1000)
@@ -224,7 +235,8 @@ class ToolPolicy:
 
 EXTRA=(
  ('read_history_citation',HistoryCitationArgs,'read','Read the saved source behind a citation in an earlier answer. Cite the new number returned for this turn, never the old number. Derived citations cannot be read directly; read their parents first.'),
- ('calculate',CalculateArgs,'read','Calculate derived figures from cited source values. Only a..z, + - * / parentheses, the constants 0, 1, 100 and powers of ten for unit conversion (1000, 10000, 1000000, 100000000, 1000000000, 1000000000000). Inputs must occur in the chosen evidence. Formula and parents are recorded; derived results are not official originals.'),
+ ('calculate',CalculateArgs,'read','Calculate derived figures from cited source values. Only a..z, + - * / parentheses, the constants 0, 1, 100 and powers of ten for unit conversion (1000, 10000, 1000000, 100000000, 1000000000, 1000000000000). Inputs must occur in the chosen evidence. Formula and parents are recorded; derived results are not official originals. For series statistics use calculate_formula.'),
+ ('calculate_formula',CalculateFormulaArgs,'read','Run a pure Python/numpy formula def f(...) -> float over one or more saved_price_set vectors (e.g. volatility, Sharpe, drawdown, returns across up to 20 bindings in a single call). math and np are pre-injected; do not write import. Verified by server replay.'),
  ('read_workspace',WorkspaceArgs,'read','Read a saved forecast/version timeline, analysis history/original, learning status, knowledge chunks/candidates, importable catalogue or revision candidates. Private records remain owner-scoped.'),
  ('start_historical_replay',ReplayArgs,'costly','Propose a retrospective replay for a specific past decision date; this is not a forward prediction. Confirmation required.'),
  ('revise_forecast',RevisionArgs,'costly','Revise the saved forecast of a symbol (its latest version, or version_id). Call it directly: the server lists the saved materials the revision rule allows (published within 7 days after that forecast, or within the 30 days before it and stored after it) and the user ticks the ones to use on a card. You never choose the materials; if the user named some, pass them as mentioned_sources so the user hears whether they qualify. When none qualify, or the forecast has expired, the user is told why. Confirmation required.'),

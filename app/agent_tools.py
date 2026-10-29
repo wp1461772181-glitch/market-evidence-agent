@@ -212,57 +212,158 @@ async def _expanded_retrieval(function, symbol: str, keyword: str, limit: int, s
     if first is None:first={'ok':True,'data':[],'source':'knowledge','as_of':None}
     return {**first,"data":rows[:limit],"as_of":max((str(row.get("observed_at")) for row in rows if isinstance(row,dict) and row.get("observed_at")),default=first.get("as_of"))}
 
-def _summarize_price_window(data: list[dict]) -> list[dict]:
-    """Attach deterministic window statistics (volatility, return, std, high/low) to the latest price row
-    and compact multi-week/multi-month series to key anchor rows so multi-stock queries fit the context budget."""
-    import math
-    if len(data) < 2:
-        return data
-    chronological = [r for r in reversed(data) if isinstance(r.get("close"), (int, float))]
-    if len(chronological) < 2:
-        return data
-    closes = [float(r["close"]) for r in chronological]
-    n = len(closes)
-    mean_close = sum(closes) / n
-    close_std = math.sqrt(sum((c - mean_close) ** 2 for c in closes) / (n - 1))
-    close_cv_pct = (close_std / mean_close * 100.0) if mean_close else 0.0
-    period_return_pct = ((closes[-1] - closes[0]) / closes[0] * 100.0) if closes[0] else 0.0
-    daily_returns = [(closes[i] - closes[i - 1]) / closes[i - 1] for i in range(1, n) if closes[i - 1]]
-    if len(daily_returns) >= 2:
-        mean_ret = sum(daily_returns) / len(daily_returns)
-        daily_vol = math.sqrt(sum((r - mean_ret) ** 2 for r in daily_returns) / (len(daily_returns) - 1))
-        daily_vol_pct = daily_vol * 100.0
-        annualized_vol_pct = daily_vol * math.sqrt(252.0) * 100.0
-    else:
-        daily_vol_pct = (abs(daily_returns[0]) * 100.0) if daily_returns else 0.0
-        annualized_vol_pct = daily_vol_pct * math.sqrt(252.0)
-    data[0].update({
-        "window_trading_days": n,
-        "window_start_date": chronological[0].get("trading_date"),
-        "window_end_date": chronological[-1].get("trading_date"),
-        "window_start_close": round(closes[0], 2),
-        "window_end_close": round(closes[-1], 2),
-        "window_high_close": round(max(closes), 2),
-        "window_low_close": round(min(closes), 2),
-        "period_return_pct": round(period_return_pct, 2),
-        "close_price_std": round(close_std, 2),
-        "close_cv_pct": round(close_cv_pct, 2),
-        "daily_return_volatility_pct": round(daily_vol_pct, 2),
-        "annualized_volatility_pct": round(annualized_vol_pct, 2),
-    })
-    if len(data) <= 10:
-        return data
-    high_row = max(chronological, key=lambda r: float(r["close"]))
-    low_row = min(chronological, key=lambda r: float(r["close"]))
-    anchors = [data[0], high_row, low_row, chronological[0]]
-    compacted = []
-    seen = set()
-    for row in anchors:
-        key = row.get("id") or row.get("trading_date")
-        if key not in seen:
-            seen.add(key)
-            compacted.append(row)
-    return compacted
+_PRICE_SET_CACHE: dict[str, dict] = {}
+PRICE_SET_FIELDS: tuple[str, ...] = ("open", "high", "low", "close", "volume")
+
+
+def _iso_date_str(val: object) -> str:
+    if isinstance(val, datetime):
+        return val.date().isoformat()
+    if isinstance(val, date):
+        return val.isoformat()
+    return str(val or "")[:10]
+
+
+def _iso_datetime_str(val: object) -> str:
+    if isinstance(val, datetime):
+        dt = val if val.tzinfo else val.replace(tzinfo=UTC)
+        return dt.astimezone(UTC).isoformat()
+    text_val = str(val or "").strip()
+    if not text_val:
+        return ""
+    try:
+        dt = datetime.fromisoformat(text_val.replace("Z", "+00:00"))
+        dt = dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+        return dt.astimezone(UTC).isoformat()
+    except ValueError:
+        return text_val
+
+
+def _canonical_price_tuple(row: dict) -> list:
+    return [
+        str(row.get("id") or ""),
+        _iso_date_str(row.get("trading_date")),
+        float(row["open"]) if row.get("open") is not None else None,
+        float(row["high"]) if row.get("high") is not None else None,
+        float(row["low"]) if row.get("low") is not None else None,
+        float(row["close"]) if row.get("close") is not None else None,
+        int(row["volume"]) if row.get("volume") is not None else None,
+        _iso_datetime_str(row.get("fetched_at")),
+    ]
+
+
+def compute_price_set_digest(rows: list[dict]) -> str:
+    """Deterministic SHA-256 digest over ascending `[id, trading_date, open, high, low, close, volume, fetched_at]`."""
+    asc = sorted(rows, key=lambda r: (_iso_date_str(r.get("trading_date")), str(r.get("id") or "")))
+    payload = [_canonical_price_tuple(r) for r in asc]
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+
+
+def build_price_set_row(rows: list[dict], symbol: str | None = None) -> tuple[dict, dict]:
+    """Build `(receipt_row, server_meta)` for a >10 row price series."""
+    asc = sorted(rows, key=lambda r: (_iso_date_str(r.get("trading_date")), str(r.get("id") or "")))
+    digest = compute_price_set_digest(asc)
+    set_id = f"ps_{digest[:16]}"
+    first_row = asc[0]
+    last_row = asc[-1]
+    sym = str(first_row.get("symbol") or symbol or "").upper()
+    receipt = {
+        "source_type": "saved_price_set",
+        "set_id": set_id,
+        "symbol": sym,
+        "n": len(asc),
+        "start_date": _iso_date_str(first_row.get("trading_date")),
+        "end_date": _iso_date_str(last_row.get("trading_date")),
+        "first_close": float(first_row["close"]),
+        "last_close": float(last_row["close"]),
+        "fields_available": list(PRICE_SET_FIELDS),
+    }
+    meta = {
+        "set_id": set_id,
+        "symbol": sym,
+        "row_ids": [str(r["id"]) for r in asc],
+        "n": len(asc),
+        "start_date": receipt["start_date"],
+        "end_date": receipt["end_date"],
+        "first_close": receipt["first_close"],
+        "last_close": receipt["last_close"],
+        "fields_available": list(PRICE_SET_FIELDS),
+        "parent_digest": digest,
+        "source": str(last_row.get("source") or "market_prices"),
+        "fetched_at": _iso_datetime_str(last_row.get("fetched_at")),
+    }
+    if len(_PRICE_SET_CACHE) >= 512:
+        _PRICE_SET_CACHE.pop(next(iter(_PRICE_SET_CACHE)), None)
+    _PRICE_SET_CACHE[set_id] = meta
+    return receipt, meta
+
+
+def get_cached_price_set(set_id: str) -> dict | None:
+    return _PRICE_SET_CACHE.get(set_id)
+
+
+def load_vectors(
+    row_ids: list[str],
+    field: str,
+    *,
+    expected_digest: str | None = None,
+) -> tuple[list[float], list[str], str]:
+    """Reload `row_ids` from `market_prices`, verify row completeness and `parent_digest`, and return `(values, trading_dates, digest)`."""
+    import uuid
+    from sqlalchemy import select
+    from .agent_workflow.formula_sandbox import FormulaError
+    from .database import SessionLocal
+    from .models import MarketPrice
+
+    if field not in PRICE_SET_FIELDS:
+        raise FormulaError("formula_input_unbound", hint=f"Unsupported price field `{field}`.")
+    if not isinstance(row_ids, list) or not (1 <= len(row_ids) <= 2000):
+        raise FormulaError("formula_parent_missing", hint="Parent row_ids list is missing or out of bounds.")
+
+    uuids: list[uuid.UUID] = []
+    for rid in row_ids:
+        try:
+            uuids.append(uuid.UUID(str(rid)))
+        except (ValueError, TypeError) as exc:
+            raise FormulaError("formula_parent_missing", hint=f"Invalid market_prices UUID: {rid}") from exc
+
+    if len(set(uuids)) != len(uuids):
+        raise FormulaError("formula_parent_missing", hint="Duplicate UUIDs in parent row_ids.")
+
+    with SessionLocal() as session:
+        stmt = (
+            select(MarketPrice)
+            .where(MarketPrice.id.in_(uuids))
+            .order_by(MarketPrice.trading_date.asc(), MarketPrice.id.asc())
+        )
+        db_rows = list(session.scalars(stmt))
+
+    if len(db_rows) != len(uuids) or {r.id for r in db_rows} != set(uuids):
+        raise FormulaError("formula_parent_missing", hint="One or more parent price rows are missing from market_prices.")
+
+    row_dicts = [
+        {
+            "id": str(r.id),
+            "symbol": r.symbol,
+            "trading_date": r.trading_date.isoformat(),
+            "open": float(r.open),
+            "high": float(r.high),
+            "low": float(r.low),
+            "close": float(r.close),
+            "volume": int(r.volume),
+            "source": r.source,
+            "fetched_at": _iso_datetime_str(r.fetched_at),
+        }
+        for r in db_rows
+    ]
+    digest = compute_price_set_digest(row_dicts)
+    if expected_digest is not None and digest != expected_digest:
+        raise FormulaError("formula_parent_changed", hint="Parent market_prices rows changed since the set was read.")
+
+    values = [float(r[field]) for r in row_dicts]
+    dates = [r["trading_date"] for r in row_dicts]
+    return values, dates, digest
+
 
 @tool(args_schema=PriceArgs)
 async def query_stock_prices(symbol: str, limit: int = 5, days: int | None = None, start: str | None = None, end: str | None = None) -> dict:
@@ -275,8 +376,11 @@ async def query_stock_prices(symbol: str, limit: int = 5, days: int | None = Non
     except ValueError:return {"ok":False,"data":[],"error_code":"invalid_date_range"}
     filters=" AND trading_date<=CAST(:upper AS date)"+(" AND trading_date>=CAST(:lower AS date)" if lower else "")
     rows = await _query("SELECT id, symbol, trading_date, open, high, low, close, volume, source, fetched_at FROM market_prices WHERE symbol=:symbol"+filters+" ORDER BY trading_date DESC LIMIT :limit", {"symbol":symbol,"limit":limit,"lower":str(lower) if lower else None,"upper":str(upper)})
-    data = _summarize_price_window([{k:_json(v) for k,v in r.items()} for r in rows])
-    return {"ok":True,"data":data,"source":"market_prices","as_of":_json(rows[0]["fetched_at"]) if rows else None}
+    serialized = [{k:_json(v) for k,v in r.items()} for r in rows]
+    if len(serialized) > 10:
+        receipt, _ = build_price_set_row(serialized, symbol=symbol)
+        return {"ok":True,"data":[receipt],"source":"market_prices","as_of":_json(rows[0]["fetched_at"]) if rows else None}
+    return {"ok":True,"data":serialized,"source":"market_prices","as_of":_json(rows[0]["fetched_at"]) if rows else None}
 
 def forecast_target(contract):
     """What a forecast's probabilities are about: the close on one date against an anchor close."""

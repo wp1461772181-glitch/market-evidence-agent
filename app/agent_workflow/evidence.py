@@ -147,7 +147,7 @@ def gate_row(question: str, row: dict, *, symbol: str | None=None, company: str 
     if official_only and kind not in {'official_filing','saved_filing'}:return False,'official_source_required'
     body=' '.join(str(row.get(k) or '') for k in ('excerpt','content','summary','text','answer','reasons'))
     title=str(row.get('title') or '')
-    if not body.strip() and not any(k in row for k in ('close','probabilities','status','form')):
+    if not body.strip() and not any(k in row for k in ('close','first_close','last_close','probabilities','status','form')):
         metric=next((key for key,terms in METRIC_GROUPS.items() if any(contains(t,question) for t in terms)),None)
         return False,('requested_metric_missing:'+metric if metric else 'zero_evidence')
     if symbol and row.get('symbol') and row['symbol'].upper()!=symbol.upper():return False,'requested_entity_missing'
@@ -175,13 +175,14 @@ def gate_row(question: str, row: dict, *, symbol: str | None=None, company: str 
         return False,'requested_entity_missing'
     needed=metrics if metrics is not None else [key for key,terms in METRIC_GROUPS.items() if any(contains(t,question) for t in terms)]
     for key in needed:
-        if key=='price' and 'close' in row:
+        if key=='price' and ('close' in row or 'last_close' in row):
             import math
+            price_val=row.get('close') if 'close' in row else row.get('last_close')
             try:
-                if not isinstance(row['close'],bool) and math.isfinite(float(row['close'])) and float(row['close'])>=0:continue
+                if not isinstance(price_val,bool) and math.isfinite(float(price_val)) and float(price_val)>=0:continue
             except (TypeError,ValueError):pass
             return _gate_outcome(False,'requested_metric_missing:price',soft)
-        if key=='date' and any(row.get(field) for field in ('filed_at','published_at','trading_date','decision_at')):continue
+        if key=='date' and any(row.get(field) for field in ('filed_at','published_at','trading_date','decision_at','start_date','end_date')):continue
         if key=='forecast' and row.get('probabilities'):continue
         terms=METRIC_GROUPS.get(key,(key,))
         passages=re.split(r'[。！？\n]|(?<=[.!?])\s+',body)
@@ -197,7 +198,7 @@ def gate_row(question: str, row: dict, *, symbol: str | None=None, company: str 
         if not relevant:return _gate_outcome(False,'requested_metric_missing:'+key,soft)
         if not any(period_match(period or question,part) for part in relevant):return _gate_outcome(False,'requested_period_missing',soft)
     requested=period or question
-    if not period_match(requested,body+' '+str(row.get('report_period') or '')+' '+str(row.get('filed_at') or row.get('trading_date') or row.get('decision_at') or '')):
+    if not period_match(requested,body+' '+str(row.get('report_period') or '')+' '+str(row.get('filed_at') or row.get('trading_date') or row.get('decision_at') or row.get('start_date') or '')+' '+str(row.get('end_date') or '')):
         return _gate_outcome(False,'requested_period_missing',soft)
     if days_back is not None and not published_within(row.get('published_at') or row.get('filed_at'),days_back,now or datetime.now(UTC)):
         return _gate_outcome(False,'requested_time_window_missing',soft)
@@ -213,7 +214,7 @@ def deterministic_confidence_gate(question: str,result: dict,citations=None,veri
     if not isinstance(result,dict) or not result.get('ok'):return False,(result or {}).get('error_code') or 'retrieval_unavailable'
     rows=result.get('data')
     if not isinstance(rows,list) or not rows:return False,'zero_evidence'
-    if not any(isinstance(r,dict) and (r.get('id') or r.get('source_id') or r.get('url') or r.get('source_url') or r.get('question') or 'close' in r) for r in rows):return False,'missing_source_coverage'
+    if not any(isinstance(r,dict) and (r.get('id') or r.get('set_id') or r.get('source_id') or r.get('url') or r.get('source_url') or r.get('question') or 'close' in r or 'first_close' in r) for r in rows):return False,'missing_source_coverage'
     inferred=[t for t in re.findall(r'(?<![A-Za-z])[A-Z]{2,5}(?![A-Za-z])',question) if t not in {'SEC','FY','EPS','URL','HTTPS'}]
     explicit_symbol=requirements.pop('symbol',None)
     symbols=verified_symbols or ([explicit_symbol] if explicit_symbol else inferred or [None])
@@ -248,6 +249,7 @@ def citation_errors(answer: str,citations: list[dict]) -> list[int]:
     valid=set()
     for c in citations:
         if type(c.get('ordinal')) is not int:continue
+        if c.get('source_type')=='unavailable' or c.get('unavailable'):continue
         if (c.get('source_type') in {'configured_news'} or c.get('origin')=='configured_news') and not _has_valid_http_url(c.get('url') or c.get('source_url')):
             continue
         valid.add(int(c['ordinal']))
@@ -284,8 +286,13 @@ def _evidence_quotes(row: dict) -> list[str]:
     return quotes
 
 
-def number_rows(name: str,rows: list[dict],citations: list[dict],scope: dict) -> list[dict]:
+def number_rows(name: str,rows: list[dict],citations: list[dict],scope: dict | None=None) -> list[dict]:
     """Give accepted rows a citation without changing provenance or raw saved snapshots."""
+    scope=scope or {}
+    if name=='query_stock_prices' and len(rows)>10 and all(isinstance(r,dict) and r.get('source_type')!='saved_price_set' for r in rows):
+        from ..agent_tools import build_price_set_row
+        receipt,_=build_price_set_row(rows,symbol=scope.get('symbol'))
+        rows=[receipt]
     accepted=[]
     for original in rows:
         row=dict(original)
@@ -311,6 +318,66 @@ def number_rows(name: str,rows: list[dict],citations: list[dict],scope: dict) ->
         kind=row.get('source_type') or ('configured_news' if name=='search_configured_news' else 'web' if name=='web_research' else 'official_filing' if name=='query_sec_filings' else 'saved_price' if name=='query_stock_prices' else 'saved_forecast' if name=='query_latest_forecast' else 'ai_analysis' if 'analysis' in name else 'research_faq' if 'faq' in name else 'saved_material')
         if kind=='configured_news' and not _has_valid_http_url(row.get('url') or row.get('source_url')):
             continue
+        if kind=='saved_price_set':
+            from ..agent_tools import PRICE_SET_FIELDS, get_cached_price_set
+            set_id=str(row.get('set_id') or '')
+            meta=get_cached_price_set(set_id) or {}
+            sym=str(row.get('symbol') or meta.get('symbol') or scope.get('symbol') or '')
+            row_ids=list(row.get('row_ids') or meta.get('row_ids') or [])
+            parent_digest=str(row.get('parent_digest') or meta.get('parent_digest') or '')
+            n_count=int(row.get('n') or meta.get('n') or len(row_ids))
+            start_date=str(row.get('start_date') or meta.get('start_date') or '')
+            end_date=str(row.get('end_date') or meta.get('end_date') or '')
+            first_close=row.get('first_close') if row.get('first_close') is not None else meta.get('first_close')
+            last_close=row.get('last_close') if row.get('last_close') is not None else meta.get('last_close')
+            fields_avail=list(row.get('fields_available') or meta.get('fields_available') or PRICE_SET_FIELDS)
+            source_name=row.get('source') or meta.get('source') or 'market_prices'
+            fetched_at=row.get('fetched_at') or meta.get('fetched_at')
+            key=hashlib.sha256(json.dumps(['saved_price_set',sym,set_id,parent_digest],sort_keys=True,default=str).encode()).hexdigest()
+            old=next((c for c in citations if c.get('evidence_key')==key),None)
+            if old:
+                ordinal=old['ordinal']
+            else:
+                ordinal=len(citations)+1
+                figures_str=f'{start_date} close {first_close} {end_date} close {last_close}'
+                receipt_fields={'symbol':sym,'set_id':set_id,'n':n_count,'start_date':start_date,'end_date':end_date,
+                    'first_close':first_close,'last_close':last_close}
+                citations.append({
+                    'ordinal':ordinal,
+                    'evidence_key':key,
+                    'source_type':'saved_price_set',
+                    'origin':'saved',
+                    'symbol':sym,
+                    'set_id':set_id,
+                    'row_ids':row_ids,
+                    'n':n_count,
+                    'start_date':start_date,
+                    'end_date':end_date,
+                    'first_close':first_close,
+                    'last_close':last_close,
+                    'fields_available':fields_avail,
+                    'parent_digest':parent_digest,
+                    'source':source_name,
+                    'fetched_at':fetched_at,
+                    'published_at':end_date,
+                    'observed_at':fetched_at,
+                    'title':f'{sym} 价格序列 ({start_date}..{end_date})'.strip(),
+                    'quote':figures_str,
+                    'figures':figures_str,
+                    'fields':receipt_fields,
+                })
+            accepted.append({
+                'citation':f'[{ordinal}]',
+                'set_id':set_id,
+                'symbol':sym,
+                'n':n_count,
+                'start_date':start_date,
+                'end_date':end_date,
+                'first_close':first_close,
+                'last_close':last_close,
+                'fields_available':fields_avail,
+            })
+            continue
         body=str(row.get('excerpt') or row.get('answer') or row.get('summary') or json.dumps(row,ensure_ascii=False,default=str))
         key=hashlib.sha256(json.dumps([kind,row.get('id'),row.get('source_id'),row.get('url'),body],sort_keys=True,default=str).encode()).hexdigest()
         old=next((c for c in citations if c.get('evidence_key')==key),None)
@@ -331,13 +398,9 @@ def number_rows(name: str,rows: list[dict],citations: list[dict],scope: dict) ->
                 'fields':_citation_fields(row),'evidence_quotes':_evidence_quotes(row)})
         if kind=='saved_price':
             citations[ordinal-1]['quote']=str(row['close'])
-            # The quote stays the close (the restore check compares it); the row's other prices and
-            # deterministic window stats are kept beside it so open/high/low/volume/volatility claims can be checked.
-            price_figure_keys=('trading_date','open','high','low','close','volume',
-                'window_trading_days','window_start_date','window_end_date','window_start_close','window_end_close',
-                'window_high_close','window_low_close','period_return_pct','close_price_std','close_cv_pct',
-                'daily_return_volatility_pct','annualized_volatility_pct')
-            citations[ordinal-1]['figures']=' '.join(f'{k} {row[k]}' for k in price_figure_keys if row.get(k) is not None)
+            # The quote stays the close (the restore check compares it); the row's other prices are
+            # kept beside it so an answer that states the open, high, low or volume can be checked.
+            citations[ordinal-1]['figures']=' '.join(f'{k} {row[k]}' for k in ('trading_date','open','high','low','close','volume') if row.get(k) is not None)
         row['citation']=f'[{ordinal}]';row['source_type']=kind
         accepted.append(row)
     return accepted
@@ -807,7 +870,7 @@ def _drop(issues, audit, claim, reason, **extra):
 
 
 def _calculation_citation(citation):
-    return citation.get("source_type") in {"calculation", "calculate"} or isinstance(citation.get("calculation"), dict)
+    return citation.get("source_type") in {"calculation", "calculate", "formula_calculation"} or isinstance(citation.get("calculation"), dict)
 
 
 def _source_body(bodies, ordinal, citation):

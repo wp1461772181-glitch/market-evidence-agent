@@ -82,7 +82,7 @@ def test_route_a_mode_rag_runs_search_knowledge_prelude():
         executor=execute,
     )
     result = asyncio.run(direct.run_direct_turn('AAPL 最新 10-K 里关于供应链风险是怎么说的', ctx, emit=emit))
-    assert result['status'] == 'succeeded'
+    assert result['status'] == 'succeeded', f"reason={result.get('reason')} audit={result.get('audit')} answer={result.get('answer')}"
     assert executed and executed[0][0] == 'search_knowledge'
     assert result['audit']['mode'] == 'rag'
     assert result['audit']['tool_bias'] == 'knowledge'
@@ -160,7 +160,7 @@ def test_route_a_mode_prices_skips_rag_prelude_and_backfills_nine_symbols():
             messages=[{'role': 'user', 'content': '我关注 AAPL、MSFT、NVDA、GOOGL、AMZN、META、TSLA、AVGO、TSM'}],
         )
     )
-    assert result['status'] == 'succeeded'
+    assert result['status'] == 'succeeded', f"reason={result.get('reason')} audit={result.get('audit')} answer={result.get('answer')}"
     assert 'search_knowledge' not in [n for n, _ in executed]
     assert [a['symbol'] for n, a in executed if n == 'query_stock_prices'] == NINE_TICKERS
     assert result['audit'].get('classify_symbols_backfilled') is True
@@ -216,7 +216,7 @@ def test_route_a_mode_financials_multi_stock_skips_rag_prelude():
         executor=execute,
     )
     result = asyncio.run(direct.run_direct_turn('对比 AAPL 和 MSFT 的营业收入', ctx, emit=emit))
-    assert result['status'] == 'succeeded'
+    assert result['status'] == 'succeeded', f"reason={result.get('reason')} audit={result.get('audit')} answer={result.get('answer')}"
     assert 'search_knowledge' not in [n for n, _ in executed]
     assert [a['symbol'] for n, a in executed if n == 'query_financials'] == ['AAPL', 'MSFT']
     assert result['audit']['mode'] == 'financials'
@@ -249,7 +249,7 @@ def test_route_a_missing_mode_defaults_to_none_without_rag_prelude():
         executor=execute,
     )
     result = asyncio.run(direct.run_direct_turn('NVDA 收盘价是多少', ctx, emit=emit))
-    assert result['status'] == 'succeeded'
+    assert result['status'] == 'succeeded', f"reason={result.get('reason')} audit={result.get('audit')} answer={result.get('answer')}"
     assert 'search_knowledge' not in [n for n, _ in executed]
     assert result['audit']['mode'] == 'none'
     assert result['audit'].get('classify_mode_defaulted') is True
@@ -257,78 +257,109 @@ def test_route_a_missing_mode_defaults_to_none_without_rag_prelude():
 
 
 def test_nine_stocks_six_month_volatility_compacts_window_and_grounds_volatility_figures():
-    """9 stocks × 127 daily bars must not trigger chat_context_too_large and must ground volatility metrics."""
-    from datetime import date, timedelta
-    from app.agent_tools import _summarize_price_window
+    """9 stocks × 127 daily bars must return 1 saved_price_set receipt per stock, compute via 1 calculate_formula call, and pass replay + claim gate."""
+    from datetime import UTC, date, datetime, timedelta
+    from sqlalchemy import delete
+    from app.agent_tools import build_price_set_row
     from app.agent_workflow.claim_review import apply_claim_gate
     from app.agent_workflow.evidence import unsupported_number_values
+    from app.database import Base, SessionLocal, engine
+    from app.models import MarketPrice
 
+    Base.metadata.create_all(bind=engine)
     base_date = date(2026, 10, 29)
-    raw_by_symbol = {}
-    for idx, sym in enumerate(NINE_TICKERS):
-        rows = []
-        for day_idx in range(127):
-            d = base_date - timedelta(days=day_idx)
-            swing = (idx + 1) * 0.8 * (1 if day_idx % 2 == 0 else -1)
-            close_val = round(100.0 + idx * 20.0 + swing, 2)
-            rows.append({
-                'id': f'{sym}-{d.isoformat()}',
-                'symbol': sym,
-                'trading_date': d.isoformat(),
-                'open': close_val - 0.5,
-                'high': close_val + 1.0,
-                'low': close_val - 1.0,
-                'close': close_val,
-                'volume': 10_000_000 + day_idx * 1000,
-                'source': 'stooq',
-                'fetched_at': '2026-10-29T00:00:00+00:00',
-            })
-        compacted = _summarize_price_window(rows)
-        assert len(compacted) <= 4
-        assert compacted[0]['window_trading_days'] == 127
-        assert 'daily_return_volatility_pct' in compacted[0]
-        assert 'annualized_volatility_pct' in compacted[0]
-        assert 'close_price_std' in compacted[0]
-        raw_by_symbol[sym] = compacted
+    fetched_ts = datetime(2026, 10, 29, 0, 0, 0, tzinfo=UTC)
+    receipt_by_symbol = {}
+
+    with SessionLocal() as session:
+        session.execute(delete(MarketPrice).where(MarketPrice.symbol.in_(NINE_TICKERS)))
+        session.commit()
+        for idx, sym in enumerate(NINE_TICKERS):
+            rows = []
+            for day_idx in range(127):
+                d = base_date - timedelta(days=day_idx)
+                swing = (idx + 1) * 0.8 * (1 if day_idx % 2 == 0 else -1)
+                close_val = round(100.0 + idx * 15.0 + swing, 2)
+                mp = MarketPrice(
+                    id=uuid.uuid4(),
+                    symbol=sym,
+                    trading_date=d,
+                    open=close_val - 0.5,
+                    high=close_val + 1.0,
+                    low=close_val - 1.0,
+                    close=close_val,
+                    volume=10_000_000 + day_idx * 1000,
+                    source='stooq',
+                    fetched_at=fetched_ts,
+                )
+                session.add(mp)
+                rows.append({
+                    'id': str(mp.id),
+                    'symbol': sym,
+                    'trading_date': d.isoformat(),
+                    'open': float(mp.open),
+                    'high': float(mp.high),
+                    'low': float(mp.low),
+                    'close': float(mp.close),
+                    'volume': int(mp.volume),
+                    'source': mp.source,
+                    'fetched_at': fetched_ts.isoformat(),
+                })
+            session.commit()
+            receipt, _ = build_price_set_row(rows, symbol=sym)
+            receipt_by_symbol[sym] = receipt
 
     def execute(name, args):
         if name == 'query_stock_prices':
-            return {'ok': True, 'data': raw_by_symbol[args['symbol']], 'source': 'market_prices'}
+            return {'ok': True, 'data': [receipt_by_symbol[args['symbol']]], 'source': 'market_prices'}
         return {'ok': True, 'data': []}
 
-    ordinals = {}
-    cur = 1
-    for sym in NINE_TICKERS:
-        ordinals[sym] = cur
-        cur += len(raw_by_symbol[sym])
-
-    lines = []
-    for sym in NINE_TICKERS:
-        r0 = raw_by_symbol[sym][0]
-        ord_n = ordinals[sym]
-        lines.append(
-            f"- {sym}：日收益率波动率 {r0['daily_return_volatility_pct']}%，"
-            f"年化波动率 {r0['annualized_volatility_pct']}%，"
-            f"收盘价标准差 {r0['close_price_std']} [{ord_n}]。"
-        )
-    hi_sym = max(NINE_TICKERS, key=lambda s: raw_by_symbol[s][0]['daily_return_volatility_pct'])
-    lo_sym = min(NINE_TICKERS, key=lambda s: raw_by_symbol[s][0]['daily_return_volatility_pct'])
-    lines.append(
-        f"波动最大的股票是 {hi_sym}（日波动率 {raw_by_symbol[hi_sym][0]['daily_return_volatility_pct']}%）[{ordinals[hi_sym]}]，"
-        f"波动最小的股票是 {lo_sym}（日波动率 {raw_by_symbol[lo_sym][0]['daily_return_volatility_pct']}%）[{ordinals[lo_sym]}]。"
+    formula_code = (
+        "def f(close):\n"
+        "    r = np.diff(close) / close[:-1]\n"
+        "    return float(np.std(r, ddof=1) * math.sqrt(252) * 100)\n"
     )
-    final_answer = "\n".join(lines)
 
-    steps = iter([
-        {
-            'content': None,
-            'tool_calls': [
-                {'id': f'call-{sym}', 'function': {'name': 'query_stock_prices', 'arguments': {'symbol': sym, 'start': '2026-04-29', 'end': '2026-10-29', 'limit': 183}}}
-                for sym in NINE_TICKERS
-            ],
-        },
-        {'content': final_answer},
-    ])
+    step_idx = 0
+
+    def decide(_messages, _tools, observations=None):
+        nonlocal step_idx
+        step_idx += 1
+        if step_idx == 1:
+            return {
+                'content': None,
+                'tool_calls': [
+                    {'id': f'call-{sym}', 'function': {'name': 'query_stock_prices', 'arguments': {'symbol': sym, 'start': '2026-04-29', 'end': '2026-10-29', 'limit': 183}}}
+                    for sym in NINE_TICKERS
+                ],
+            }
+        if step_idx == 2:
+            return _call(
+                'calculate_formula',
+                formula_code=formula_code,
+                bindings=[
+                    {
+                        'label': sym,
+                        'inputs': {'close': {'source_ordinal': i + 1, 'field': 'close'}},
+                    }
+                    for i, sym in enumerate(NINE_TICKERS)
+                ],
+                decimals=2,
+                unit='pct',
+            )
+        calc_obs = next(o for o in (observations or []) if o.get('name') == 'calculate_formula')
+        items = calc_obs['result']['data']
+        lines = [
+            f"- {item['label']}：近半年收盘价年化波动率 {item['value']}% {item['citation']}。"
+            for item in items
+        ]
+        hi_item = max(items, key=lambda x: float(x['value']))
+        lo_item = min(items, key=lambda x: float(x['value']))
+        lines.append(
+            f"按 252 个交易日年化计算，波动最大的股票是 {hi_item['label']}（{hi_item['value']}%）{hi_item['citation']}，"
+            f"波动最小的股票是 {lo_item['label']}（{lo_item['value']}%）{lo_item['citation']}。"
+        )
+        return {'content': '\n'.join(lines)}
 
     async def emit(_):
         pass
@@ -347,7 +378,7 @@ def test_nine_stocks_six_month_volatility_compacts_window_and_grounds_volatility
             'symbols': NINE_TICKERS,
             'days_back': 183,
         },
-        decider=lambda *_: next(steps),
+        decider=decide,
         executor=execute,
     )
     result = asyncio.run(
@@ -358,8 +389,10 @@ def test_nine_stocks_six_month_volatility_compacts_window_and_grounds_volatility
             messages=[{'role': 'user', 'content': '我关注 AAPL、MSFT、NVDA、GOOGL、AMZN、META、TSLA、AVGO、TSM'}],
         )
     )
-    assert result['status'] == 'succeeded'
+    assert result['status'] == 'succeeded', f"reason={result.get('reason')} audit={result.get('audit')} answer={result.get('answer')}"
+    assert result['audit']['formula_replay'] == {'checked': 9, 'failed': []}
     assert not unsupported_number_values(result['answer'], result['citations'])
     gate = apply_claim_gate(result['answer'], result['citations'], mode='enforce')
     assert not gate.dropped_lines
+
 
