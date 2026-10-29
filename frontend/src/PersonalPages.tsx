@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useOpenConversation } from "./AgentChatPanel";
-import { confirmInboxItem, confirmProfileItem, createProfileItem, deleteProfileItem, getChatMode, getNewsSourcesConfig, listBots, listInbox, listProfileItems, listRecall, listTaskProposals, mintInboxCard, saveNewsPushSettings, setInboxStatus, updateProfileItem, type Bot, type InboxItem, type ProfileBot, type ProfileItem, type RecallItem, type TaskProposal } from "./api";
+import { confirmInboxItem, confirmProfileItem, createProfileItem, deleteNewsSource, deleteProfileItem, dryRunNewsSource, getChatMode, getNewsSourcesConfig, listBots, listInbox, listProfileItems, listRecall, listTaskProposals, mintInboxCard, repairNewsSource, saveNewsPushSettings, setInboxStatus, setNewsSourceEnabled, updateProfileItem, upsertNewsSource, type Bot, type InboxItem, type NewsDryRunResult, type NewsSource, type NewsSourceInput, type ProfileBot, type ProfileItem, type RecallItem, type TaskProposal } from "./api";
 import { RoutineIcon } from "./BotPages";
 import { TaskManager } from "./BotRoutines";
 import { useLocale } from "./i18n";
@@ -93,17 +93,9 @@ export function RoutinesPage({ bots, onNavigate, onChanged }: { bots: Bot[]; onN
         </li>)}</ul>}
     </section>
     <section className="personal-card memory-panel">
-      <div className="memory-line">
-        <label className="memory-scope">新闻推送摘要长度上限
-          <select value={summaryMaxTokens} disabled={busy === "push-tokens"} onChange={e => void updateSummaryMaxTokens(Number(e.target.value))}>
-            <option value={128}>短（128 tokens）</option>
-            <option value={256}>中（256 tokens）</option>
-            <option value={512}>长（512 tokens）</option>
-          </select>
-        </label>
-      </div>
       <TaskManager bots={bots} onChanged={() => { load(); onChanged?.(); }} />
     </section>
+    <NewsSourcesPanel summaryMaxTokens={summaryMaxTokens} onUpdateSummaryTokens={updateSummaryMaxTokens} busyToken={busy === "push-tokens"} onChanged={() => { load(); onChanged?.(); }} />
     {waiting.length > 0 && <section className="personal-card memory-panel" aria-labelledby="routine-confirms-title">
       <h3 id="routine-confirms-title">{t("例行任务运行时想做的写操作")}</h3>
       <p className="fine-print">{t("定时任务在无人值守时只读不写。它想做的写操作会放在这里，不会自动执行；点「生成确认卡」后到对话里核对，点「同意」才执行。")}</p>
@@ -123,6 +115,233 @@ export function RoutinesPage({ bots, onNavigate, onChanged }: { bots: Bot[]; onN
       </li>)}</ul>
     </section>}
   </main>;
+}
+
+const HEALTH_LABELS: Record<string, string> = { ok: "健康", degraded: "降级", failed: "异常" };
+const SOURCE_KIND_LABELS: Record<NewsSource["kind"], string> = { rss: "RSS / Atom", http_json: "HTTP JSON", http_html: "HTTP HTML" };
+
+function NewsSourcesPanel({
+  summaryMaxTokens,
+  onUpdateSummaryTokens,
+  busyToken,
+  onChanged,
+}: {
+  summaryMaxTokens: number;
+  onUpdateSummaryTokens: (val: number) => void;
+  busyToken: boolean;
+  onChanged?: () => void;
+}) {
+  const { t } = useLocale();
+  const [sources, setSources] = useState<NewsSource[] | null>(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState<string | null>(null);
+  const [dryRuns, setDryRuns] = useState<Record<string, NewsDryRunResult>>({});
+  const [repairMsg, setRepairMsg] = useState<Record<string, string>>({});
+  const [formOpen, setFormOpen] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [formError, setFormError] = useState("");
+  const [formBusy, setFormBusy] = useState(false);
+
+  const [draftId, setDraftId] = useState("");
+  const [draftName, setDraftName] = useState("");
+  const [draftKind, setDraftKind] = useState<NewsSource["kind"]>("rss");
+  const [draftUrl, setDraftUrl] = useState("");
+  const [draftHomepage, setDraftHomepage] = useState("");
+  const [draftLanguage, setDraftLanguage] = useState("zh-CN");
+  const [draftMarkets, setDraftMarkets] = useState("US, CN");
+  const [draftTags, setDraftTags] = useState("macro, flash");
+  const [draftAlternates, setDraftAlternates] = useState("");
+  const [draftReaRepair, setDraftReaRepair] = useState(true);
+  const [draftEnabled, setDraftEnabled] = useState(true);
+
+  const loadSources = useCallback((signal?: AbortSignal) => {
+    getNewsSourcesConfig(signal)
+      .then(cfg => setSources(cfg.sources ?? []))
+      .catch(e => { if (!signal?.aborted) setError(e instanceof Error ? e.message : "新闻源配置暂时无法读取。"); });
+  }, []);
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    loadSources(ctrl.signal);
+    return () => ctrl.abort();
+  }, [loadSources]);
+
+  function openForm(src?: NewsSource) {
+    setFormError("");
+    setEditingId(src?.id ?? null);
+    setDraftId(src?.id ?? "");
+    setDraftName(src?.name ?? "");
+    setDraftKind(src?.kind ?? "rss");
+    setDraftUrl(src?.url ?? "");
+    setDraftHomepage(src?.homepage ?? "");
+    setDraftLanguage(src?.language ?? "zh-CN");
+    setDraftMarkets((src?.markets ?? ["US"]).join(", "));
+    setDraftTags((src?.tags ?? ["news"]).join(", "));
+    setDraftAlternates((src?.alternates ?? []).join(", "));
+    setDraftReaRepair(src?.rea_repair ?? true);
+    setDraftEnabled(src?.enabled ?? true);
+    setFormOpen(true);
+  }
+
+  async function submitForm(e: React.FormEvent) {
+    e.preventDefault();
+    const cleanId = draftId.trim();
+    const cleanUrl = draftUrl.trim();
+    if (!cleanId || !/^[A-Za-z0-9._-]{2,80}$/.test(cleanId)) {
+      setFormError("请填写有效的新闻源 ID（2-80 位字母、数字、连字符或下划线，如 cls-telegraph）。");
+      return;
+    }
+    if (!/^https?:\/\/.+/i.test(cleanUrl)) {
+      setFormError("抓取地址须以 http:// 或 https:// 开头。");
+      return;
+    }
+    setFormBusy(true);
+    setFormError("");
+    try {
+      const input: NewsSourceInput = {
+        id: cleanId,
+        name: draftName.trim() || cleanId,
+        kind: draftKind,
+        url: cleanUrl,
+        ...(draftHomepage.trim() ? { homepage: draftHomepage.trim() } : {}),
+        language: draftLanguage.trim() || "zh-CN",
+        markets: draftMarkets.split(/[\s,，、]+/).map(s => s.trim().toUpperCase()).filter(Boolean),
+        tags: draftTags.split(/[\s,，、]+/).map(s => s.trim()).filter(Boolean),
+        alternates: draftAlternates.split(/[\s,，\n]+/).map(s => s.trim()).filter(Boolean),
+        rea_repair: draftReaRepair,
+        enabled: draftEnabled,
+      };
+      await upsertNewsSource(input);
+      setFormOpen(false);
+      loadSources();
+      onChanged?.();
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : "保存新闻源失败，请重试。");
+    } finally {
+      setFormBusy(false);
+    }
+  }
+
+  async function runSourceAction(id: string, work: () => Promise<void>) {
+    setBusy(id);
+    setError("");
+    try {
+      await work();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "操作失败，请重试。");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const toggleSource = (src: NewsSource) => runSourceAction(src.id, async () => {
+    await setNewsSourceEnabled(src.id, !src.enabled);
+    loadSources();
+    onChanged?.();
+  });
+
+  const testSource = (src: NewsSource) => runSourceAction(src.id, async () => {
+    const res = await dryRunNewsSource(src.id);
+    setDryRuns(prev => ({ ...prev, [src.id]: res }));
+  });
+
+  const repairSource = (src: NewsSource) => runSourceAction(src.id, async () => {
+    const res = await repairNewsSource(src.id);
+    if (res.ok) {
+      setRepairMsg(prev => ({ ...prev, [src.id]: `REA 修复成功（抽样 ${res.sample?.length ?? 0} 条有效新闻）` }));
+      loadSources();
+      onChanged?.();
+    } else {
+      setRepairMsg(prev => ({ ...prev, [src.id]: `REA 暂未自动修复：${res.error_code ?? "未发现可用备源"}` }));
+    }
+  });
+
+  const removeSource = (src: NewsSource) => {
+    if (!window.confirm(`确定删除新闻源「${src.name || src.id}」？`)) return;
+    void runSourceAction(src.id, async () => {
+      await deleteNewsSource(src.id);
+      loadSources();
+      onChanged?.();
+    });
+  };
+
+  return <section className="personal-card memory-panel" aria-labelledby="news-sources-title">
+    <h3 id="news-sources-title">新闻源配置</h3>
+    <p className="fine-print">配置公开新闻与快讯源（RSS / Atom / JSON / HTML）。Agent 查询最新动态或运行例行简报时优先检索已启用的配置源；无命中或全部停用时自动回退网页搜索。你也可以在对话里直接让 Agent 开启、停用或添加新闻源。</p>
+    <div className="memory-line">
+      <label className="memory-scope">新闻推送摘要长度上限
+        <select value={summaryMaxTokens} disabled={busyToken} onChange={e => onUpdateSummaryTokens(Number(e.target.value))}>
+          <option value={128}>短（128 tokens）</option>
+          <option value={256}>中（256 tokens）</option>
+          <option value={512}>长（512 tokens）</option>
+        </select>
+      </label>
+    </div>
+    {error && <p role="alert">{error}</p>}
+    {sources === null && !error ? <p>{t("正在加载…")}</p> : (sources ?? []).length === 0 ? <p>还没有配置任何新闻源。</p> :
+      <ul className="memory-list">{(sources ?? []).map(src => {
+        const probe = dryRuns[src.id];
+        const repairNote = repairMsg[src.id];
+        return <li key={src.id}>
+          <div className="memory-line">
+            <span className="personal-badge">{SOURCE_KIND_LABELS[src.kind] ?? src.kind}</span>
+            <span className="personal-badge">{src.enabled ? "已启用" : t("已暂停")}</span>
+            <span className="personal-badge">{HEALTH_LABELS[src.health] ?? src.health}</span>
+            <strong>{src.name || src.id}</strong>
+            <span className="fine-print">（ID: {src.id}）</span>
+          </div>
+          <p className="fine-print">
+            抓取地址：<a href={src.url} target="_blank" rel="noreferrer">{src.url}</a>
+            {src.markets && src.markets.length > 0 ? ` · 市场：${src.markets.join("/")}` : ""}
+            {src.tags && src.tags.length > 0 ? ` · 标签：${src.tags.join(", ")}` : ""}
+            {src.rea_repair ? " · 支持 REA 自动诊断" : ""}
+          </p>
+          {src.alternates && src.alternates.length > 0 && <p className="fine-print">备用源：{src.alternates.join(" , ")}</p>}
+          {src.last_error && <p className="fine-print">最近错误：{src.last_error}</p>}
+          {repairNote && <p className="fine-print">{repairNote}</p>}
+          {probe && <blockquote className="memory-quote">
+            {probe.ok
+              ? <>测试抓取成功：共抓取 {probe.raw_count ?? 0} 条，有效标准化 {probe.valid_count ?? 0} 条。
+                  {(probe.sample ?? []).slice(0, 2).map((item, i) => <div key={i} className="fine-print">· <a href={item.url} target="_blank" rel="noreferrer">{item.title}</a>（{item.published_at?.slice(0, 16)}）</div>)}
+                </>
+              : <>测试抓取未通过：{probe.reason || probe.error_code || "无有效条目"}</>}
+          </blockquote>}
+          <div className="memory-actions">
+            <button type="button" className="secondary-action" disabled={busy === src.id} onClick={() => void toggleSource(src)}>{t(src.enabled ? "暂停" : "启用")}</button>
+            <button type="button" className="secondary-action" disabled={busy === src.id} onClick={() => void testSource(src)}>测试抓取</button>
+            <button type="button" className="secondary-action" disabled={busy === src.id} onClick={() => openForm(src)}>{t("编辑")}</button>
+            {src.rea_repair && <button type="button" className="secondary-action" disabled={busy === src.id} onClick={() => void repairSource(src)}>REA 修复</button>}
+            <button type="button" className="secondary-action" disabled={busy === src.id} onClick={() => removeSource(src)}>{t("删除")}</button>
+          </div>
+        </li>;
+      })}</ul>}
+    <div>
+      <button type="button" className="secondary-action" onClick={() => openForm()}>＋ 新建新闻源</button>
+    </div>
+    {formOpen && <form className="task-form" onSubmit={submitForm}>
+      <label>源 ID（英文标识）<input type="text" value={draftId} disabled={Boolean(editingId)} maxLength={80} placeholder="例如：cls-telegraph 或 wsj-markets-rss" onChange={e => setDraftId(e.target.value)} /></label>
+      <label>{t("名称")}<input type="text" value={draftName} maxLength={120} placeholder="例如：财联社电报 / Yahoo Finance" onChange={e => setDraftName(e.target.value)} /></label>
+      <label>{t("类型")}<select value={draftKind} onChange={e => setDraftKind(e.target.value as NewsSource["kind"])}>
+        <option value="rss">RSS / Atom 订阅源</option>
+        <option value="http_json">HTTP JSON 接口</option>
+        <option value="http_html">HTTP HTML 列表页</option>
+      </select></label>
+      <label>抓取地址（URL）<input type="url" value={draftUrl} placeholder="https://finance.yahoo.com/news/rssindex" onChange={e => setDraftUrl(e.target.value)} /></label>
+      <label>站点主页（可选，供 REA 发现备用订阅源）<input type="url" value={draftHomepage} placeholder="https://finance.yahoo.com/news/" onChange={e => setDraftHomepage(e.target.value)} /></label>
+      <label>市场（逗号分隔）<input type="text" value={draftMarkets} placeholder="US, CN, HK" onChange={e => setDraftMarkets(e.target.value)} /></label>
+      <label>标签（逗号分隔）<input type="text" value={draftTags} placeholder="macro, flash, us-stocks" onChange={e => setDraftTags(e.target.value)} /></label>
+      <label>备用地址（可选，逗号分隔）<input type="text" value={draftAlternates} placeholder="https://..." onChange={e => setDraftAlternates(e.target.value)} /></label>
+      <div className="task-form-row">
+        <label><input type="checkbox" checked={draftEnabled} onChange={e => setDraftEnabled(e.target.checked)} /> 立即启用</label>
+        <label><input type="checkbox" checked={draftReaRepair} onChange={e => setDraftReaRepair(e.target.checked)} /> 允许 REA 自动诊断修复</label>
+      </div>
+      {formError && <p role="alert">{formError}</p>}
+      <div className="memory-actions">
+        <button type="submit" className="primary-action" disabled={formBusy}>{t("保存")}</button>
+        <button type="button" className="secondary-action" onClick={() => setFormOpen(false)}>{t("取消")}</button>
+      </div>
+    </form>}
+  </section>;
 }
 
 const KIND_LABELS: Record<ProfileItem["kind"], string> = { preference: "偏好", about_me: "关于我", instruction: "长期指令" };

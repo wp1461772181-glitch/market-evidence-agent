@@ -967,13 +967,63 @@ async def upsert_news_source_endpoint(body: UpsertNewsSourceBody, x_chat_session
     from . import fin_news_engine as news
     credential = _owner_only(x_chat_session)
     try:
-        return await asyncio.to_thread(
+        res = await asyncio.to_thread(
             news.upsert_news_source,
             body.model_dump(exclude_none=True),
             owner_hash=owner_hash(credential),
         )
+        if not res.get("ok"):
+            raise HTTPException(422, res.get("error_code") or "invalid_news_source")
+        return res
     except ValueError as exc:
         raise HTTPException(422, str(exc))
+
+
+class NewsSourceEnabledBody(BaseModel):
+    enabled: bool
+
+
+@router.post("/news-sources/{source_id}/enabled")
+async def set_news_source_enabled_endpoint(
+    source_id: str,
+    body: NewsSourceEnabledBody,
+    x_chat_session: str | None = Header(default=None),
+):
+    from . import fin_news_engine as news
+    _owner_only(x_chat_session)
+    res = await asyncio.to_thread(news.disable_news_source, source_id, enabled=body.enabled)
+    if not res.get("ok"):
+        raise HTTPException(404, res.get("error_code") or "news_source_not_found")
+    return res
+
+
+@router.post("/news-sources/{source_id}/dry-run")
+async def dry_run_news_source_endpoint(source_id: str, x_chat_session: str | None = Header(default=None)):
+    from . import fin_news_engine as news
+    _owner_only(x_chat_session)
+    return await asyncio.to_thread(news.dry_run_news_source, source_id)
+
+
+@router.post("/news-sources/{source_id}/repair")
+async def repair_news_source_endpoint(source_id: str, x_chat_session: str | None = Header(default=None)):
+    from . import fin_news_engine as news
+    credential = _owner_only(x_chat_session)
+    return await asyncio.to_thread(
+        news.repair_news_source_with_rea,
+        source_id,
+        require_confirm=False,
+        owner_hash=owner_hash(credential),
+    )
+
+
+@router.delete("/news-sources/{source_id}")
+async def delete_news_source_endpoint(source_id: str, x_chat_session: str | None = Header(default=None)):
+    from . import fin_news_engine as news
+    _owner_only(x_chat_session)
+    res = await asyncio.to_thread(news.delete_news_source, source_id)
+    if not res.get("ok"):
+        raise HTTPException(404, res.get("error_code") or "news_source_not_found")
+    return res
 
 
 

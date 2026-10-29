@@ -92,6 +92,11 @@ def config_path(custom_path: str | Path | None = None) -> Path:
     if env_path:
         return Path(env_path)
     repo_root = Path(__file__).resolve().parents[1]
+    if repo_root.parent.name == "releases" and repo_root.parent.parent.name == "data":
+        persistent_root = repo_root.parent.parent.parent
+        persistent_cfg = persistent_root / "config" / "news_sources.yaml"
+        if persistent_cfg.exists() or (persistent_root / "config").exists():
+            return persistent_cfg
     return repo_root / "config" / "news_sources.yaml"
 
 
@@ -1086,8 +1091,26 @@ def disable_news_source(
         "source_id": source_id,
         "enabled": bool(enabled),
         "status": "enabled" if enabled else "disabled",
+        "source": target,
         "data": [{"id": source_id, "enabled": bool(enabled)}],
     }
+
+
+def delete_news_source(
+    source_id: str,
+    *,
+    custom_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Delete a configured news source by id."""
+    cfg = load_config(custom_path)
+    sources = list(cfg.get("sources") or [])
+    remaining = [s for s in sources if s.get("id") != source_id]
+    if len(remaining) == len(sources):
+        return {"ok": False, "error_code": "news_source_not_found", "data": []}
+    cfg["sources"] = remaining
+    save_config(cfg, custom_path)
+    _RUNTIME_STATE.pop(source_id, None)
+    return {"ok": True, "source_id": source_id, "status": "deleted", "data": [{"id": source_id, "status": "deleted"}]}
 
 
 def set_news_source_alternate(
