@@ -2,14 +2,22 @@
 
 const KIND_LABELS = { task_brief: "任务简报", filing: "新申报", news: "新闻线索", price: "价格线", action: "待你确认" };
 const SCHEDULE_LABELS = { daily: "每天", weekdays: "工作日", hourly: "每小时" };
+const EVERY_LABELS = { hours: "小时", days: "天", weeks: "周" };
 
 export function inboxKindLabel(kind) { return KIND_LABELS[kind] ?? kind; }
 
-/** "工作日 08:00" / "每天 08:00" / "每小时第 15 分". */
+/** "工作日 08:00" / "每天 08:00" / "每小时第 15 分" / "每 7 天（从 08:00 起）". */
 export function scheduleLabel(task) {
   const time = String(task?.schedule_time ?? "");
   if (task?.schedule_kind === "hourly") return `每小时第 ${Number(time.slice(3, 5)) || 0} 分`;
+  if (task?.schedule_kind === "every") return `每 ${task.every_value ?? ""} ${EVERY_LABELS[task.every_unit] ?? ""}（从 ${time} 起）`;
   return `${SCHEDULE_LABELS[task?.schedule_kind] ?? ""} ${time}`.trim();
+}
+
+/** "只执行一次" / "共 4 次"; "" when the task has no run limit. */
+export function runsLabel(task) {
+  if (!task?.max_runs) return "";
+  return task.max_runs === 1 ? "只执行一次" : `共 ${task.max_runs} 次`;
 }
 
 /** Unread first, newest first within each; dismissed items are not shown. */

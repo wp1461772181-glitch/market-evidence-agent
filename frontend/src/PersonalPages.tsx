@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useOpenConversation } from "./AgentChatPanel";
 import { confirmInboxItem, confirmProfileItem, createProfileItem, deleteNewsSource, deleteProfileItem, dryRunNewsSource, getChatMode, getNewsSourcesConfig, listBots, listInbox, listProfileItems, listRecall, listTaskProposals, mintInboxCard, repairNewsSource, saveNewsPushSettings, setInboxStatus, setNewsSourceEnabled, updateProfileItem, upsertNewsSource, type Bot, type InboxItem, type NewsDryRunResult, type NewsSource, type NewsSourceInput, type ProfileBot, type ProfileItem, type RecallItem, type TaskProposal } from "./api";
-import { RoutineIcon } from "./BotPages";
+import { NewsIcon, RoutineIcon } from "./BotPages";
 import { TaskManager } from "./BotRoutines";
 import { useLocale } from "./i18n";
 export { SkillsPage } from "./SkillsPage";
@@ -10,8 +10,8 @@ import { layerLabel, manualItemDraft, originLabel, profileGroups, profileLayers,
 
 // Pages of the personal agent (the skills page lives in SkillsPage.tsx).  The 例行任务 page (#routines; #briefs, its
 // old 待你确认 address, still opens it) holds every bot's routines, the routine cards a bot proposed that wait for the
-// owner's press, and the writes unattended runs suggested; the memory page lists profile items and past conversations.
-// All through the owner-only /agent-chat API.
+// owner's press, and the writes unattended runs suggested; the 新闻源 page (#news) holds the news sources; the memory
+// page lists profile items and past conversations.  All through the owner-only /agent-chat API.
 
 type Go = (section: "agent" | "routines" | "skills" | "memory" | "admin" | "materials") => void;
 
@@ -20,7 +20,6 @@ export function RoutinesPage({ bots, onNavigate, onChanged }: { bots: Bot[]; onN
   const openConversation = useOpenConversation();
   const [proposals, setProposals] = useState<TaskProposal[] | null>(null);
   const [confirms, setConfirms] = useState<InboxItem[] | null>(null);
-  const [summaryMaxTokens, setSummaryMaxTokens] = useState<number>(256);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const personal = getChatMode() === "personal";
@@ -29,9 +28,6 @@ export function RoutinesPage({ bots, onNavigate, onChanged }: { bots: Bot[]; onN
     const fail = (e: unknown) => { if (!signal?.aborted) setError(e instanceof Error ? e.message : "任务暂时无法读取。"); };
     listTaskProposals(signal).then(setProposals).catch(fail);
     listInbox("confirm", signal).then(setConfirms).catch(fail);
-    getNewsSourcesConfig(signal).then(cfg => {
-      if (cfg?.push?.summary_max_tokens) setSummaryMaxTokens(cfg.push.summary_max_tokens);
-    }).catch(() => { /* optional */ });
   }, []);
   useEffect(() => {
     if (!personal) return;
@@ -50,10 +46,6 @@ export function RoutinesPage({ bots, onNavigate, onChanged }: { bots: Bot[]; onN
     await confirmInboxItem(item.id, action, item.action_token);
     load();
     onChanged?.();
-  });
-  const updateSummaryMaxTokens = (val: number) => act("push-tokens", async () => {
-    const res = await saveNewsPushSettings(val);
-    setSummaryMaxTokens(res.push.summary_max_tokens);
   });
   // The card is minted now, with its own ten-minute capability, in the conversation of the run.
   const mintCard = (item: InboxItem) => act(item.id, async () => {
@@ -95,7 +87,6 @@ export function RoutinesPage({ bots, onNavigate, onChanged }: { bots: Bot[]; onN
     <section className="personal-card memory-panel">
       <TaskManager bots={bots} onChanged={() => { load(); onChanged?.(); }} />
     </section>
-    <NewsSourcesPanel summaryMaxTokens={summaryMaxTokens} onUpdateSummaryTokens={updateSummaryMaxTokens} busyToken={busy === "push-tokens"} onChanged={() => { load(); onChanged?.(); }} />
     {waiting.length > 0 && <section className="personal-card memory-panel" aria-labelledby="routine-confirms-title">
       <h3 id="routine-confirms-title">{t("例行任务运行时想做的写操作")}</h3>
       <p className="fine-print">{t("定时任务在无人值守时只读不写。它想做的写操作会放在这里，不会自动执行；点「生成确认卡」后到对话里核对，点「同意」才执行。")}</p>
@@ -342,6 +333,49 @@ function NewsSourcesPanel({
       </div>
     </form>}
   </section>;
+}
+
+// The 新闻源 page (#news, its own entry under 例行任务): the sources the agent searches and checks, and how long a news
+// push's digest may be.  The panel itself is NewsSourcesPanel, unchanged.
+export function NewsSourcesPage() {
+  const { t } = useLocale();
+  const [summaryMaxTokens, setSummaryMaxTokens] = useState<number>(256);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const personal = getChatMode() === "personal";
+
+  useEffect(() => {
+    if (!personal) return;
+    const ctrl = new AbortController();
+    getNewsSourcesConfig(ctrl.signal).then(cfg => {
+      if (cfg?.push?.summary_max_tokens) setSummaryMaxTokens(cfg.push.summary_max_tokens);
+    }).catch(() => { /* optional */ });
+    return () => ctrl.abort();
+  }, [personal]);
+
+  async function updateSummaryMaxTokens(val: number) {
+    setBusy(true);
+    setError("");
+    try {
+      const res = await saveNewsPushSettings(val);
+      setSummaryMaxTokens(res.push.summary_max_tokens);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "操作失败，请重试。");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!personal) return <main className="personal-page" aria-labelledby="news-title">
+    <h1 id="news-title"><NewsIcon /> {t("新闻源")}</h1>
+    <section className="personal-card"><p>{t("登录个人聊天后才能查看和管理新闻源。")}</p></section>
+  </main>;
+
+  return <main className="personal-page" aria-labelledby="news-title">
+    <h1 id="news-title"><NewsIcon /> {t("新闻源")}</h1>
+    {error && <p role="alert">{error}</p>}
+    <NewsSourcesPanel summaryMaxTokens={summaryMaxTokens} onUpdateSummaryTokens={val => void updateSummaryMaxTokens(val)} busyToken={busy} />
+  </main>;
 }
 
 const KIND_LABELS: Record<ProfileItem["kind"], string> = { preference: "偏好", about_me: "关于我", instruction: "长期指令" };

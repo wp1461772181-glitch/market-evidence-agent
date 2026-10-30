@@ -2,13 +2,16 @@ import { useCallback, useEffect, useState } from "react";
 import { createAgentTask, deleteAgentTask, listAgentTasks, listSkills, listTaskRuns, updateAgentTask, type Bot, type Skill, type AgentTask, type AgentTaskInput, type TaskRun } from "./api";
 import { translatePhrase, useLocale } from "./i18n";
 import { usableSkills } from "./skill-items.mjs";
-import { formatPriceLines, parsePriceLines, parseSymbols, scheduleLabel } from "./inbox-items.mjs";
+import { formatPriceLines, parsePriceLines, parseSymbols, runsLabel, scheduleLabel } from "./inbox-items.mjs";
 
 // A bot's routines (personal agent, second edition): its scheduled tasks and its last 20 runs.  A brief task's
 // result is posted into the bot's line; whether it notifies the owner is written in the bot's or the task's instruction.
 // Without botId it is the 例行任务 page's list: every bot's routines, each with its bot, and the form picks the bot.
 
 const message = (error: unknown, fallback: string) => translatePhrase(error instanceof Error ? error.message : fallback);
+
+// How many runs the form asks for: no limit, only one, or a count the owner types.
+type RunCount = "unlimited" | "once" | "count";
 
 export function TaskManager({ botId, bots = [], onChanged }: { botId?: string; bots?: Bot[]; onChanged?: () => void }) {
   const { t } = useLocale();
@@ -17,12 +20,14 @@ export function TaskManager({ botId, bots = [], onChanged }: { botId?: string; b
   const [formOpen, setFormOpen] = useState(false), [editingTask, setEditingTask] = useState<AgentTask | null>(null), [formError, setFormError] = useState(""), [formBusy, setFormBusy] = useState(false);
   const [draftName, setDraftName] = useState(""), [draftKind, setDraftKind] = useState<AgentTask["kind"]>("brief");
   const [draftSchedule, setDraftSchedule] = useState<AgentTask["schedule_kind"]>("weekdays"), [draftTime, setDraftTime] = useState("08:00"), [draftTimezone, setDraftTimezone] = useState("Asia/Shanghai");
+  const [draftEveryValue, setDraftEveryValue] = useState(1), [draftEveryUnit, setDraftEveryUnit] = useState<"hours" | "days" | "weeks">("days");
+  const [draftCount, setDraftCount] = useState<RunCount>("unlimited"), [draftRuns, setDraftRuns] = useState(5);
   const [draftScope, setDraftScope] = useState<AgentTask["scope"]>("research_queue"), [draftSymbols, setDraftSymbols] = useState(""), [draftInstruction, setDraftInstruction] = useState("");
   const [draftFilings, setDraftFilings] = useState(true), [draftNews, setDraftNews] = useState(true), [draftPriceLines, setDraftPriceLines] = useState("");
   const [skills, setSkills] = useState<Skill[]>([]), [draftSkill, setDraftSkill] = useState("");
   const [draftBot, setDraftBot] = useState("");
   const botName = (id: string | null) => bots.find(b => b.id === id)?.name ?? t("已删除的 bot");
-  const [draftChannel, setDraftChannel] = useState<AgentTask["channel"]>("inbox"), [draftRunCap, setDraftRunCap] = useState(60000), [draftDailyCap, setDraftDailyCap] = useState(200000);
+  const [draftChannel, setDraftChannel] = useState<AgentTask["channel"]>("inbox");
 
   const loadTasks = useCallback((signal?: AbortSignal) => {
     listAgentTasks(signal, botId).then(setTasks).catch(e => { if (!signal?.aborted) setError(message(e, "任务暂时无法读取。")); });
@@ -38,9 +43,11 @@ export function TaskManager({ botId, bots = [], onChanged }: { botId?: string; b
     setFormError("");
     setEditingTask(task ?? null);
     setDraftName(task?.name ?? "研究队列简报"); setDraftKind(task?.kind ?? "brief"); setDraftSchedule(task?.schedule_kind ?? "weekdays"); setDraftTime(task?.schedule_time ?? "08:00");
-    setDraftTimezone(task?.timezone ?? "Asia/Shanghai"); setDraftScope(task?.scope ?? "research_queue"); setDraftSymbols(task?.symbols.join(", ") ?? ""); setDraftInstruction(task?.instruction ?? "");
+    setDraftTimezone(task?.timezone ?? "Asia/Shanghai"); setDraftEveryValue(task?.every_value ?? 1); setDraftEveryUnit(task?.every_unit ?? "days");
+    setDraftCount(task?.max_runs ? (task.max_runs === 1 ? "once" : "count") : "unlimited"); setDraftRuns(task?.max_runs ?? 5);
+    setDraftScope(task?.scope ?? "research_queue"); setDraftSymbols(task?.symbols.join(", ") ?? ""); setDraftInstruction(task?.instruction ?? "");
     setDraftFilings(task?.config.filings ?? true); setDraftNews(task?.config.news ?? true); setDraftPriceLines(formatPriceLines(task?.config.price_lines ?? []));
-    setDraftChannel(task?.channel ?? "inbox"); setDraftRunCap(task?.run_token_cap ?? 60000); setDraftDailyCap(task?.daily_token_cap ?? 200000);
+    setDraftChannel(task?.channel ?? "inbox");
     setDraftSkill(task?.skill_id ?? "");
     setDraftBot(task?.bot_id ?? botId ?? bots.find(b => b.is_default)?.id ?? bots[0]?.id ?? "");
     setFormOpen(true);
@@ -52,11 +59,15 @@ export function TaskManager({ botId, bots = [], onChanged }: { botId?: string; b
     const symbols = draftScope === "symbols" ? parseSymbols(draftSymbols) : [];
     if (draftScope === "symbols" && symbols.length === 0) { setFormError(t("股票代码无效，或指定公司时没有填代码。")); return; }
     if (draftKind === "alerts" && draftPriceLines.trim() && parsePriceLines(draftPriceLines) === null) { setFormError(t("价格线格式：代码>价格 或 代码<价格，用逗号分隔。")); return; }
+    if (draftSchedule === "every" && (!Number.isInteger(draftEveryValue) || draftEveryValue < 1)) { setFormError(t("间隔要填整数，至少为 1。")); return; }
+    if (draftCount === "count" && (!Number.isInteger(draftRuns) || draftRuns < 1)) { setFormError(t("执行次数要填整数，至少为 1。")); return; }
     setFormBusy(true); setFormError("");
     try {
       const input: AgentTaskInput = {
         name: draftName.trim(), kind: draftKind, schedule_kind: draftSchedule, schedule_time: draftTime, timezone: draftTimezone, scope: draftScope, symbols,
-        channel: draftKind === "alerts" ? draftChannel : "inbox", run_token_cap: draftRunCap, daily_token_cap: draftDailyCap, bot_id: botId ?? draftBot,
+        every_value: draftSchedule === "every" ? draftEveryValue : null, every_unit: draftSchedule === "every" ? draftEveryUnit : null,
+        max_runs: draftCount === "once" ? 1 : draftCount === "count" ? draftRuns : 0,
+        channel: draftKind === "alerts" ? draftChannel : "inbox", bot_id: botId ?? draftBot,
         instruction: draftKind === "brief" ? draftInstruction : null, skill_id: draftKind === "brief" ? draftSkill : "",
         config: draftKind === "alerts" ? { filings: draftFilings, news: draftNews, price_lines: parsePriceLines(draftPriceLines) ?? [] } : {},
       };
@@ -81,8 +92,8 @@ export function TaskManager({ botId, bots = [], onChanged }: { botId?: string; b
     {error && <p role="alert">{error}</p>}
     {tasks === null && !error ? <p>{t("正在加载…")}</p> : (tasks ?? []).length === 0 ? <p>{t("还没有任务。")}</p> :
       <ul className="memory-list">{(tasks ?? []).map(task => <li key={task.id}>
-        <div className="memory-line">{!botId && <span className="personal-badge">{botName(task.bot_id)}</span>}<strong>{task.name}</strong>{!task.enabled && <span className="personal-badge">{t("已暂停")}</span>}<span className="personal-badge">{t(task.kind === "brief" ? "简报" : "提醒")}</span><span className="fine-print">{scheduleLabel(task)} · {task.timezone}</span></div>
-        <p className="fine-print">{task.last_status_label ?? t("尚未运行")}{task.enabled && task.next_run_at ? ` · ${t("下次：")}${new Date(task.next_run_at).toLocaleString()}` : ""}<span className="num"> · {t("今日用量：")}{`${task.tokens_today} / ${task.daily_token_cap} tokens`}</span></p>
+        <div className="memory-line">{!botId && <span className="personal-badge">{botName(task.bot_id)}</span>}<strong>{task.name}</strong>{!task.enabled && <span className="personal-badge">{t("已暂停")}</span>}{task.finished && <span className="personal-badge">{t("已完成")}</span>}<span className="personal-badge">{t(task.kind === "brief" ? "简报" : "提醒")}</span><span className="fine-print">{[scheduleLabel(task), runsLabel(task)].filter(Boolean).join(" · ")} · {task.timezone}</span></div>
+        <p className="fine-print">{task.last_status_label ?? t("尚未运行")}{task.enabled && task.next_run_at ? ` · ${t("下次：")}${new Date(task.next_run_at).toLocaleString()}` : ""}<span className="num"> · {t("已执行")} {task.runs_done} {t("次")}</span></p>
         {task.instruction && <blockquote className="memory-quote">“{task.instruction}”</blockquote>}
         <div className="memory-actions">
           <button type="button" className="secondary-action" disabled={busy === task.id} onClick={() => void toggleTask(task)}>{t(task.enabled ? "暂停" : "启用")}</button>
@@ -104,9 +115,26 @@ export function TaskManager({ botId, bots = [], onChanged }: { botId?: string; b
         <option value="daily">{t("每天")}</option>
         <option value="weekdays">{t("工作日")}</option>
         <option value="hourly">{t("每小时")}</option>
+        <option value="every">{t("每隔一段时间")}</option>
       </select></label>
+      {draftSchedule === "every" && <div className="task-form-row">
+        <label>{t("间隔")}<input type="number" min={1} value={draftEveryValue} onChange={e => setDraftEveryValue(Number(e.target.value))} /></label>
+        <label>{t("单位")}<select value={draftEveryUnit} onChange={e => setDraftEveryUnit(e.target.value as "hours" | "days" | "weeks")}>
+          <option value="hours">{t("小时")}</option>
+          <option value="days">{t("天")}</option>
+          <option value="weeks">{t("周")}</option>
+        </select></label>
+      </div>}
       <label>{t("时间")}<input type="time" value={draftTime} onChange={e => setDraftTime(e.target.value)} />
-        {draftSchedule === "hourly" && <span className="fine-print">{t("每小时按这里的分钟运行。")}</span>}</label>
+        {draftSchedule === "hourly" && <span className="fine-print">{t("每小时按这里的分钟运行。")}</span>}
+        {draftSchedule === "every" && <span className="fine-print">{t("从这个时间开始，之后按间隔重复。")}</span>}</label>
+      <label>{t("执行次数")}<select value={draftCount} onChange={e => setDraftCount(e.target.value as RunCount)}>
+        <option value="unlimited">{t("不限次数")}</option>
+        <option value="once">{t("只执行一次")}</option>
+        <option value="count">{t("执行指定次数后停止")}</option>
+      </select></label>
+      {draftCount === "count" && <label>{t("次数")}<input type="number" min={1} max={1000} value={draftRuns} onChange={e => setDraftRuns(Number(e.target.value))} />
+        <span className="fine-print">{t("已执行的次数会累计计入。")}</span></label>}
       <label>{t("时区")}<input type="text" value={draftTimezone} onChange={e => setDraftTimezone(e.target.value)} placeholder="Asia/Shanghai" /></label>
       <label>{t("范围")}<select value={draftScope} onChange={e => setDraftScope(e.target.value as AgentTask["scope"])}>
         <option value="research_queue">{t("研究队列")}</option>
@@ -127,8 +155,6 @@ export function TaskManager({ botId, bots = [], onChanged }: { botId?: string; b
         <label>{t("价格线")}<input type="text" value={draftPriceLines} onChange={e => setDraftPriceLines(e.target.value)} placeholder="NVDA&gt;150, AAPL&lt;180" /></label>
         <label><input type="checkbox" checked={draftChannel === "telegram"} onChange={e => setDraftChannel(e.target.checked ? "telegram" : "inbox")} /> {t("也发 Telegram")}</label>
       </>}
-      <label>{t("单次 token 上限")}<input type="number" value={draftRunCap} onChange={e => setDraftRunCap(Number(e.target.value))} /></label>
-      <label>{t("每日 token 上限")}<input type="number" value={draftDailyCap} onChange={e => setDraftDailyCap(Number(e.target.value))} /></label>
       <p className="fine-print">{t("要不要通知你，写在 bot 的说明或任务说明里，比如「只有重要程度为高才发 Telegram」。没新东西时不会往对话里发消息。")}</p>
       {formError && <p role="alert">{formError}</p>}
       <div className="memory-actions">

@@ -133,11 +133,12 @@ export type InboxItem = { id:string; section:"brief"|"confirm"; kind:"task_brief
   actions?:Array<{ id:"confirm"|"skip"|"later"; label:string; kind:string }>;
   task_id:string|null; bot_id:string|null; posted:boolean; conversation_id:string|null; status:"unread"|"read"|"done"|"dismissed"; created_at:string|null };
 export type PriceLine = { symbol:string; above?:number; below?:number };
-export type AgentTask = { id:string; name:string; kind:"brief"|"alerts"; schedule_kind:"daily"|"weekdays"|"hourly"; schedule_time:string; timezone:string;
+export type AgentTask = { id:string; name:string; kind:"brief"|"alerts"; schedule_kind:"daily"|"weekdays"|"hourly"|"every"; schedule_time:string;
+  every_value:number|null; every_unit:"hours"|"days"|"weeks"|null; max_runs:number|null; runs_done:number; finished:boolean; timezone:string;
   bot_id:string|null; skill_id:string|null; instruction:string|null; scope:"research_queue"|"symbols"; symbols:string[]; channel:"inbox"|"telegram";
-  config:{ filings?:boolean; news?:boolean; price_lines?:PriceLine[] }; enabled:boolean; run_token_cap:number; daily_token_cap:number; tokens_today:number;
+  config:{ filings?:boolean; news?:boolean; price_lines?:PriceLine[] }; enabled:boolean;
   last_run_at:string|null; next_run_at:string|null; last_status:string|null; last_status_label:string|null; last_conversation_id:string|null };
-export type AgentTaskInput = Partial<Omit<AgentTask,"skill_id"|"id"|"tokens_today"|"last_run_at"|"next_run_at"|"last_status"|"last_status_label"|"last_conversation_id">> & {skill_id?:string|null};
+export type AgentTaskInput = Partial<Omit<AgentTask,"skill_id"|"id"|"runs_done"|"finished"|"last_run_at"|"next_run_at"|"last_status"|"last_status_label"|"last_conversation_id">> & {skill_id?:string|null};
 export type BackgroundModel = { configured:boolean; has_key:boolean; provider?:string; model?:string; base_url?:string|null; revoked_at?:string|null; updated_at?:string|null };
 async function ownerJson<T>(path:string,init:{method?:string;body?:unknown;signal?:AbortSignal},failure:string):Promise<T>{
   const response=await fetch(agentPath(path),{method:init.method??"GET",signal:init.signal,cache:"no-store",headers:ownerHeaders(init.body!==undefined),
@@ -149,7 +150,7 @@ async function ownerJson<T>(path:string,init:{method?:string;body?:unknown;signa
   return await response.json() as T;
 }
 const TASK_ERRORS:Record<string,string>={invalid_schedule:"时间格式应为 HH:MM。",invalid_timezone:"时区无效。",invalid_instruction:"请写任务说明（最多 2000 字）。",
-  invalid_symbols:"股票代码无效，或指定公司时没有填代码。",invalid_price_lines:"价格线无效：填股票代码和上穿或下穿的价格。",invalid_token_caps:"token 上限无效：单次 5000 到 150000，每日不少于单次。",
+  invalid_symbols:"股票代码无效，或指定公司时没有填代码。",invalid_price_lines:"价格线无效：填股票代码和上穿或下穿的价格。",invalid_every:"间隔无效：小时 1 到 720，天 1 到 365，周 1 到 52。",invalid_max_runs:"执行次数无效：填 1 到 1000 的整数，或不限。",
   too_many_tasks:"任务已达上限（20 个）。",invalid_name:"请填任务名称（最多 80 字）。",key_required:"请填写 API key。",invalid_key:"API key 格式不对。",
   invalid_endpoint:"接口地址无效：须为 HTTPS，自定义服务必须填写。",credential_key_missing:"服务器没有配置加密密钥，无法保存 key。",invalid_agent_chat_request:"填写的内容无效。",token_in_use:"这个 token 已经用在别的 bot 上了：一个 Telegram bot 只能接一个 bot。",bind_code_expired:"绑定码已过期，请重新生成。",
   invalid_bot_token:"Bot Token 格式无效：应从 BotFather 获取。",no_bot_token:"请先保存 Bot Token。",

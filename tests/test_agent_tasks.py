@@ -1,12 +1,13 @@
 """Scheduled tasks, inbox, background key and alerts (personal agent plan §2.3).
 
-* schedule math: daily / weekdays / hourly in the task's time zone; a Mac that slept through slots runs
-  the task once on waking (catch-up once), then waits for the next slot after now;
+* schedule math: daily / weekdays / hourly, or every N hours, days or weeks, in the task's time zone; a Mac
+  that slept through slots runs the task once on waking (catch-up once), then waits for the next slot after
+  now; a run cap (max_runs) counts only the runs that reached the model;
 * an unattended run never writes: the classifier's grants are dropped, a direct write call is refused, and
   a write the model suggests lands in the inbox's 待你确认 without a capability; the card is minted only when
   the owner asks for it, and the write runs only when that card is pressed (once);
 * a revoked background key leaves the task 未运行：缺少模型; the key is never returned;
-* token caps per run and per day; a failed run is retried only when it queued no write suggestion;
+* a failed run is retried only when it queued no write suggestion;
 * alerts (filings, news leads, price lines) are 简报 entries with a numbered source, never duplicated.
 """
 import asyncio
@@ -20,6 +21,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
+from sqlalchemy import inspect, text as sql
 
 from app import agent_task_runner as runner
 from app import agent_tasks as tasks
@@ -78,6 +80,14 @@ def _brief(**fields):
     return values
 
 
+def _alerts(**fields):
+    """An alerts task on NVDA that calls no model; its runs are what the run cap counts here."""
+    values = {"name": "价格线", "kind": "alerts", "schedule_kind": "daily", "schedule_time": "08:00",
+              "timezone": "Asia/Shanghai", "scope": "symbols", "symbols": ["NVDA"], "config": {"filings": False, "news": False}}
+    values.update(fields)
+    return values
+
+
 def _set(task_id, **values):
     with SessionLocal() as db:
         task = db.get(AgentTask, uuid.UUID(task_id))
@@ -127,6 +137,92 @@ def test_invalid_schedules_are_refused():
                               ("daily", "08:00", "Mars/Olympus")):
         with pytest.raises(tasks.TaskError):
             tasks.next_run(kind, clock, zone, datetime(2026, 10, 30, tzinfo=UTC))
+
+
+def _interval(**fields):
+    """An unsaved task with an interval: the schedule math reads only these fields."""
+    values = {"enabled": True, "schedule_kind": "every", "schedule_time": "09:00", "timezone": "Asia/Shanghai",
+              "every_value": 7, "every_unit": "days"}
+    values.update(fields)
+    return AgentTask(**values)
+
+
+def test_an_interval_starts_at_its_first_time_of_day_and_keeps_its_own_slots():
+    # Friday 2026-10-30 at 10:00: today's 09:00 has passed, so the first run is Saturday 09:00.
+    assert tasks.next_run("every", "09:00", "Asia/Shanghai", at(2026, 10, 30, 10, 0)) == at(2026, 10, 31, 9, 0)
+    weekly = _interval(next_run_at=at(2026, 10, 31, 9, 0))
+    # A run that starts two minutes late does not move the slots after it.
+    tasks.advance(weekly, at(2026, 11, 7, 9, 2))
+    assert weekly.next_run_at == at(2026, 11, 14, 9, 0)
+
+
+def test_an_interval_in_hours_or_weeks_keeps_its_clock_time_across_daylight_saving():
+    six_hours = _interval(schedule_time="08:00", every_value=6, every_unit="hours", next_run_at=at(2026, 10, 30, 8, 0))
+    tasks.advance(six_hours, at(2026, 10, 30, 8, 0))
+    assert six_hours.next_run_at == at(2026, 10, 30, 14, 0)
+    tasks.advance(six_hours, at(2026, 10, 30, 14, 1))
+    assert six_hours.next_run_at == at(2026, 10, 30, 20, 0)
+    # Every two weeks at 08:00 in New York: the clock stays 08:00 after the 1 November change, so the UTC hour moves.
+    fortnight = _interval(schedule_time="08:00", timezone="America/New_York", every_value=2, every_unit="weeks",
+                          next_run_at=datetime(2026, 10, 25, 12, 0, tzinfo=UTC))
+    tasks.advance(fortnight, datetime(2026, 10, 26, 0, 0, tzinfo=UTC))
+    assert fortnight.next_run_at == datetime(2026, 11, 8, 13, 0, tzinfo=UTC)
+
+
+def test_a_slept_through_interval_runs_once_and_keeps_its_cadence():
+    weekly = _interval(next_run_at=at(2026, 10, 31, 9, 0))
+    woke = at(2026, 11, 20, 12, 0)
+    assert tasks.missed_slots(weekly, woke) == 3  # 10-31, 11-07 and 11-14 passed
+    tasks.advance(weekly, woke)
+    assert weekly.next_run_at == at(2026, 11, 21, 9, 0)
+
+
+def test_interval_and_run_cap_fields_are_checked(owner):
+    base = _brief(schedule_kind="every", every_value=7, every_unit="days")
+    for fields in ({"every_value": 0}, {"every_value": 1.5}, {"every_value": None}, {"every_unit": "months"}):
+        with pytest.raises(tasks.TaskError, match="invalid_every"):
+            tasks.create_task(OWNER_HASH, {**base, **fields})
+    for runs in (-1, 1001, "3"):
+        with pytest.raises(tasks.TaskError, match="invalid_max_runs"):
+            tasks.create_task(OWNER_HASH, {**_brief(), "max_runs": runs})
+    # 0 means no limit; an interval is dropped from a calendar schedule.
+    unlimited = tasks.create_task(OWNER_HASH, {**base, "max_runs": 0})
+    assert unlimited["max_runs"] is None and unlimited["every_value"] == 7
+    daily = tasks.create_task(OWNER_HASH, {**_brief(schedule_kind="daily"), "every_value": 5, "every_unit": "days"})
+    assert daily["every_value"] is None and daily["every_unit"] is None
+
+
+def test_schedule_text_says_what_the_card_says():
+    assert tasks.schedule_text({"schedule_kind": "daily", "schedule_time": "08:00"}) == "每天 08:00"
+    assert tasks.schedule_text({"schedule_kind": "hourly", "schedule_time": "00:15", "max_runs": 3}) == "每小时第 15 分，共 3 次"
+    weekly = {"schedule_kind": "every", "schedule_time": "08:00", "every_value": 7, "every_unit": "days", "max_runs": None}
+    assert tasks.schedule_text(weekly) == "每 7 天（从 08:00 起）"
+    assert tasks.schedule_text({**weekly, "max_runs": 1}) == "每 7 天（从 08:00 起），只执行一次"
+
+
+def test_an_older_tasks_table_gains_the_frequency_columns_and_its_tasks_keep_running(owner):
+    # Before the frequency columns existed, and when the token caps were NOT NULL.
+    legacy = ("run_token_cap", "daily_token_cap", "usage_tokens")
+    with engine.begin() as connection:
+        for column in ("every_value", "every_unit", "max_runs", "runs_done", *legacy):
+            connection.execute(sql(f"ALTER TABLE agent_tasks DROP COLUMN IF EXISTS {column}"))
+        for column in legacy:
+            connection.execute(sql(f"ALTER TABLE agent_tasks ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0"))
+            connection.execute(sql(f"ALTER TABLE agent_tasks ALTER COLUMN {column} DROP DEFAULT"))
+    try:
+        tasks.ensure_schedule_columns()
+        tasks.ensure_schedule_columns()  # idempotent
+        columns = {column["name"]: column for column in inspect(engine).get_columns("agent_tasks")}
+        assert {"every_value", "every_unit", "max_runs", "runs_done"} <= set(columns)
+        assert columns["runs_done"]["nullable"] is False and all(columns[name]["nullable"] for name in legacy)
+        # A task made now needs no cap; a daily task has no run limit and keeps its slot.
+        created = tasks.create_task(OWNER_HASH, _brief(schedule_kind="daily"), now=at(2026, 10, 30, 7, 0))
+        assert created["max_runs"] is None and created["finished"] is False and created["runs_done"] == 0
+        assert created["next_run_at"] == at(2026, 10, 30, 8, 0).isoformat()
+    finally:
+        with engine.begin() as connection:
+            for name in legacy:
+                connection.execute(sql(f"ALTER TABLE agent_tasks DROP COLUMN IF EXISTS {name}"))
 
 
 def test_slots_missed_in_sleep_run_once_then_wait_for_the_next_slot(owner):
@@ -364,13 +460,13 @@ def test_task_and_inbox_api_are_owner_only(owner, client):
     assert client.delete(f"/agent-chat/tasks/{task_id}", headers=headers).json() == {"deleted": True}
 
 
-# --- caps and retries -----------------------------------------------------------------------------
+# --- run caps and retries -------------------------------------------------------------------------
 
 def _stub_turn(monkeypatch, results):
     calls = []
 
-    async def fake(credential, question, model, *, token_budget, title, **_):
-        calls.append({"budget": token_budget, "question": question, "key": model["api_key"]})
+    async def fake(credential, question, model, *, title, **kwargs):
+        calls.append({"budget": kwargs.get("token_budget"), "question": question, "key": model["api_key"]})
         return {"conversation_id": str(uuid.uuid4()), "actions": [], "citations": [], "audit": {}, "answer": "",
                 "status": "complete", "reason": None, **results[len(calls) - 1]}
     monkeypatch.setattr(runner, "run_unattended_turn", fake)
@@ -388,29 +484,46 @@ def test_brief_with_citations_goes_to_the_inbox_with_numbered_sources(owner, mon
                                       "audit": {"token_usage": 1234}}])
     task = tasks.create_task(OWNER_HASH, _brief(), now=at(2026, 10, 30, 7, 0))
     assert run(runner.run_due(now=at(2026, 10, 30, 8, 0), credential=OWNER)) == {task["id"]: "ok"}
-    assert "研究队列：NVDA、AAPL" in calls[0]["question"] and calls[0]["budget"] == tasks.DEFAULT_RUN_TOKENS
+    assert "研究队列：NVDA、AAPL" in calls[0]["question"] and calls[0]["budget"] is None  # no per-task token cap
     brief = tasks.list_inbox(OWNER_HASH, section="brief")[0]
     assert [s["ordinal"] for s in brief["sources"]] == [1, 2] and "[1]" in brief["body"]
     assert brief["conversation_id"] and brief["kind"] == "task_brief"
-    assert tasks.serialize_task(_task(task["id"]), at(2026, 10, 30, 9, 0))["tokens_today"] == 1234
+    assert tasks.list_runs(OWNER_HASH)[0]["tokens"] == 1234
+    assert not {"run_token_cap", "daily_token_cap", "tokens_today"} & set(tasks.serialize_task(_task(task["id"])))
 
 
-def test_daily_cap_stops_a_run_and_the_run_cap_shrinks_to_what_is_left_today(owner, monkeypatch):
-    _with_key()
-    calls = _stub_turn(monkeypatch, [{"audit": {"token_usage": 10}}])
-    task = tasks.create_task(OWNER_HASH, _brief(run_token_cap=50_000, daily_token_cap=100_000), now=at(2026, 10, 30, 7, 0))
-    _set(task["id"], usage_day=date(2026, 10, 30), usage_tokens=90_000)
-    run(runner.run_due(now=at(2026, 10, 30, 8, 0), credential=OWNER))
-    assert calls[0]["budget"] == 10_000
-    _set(task["id"], usage_day=date(2026, 11, 2), usage_tokens=100_000, next_run_at=at(2026, 11, 2, 8, 0))
-    assert run(runner.run_due(now=at(2026, 11, 2, 8, 0), credential=OWNER)) == {task["id"]: "skipped_daily_cap"}
-    assert len(calls) == 1
-    # A new local day starts from zero.
-    _set(task["id"], next_run_at=at(2026, 11, 3, 8, 0))
-    calls_before = len(calls)
-    _stub_turn(monkeypatch, [{"audit": {"token_usage": 5}}])
-    assert run(runner.run_due(now=at(2026, 11, 3, 8, 0), credential=OWNER))[task["id"]] == "no_evidence"
-    assert calls_before == 1
+def test_a_run_cap_ends_the_task_after_its_last_run(owner):
+    # An alerts task runs without a model; each run that happens uses up one of its runs.
+    task = tasks.create_task(OWNER_HASH, _alerts(max_runs=2), now=at(2026, 10, 30, 7, 0))
+    assert run(runner.run_due(now=at(2026, 10, 30, 8, 0), credential=OWNER)) == {task["id"]: "quiet"}
+    once = _task(task["id"])
+    assert once.runs_done == 1 and once.next_run_at == at(2026, 10, 31, 8, 0)
+    assert run(runner.run_due(now=at(2026, 10, 31, 8, 0), credential=OWNER)) == {task["id"]: "quiet"}
+    done = _task(task["id"])
+    assert done.runs_done == 2 and done.next_run_at is None and tasks.serialize_task(done)["finished"] is True
+    assert run(runner.run_due(now=at(2026, 11, 1, 8, 0), credential=OWNER)) == {}
+    # Raising the cap resumes the task at the next slot after the change.
+    resumed = tasks.update_task(OWNER_HASH, task["id"], {"max_runs": 3}, now=at(2026, 11, 1, 9, 0))
+    assert resumed["finished"] is False and resumed["next_run_at"] == at(2026, 11, 2, 8, 0).isoformat()
+    assert run(runner.run_due(now=at(2026, 11, 2, 8, 0), credential=OWNER)) == {task["id"]: "quiet"}
+
+
+def test_a_skipped_run_does_not_use_up_a_run(owner):
+    # No model is saved, so the run is skipped: it did not reach the model and the task keeps its one run.
+    task = tasks.create_task(OWNER_HASH, _brief(schedule_kind="daily", max_runs=1), now=at(2026, 10, 30, 7, 0))
+    assert run(runner.run_due(now=at(2026, 10, 30, 8, 0), credential=OWNER)) == {task["id"]: "skipped_no_model"}
+    row = _task(task["id"])
+    assert row.runs_done == 0 and row.next_run_at == at(2026, 10, 31, 8, 0)
+
+
+def test_a_finished_alerts_task_stops_alerting_between_its_runs(owner, monkeypatch):
+    finished = tasks.create_task(OWNER_HASH, _alerts(max_runs=1), now=at(2026, 10, 30, 7, 0))
+    assert run(runner.run_due(now=at(2026, 10, 30, 8, 0), credential=OWNER)) == {finished["id"]: "quiet"}
+    unlimited = tasks.create_task(OWNER_HASH, _alerts(name="价格线二"), now=at(2026, 10, 30, 7, 0))
+    checked = []
+    monkeypatch.setattr(runner, "run_alerts", lambda task_id, **_: checked.append(task_id) or {})
+    runner.run_alert_hooks("filings", now=at(2026, 10, 30, 9, 0))
+    assert checked == [uuid.UUID(unlimited["id"])]
 
 
 def test_a_failed_run_is_retried_once_but_never_after_it_queued_a_write(owner, monkeypatch):

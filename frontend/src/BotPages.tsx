@@ -88,7 +88,16 @@ export function RoutineIcon() {
   </svg>;
 }
 
-export function BotRailList({ bots, error, activeBotId, routinesActive, onRoutines, onOpen, onNew }: { bots: Bot[]; error: string; activeBotId: string | null; routinesActive: boolean; onRoutines: () => void; onOpen: (bot: Bot) => void; onNew: () => void }) {
+/** 新闻源: a newspaper, drawn as an SVG for the same reason as the routine icon. */
+export function NewsIcon() {
+  return <svg className="news-icon" viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" strokeWidth="1.8"
+    strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+    <path d="M4 5h13v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5Z" /><path d="M17 9h3v8a2 2 0 0 1-2 2h-1" />
+    <path d="M7.5 9h6M7.5 12.5h6M7.5 16h4" />
+  </svg>;
+}
+
+export function BotRailList({ bots, error, activeBotId, routinesActive, onRoutines, newsActive, onNews, onOpen, onNew }: { bots: Bot[]; error: string; activeBotId: string | null; routinesActive: boolean; onRoutines: () => void; newsActive: boolean; onNews: () => void; onOpen: (bot: Bot) => void; onNew: () => void }) {
   const { t } = useLocale();
   const { top, groups } = botSections(bots);
   const pending = bots.reduce((sum, b) => sum + (b.pending || 0), 0);
@@ -104,6 +113,9 @@ export function BotRailList({ bots, error, activeBotId, routinesActive, onRoutin
     <button type="button" className={`bot-row bot-confirm${routinesActive ? " is-active" : ""}`} aria-current={routinesActive ? "page" : undefined} onClick={onRoutines}>
       <span className="bot-avatar" aria-hidden="true"><RoutineIcon /></span><span className="bot-row-text"><strong>{t("例行任务")}</strong></span>
       {pending > 0 && <span className="bot-pending-badge" aria-label={`${pending} ${t("条待确认")}`}>{pending}</span>}
+    </button>
+    <button type="button" className={`bot-row bot-confirm${newsActive ? " is-active" : ""}`} aria-current={newsActive ? "page" : undefined} onClick={onNews}>
+      <span className="bot-avatar" aria-hidden="true"><NewsIcon /></span><span className="bot-row-text"><strong>{t("新闻源")}</strong></span>
     </button>
     <div className="bot-rail-head"><span>{t("Bot")}</span><button type="button" className="bot-new" onClick={onNew} aria-label={t("新建 bot")} title={t("新建 bot")}>＋</button></div>
     {error && <p className="bot-rail-error" role="alert">{error}</p>}

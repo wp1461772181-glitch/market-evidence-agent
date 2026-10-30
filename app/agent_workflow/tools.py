@@ -225,7 +225,7 @@ async def _dispatch(name,args,context,is_owner,emit):
         rows=await asyncio.to_thread(tasks.list_tasks,context.owner_hash,None if every else bot)
         names={b['id']:b['name'] for b in await asyncio.to_thread(bots.list_bots,context.owner_hash)}
         return result([{'id':t['id'],'name':t['name'],'bot':names.get(t['bot_id']) or '','kind':t['kind'],
-                        'schedule_kind':t['schedule_kind'],'schedule_time':t['schedule_time'],'enabled':t['enabled'],
+                        'schedule_kind':t['schedule_kind'],'schedule_time':t['schedule_time'],'schedule':tasks.schedule_text(t),'enabled':t['enabled'],
                         'instruction':(t['instruction'] or '')[:300],'symbols':t['symbols'],'next_run_at':t['next_run_at'],
                         'last_status':t['last_status_label']} for t in rows],'routines')
     if name in {'update_routine','delete_routine'}:

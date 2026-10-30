@@ -2,8 +2,9 @@
 
 Three things live here, all owner-only:
 
-* **Tasks** (``agent_tasks``): when a task is due and what comes next.  A Mac that slept through several
-  slots runs the task once when it wakes, then waits for the next slot after "now" (catch-up once).
+* **Tasks** (``agent_tasks``): when a task is due and what comes next: daily, weekdays, hourly, or every N
+  hours, days or weeks, and at most N runs.  A Mac that slept through several slots runs the task once when
+  it wakes, then waits for the next slot after "now" (catch-up once).
 * **Inbox** (``agent_inbox_items``): 简报 (a task's answer or an alert, each with numbered sources) and
   待你确认 (a write an unattended run suggested).  A suggestion holds the validated operation and no
   capability; ``mint_card`` turns it into an ordinary confirmation card when the owner is there to press it.
@@ -15,17 +16,17 @@ line as a turn of their own (``post_to_line``), so the owner follows up right be
 stays as the post's unread mark.  A post waits while the owner's own turn in that line is unfinished, so
 it never splits it.  Each run is logged (``agent_task_runs``) for the bot page.
 
-The runner itself (an unattended turn, alerts, token caps) is ``agent_task_runner``.
+The runner itself (an unattended turn, alerts, the run cap) is ``agent_task_runner``.
 """
 from __future__ import annotations
 
 import asyncio
 import re
 import uuid
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, datetime, time, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import func, select, text as sql
+from sqlalchemy import func, inspect, select, text as sql
 from sqlalchemy.dialects.postgresql import insert
 
 from .agent_chat_models import (AgentBackgroundModel, AgentBot, AgentConversation, AgentInboxItem, AgentMessage,
@@ -35,14 +36,12 @@ from .database import SessionLocal
 from .secret_box import CredentialEncryptionError, decrypt_secret, encrypt_secret
 
 KINDS = ("brief", "alerts")
-SCHEDULES = ("daily", "weekdays", "hourly")
+SCHEDULES = ("daily", "weekdays", "hourly", "every")
+EVERY_UNITS = {"hours": (1, 720), "days": (1, 365), "weeks": (1, 52)}  # an interval's (smallest, largest)
+MAX_RUNS = 1000
 SCOPES = ("research_queue", "symbols")
 CHANNELS = ("inbox", "telegram")
 DEFAULT_TIMEZONE = "Asia/Shanghai"
-DEFAULT_RUN_TOKENS = 60_000
-DEFAULT_DAILY_TOKENS = 200_000
-RUN_TOKENS_RANGE = (5_000, 150_000)
-DAILY_TOKENS_MAX = 2_000_000
 MAX_TASKS = 20
 INSTRUCTION_MAX_CHARS = 2000
 MAX_SYMBOLS = 30
@@ -56,7 +55,6 @@ STATUS_LABELS = {
     "no_evidence": "已运行：没有取得带来源的证据",
     "needs_input": "已运行：需要你补充信息",
     "skipped_no_model": "未运行：缺少模型",
-    "skipped_daily_cap": "未运行：已达每日 token 上限",
     "skipped_no_owner": "未运行：没有所有者登录配置",
     "skipped_no_scope": "未运行：范围里没有股票",
     "skipped_no_bot": "未运行：bot 已不存在",
@@ -84,7 +82,8 @@ def _zone(name: str) -> ZoneInfo:
 
 def next_run(schedule_kind: str, schedule_time: str, timezone: str, after: datetime) -> datetime:
     """The first slot strictly after ``after`` (UTC).  daily/weekdays: HH:MM local time (weekdays skips
-    Saturday and Sunday); hourly: minute MM of every hour."""
+    Saturday and Sunday); hourly: minute MM of every hour; every: its first HH:MM after ``after`` (the steps
+    after that come from ``_following``)."""
     match = _TIME.fullmatch(schedule_time or "")
     if not match or schedule_kind not in SCHEDULES:
         raise TaskError("invalid_schedule")
@@ -114,6 +113,29 @@ def is_due(task: AgentTask, now: datetime) -> bool:
     return bool(task.enabled and task.next_run_at is not None and task.next_run_at <= now)
 
 
+def finished(task: AgentTask) -> bool:
+    """A task that has used up its runs (``max_runs``) has no next slot until the cap is raised."""
+    return task.max_runs is not None and (task.runs_done or 0) >= task.max_runs
+
+
+def counts_as_run(status: str) -> bool:
+    """A run that reached the model, or failed trying, uses up one of the task's runs; a skip does not."""
+    return not status.startswith("skipped_")
+
+
+def _following(task: AgentTask, slot: datetime) -> datetime:
+    """The slot after ``slot`` in the task's own rhythm.  An interval counts from the slot it follows, not from
+    when the run started, so a late run does not move the later ones."""
+    if task.schedule_kind != "every":
+        return next_run(task.schedule_kind, task.schedule_time, task.timezone, slot)
+    if task.every_unit == "hours":
+        return slot + timedelta(hours=task.every_value)
+    zone = _zone(task.timezone)
+    days = task.every_value * (7 if task.every_unit == "weeks" else 1)
+    day = slot.astimezone(zone).date() + timedelta(days=days)
+    return datetime.combine(day, time(int(task.schedule_time[:2]), int(task.schedule_time[3:])), tzinfo=zone).astimezone(UTC)
+
+
 def missed_slots(task: AgentTask, now: datetime, limit: int = 1000) -> int:
     """How many slots passed between the one that was due and now (1 = on time).  Only reported: however
     many were missed, a due task runs once."""
@@ -121,7 +143,7 @@ def missed_slots(task: AgentTask, now: datetime, limit: int = 1000) -> int:
         return 0
     count, slot = 1, task.next_run_at
     while count < limit:
-        slot = next_run(task.schedule_kind, task.schedule_time, task.timezone, slot)
+        slot = _following(task, slot)
         if slot > now:
             break
         count += 1
@@ -129,23 +151,35 @@ def missed_slots(task: AgentTask, now: datetime, limit: int = 1000) -> int:
 
 
 def advance(task: AgentTask, now: datetime) -> None:
-    """Called when a due task starts: missed slots collapse into this run (catch-up once)."""
-    task.next_run_at = next_run(task.schedule_kind, task.schedule_time, task.timezone, now)
+    """Called when a due task starts: missed slots collapse into this run (catch-up once).  An interval steps on
+    through its own slots past now; a calendar schedule takes its next slot after now."""
+    if task.schedule_kind == "every" and task.next_run_at is not None:
+        slot = task.next_run_at
+        while slot <= now:
+            slot = _following(task, slot)
+        task.next_run_at = slot
+    else:
+        task.next_run_at = next_run(task.schedule_kind, task.schedule_time, task.timezone, now)
 
 
-def local_day(task: AgentTask, now: datetime) -> date:
-    return now.astimezone(_zone(task.timezone)).date()
+SCHEDULE_WORDS = {"daily": "每天", "weekdays": "工作日"}
+EVERY_WORDS = {"hours": "小时", "days": "天", "weeks": "周"}
 
 
-def tokens_used_today(task: AgentTask, now: datetime) -> int:
-    return task.usage_tokens if task.usage_day == local_day(task, now) else 0
-
-
-def add_usage(task: AgentTask, now: datetime, tokens: int) -> None:
-    today = local_day(task, now)
-    if task.usage_day != today:
-        task.usage_day, task.usage_tokens = today, 0
-    task.usage_tokens += max(0, int(tokens or 0))
+def schedule_text(schedule: dict) -> str:
+    """The frequency in words for a card or a line: 每天 08:00, 每小时第 15 分, 每 7 天（从 08:00 起）, then the
+    run cap: 只执行一次, 共 4 次.  ``schedule`` is a serialized task (or the fields of one)."""
+    kind, clock = schedule.get("schedule_kind"), str(schedule.get("schedule_time") or "")
+    if kind == "hourly":
+        text = f"每小时第 {clock[3:]} 分"
+    elif kind == "every":
+        text = f"每 {schedule.get('every_value')} {EVERY_WORDS.get(schedule.get('every_unit'), '')}（从 {clock} 起）"
+    else:
+        text = f"{SCHEDULE_WORDS.get(kind, kind)} {clock}"
+    runs = schedule.get("max_runs")
+    if runs == 1:
+        return f"{text}，只执行一次"
+    return f"{text}，共 {runs} 次" if runs else text
 
 
 # --- tasks ----------------------------------------------------------------------------------------
@@ -154,15 +188,20 @@ def _stamp(value):
     return value.astimezone(UTC).isoformat() if value else None
 
 
-def serialize_task(task: AgentTask, now: datetime | None = None) -> dict:
-    now = now or datetime.now(UTC)
+def status_label(status: str | None) -> str | None:
+    """The words for a run's status.  A status an older release wrote (a skip it no longer makes) reads as a skip."""
+    return STATUS_LABELS.get(status, "未运行") if status else None
+
+
+def serialize_task(task: AgentTask) -> dict:
     return {"id": str(task.id), "name": task.name, "kind": task.kind, "schedule_kind": task.schedule_kind,
-            "schedule_time": task.schedule_time, "timezone": task.timezone, "instruction": task.instruction,
+            "schedule_time": task.schedule_time, "every_value": task.every_value, "every_unit": task.every_unit,
+            "max_runs": task.max_runs, "runs_done": task.runs_done or 0, "finished": finished(task),
+            "timezone": task.timezone, "instruction": task.instruction,
             "scope": task.scope, "symbols": list(task.symbols or []), "channel": task.channel,
-            "config": task.config or {}, "enabled": task.enabled, "run_token_cap": task.run_token_cap,
-            "daily_token_cap": task.daily_token_cap, "tokens_today": tokens_used_today(task, now),
+            "config": task.config or {}, "enabled": task.enabled,
             "last_run_at": _stamp(task.last_run_at), "next_run_at": _stamp(task.next_run_at),
-            "last_status": task.last_status, "last_status_label": STATUS_LABELS.get(task.last_status or "", None),
+            "last_status": task.last_status, "last_status_label": status_label(task.last_status),
             "last_conversation_id": str(task.last_conversation_id) if task.last_conversation_id else None,
             "bot_id": str(task.bot_id) if task.bot_id else None,
             "skill_id": str(task.skill_id) if task.skill_id else None}
@@ -218,6 +257,26 @@ def _config(kind: str, value) -> dict:
             "price_lines": _price_lines(value.get("price_lines"))}
 
 
+def _every(schedule_kind: str, fields: dict, task: AgentTask) -> tuple[int | None, str | None]:
+    """An interval's size and unit; the other schedules keep neither."""
+    if schedule_kind != "every":
+        return None, None
+    unit = fields.get("every_unit", task.every_unit)
+    value = fields.get("every_value", task.every_value)
+    if unit not in EVERY_UNITS or type(value) is not int or not EVERY_UNITS[unit][0] <= value <= EVERY_UNITS[unit][1]:
+        raise TaskError("invalid_every")
+    return value, unit
+
+
+def _max_runs(value) -> int | None:
+    """At most this many runs.  None, or 0 (what a form sends for "no limit"), runs on without a limit."""
+    if value in (None, 0):
+        return None
+    if type(value) is not int or not 1 <= value <= MAX_RUNS:
+        raise TaskError("invalid_max_runs")
+    return value
+
+
 def _apply(task: AgentTask, fields: dict, now: datetime) -> None:
     kind = fields.get("kind", task.kind or "brief")
     if kind not in KINDS:
@@ -231,6 +290,8 @@ def _apply(task: AgentTask, fields: dict, now: datetime) -> None:
     _zone(timezone)
     if schedule_kind not in SCHEDULES or not _TIME.fullmatch(str(schedule_time or "")):
         raise TaskError("invalid_schedule")
+    every_value, every_unit = _every(schedule_kind, fields, task)
+    max_runs = _max_runs(fields.get("max_runs", task.max_runs))
     instruction = fields.get("instruction", task.instruction)
     instruction = str(instruction).strip() if instruction is not None else None
     if kind == "brief" and (not instruction or len(instruction) > INSTRUCTION_MAX_CHARS):
@@ -248,19 +309,18 @@ def _apply(task: AgentTask, fields: dict, now: datetime) -> None:
         # Whether a brief notifies is its bot's call (notify_telegram, per the instruction); only alerts,
         # which run no model, keep the 也发 Telegram switch.
         channel = "inbox"
-    run_cap = int(fields.get("run_token_cap", task.run_token_cap or DEFAULT_RUN_TOKENS))
-    daily_cap = int(fields.get("daily_token_cap", task.daily_token_cap or DEFAULT_DAILY_TOKENS))
-    if not RUN_TOKENS_RANGE[0] <= run_cap <= RUN_TOKENS_RANGE[1] or not run_cap <= daily_cap <= DAILY_TOKENS_MAX:
-        raise TaskError("invalid_token_caps")
     config = _config(kind, fields.get("config", task.config))
-    rescheduled = (schedule_kind, schedule_time, timezone) != (task.schedule_kind, task.schedule_time, task.timezone)
+    rescheduled = (schedule_kind, schedule_time, timezone, every_value, every_unit) != (
+        task.schedule_kind, task.schedule_time, task.timezone, task.every_value, task.every_unit)
     task.kind, task.name, task.schedule_kind, task.schedule_time, task.timezone = kind, name, schedule_kind, schedule_time, timezone
+    task.every_value, task.every_unit, task.max_runs = every_value, every_unit, max_runs
     task.instruction = instruction if kind == "brief" else None
     task.scope, task.symbols, task.channel, task.config = scope, symbols, channel, config
-    task.run_token_cap, task.daily_token_cap = run_cap, daily_cap
     if "enabled" in fields:
         task.enabled = bool(fields["enabled"])
-    if rescheduled or task.next_run_at is None:
+    if finished(task):
+        task.next_run_at = None
+    elif rescheduled or task.next_run_at is None:
         task.next_run_at = next_run(schedule_kind, schedule_time, timezone, now)
 
 
@@ -271,6 +331,23 @@ def ensure_bot_columns() -> None:
         for table in ("agent_tasks", "agent_inbox_items"):
             connection.execute(sql(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS bot_id UUID"))
             connection.execute(sql(f"CREATE INDEX IF NOT EXISTS ix_{table}_bot_id ON {table} (bot_id)"))
+
+
+def ensure_schedule_columns() -> None:
+    """The frequency columns (every_value, every_unit, max_runs, runs_done), added to tables made before them.
+    A task already there keeps its slots and runs as before: its kind is one the schedule still has, and it has
+    no interval and no run cap.  The token-cap columns are no longer read or written; they only lose NOT NULL,
+    and dropping them waits for the owner's say.  Idempotent."""
+    from .database import engine
+    with engine.begin() as connection:
+        connection.execute(sql("ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS every_value INTEGER"))
+        connection.execute(sql("ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS every_unit VARCHAR(8)"))
+        connection.execute(sql("ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS max_runs INTEGER"))
+        connection.execute(sql("ALTER TABLE agent_tasks ADD COLUMN IF NOT EXISTS runs_done INTEGER NOT NULL DEFAULT 0"))
+        columns = {column["name"]: column for column in inspect(connection).get_columns("agent_tasks")}
+        for name in ("run_token_cap", "daily_token_cap", "usage_tokens"):
+            if name in columns and not columns[name]["nullable"]:
+                connection.execute(sql(f"ALTER TABLE agent_tasks ALTER COLUMN {name} DROP NOT NULL"))
 
 
 BRIEF_TELEGRAM_NOTE = ("（迁移说明：这个任务以前每次运行都推送到 Telegram。现在由 bot 判断：有值得告诉我的新结论时，"
@@ -323,14 +400,14 @@ def create_task(owner_hash: str, fields: dict, *, now: datetime | None = None) -
         count = len(db.scalars(select(AgentTask.id).where(AgentTask.owner_hash == owner_hash)).all())
         if count >= MAX_TASKS:
             raise TaskError("too_many_tasks")
-        task = AgentTask(owner_hash=owner_hash, enabled=True, usage_tokens=0, symbols=[], config={})
+        task = AgentTask(owner_hash=owner_hash, enabled=True, runs_done=0, symbols=[], config={})
         task.bot_id = _task_bot(db, owner_hash, fields.get("bot_id"))
         task.skill_id = _task_skill(owner_hash, fields.get("skill_id"))
         _apply(task, fields, now)
         db.add(task)
         db.commit()
         db.refresh(task)
-        return serialize_task(task, now)
+        return serialize_task(task)
 
 
 def _owned_task(db, owner_hash: str, task_id) -> AgentTask | None:
@@ -345,7 +422,7 @@ def _owned_task(db, owner_hash: str, task_id) -> AgentTask | None:
 def get_task(owner_hash: str, task_id) -> dict | None:
     with SessionLocal() as db:
         task = _owned_task(db, owner_hash, task_id)
-        return serialize_task(task, datetime.now(UTC)) if task is not None else None
+        return serialize_task(task) if task is not None else None
 
 
 def update_task(owner_hash: str, task_id, fields: dict, *, now: datetime | None = None) -> dict | None:
@@ -361,7 +438,7 @@ def update_task(owner_hash: str, task_id, fields: dict, *, now: datetime | None 
         _apply(task, fields, now)
         db.commit()
         db.refresh(task)
-        return serialize_task(task, now)
+        return serialize_task(task)
 
 
 def delete_task(owner_hash: str, task_id) -> bool:
@@ -375,13 +452,12 @@ def delete_task(owner_hash: str, task_id) -> bool:
 
 
 def list_tasks(owner_hash: str, bot_id=None) -> list[dict]:
-    now = datetime.now(UTC)
     with SessionLocal() as db:
         query = select(AgentTask).where(AgentTask.owner_hash == owner_hash)
         if bot_id is not None:
             query = query.where(AgentTask.bot_id == _uuid(bot_id))
         rows = db.scalars(query.order_by(AgentTask.created_at)).all()
-        return [serialize_task(row, now) for row in rows]
+        return [serialize_task(row) for row in rows]
 
 
 def _uuid(value) -> uuid.UUID | None:
@@ -405,7 +481,7 @@ def list_runs(owner_hash: str, bot_id=None, *, limit: int = 20) -> list[dict]:
             query = query.where(AgentTaskRun.bot_id == _uuid(bot_id))
         rows = db.scalars(query.order_by(AgentTaskRun.created_at.desc()).limit(max(1, min(100, limit)))).all()
         return [{"id": str(r.id), "task_id": str(r.task_id), "task_name": r.task_name, "status": r.status,
-                 "status_label": STATUS_LABELS.get(r.status), "posted": r.posted, "tokens": r.tokens,
+                 "status_label": status_label(r.status), "posted": r.posted, "tokens": r.tokens,
                  "conversation_id": str(r.conversation_id) if r.conversation_id else None,
                  "created_at": _stamp(r.created_at)} for r in rows]
 

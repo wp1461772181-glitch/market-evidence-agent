@@ -18,9 +18,9 @@ checkpoint with the owner's turn); its conclusion is then posted in the bot's li
 new (the model answers ``QUIET_ANSWER``) or no cited evidence posts nothing.  The default bot's tasks also
 see the other bots' posts since their last run, so a morning digest can string them together.
 
-Cost: a run stops gathering at the task's per-run token cap, never starts once today's usage reached the
-daily cap, and a failed run is retried once only when it is safe: the retry is unattended again (reads
-only) and a run that already queued a suggestion is not retried, so a write suggestion is never repeated.
+Cost: a run has the same soft token guard as a chat turn (a task has no token cap of its own), and a failed
+run is retried once only when it is safe: the retry is unattended again (reads only) and a run that already
+queued a suggestion is not retried, so a write suggestion is never repeated.
 """
 from __future__ import annotations
 
@@ -80,7 +80,7 @@ def _attach_to_bot(conversation_id: str, bot_id) -> None:
             db.commit()
 
 
-async def run_unattended_turn(credential: str, question: str, model: dict, *, token_budget: int, title: str,
+async def run_unattended_turn(credential: str, question: str, model: dict, *, token_budget: int | None = None, title: str,
                               bot: dict | None = None, notes: list[str] | None = None, skill_id=None) -> dict:
     """One agent turn with nobody watching, stored as an ordinary conversation of the owner (under ``bot``,
     whose settings it runs with) so that the run opens as a chat the owner can continue.  ``notes`` go into
@@ -348,7 +348,9 @@ def run_alert_hooks(kind: str, *, now: datetime | None = None) -> None:
     try:
         now = now or datetime.now(UTC)
         with SessionLocal() as db:
-            ids = db.scalars(select(AgentTask.id).where(AgentTask.kind == "alerts", AgentTask.enabled.is_(True))).all()
+            # A task that used up its runs has no next slot, and its alerts stop with its runs.
+            ids = db.scalars(select(AgentTask.id).where(AgentTask.kind == "alerts", AgentTask.enabled.is_(True),
+                                                        AgentTask.next_run_at.is_not(None))).all()
         for task_id in ids:
             run_alerts(task_id, now=now, only={kind})
     except Exception:
@@ -363,7 +365,10 @@ def _finish(task_id, *, status: str, now: datetime, tokens: int = 0, conversatio
         if task is None:
             return
         task.last_status, task.last_run_at = status, now
-        tasks.add_usage(task, now, tokens)
+        if tasks.counts_as_run(status):
+            task.runs_done = (task.runs_done or 0) + 1
+            if tasks.finished(task):
+                task.next_run_at = None
         if conversation_id:
             task.last_conversation_id = uuid.UUID(str(conversation_id))
         tasks.log_run(db, task, status=status, tokens=tokens, posted=posted, conversation_id=conversation_id)
@@ -409,7 +414,6 @@ async def run_brief(task_id, credential: str, *, now: datetime, missed: int = 1)
         skill_id = task.skill_id
         symbols = tasks.scope_symbols(db, task)
         question = brief_question(task, symbols, now)
-        run_cap, daily_left = task.run_token_cap, task.daily_token_cap - tasks.tokens_used_today(task, now)
         local = now.astimezone(tasks._zone(task.timezone))
     if status:
         _finish(task_id, status=status, now=now)
@@ -420,13 +424,7 @@ async def run_brief(task_id, credential: str, *, now: datetime, missed: int = 1)
         return "skipped_no_model"
     used, result = 0, None
     for attempt in range(2):
-        if daily_left - used <= 0:
-            if result is None:
-                _finish(task_id, status="skipped_daily_cap", now=now)
-                return "skipped_daily_cap"
-            break
-        budget = max(1, min(run_cap, daily_left - used))
-        result = await run_unattended_turn(credential, question, model, token_budget=budget,
+        result = await run_unattended_turn(credential, question, model,
                                            title=f"{name} · {local:%m-%d %H:%M}", bot=settings, notes=notes,
                                            **({"skill_id": skill_id} if skill_id else {}))
         used += int((result.get("audit") or {}).get("token_usage") or 0)

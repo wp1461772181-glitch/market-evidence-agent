@@ -1,12 +1,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { formatPriceLines, inboxKindLabel, inboxOrder, numberedSources, parsePriceLines, parseSymbols, scheduleLabel } from "../src/inbox-items.mjs";
+import { formatPriceLines, inboxKindLabel, inboxOrder, numberedSources, parsePriceLines, parseSymbols, runsLabel, scheduleLabel } from "../src/inbox-items.mjs";
 
 test("schedules read as the owner set them", () => {
   assert.equal(scheduleLabel({ schedule_kind: "weekdays", schedule_time: "08:00" }), "工作日 08:00");
   assert.equal(scheduleLabel({ schedule_kind: "daily", schedule_time: "21:30" }), "每天 21:30");
   assert.equal(scheduleLabel({ schedule_kind: "hourly", schedule_time: "00:15" }), "每小时第 15 分");
+  assert.equal(scheduleLabel({ schedule_kind: "every", schedule_time: "08:00", every_value: 7, every_unit: "days" }), "每 7 天（从 08:00 起）");
+  assert.equal(scheduleLabel({ schedule_kind: "every", schedule_time: "06:30", every_value: 6, every_unit: "hours" }), "每 6 小时（从 06:30 起）");
   assert.equal(inboxKindLabel("price"), "价格线");
+});
+
+test("a run limit reads as one run or a count, and no limit reads as nothing", () => {
+  assert.equal(runsLabel({ max_runs: 1 }), "只执行一次");
+  assert.equal(runsLabel({ max_runs: 4 }), "共 4 次");
+  assert.equal(runsLabel({ max_runs: null }), "");
 });
 
 test("unread first, newest first, dismissed hidden", () => {

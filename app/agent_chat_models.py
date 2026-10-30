@@ -1,6 +1,6 @@
 import uuid
-from datetime import date, datetime
-from sqlalchemy import BigInteger, Boolean, Date, DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint, Uuid, func
+from datetime import datetime
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint, Uuid, func
 from sqlalchemy.orm import Mapped, mapped_column
 from .database import Base
 
@@ -124,8 +124,12 @@ class AgentTask(Base):
     owner_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(80), nullable=False)
     kind: Mapped[str] = mapped_column(String(12), nullable=False, default="brief")
-    schedule_kind: Mapped[str] = mapped_column(String(12), nullable=False)      # daily | weekdays | hourly
-    schedule_time: Mapped[str] = mapped_column(String(5), nullable=False)       # HH:MM (hourly: only MM counts)
+    schedule_kind: Mapped[str] = mapped_column(String(12), nullable=False)      # daily | weekdays | hourly | every
+    schedule_time: Mapped[str] = mapped_column(String(5), nullable=False)       # HH:MM (hourly: only MM counts; every: the first time of day)
+    every_value: Mapped[int | None] = mapped_column(Integer, nullable=True)     # every: the interval's size, in every_unit
+    every_unit: Mapped[str | None] = mapped_column(String(8), nullable=True)    # hours | days | weeks
+    max_runs: Mapped[int | None] = mapped_column(Integer, nullable=True)        # at most this many runs; NULL: no limit
+    runs_done: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")  # runs that reached the model
     timezone: Mapped[str] = mapped_column(String(64), nullable=False)
     instruction: Mapped[str | None] = mapped_column(Text, nullable=True)
     skill_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)     # Phase 5
@@ -134,10 +138,6 @@ class AgentTask(Base):
     channel: Mapped[str] = mapped_column(String(12), nullable=False, default="inbox")         # inbox | telegram
     config: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    run_token_cap: Mapped[int] = mapped_column(Integer, nullable=False)
-    daily_token_cap: Mapped[int] = mapped_column(Integer, nullable=False)
-    usage_day: Mapped[date | None] = mapped_column(Date, nullable=True)
-    usage_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     last_status: Mapped[str | None] = mapped_column(String(32), nullable=True)

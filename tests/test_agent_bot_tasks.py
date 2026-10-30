@@ -130,7 +130,7 @@ def _with_key():
 def _stub_turn(monkeypatch, results):
     calls = []
 
-    async def fake(credential, question, model, *, token_budget, title, bot=None, notes=None):
+    async def fake(credential, question, model, *, title, bot=None, notes=None, token_budget=None):
         calls.append({"question": question, "model": model, "bot": bot, "notes": list(notes or []), "budget": token_budget})
         cid = str(uuid.uuid4())
         with SessionLocal() as db:

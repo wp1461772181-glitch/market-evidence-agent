@@ -27,7 +27,7 @@ TOOL_IDLE_SECONDS=180
 MAX_DECISION_STEPS=30
 MAX_INVALID_CALLS=6
 # Last-resort ceilings for a turn that never converges, far above a healthy multi-tool turn; past them
-# the loop answers from the evidence it already holds.  A task's own token_budget still applies.
+# the loop answers from the evidence it already holds.  A token_budget a caller passes still applies.
 SOFT_TURN_SECONDS=600
 SOFT_TURN_TOKENS=1_000_000
 # A scheduled task stops gathering at its per-run cap; past this multiple of it no model call starts at all.
@@ -363,15 +363,16 @@ WRITE_TITLES={
 }
 ROUTINE_WRITES=('create_routine','update_routine','delete_routine')
 
-def routine_when(kind,at):
-    return {'hourly':f'每小时第 {at[3:]} 分','daily':f'每天 {at}','weekdays':f'工作日 {at}'}.get(kind,f'{kind} {at}')
+def routine_when(schedule):
+    from ..agent_tasks import schedule_text
+    return schedule_text(schedule)
 
 def routine_changes(args,task):
     """What an update_routine card changes, in the owner's words (the saved task fills what stays)."""
     parts=[]
     if args.get('name'):parts.append(f'改名为「{args["name"]}」')
     if args.get('schedule_kind') or args.get('schedule_time'):
-        parts.append('改为'+routine_when(args.get('schedule_kind') or task['schedule_kind'],args.get('schedule_time') or task['schedule_time']))
+        parts.append('改为'+routine_when({**task,**{k:args[k] for k in ('schedule_kind','schedule_time') if args.get(k)}}))
     if args.get('symbols') is not None:parts.append('范围改为 '+('、'.join(args['symbols']) if args['symbols'] else '研究队列'))
     if args.get('instruction'):parts.append(f'每次运行：{args["instruction"]}')
     if args.get('enabled') is not None:parts.append('恢复运行' if args['enabled'] else '暂停')
@@ -1559,14 +1560,14 @@ class Turn:
         display={'title':title,'targets':await self.describe_targets(name,args)}
         if name=='create_routine':
             operation['bot_id']=self.context.bot_id
-            display.update(title=f'{title} · {args["name"]}',targets=[{'kind':routine_when(args['schedule_kind'],args['schedule_time']),**({'symbol':'、'.join(args['symbols'])} if args['symbols'] else {})}],
+            display.update(title=f'{title} · {args["name"]}',targets=[{'kind':routine_when({'schedule_kind':args['schedule_kind'],'schedule_time':args['schedule_time']}),**({'symbol':'、'.join(args['symbols'])} if args['symbols'] else {})}],
                            alternative=f'每次运行：{args["instruction"]}（可在「例行任务」页暂停、修改或删除）')
         if name in {'update_routine','delete_routine'}:
             # The card names the routine as saved now; one this owner does not have makes no card.
             from ..agent_tasks import get_task
             task=await asyncio.to_thread(get_task,self.context.owner_hash,args['routine_id'])
             if task is None:return tools.error('routine_not_found')
-            display.update(title=f'{title} · {task["name"]}',targets=[{'kind':routine_when(task['schedule_kind'],task['schedule_time'])}],
+            display.update(title=f'{title} · {task["name"]}',targets=[{'kind':routine_when(task)}],
                            alternative=routine_changes(args,task) if name=='update_routine' else '删除后不再运行；已生成的简报会保留。')
         if name=='ingest_web_source':
             # Guard an explicit newer-date condition; never choose a route or tool.

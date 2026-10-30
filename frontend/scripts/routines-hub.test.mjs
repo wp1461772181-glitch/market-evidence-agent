@@ -40,3 +40,22 @@ test("the card counts this bot's live proposals and open suggestions", () => {
   assert.equal(waitingCount("b1", proposals, confirms), 3);
   assert.equal(waitingCount("b3", [], []), 0);
 });
+
+test("新闻源 is a rail row right under 例行任务, opens its own page, and the 例行任务 page no longer carries it", () => {
+  const rail = src("BotPages.tsx"), app = src("App.tsx"), page = src("PersonalPages.tsx");
+  assert.match(rail, /onClick=\{onRoutines\}[\s\S]*?onClick=\{onNews\}[\s\S]*?<strong>\{t\("新闻源"\)\}<\/strong>/);
+  assert.match(app, /newsActive=\{activeSection === "news"\} onNews=\{\(\) => \{ close\(\); navigate\("news"\); \}\}/);
+  assert.match(app, /if \(activeSection === "news"\) return <Shell \{\.\.\.shellProps\}><NewsSourcesPage \/><\/Shell>;/);
+  assert.match(app, /"routines", "news", "skills"/);
+  const routines = page.slice(page.indexOf("export function RoutinesPage"), page.indexOf("const HEALTH_LABELS"));
+  assert.doesNotMatch(routines, /NewsSourcesPanel|getNewsSourcesConfig/);
+  const newsPage = page.slice(page.indexOf("export function NewsSourcesPage"), page.indexOf("const KIND_LABELS"));
+  assert.match(newsPage, /<NewsSourcesPanel /);
+});
+
+test("the routine form has no token caps; the frequency offers intervals and run counts", () => {
+  const form = src("BotRoutines.tsx");
+  assert.doesNotMatch(form, /token|Cap/);
+  assert.match(form, /<option value="every">\{t\("每隔一段时间"\)\}<\/option>/);
+  assert.match(form, /max_runs: draftCount === "once" \? 1 : draftCount === "count" \? draftRuns : 0/);
+});

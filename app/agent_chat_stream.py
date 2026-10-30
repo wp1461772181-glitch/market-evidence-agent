@@ -794,8 +794,12 @@ async def get_recall_endpoint(q: str | None = None, limit: int = 20, bot_id: str
 class TaskBody(BaseModel):
     name: str | None = Field(default=None, max_length=80)
     kind: Literal["brief", "alerts"] | None = None
-    schedule_kind: Literal["daily", "weekdays", "hourly"] | None = None
+    schedule_kind: Literal["daily", "weekdays", "hourly", "every"] | None = None
     schedule_time: str | None = Field(default=None, max_length=5)
+    # every: the interval's size and unit.  max_runs: at most this many runs; 0 means no limit.
+    every_value: int | None = None
+    every_unit: Literal["hours", "days", "weeks"] | None = None
+    max_runs: int | None = None
     timezone: str | None = Field(default=None, max_length=64)
     instruction: str | None = Field(default=None, max_length=2000)
     scope: Literal["research_queue", "symbols"] | None = None
@@ -803,8 +807,6 @@ class TaskBody(BaseModel):
     channel: Literal["inbox", "telegram"] | None = None
     config: dict | None = None
     enabled: bool | None = None
-    run_token_cap: int | None = None
-    daily_token_cap: int | None = None
     # The bot the task belongs to (stage C); left out on create: the default bot.
     bot_id: str | None = Field(default=None, max_length=36)
     # The skill a brief runs with (stage E); "" clears it.

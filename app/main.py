@@ -191,6 +191,8 @@ def create_tables() -> None:
     # Stage C: tasks and inbox entries belong to a bot; NULL (every existing row) is adopted by the default bot.
     from .agent_tasks import ensure_bot_columns as ensure_task_bot_columns
     ensure_task_bot_columns()
+    from .agent_tasks import ensure_schedule_columns
+    ensure_schedule_columns()
     # Stage D: Telegram ids are BIGINT; brief tasks that pushed every run now leave it to notify_telegram.
     from .agent_telegram import ensure_columns as ensure_telegram_columns
     from .agent_recall import safe_hook as _safe_hook
