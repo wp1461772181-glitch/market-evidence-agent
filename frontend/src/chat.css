@@ -141,6 +141,7 @@
 .agent-question-rail button { position: relative; display: block; width: 36px; height: 10px; padding: 0; border: 0; background: transparent; color: var(--c-line-strong); opacity: .42; cursor: pointer; }
 .agent-question-rail button:is([aria-current="location"], .is-bookmarked) { opacity: 1; }
 .agent-question-rail button[aria-current="location"] { color: var(--c-accent); }
+.agent-question-rail button.is-focused { color: var(--c-ink); opacity: 1; }
 .agent-question-rail button:focus-visible { outline: 2px solid var(--c-accent); outline-offset: 2px; border-radius: 4px; }
 .agent-rail-line { position: absolute; left: 5px; top: 4px; width: 26px; height: 2px; border-radius: 2px; background: currentColor; transform: scaleX(calc(.2308 + .7692 * var(--marker-progress, 0))); transform-origin: left center; transition: transform .16s cubic-bezier(.23, 1, .32, 1), background-color .12s; }
 .agent-rail-dot { position: absolute; left: 5px; top: 4px; width: 2px; height: 2px; border-radius: 50%; background: var(--c-accent); transform: translateX(calc(26px * (.2308 + .7692 * var(--marker-progress, 0)) + 3px)); transition: transform .16s cubic-bezier(.23, 1, .32, 1); }
