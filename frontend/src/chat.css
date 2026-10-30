@@ -133,10 +133,11 @@
 .agent-welcome button { padding: 9px 14px; border: 1px solid var(--c-line-strong); border-radius: 999px; background: var(--c-surface); color: var(--c-ink); font: 13px var(--sans); cursor: pointer; transition: background .12s, border-color .12s; }
 .agent-welcome button:hover { background: var(--c-tint); border-color: var(--c-accent); }
 
-.agent-thread-grid { display: grid; grid-template-columns: 36px minmax(0, 1fr); gap: 10px; min-width: 0; }
+.agent-thread-grid { display: grid; grid-template-columns: 36px minmax(0, 1fr); gap: 10px; min-width: 0; min-height: 100%; }
 .agent-thread { display: flex; flex-direction: column; gap: 22px; min-width: 0; max-width: 820px; width: 100%; margin: 0 auto; }
 
-.agent-question-rail { position: sticky; top: 8px; align-self: start; display: flex; flex-direction: column; padding-top: 4px; }
+.agent-question-rail { position: sticky; top: 50%; align-self: start; display: flex; flex-direction: column; max-height: min(70vh, 40rem); overflow-y: auto; scrollbar-width: none; transform: translateY(-50%); }
+.agent-question-rail::-webkit-scrollbar { display: none; }
 .agent-question-rail button { position: relative; display: block; width: 36px; height: 10px; padding: 0; border: 0; background: transparent; color: var(--c-line-strong); opacity: .42; cursor: pointer; }
 .agent-question-rail button:is([aria-current="location"], .is-bookmarked) { opacity: 1; }
 .agent-question-rail button[aria-current="location"] { color: var(--c-accent); }
