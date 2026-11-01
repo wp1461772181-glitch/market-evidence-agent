@@ -1,0 +1,314 @@
+From 37d036e895f746a1e519b820f9bd2808e3a3d179 Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Sun, 1 Nov 2026 11:16:01 +0000
+Subject: [PATCH] Collapse the six secondary nav labels into More
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+公司、预测、资料库、技能、记忆 and 设置 now open from one 更多 control on the desktop rail and the mobile tab bar. 例行任务 stays on the bot rail and as its own mobile tab. The pinned bot rail is 288px, up from 240px.
+---
+ frontend/package.json              |  2 +-
+ frontend/scripts/more-nav.test.mjs | 38 +++++++++++++++++
+ frontend/src/App.tsx               | 67 +++++++++++++++++++++++++-----
+ frontend/src/grok.css              |  9 ++++
+ frontend/src/locales/en-US.json    |  4 +-
+ frontend/src/locales/zh-CN.json    |  4 +-
+ frontend/src/styles.css            | 10 ++---
+ frontend/src/theme.css             | 18 +++++++-
+ 8 files changed, 132 insertions(+), 20 deletions(-)
+ create mode 100644 frontend/scripts/more-nav.test.mjs
+
+diff --git a/frontend/package.json b/frontend/package.json
+index 9aba0b4..48721bc 100644
+--- a/frontend/package.json
++++ b/frontend/package.json
+@@ -7,7 +7,7 @@
+     "dev": "vite",
+     "build": "tsc -b && vite build",
+     "preview": "vite preview",
+-    "test:i18n": "node --test scripts/delta.test.mjs scripts/theme.test.mjs scripts/theme-contrast.test.mjs scripts/material-focus.test.mjs scripts/orb.test.mjs scripts/workspace-cards.test.mjs scripts/routines-hub.test.mjs scripts/i18n.test.mjs scripts/model-profiles.test.mjs scripts/model-profile-backup.test.mjs scripts/model-discovery.test.mjs scripts/model-profiles-parent.test.mjs scripts/agent-chat-lifecycle.test.mjs scripts/agent-chat-url.test.mjs scripts/watchlist.test.mjs scripts/chat-archive.test.mjs scripts/chat-identity.test.mjs scripts/chat-mode-switch.test.mjs scripts/chat-session.test.mjs scripts/markdown-render.test.mjs scripts/chat-thread.test.mjs scripts/api-errors.test.mjs scripts/chat-clarification.test.mjs scripts/context-usage.test.mjs scripts/watchlist-bridge.test.mjs scripts/agent-client-actions.test.mjs scripts/turn-flow.test.mjs scripts/memory-items.test.mjs scripts/inbox-items.test.mjs scripts/bot-items.test.mjs scripts/task-posts.test.mjs scripts/skill-items.test.mjs scripts/catalog-form.test.mjs scripts/question-rail.test.mjs"
++    "test:i18n": "node --test scripts/delta.test.mjs scripts/theme.test.mjs scripts/theme-contrast.test.mjs scripts/material-focus.test.mjs scripts/orb.test.mjs scripts/workspace-cards.test.mjs scripts/routines-hub.test.mjs scripts/more-nav.test.mjs scripts/i18n.test.mjs scripts/model-profiles.test.mjs scripts/model-profile-backup.test.mjs scripts/model-discovery.test.mjs scripts/model-profiles-parent.test.mjs scripts/agent-chat-lifecycle.test.mjs scripts/agent-chat-url.test.mjs scripts/watchlist.test.mjs scripts/chat-archive.test.mjs scripts/chat-identity.test.mjs scripts/chat-mode-switch.test.mjs scripts/chat-session.test.mjs scripts/markdown-render.test.mjs scripts/chat-thread.test.mjs scripts/api-errors.test.mjs scripts/chat-clarification.test.mjs scripts/context-usage.test.mjs scripts/watchlist-bridge.test.mjs scripts/agent-client-actions.test.mjs scripts/turn-flow.test.mjs scripts/memory-items.test.mjs scripts/inbox-items.test.mjs scripts/bot-items.test.mjs scripts/task-posts.test.mjs scripts/skill-items.test.mjs scripts/catalog-form.test.mjs scripts/question-rail.test.mjs"
+   },
+   "dependencies": {
+     "react": "19.3.0",
+diff --git a/frontend/scripts/more-nav.test.mjs b/frontend/scripts/more-nav.test.mjs
+new file mode 100644
+index 0000000..97e5579
+--- /dev/null
++++ b/frontend/scripts/more-nav.test.mjs
+@@ -0,0 +1,38 @@
++import assert from "node:assert/strict";
++import { readFileSync } from "node:fs";
++import test from "node:test";
++
++// 「更多」 folds 公司、预测、资料库、技能、记忆、设置 into one control.  No component renderer here, so the
++// wiring is checked in the source the build compiles.  例行任务 stays a bot-rail row and a mobile tab.
++const src = (name) => readFileSync(new URL(`../src/${name}`, import.meta.url), "utf8");
++
++test("the six secondary labels live in 更多, and the rail lists one More control", () => {
++  const app = src("App.tsx");
++  const more = app.slice(app.indexOf("const moreItems"), app.indexOf("const mobileTabs"));
++  for (const label of ["公司", "预测", "资料库", "技能", "记忆", "设置"]) {
++    assert.match(more, new RegExp(`label: t\\("${label}"\\)`));
++  }
++  assert.doesNotMatch(more, /例行任务|新闻源/);
++  assert.match(app, /<MoreMenu items=\{moreItems\}[\s\S]*placement="rail" drop=\{botRail \? "up" : "down"\}/);
++  assert.match(app, /<MoreMenu items=\{moreItems\}[\s\S]*placement="sheet"/);
++  assert.match(app, /aria-haspopup="menu"/);
++  assert.match(app, /t\("更多"\)/);
++  assert.match(app, /active \? active\.label : t\("公司、预测与其它"\)/);
++  assert.doesNotMatch(app, /label: t\("我"\)/);
++  assert.doesNotMatch(app, /nav\.filter\(item => !botRail/);
++});
++
++test("例行任务 stays primary chrome: a rail row and a mobile tab, not a More item", () => {
++  const app = src("App.tsx"), rail = src("BotPages.tsx");
++  assert.match(app, /\{ id: "routines", label: t\("例行任务"\), icon: <RoutineIcon \/>/);
++  assert.match(rail, /<strong>\{t\("例行任务"\)\}<\/strong>/);
++  assert.match(app, /例行任务 is not one of them/);
++});
++
++test("the pinned bot rail is 288px, a modest step up from 240px", () => {
++  const css = src("styles.css");
++  assert.match(css, /\.app-frame\.is-nav-pinned\{grid-template-columns:288px minmax\(0,1fr\)!important\}/);
++  assert.match(css, /\.app-frame\.is-nav-pinned \.app-rail\{[^}]*width:288px/);
++  assert.doesNotMatch(css, /240px|276px/);
++  assert.match(src("theme.css"), /grid-template-columns: repeat\(3, 1fr\)/);
++});
+diff --git a/frontend/src/App.tsx b/frontend/src/App.tsx
+index 781d706..033728c 100644
+--- a/frontend/src/App.tsx
++++ b/frontend/src/App.tsx
+@@ -28,10 +28,11 @@ type SupportedSymbol = string;
+ type FilingState = { kind: "idle" } | { kind: "loading" } | { kind: "ready"; data: FilingInventory } | { kind: "error"; message: string };
+ type WorkspaceSection = "overview" | "forecast" | "evidence" | "materials" | "revisions" | "evaluation" | "replay" | "agent" | "bot" | "admin" | "routines" | "news" | "skills" | "memory" | "me";
+ type ResearchSection = Exclude<WorkspaceSection, "agent" | "bot" | "admin" | "routines" | "news" | "skills" | "memory" | "me">;
+-// The personal-agent navigation groups the older sections: 公司 holds 总览; 预测 (its own sidebar entry since
+-// the bot-first sidebar buried it two clicks deep under 公司) holds 预测工作台, 修订, 到期评估 and 历史回放;
+-// 资料库 holds 材料库 and 证据.  The older hashes stay the addresses, so links inside
+-// the older pages (#materials, #evidence/<id>/…) and the agent's open_page keep working unchanged.
++// The personal-agent navigation groups the older sections: 公司 holds 总览; 预测 holds 预测工作台, 修订, 到期评估
++// and 历史回放; 资料库 holds 材料库 and 证据.  Those six (公司、预测、资料库、技能、记忆、设置) are one 「更多」
++// control on the rail and on the mobile tab bar.  例行任务 is not one of them: it is a bot-rail row (with 新闻源
++// under it) and its own mobile tab, so it stays primary chrome.  The older hashes stay the addresses, so links
++// inside the older pages (#materials, #evidence/<id>/…) and the agent's open_page keep working unchanged.
+ type NavGroup = "chat" | "routines" | "news" | "company" | "forecast" | "library" | "skills" | "memory" | "settings";
+ const FORECAST_TABS = ["forecast", "revisions", "evaluation", "replay"] as const;
+ const LIBRARY_TABS = ["materials", "evidence"] as const;
+@@ -400,6 +401,53 @@ function WorkspaceIntro({ eyebrow, title, description, action }: { eyebrow: stri
+   </section>;
+ }
+ 
++type NavItem = { id: WorkspaceSection; group: NavGroup; label: string; hint: string; icon: string };
++
++/** 「更多」: the six secondary destinations.  The trigger stays highlighted, and its subtitle names the open section. */
++function MoreMenu({ items, activeGroup, onPick, placement, drop = "up" }: { items: NavItem[]; activeGroup: NavGroup; onPick: (section: WorkspaceSection) => void; placement: "rail" | "sheet"; drop?: "up" | "down" }) {
++  const { t } = useLocale();
++  const [open, setOpen] = useState(false);
++  const rootRef = useRef<HTMLDivElement>(null);
++  const triggerRef = useRef<HTMLButtonElement>(null);
++  const menuRef = useRef<HTMLDivElement>(null);
++  const active = items.find(item => item.group === activeGroup) ?? null;
++  const menuId = placement === "rail" ? "rail-more-menu" : "more-sheet";
++  useEffect(() => { setOpen(false); }, [activeGroup]);
++  useEffect(() => {
++    if (!open) return;
++    menuRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus();
++    const onKey = (event: KeyboardEvent) => {
++      if (event.key !== "Escape") return;
++      event.preventDefault();
++      event.stopPropagation();
++      setOpen(false);
++      triggerRef.current?.focus();
++    };
++    const onPointer = (event: PointerEvent) => {
++      if (placement === "sheet" || rootRef.current?.contains(event.target as Node)) return;
++      setOpen(false);
++    };
++    document.addEventListener("keydown", onKey, true);
++    document.addEventListener("pointerdown", onPointer);
++    return () => {
++      document.removeEventListener("keydown", onKey, true);
++      document.removeEventListener("pointerdown", onPointer);
++    };
++  }, [open, placement]);
++  function pick(id: WorkspaceSection) { setOpen(false); onPick(id); }
++  const trigger = <button ref={triggerRef} type="button" className={active ? (placement === "sheet" ? "is-active" : "active") : ""} aria-current={active && !open ? "page" : undefined} aria-expanded={open} aria-haspopup="menu" aria-controls={menuId} onClick={() => setOpen(value => !value)}>
++    <span aria-hidden="true">⋯</span>{placement === "sheet" ? t("更多") : <span><strong>{t("更多")}</strong><small>{active ? active.label : t("公司、预测与其它")}</small></span>}
++  </button>;
++  const menu = <div ref={menuRef} id={menuId} className={placement === "rail" ? `nav-more-menu${drop === "down" ? " is-down" : ""}` : "more-sheet"} role="menu" aria-label={t("更多")}>
++    {items.map(item => {
++      const current = item.group === activeGroup;
++      return <button key={item.id} type="button" role="menuitem" className={current ? "active" : ""} aria-current={current ? "page" : undefined} onClick={() => pick(item.id)}><span aria-hidden="true">{item.icon}</span><span><strong>{item.label}</strong><small>{item.hint}</small></span></button>;
++    })}
++  </div>;
++  if (placement === "sheet") return <div className="mobile-more">{trigger}{open && <div className="more-sheet-backdrop" onClick={() => setOpen(false)}><div onClick={event => event.stopPropagation()}>{menu}</div></div>}</div>;
++  return <div className="nav-more" ref={rootRef}>{trigger}{open && menu}</div>;
++}
++
+ function Shell({ activeSection, navigate, symbol, symbols, onSelectStock, watchInput, setWatchInput, addWatchSymbol, watchError, setWatchError, onModeChange, botRail, overlay, children }: { activeSection: WorkspaceSection; navigate: (section: WorkspaceSection) => void; symbol: string; symbols: string[]; onSelectStock: (ticker: SupportedSymbol) => void; watchInput: string; setWatchInput: (value: string) => void; addWatchSymbol: () => void; watchError: string; setWatchError: (value: string) => void; onModeChange:(mode:"guest"|"personal")=>void; botRail?: (close: () => void) => ReactNode; overlay?: ReactNode; children: ReactNode }) {
+   const { locale, setLocale, t } = useLocale();
+   const navRef = useRef<HTMLElement>(null);
+@@ -430,8 +478,7 @@ function Shell({ activeSection, navigate, symbol, symbols, onSelectStock, watchI
+     if (itemRect.left < navRect.left) navElement.scrollLeft -= navRect.left - itemRect.left;
+     else if (itemRect.right > navRect.right) navElement.scrollLeft += itemRect.right - navRect.right;
+   }, [activeSection]);
+-  const nav: Array<{ id: WorkspaceSection; group: NavGroup; label: string; hint: string; icon: string }> = [
+-    { id: "agent", group: "chat", label: t("对话"), hint: t("首页"), icon: "✳" },
++  const moreItems: NavItem[] = [
+     { id: "overview", group: "company", label: t("公司"), hint: t("研究总览"), icon: "◌" },
+     { id: "forecast", group: "forecast", label: t("预测"), hint: t("预测、修订与回放"), icon: "◔" },
+     { id: "materials", group: "library", label: t("资料库"), hint: t("证据与材料"), icon: "▤" },
+@@ -440,10 +487,8 @@ function Shell({ activeSection, navigate, symbol, symbols, onSelectStock, watchI
+     { id: "admin", group: "settings", label: t("设置"), hint: t("模型与账户"), icon: "⚙" },
+   ];
+   const mobileTabs: Array<{ id: WorkspaceSection; label: string; icon: React.ReactNode; active: boolean }> = [
+-    { id: "agent", label: t("对话"), icon: "✳", active: activeSection === "agent" },
++    { id: "agent", label: t("对话"), icon: "✳", active: activeSection === "agent" || activeSection === "bot" },
+     { id: "routines", label: t("例行任务"), icon: <RoutineIcon />, active: activeSection === "routines" },
+-    { id: "overview", label: t("公司"), icon: "◌", active: navGroup(activeSection) === "company" || navGroup(activeSection) === "forecast" },
+-    { id: "me", label: t("我"), icon: "☺", active: ["me", "memory", "skills", "admin", "materials", "evidence"].includes(activeSection) },
+   ];
+   const research = isResearchSection(activeSection);
+   const [theme, setTheme] = useState<ThemeChoice>(() => storedTheme());
+@@ -455,7 +500,8 @@ function Shell({ activeSection, navigate, symbol, symbols, onSelectStock, watchI
+       <a className="workspace-brand" href="#agent" onClick={() => navigate("agent")} aria-label={`FinBot · ${t("对话")}`}><BrandLogo /><span>FinBot<br /><em>{t("研究助理")}</em></span></a>
+       {botRail?.(() => { if (isNarrow || !pinned) setMenuOpen(false); })}
+       <nav ref={navRef} className={`workspace-nav${botRail ? " is-bottom" : ""}`}>
+-        {nav.filter(item => !botRail || item.id !== "agent").map((item) => <button key={item.id} type="button" className={navGroup(activeSection) === item.group ? "active" : ""} aria-current={navGroup(activeSection) === item.group ? "page" : undefined} onClick={() => drawerNavigate(item.id)}><span aria-hidden="true">{item.icon}</span><span><strong>{item.label}</strong><small>{item.hint}</small></span></button>)}
++        {!botRail && <button type="button" className={navGroup(activeSection) === "chat" ? "active" : ""} aria-current={navGroup(activeSection) === "chat" ? "page" : undefined} onClick={() => drawerNavigate("agent")}><span aria-hidden="true">✳</span><span><strong>{t("对话")}</strong><small>{t("首页")}</small></span></button>}
++        <MoreMenu items={moreItems} activeGroup={navGroup(activeSection)} onPick={drawerNavigate} placement="rail" drop={botRail ? "up" : "down"} />
+       </nav>
+       <div className="rail-bottom">{research && <span><span className="rail-review-dot" aria-hidden="true" />{<Tx text={"判断可回到原始来源查看"} />}</span>}</div>
+       </aside>
+@@ -498,6 +544,7 @@ function Shell({ activeSection, navigate, symbol, symbols, onSelectStock, watchI
+       <footer>{<Tx text={"FinBot · 本地研究记录 · 研究判断可追溯到原始来源"} />}</footer>
+       <nav className="mobile-tabbar" aria-label={t("主要导航")}>
+         {mobileTabs.map(tab => <button key={tab.id} type="button" aria-current={tab.active ? "page" : undefined} onClick={() => navigate(tab.id)}><span aria-hidden="true">{tab.icon}</span>{tab.label}</button>)}
++        <MoreMenu items={moreItems} activeGroup={navGroup(activeSection)} onPick={navigate} placement="sheet" />
+       </nav>
+     </div>
+   </div>;
+diff --git a/frontend/src/grok.css b/frontend/src/grok.css
+index afb172b..b74119a 100644
+--- a/frontend/src/grok.css
++++ b/frontend/src/grok.css
+@@ -69,6 +69,15 @@ body { -webkit-font-smoothing: antialiased; }
+ .workspace-nav button:hover, .workspace-nav button:focus-visible { background: var(--me-rail-hover); color: var(--me-rail-ink); }
+ .workspace-nav button.active { background: var(--me-rail-hover); color: var(--me-rail-ink); box-shadow: none; }
+ .workspace-nav button.active small { color: var(--me-rail-muted); }
++.nav-more { position: relative; }
++.nav-more > button { width: 100%; }
++.nav-more-menu { position: absolute; z-index: 5; left: 0; right: 0; bottom: calc(100% + 6px); display: grid; gap: 2px; padding: 6px; max-height: min(420px, 70dvh); overflow: auto; background: var(--me-surface); color: var(--me-ink); border: 1px solid var(--me-line); border-radius: 14px; box-shadow: 0 12px 32px rgba(0, 0, 0, .28); }
++.nav-more-menu.is-down { top: calc(100% + 6px); bottom: auto; }
++.workspace-nav .nav-more-menu button { color: var(--me-ink); background: transparent; box-shadow: none; }
++.workspace-nav .nav-more-menu button small { color: var(--me-muted); }
++.workspace-nav .nav-more-menu button:hover, .workspace-nav .nav-more-menu button:focus-visible { background: var(--me-surface-2); color: var(--me-ink); }
++.workspace-nav .nav-more-menu button.active, .workspace-nav .nav-more-menu button[aria-current="page"] { background: var(--me-accent-soft); color: var(--me-accent); }
++.workspace-nav .nav-more-menu button.active small { color: var(--me-accent); }
+ .rail-bottom { color: var(--me-rail-muted); }
+ .rail-nav-close, .nav-menu-trigger { border-color: var(--me-line); color: var(--me-rail-muted); background: transparent; border-radius: 10px; }
+ .rail-nav-close:hover, .nav-menu-trigger:hover { color: var(--me-rail-ink); background: var(--me-rail-hover); }
+diff --git a/frontend/src/locales/en-US.json b/frontend/src/locales/en-US.json
+index 52f5d9e..7672c92 100644
+--- a/frontend/src/locales/en-US.json
++++ b/frontend/src/locales/en-US.json
+@@ -1739,5 +1739,7 @@
+   "次": "times",
+   "间隔要填整数，至少为 1。": "The interval must be a whole number, at least 1.",
+   "执行次数要填整数，至少为 1。": "The run count must be a whole number, at least 1.",
+-  "登录个人聊天后才能查看和管理新闻源。": "Sign in to personal chat to view and manage news sources."
++  "登录个人聊天后才能查看和管理新闻源。": "Sign in to personal chat to view and manage news sources.",
++  "更多": "More",
++  "公司、预测与其它": "Company, forecast, and more"
+ }
+diff --git a/frontend/src/locales/zh-CN.json b/frontend/src/locales/zh-CN.json
+index 44b9009..5922fdb 100644
+--- a/frontend/src/locales/zh-CN.json
++++ b/frontend/src/locales/zh-CN.json
+@@ -1739,5 +1739,7 @@
+   "次",
+   "间隔要填整数，至少为 1。",
+   "执行次数要填整数，至少为 1。",
+-  "登录个人聊天后才能查看和管理新闻源。"
++  "登录个人聊天后才能查看和管理新闻源。",
++  "更多",
++  "公司、预测与其它"
+ ]
+diff --git a/frontend/src/styles.css b/frontend/src/styles.css
+index 44f260c..bca8824 100644
+--- a/frontend/src/styles.css
++++ b/frontend/src/styles.css
+@@ -1770,7 +1770,7 @@ html,body,#root{max-width:100%}
+ 
+ .nav-scrim{display:none}
+ 
+-.app-rail{position:fixed!important;z-index:6;left:0;top:0;bottom:0;width:min(276px,calc(100vw - 58px));height:100vh;height:100dvh;transform:translateX(-105%);transition:transform .2s ease;box-shadow:0 15px 40px #13271f30}
++.app-rail{position:fixed!important;z-index:6;left:0;top:0;bottom:0;width:min(288px,calc(100vw - 58px));height:100vh;height:100dvh;transform:translateX(-105%);transition:transform .2s ease;box-shadow:0 15px 40px #13271f30}
+ 
+ .app-rail.is-open{transform:translateX(0)}
+ 
+@@ -1820,11 +1820,11 @@ html,body,#root{max-width:100%}
+ 
+ /* Approved chat refinements: docked desktop navigation, centered transcript, and compact turn previews. */
+ 
+-.app-frame.is-nav-pinned{grid-template-columns:240px minmax(0,1fr)!important}
++.app-frame.is-nav-pinned{grid-template-columns:288px minmax(0,1fr)!important}
+ 
+-.app-frame.is-nav-pinned .nav-drawer-region{position:sticky;top:0;grid-column:1;grid-row:1;height:100dvh;width:240px;z-index:auto}
++.app-frame.is-nav-pinned .nav-drawer-region{position:sticky;top:0;grid-column:1;grid-row:1;height:100dvh;width:288px;z-index:auto}
+ 
+-.app-frame.is-nav-pinned .app-rail{position:relative!important;inset:auto;width:240px;height:100%;transform:none;visibility:visible;box-sizing:border-box;box-shadow:none;z-index:auto}
++.app-frame.is-nav-pinned .app-rail{position:relative!important;inset:auto;width:288px;height:100%;transform:none;visibility:visible;box-sizing:border-box;box-shadow:none;z-index:auto}
+ 
+ .app-frame.is-nav-pinned .rail-nav-close{display:inline-flex}
+ 
+@@ -1852,7 +1852,7 @@ html,body,#root{max-width:100%}
+ 
+ .owner-auth-close{position:absolute;right:12px;top:10px;border:0;background:transparent;color:#547164;font-size:24px;cursor:pointer}
+ 
+-@media(max-width:760px){.app-frame.is-nav-pinned{grid-template-columns:minmax(0,1fr)!important}.app-frame.is-nav-pinned .nav-drawer-region{position:fixed;top:0;left:0;width:0;height:100dvh;grid-column:auto;grid-row:auto;z-index:66}.app-frame.is-nav-pinned .app-rail{position:fixed!important;z-index:6;inset:0 auto 0 0;width:min(276px,calc(100vw - 58px));height:100dvh;transform:translateX(0);box-shadow:0 15px 40px #13271f30}.app-frame.is-nav-pinned .rail-nav-close{display:inline-flex}}
++@media(max-width:760px){.app-frame.is-nav-pinned{grid-template-columns:minmax(0,1fr)!important}.app-frame.is-nav-pinned .nav-drawer-region{position:fixed;top:0;left:0;width:0;height:100dvh;grid-column:auto;grid-row:auto;z-index:66}.app-frame.is-nav-pinned .app-rail{position:fixed!important;z-index:6;inset:0 auto 0 0;width:min(288px,calc(100vw - 58px));height:100dvh;transform:translateX(0);box-shadow:0 15px 40px #13271f30}.app-frame.is-nav-pinned .rail-nav-close{display:inline-flex}}
+ 
+ @media(max-width:760px){.app-frame.is-nav-pinned .nav-drawer-region{position:fixed}.app-frame.is-nav-pinned .app-rail{position:fixed!important}}
+ 
+diff --git a/frontend/src/theme.css b/frontend/src/theme.css
+index cd62729..5220561 100644
+--- a/frontend/src/theme.css
++++ b/frontend/src/theme.css
+@@ -134,15 +134,29 @@ body { background: var(--me-bg); color: var(--me-ink); font-family: var(--me-fon
+ .memory-search input { flex: 1; font: inherit; padding: 6px 10px; border: 1px solid var(--me-line); border-radius: 8px; background: var(--me-surface); color: var(--me-ink); }
+ .memory-archived summary { cursor: pointer; color: var(--me-muted); font-size: 13px; }
+ .mobile-tabbar { display: none; }
++.more-sheet-backdrop { position: fixed; inset: 0 0 calc(62px + env(safe-area-inset-bottom)) 0; z-index: 19; display: flex; align-items: flex-end; background: rgba(16, 16, 16, .45); }
++.more-sheet-backdrop > * { width: 100%; }
++.more-sheet { width: 100%; box-sizing: border-box; display: grid; gap: 2px; padding: 8px 8px 10px; background: var(--me-surface); color: var(--me-ink); border-top: 1px solid var(--me-line); border-radius: 16px 16px 0 0; box-shadow: 0 -12px 32px rgba(0, 0, 0, .2); }
++.more-sheet button { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; border: 0; background: transparent; color: var(--me-ink); border-radius: 10px; padding: 10px 12px; font: inherit; cursor: pointer; }
++.more-sheet button span:first-child { width: 1.25em; text-align: center; color: var(--me-muted); }
++.more-sheet button strong { display: block; font-size: 14px; font-weight: 600; }
++.more-sheet button small { display: block; color: var(--me-muted); font-size: 11px; margin-top: 2px; }
++.more-sheet button.active, .more-sheet button[aria-current="page"] { background: var(--me-accent-soft); color: var(--me-accent); }
++.more-sheet button.active span:first-child, .more-sheet button.active small { color: var(--me-accent); }
+ @media (max-width: 760px) {
+-  .mobile-tabbar { display: grid; grid-template-columns: repeat(4, 1fr); position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
++  .mobile-tabbar { display: grid; grid-template-columns: repeat(3, 1fr); position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
+     background: var(--me-surface); border-top: 1px solid var(--me-line); padding: 6px 4px calc(6px + env(safe-area-inset-bottom)); }
+   .mobile-tabbar button { border: 0; background: transparent; color: var(--me-muted); display: grid; justify-items: center; gap: 2px; font-size: 11px; padding: 4px 0; }
+   .mobile-tabbar button span { font-size: 17px; line-height: 1; }
+-  .mobile-tabbar button[aria-current="page"] { color: var(--me-accent); font-weight: 600; }
++  .mobile-tabbar button[aria-current="page"], .mobile-tabbar button.is-active { color: var(--me-accent); font-weight: 600; }
++  .mobile-tabbar .mobile-more { min-width: 0; }
++  .mobile-tabbar .mobile-more > button { width: 100%; }
+   .app-content { padding-bottom: calc(62px + env(safe-area-inset-bottom)); }
+   .nav-menu-trigger { display: none; }
+   .theme-form { display: none; }
++  .mobile-tabbar .more-sheet button { display: flex; align-items: center; justify-content: flex-start; gap: 12px; width: 100%; text-align: left; color: var(--me-ink); font-size: 14px; font-weight: 400; padding: 10px 12px; }
++  .mobile-tabbar .more-sheet button span { font-size: inherit; line-height: 1.3; }
++  .mobile-tabbar .more-sheet button.active, .mobile-tabbar .more-sheet button[aria-current="page"] { color: var(--me-accent); font-weight: 600; background: var(--me-accent-soft); }
+ }
+ 
+ /* Dark mode: the older sheets paint some surfaces light directly (generated from every rule whose
+-- 
+2.43.0
+
